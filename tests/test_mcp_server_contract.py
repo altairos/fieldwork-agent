@@ -90,3 +90,25 @@ async def test_resources_and_prompts_visible(server):
         got = await client.read_resource("fieldwork://guidance/phases")
         assert "proposal_confirmation" in got.contents[0].text
         assert len((await client.list_prompts()).prompts) == 2
+
+
+async def test_compose_proposal_degraded_visible_without_key(server):
+    """终审 I2（验收③）：config=None（无 LLM）时 compose_proposal 包络必须机器可见 degraded。
+
+    最小合法参数覆盖 build_context_block 四硬渠道（研究者/田野点/行程/访谈对象，
+    形状对照 tests/test_documents.py 的 CTX/SITES 与 test_registry_surface 的 _FULL_ARGS）；
+    server 夹具 config=None → host_ctx["llm"]=None → proposal_handler 模板降级分支
+    带 degraded 键（本次 kernel 唯一豁免改动），envelope_dict(exclude_none) 后仍可见。
+    """
+    args = {
+        "ctx": {"discipline": "社会学", "topic": "宗族变迁", "target_location": "喜洲"},
+        "sites": [{"name": "喜洲", "confirmed": True}],
+        "itinerary": {"legs": [{"from": "昆明", "to": "大理"}]},
+        "informants": [{"code": "P1", "type": "长老"}],
+        "knowledge": [],
+    }
+    async with _session(server) as client:
+        res = await client.call_tool("compose_proposal", args)
+        payload = json.loads(res.content[0].text)
+    assert payload["ok"] is True, payload.get("error")
+    assert payload.get("degraded"), "无 key 时 degraded 必须机器可见（验收③）"

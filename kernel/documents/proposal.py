@@ -425,7 +425,11 @@ def proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
                      informants: list, knowledge: list, *, llm: Any = None,
                      section: str | None = None, mode: str = "global",
                      prior_markdown: str = "") -> Envelope:
-    """registry 分派入口：宿主以 JSON 传 ``ctx`` dict，内核转 ResearchContext 后统一包络。"""
+    """registry 分派入口：宿主以 JSON 传 ``ctx`` dict，内核转 ResearchContext 后统一包络。
+
+    终审 I2（验收③）：``llm is None`` 且 compose 成功时，包络带非空 ``degraded``，
+    使"模板降级"对机器可见（此前只在 markdown 尾注里，人眼可见、程序不可见）。
+    """
     try:
         doc = compose_proposal(
             ResearchContext.model_validate(ctx or {}), sites or [], itinerary,
@@ -441,6 +445,10 @@ def proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
         return Envelope(ok=False, error=ToolError(
             code="missing_channel", message=str(exc),
             hint="先补齐研究者信息/田野点/行程/访谈对象四渠道，再生成方案"))
+    if llm is None:
+        # 措辞对齐 informants.suggest_informants 的既有 degraded 风格（"参考起点，非完整覆盖"）；
+        # llm 非 None 路径不动（chat error 分支的内部降级仍由 compose_proposal 尾注承担）
+        return Envelope(ok=True, data=doc, degraded="模板降级版（未接入 LLM）")
     return Envelope(ok=True, data=doc)
 
 

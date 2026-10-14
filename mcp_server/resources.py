@@ -2,6 +2,8 @@
 
 静态资源从 kernel 常量拼装（禁止复制第二份事实），项目类资源按 repo 存量展开。
 URI 路由：前缀匹配 → 渲染函数；未知 URI 返回 ok:false 包络，不抛裸异常。
+终审 C1：项目类 URI 解析出的 pid 先过 ``state_tools.guard_project_id`` 同一净化
+守卫（``split("/")`` 对反斜杠路径失效），非法 → ``invalid_args`` 包络再谈路由。
 """
 
 import inspect
@@ -15,6 +17,7 @@ from fieldwork_agent.kernel.guidance.informants import (
     get_informant,
 )
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
+from fieldwork_agent.mcp_server.state_tools import guard_project_id
 from mcp.types import Resource
 
 # ---------------------------------------------------------------- 渲染辅助
@@ -284,6 +287,10 @@ def read_resource(repo: ProjectRepository, uri: str) -> dict[str, Any]:
         parts = uri.removeprefix("fieldwork://project/").split("/")
         if len(parts) == 2:
             pid, kind = parts
+            # 终审 C1：pid 先过与 state_tools 同一净化守卫（split("/") 挡不住反斜杠），
+            # 非法 → invalid_args 包络；合法再走原 KeyError→project_not_found 逻辑
+            if (bad := guard_project_id(pid, repo)) is not None:
+                return bad
             try:
                 if kind == "summary":
                     return {"ok": True, "text": _render_project_summary(repo, pid)}
