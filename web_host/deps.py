@@ -7,6 +7,7 @@ def init_deps(app, *, config=None, repo=None) -> None:
     from fieldwork_agent.core.config import Config
     from fieldwork_agent.kernel.repository.json_repo import JsonRepository
     from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+    from fieldwork_agent.web_host.turn_manager import TurnManager
 
     cfg = config or Config()
     if repo is None:
@@ -14,7 +15,7 @@ def init_deps(app, *, config=None, repo=None) -> None:
     app.state.config = cfg
     app.state.repo = repo
     app.state.flyai = FlyAIClient(getattr(cfg, "flyai_api_key", ""))
-    app.state.turn_manager = None  # Task 3 创建后替换
+    app.state.turn_manager = TurnManager(root=cfg.projects_dir)
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
         from fieldwork_agent.kernel.llm import LLMClient
@@ -23,9 +24,9 @@ def init_deps(app, *, config=None, repo=None) -> None:
             app.state.llm = LLMClient(cfg.dashscope_api_key, cfg.llm_models)
         except RuntimeError:
             pass
-    # R4：进程重启后遗留 running → interrupted（Task 3 创建 TurnManager 后启用）
-    # pids = [p["project_id"] for p in repo.list_projects()]
-    # app.state.turn_manager.recover_interrupted(pids)
+    # R4：进程重启后遗留 running → interrupted
+    pids = [p["project_id"] for p in repo.list_projects()]
+    app.state.turn_manager.recover_interrupted(pids)
 
 
 def get_repo(request: Request):
