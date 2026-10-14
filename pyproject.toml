@@ -26,6 +26,7 @@ fieldwork = "fieldwork_agent.core.cli:main"
 
 [tool.setuptools]
 # 仓库根即包目录，映射为顶层包 fieldwork_agent；子包相对其自动解析
+# tools/ 已随旧决策核心删除（能力实现迁至 kernel/sources 等子包），packages 同步移除
 package-dir = { fieldwork_agent = "." }
 packages = [
     "fieldwork_agent",
@@ -37,7 +38,6 @@ packages = [
     "fieldwork_agent.kernel.documents",
     "fieldwork_agent.kernel.repository",
     "fieldwork_agent.runtime",
-    "fieldwork_agent.tools",
 ]
 
 [tool.pytest.ini_options]

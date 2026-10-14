@@ -1,15 +1,13 @@
 """pytest 共享 fixture。
 
 用 FakeConfig 把项目状态目录指向 tmp_path，避免测试读写真实的
-`~/.fieldwork_agent`，保证隔离与可重复。另提供 Task 9+ 复用的
+`~/.fieldwork_agent`，保证隔离与可重复。另提供宿主测试复用的
 ``fake_llm``（ScriptedLLM 形状）与 ``fake_flyai``（StubClient 形状）——
 全 mock、不联网、不调 subprocess、无 key。
 """
 from pathlib import Path
 
 import pytest
-from fieldwork_agent.core.dialogue_engine import DialogueEngine
-from fieldwork_agent.core.state import ProjectState
 from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
 
 
@@ -53,32 +51,7 @@ def fake_config(tmp_path) -> FakeConfig:
     return FakeConfig(tmp_path)
 
 
-@pytest.fixture
-def make_project(fake_config):
-    """工厂：创建带指定 project_id 的 ProjectState。"""
-
-    def _make(project_id: str = "test_project") -> ProjectState:
-        return ProjectState(fake_config, project_id)
-
-    return _make
-
-
-@pytest.fixture
-def project(make_project) -> ProjectState:
-    return make_project()
-
-
-@pytest.fixture
-def make_engine(project):
-    """工厂：基于给定 ProjectState 创建 DialogueEngine。"""
-
-    def _make(state: ProjectState | None = None) -> DialogueEngine:
-        return DialogueEngine(state or project)
-
-    return _make
-
-
-# ---------------------------------------------------------------- Task 9+ 复用桩
+# ---------------------------------------------------------------- 宿主测试复用桩
 
 
 class FakeLLM:
