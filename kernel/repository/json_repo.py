@@ -21,6 +21,7 @@
 """
 
 import json
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -116,17 +117,25 @@ class JsonRepository:
 
     @staticmethod
     def _read_json(path: Path) -> dict | None:
+        """读取 JSON。文件不存在/不可访问 → None；存在但解析失败 → ValueError。"""
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            text = path.read_text(encoding="utf-8")
+        except OSError:
             return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"state.json 损坏: {path}: {exc}") from exc
 
     @staticmethod
     def _write_json(path: Path, payload: dict) -> None:
+        """原子落盘：先写 tmp 再 os.replace（Windows 同卷可覆盖既有文件）。"""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        tmp = path.parent / (path.name + ".tmp")
+        tmp.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        os.replace(tmp, path)
 
     def _read_chat_log(self, pid: str) -> list[dict]:
         """读全量消息史；坏行跳过（旧文件可能因进程中断留下半行）。"""
@@ -224,7 +233,7 @@ class JsonRepository:
         current = state["phase"]
         if current == phase:
             return
-        state["phase_history"].append({"from": current, "to": phase, "ts": _now()})
+        state["phase_history"].append({"from": current, "to": phase, "at": _now()})
         state["phase"] = phase
         self._save(pid, state)
 
@@ -301,7 +310,10 @@ class JsonRepository:
         self._require(pid)
         index = []
         for path in sorted(self._cache_dir(pid).glob("*.json")):
-            data = self._read_json(path)
+            try:
+                data = self._read_json(path)
+            except ValueError:
+                continue
             if data is None:
                 continue
             index.append(
@@ -320,7 +332,10 @@ class JsonRepository:
         if not self._projects_dir.exists():
             return None
         for path in self._projects_dir.glob(f"*/search_cache/{cid}.json"):
-            data = self._read_json(path)
+            try:
+                data = self._read_json(path)
+            except ValueError:
+                continue
             if data is not None:
                 return data
         return None
@@ -353,7 +368,10 @@ class JsonRepository:
         self._require(pid)
         entries = []
         for path in sorted(self._knowledge_dir(pid).glob("*.json")):
-            data = self._read_json(path)
+            try:
+                data = self._read_json(path)
+            except ValueError:
+                continue
             if data is not None:
                 entries.append(data)
         return entries

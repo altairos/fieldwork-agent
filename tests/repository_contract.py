@@ -62,7 +62,7 @@ class TestContract:
         history = repo.get_state("p1")["phase_history"]
         assert [h["to"] for h in history] == ["field_site_profiles", "itinerary_planning"]
         assert history[1]["from"] == "field_site_profiles"
-        assert history[1]["ts"]
+        assert history[1]["at"]
 
     def test_same_phase_writes_no_history(self, repo):
         repo.set_phase("p1", "field_site_profiles")

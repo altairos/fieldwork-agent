@@ -169,3 +169,65 @@ def test_legacy_chat_tail_backfilled(legacy_repo):
     again = JsonRepository(projects_dir=legacy_repo.root)
     again.create("legacy_project")
     assert len(again.get_messages("legacy_project", limit=100)) == 4
+
+# ---------------------------------------------------------------- 损坏 state.json 响亮失败 + 原子写
+
+
+def test_corrupt_state_json_raises_valueerror(tmp_path):
+    """半截 state.json 不得被当作空项目静默重置——必须 raise ValueError 且原文件保留。"""
+    projects = tmp_path / "projects"
+    pid_dir = projects / "p1"
+    pid_dir.mkdir(parents=True)
+    corrupt = '{"project_id": "p1", "phase": "research_positioning", "phase_hi'
+    (pid_dir / "state.json").write_text(corrupt, encoding="utf-8")
+    r = JsonRepository(projects_dir=projects)
+    # _require 通过（文件存在），但解析失败 -> ValueError
+    with pytest.raises(ValueError, match="损坏"):
+        r.get_state("p1")
+    # 原文件未被覆盖（人工可抢救）
+    assert (pid_dir / "state.json").read_text(encoding="utf-8") == corrupt
+
+
+def test_corrupt_state_json_list_projects_raises(tmp_path):
+    """list_projects 遇到损坏 state.json 同样 raise，不产生幻影正常项。"""
+    projects = tmp_path / "projects"
+    (projects / "good" ).mkdir(parents=True)
+    (projects / "good" / "state.json").write_text(
+        '{"project_id":"good","created_at":"x","updated_at":"y",'
+        '"phase":"a","phase_history":[],"research_context":{},'
+        '"dialogue_context":[],"field_sites":[],"informants":[],'
+        '"proposals":[],"travel_plan":null,"researcher_info":{},'
+        '"proposal_draft":null,"final_proposal":null,"search_results":[],"notes":[]}',
+        encoding="utf-8",
+    )
+    (projects / "bad").mkdir(parents=True)
+    (projects / "bad" / "state.json").write_text("{NOT JSON", encoding="utf-8")
+    r = JsonRepository(projects_dir=projects)
+    with pytest.raises(ValueError, match="损坏"):
+        r.list_projects()
+
+
+def test_create_corrupt_state_json_raises(tmp_path):
+    """create 打开已存在但损坏的 state.json 也必须 raise（而非覆盖重置）。"""
+    projects = tmp_path / "projects"
+    pid_dir = projects / "p1"
+    pid_dir.mkdir(parents=True)
+    (pid_dir / "state.json").write_text("{{{broken", encoding="utf-8")
+    r = JsonRepository(projects_dir=projects)
+    with pytest.raises(ValueError, match="损坏"):
+        r.create("p1")
+
+
+def test_atomic_write_produces_valid_json(tmp_path):
+    """正常路径：_write_json 原子落盘后 state.json 是完整合法 JSON（无残留 .tmp）。"""
+    projects = tmp_path / "projects"
+    r = JsonRepository(projects_dir=projects)
+    r.create("p1")
+    r.set_phase("p1", "field_site_profiles")
+    state_path = projects / "p1" / "state.json"
+    # 文件是完整 JSON
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["phase"] == "field_site_profiles"
+    # 没有残留 tmp 文件（os.replace 后 tmp 不再存在）
+    tmp_files = list(state_path.parent.glob("*.tmp"))
+    assert tmp_files == []
