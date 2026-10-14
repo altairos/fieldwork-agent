@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fieldwork-agent"
+version = "0.1.0"
+description = "田野罗盘 — 面向人类学/社会学田野调查者的 AI 旅行规划 Agent（基于飞猪 FlyAI）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "dashscope>=1.20.0",
+    "prompt-toolkit>=3.0.0",
+]
+
+[project.scripts]
+fieldwork = "fieldwork_agent.core.cli:main"
+
+[tool.setuptools]
+# 仓库根即包目录，映射为顶层包 fieldwork_agent；子包相对其自动解析
+package-dir = { fieldwork_agent = "." }
+packages = [
+    "fieldwork_agent",
+    "fieldwork_agent.core",
+    "fieldwork_agent.tools",
+]

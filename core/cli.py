@@ -3,13 +3,25 @@
 """
 import sys
 from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 from datetime import datetime
 
-from .config import Config
+from .config import Config, CONFIG_DIR
 from .orchestrator import FieldAgent
 
 
+def _ensure_utf8_stdio():
+    """Windows 终端默认 GBK，CLI 打印 emoji 会触发 UnicodeEncodeError。
+    将 stdout/stderr 切换为 UTF-8（无法编码时替换），保证跨终端可运行。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main():
+    _ensure_utf8_stdio()
     config = Config()
     check_dependencies(config)
 
@@ -33,7 +45,7 @@ def main():
     print(f"🔧 已加载能力: {', '.join(available_tools)}")
     print()
 
-    session = PromptSession(history_file="~/.fieldwork_agent/history.txt")
+    session = PromptSession(history=FileHistory(str(CONFIG_DIR / "history.txt")))
 
     while True:
         try:
