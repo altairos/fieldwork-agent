@@ -1,13 +1,16 @@
 """documents/proposal 测试 — 提案与访谈提纲的 LLM/降级双路径，全部基于 mock 不联网。"""
+import json as _json
+
 import pytest
 from fieldwork_agent.kernel import build_tool_schemas
+from fieldwork_agent.kernel.documents.informants import suggest_informants
 from fieldwork_agent.kernel.documents.proposal import (
     PROPOSAL_SECTIONS,
     build_context_block,
     compose_interview_guide,
     compose_proposal,
 )
-from fieldwork_agent.kernel.models import ProposalDoc, ResearchContext
+from fieldwork_agent.kernel.models import InformantCandidate, ProposalDoc, ResearchContext
 
 CTX = ResearchContext(discipline="社会学", topic="宗族变迁", scale="单人调研",
                       budget="2万", time_window="6-9月", target_location="喜洲")
@@ -212,4 +215,86 @@ def test_compose_interview_guide_registered():
     assert tool, "compose_interview_guide 应已注册"
     props = tool[0]["function"]["parameters"]["properties"]
     assert {"topic", "informant_types"} <= set(props)
+    assert "llm" not in props
+
+
+# ────────────────────────────────────────────────────────────────
+# suggest_informants（Task 7+ 动态生成）：前三个测试为 brief Step 1 逐字补漏；
+# brief 块内的 import json as _json / suggest_informants / InformantCandidate
+# 三行导入上移至文件顶部（避免 E402），测试体本身未改动。
+# ────────────────────────────────────────────────────────────────
+
+_CANDIDATES = _json.dumps([{"type": "社群骨干", "approach": "a", "cautions": "c",
+    "question_domains": ["q"], "ethics": "e", "access_channel": "ac", "preparation": "p"}] * 4,
+    ensure_ascii=False)
+
+
+def test_suggest_informants_validates_schema():
+    llm = FakeLLM(_CANDIDATES)
+    env = suggest_informants("性与性别少数群体的社区网络", "社会学", llm=llm)
+    assert env.ok and len(env.data) == 4
+    assert all(isinstance(c, InformantCandidate) for c in env.data)
+    assert "社群骨干" in llm.messages[-1]["content"] or True  # prompt 含主题
+    assert "示范" in llm.messages[-1]["content"] or "长老" in llm.messages[-1]["content"]  # few-shot 锚定
+
+
+def test_suggest_informants_illegal_json():
+    env = suggest_informants("x", llm=FakeLLM("不是JSON"))
+    assert not env.ok and env.error.code == "generation_invalid"
+
+
+def test_suggest_informants_no_key_degraded():
+    env = suggest_informants("宗族变迁")
+    assert env.ok and env.degraded and "参考起点" in env.degraded
+    assert 0 < len(env.data) <= 6 and all(isinstance(c, InformantCandidate) for c in env.data)
+
+
+# ---- suggest_informants 补充覆盖（注册面 / 槽位 / 条目级容错 / 上限）----
+
+
+def test_suggest_informants_prompt_carries_topic_and_json_array_instruction():
+    llm = FakeLLM(_CANDIDATES)
+    suggest_informants("性与性别少数群体的社区网络", "社会学", llm=llm)
+    user = llm.messages[-1]["content"]
+    assert "性与性别少数群体的社区网络" in user  # 主题进 prompt（brief 的 or True 断言补实）
+    assert "输出 JSON 数组" in user
+    assert llm.kwargs["slot"] == "proposal"  # brief：注册能力用 proposal 槽
+
+
+def test_suggest_informants_site_profile_in_prompt():
+    llm = FakeLLM(_CANDIDATES)
+    suggest_informants("宗族变迁", "社会学", {"accommodation": "喜洲客栈"}, llm=llm)
+    assert "喜洲客栈" in llm.messages[-1]["content"]
+
+
+def test_suggest_informants_drops_illegal_entries_keeps_valid():
+    out = _json.dumps([
+        {"type": "意见领袖", "approach": "a", "cautions": "c", "question_domains": ["q"],
+         "ethics": "e", "access_channel": "ac", "preparation": "p"},
+        "不是dict",
+        42,
+    ], ensure_ascii=False)
+    env = suggest_informants("x", llm=FakeLLM(out))
+    assert env.ok and len(env.data) == 1 and env.data[0].type == "意见领袖"
+
+
+def test_suggest_informants_caps_at_six():
+    one = {"type": "t", "approach": "a", "cautions": "c", "question_domains": ["q"],
+           "ethics": "e", "access_channel": "ac", "preparation": "p"}
+    many = _json.dumps([dict(one, type=f"t{i}") for i in range(9)], ensure_ascii=False)
+    env = suggest_informants("x", llm=FakeLLM(many))
+    assert env.ok and len(env.data) == 6
+
+
+def test_suggest_informants_error_envelope_has_code_and_message():
+    env = suggest_informants("x", llm=FakeLLM("完全不是JSON"))
+    assert env.error.code and env.error.message  # 全局约束：error 包络必带 code+message
+
+
+def test_suggest_informants_registered():
+    tool = [t for t in build_tool_schemas()
+            if t["function"]["name"] == "suggest_informants"]
+    assert tool, "suggest_informants 应已注册"
+    props = tool[0]["function"]["parameters"]["properties"]
+    assert {"research_topic", "discipline", "site_profile"} <= set(props)
     assert "llm" not in props

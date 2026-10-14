@@ -1,7 +1,12 @@
 """guidance 子包测试 — 阶段推进纯函数、消息提取、访谈对象库（全部纯数据，不联网不调 LLM）。"""
 
 from fieldwork_agent.kernel.guidance import extract, informants, phases
-from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
+from fieldwork_agent.kernel.models import (
+    FieldSiteRecord,
+    InformantCandidate,
+    InformantRecord,
+    ResearchContext,
+)
 
 
 def test_check_advance_a_to_b_needs_4_fields():
@@ -214,3 +219,39 @@ def test_interview_guide_methodology_sections():
     assert isinstance(text, str) and len(text) > 200
     for token in ("开场", "主问", "追问", "敏感", "知情同意"):
         assert token in text
+
+
+# ---------------------------------------------------------------- 动态生成支撑（Task 4+ 补漏）
+
+
+def test_informant_library_entries_have_examples():
+    """LIBRARY 每类带 2-3 条提问示例，末条为追问句式（few-shot 质量锚的数据基础）。"""
+    for key, entry in informants.INFORMANT_LIBRARY.items():
+        ex = entry["examples"]
+        assert isinstance(ex, list) and 2 <= len(ex) <= 3, key
+        assert all(isinstance(s, str) and s for s in ex), key
+        assert ex[-1].startswith("追问"), key
+    one = informants.get_informant("长老")
+    assert one is not None and one["examples"]  # get_informant 兼容：深拷贝后仍含 examples
+
+
+def test_informant_examples_constant():
+    """INFORMANT_EXAMPLES：类型名→提问示例列表（由 LIBRARY 派生的等价访问）。"""
+    assert len(informants.INFORMANT_EXAMPLES) >= 5
+    assert set(informants.INFORMANT_EXAMPLES) <= set(informants.INFORMANT_LIBRARY)
+    assert all(isinstance(v, list) and v for v in informants.INFORMANT_EXAMPLES.values())
+    assert informants.INFORMANT_EXAMPLES["长老"] == informants.INFORMANT_LIBRARY["长老"]["examples"]
+
+
+def test_match_examples_returns_candidate_validatable_dicts():
+    hits = informants.match_examples("少数民族村落宗族组织变迁")
+    assert hits and all("type" in h and "ethics" in h for h in hits)
+    for h in hits:
+        c = InformantCandidate.model_validate(h)  # 形状 = InformantCandidate 字段可 validate
+        assert c.type and c.approach and c.question_domains and c.ethics
+        assert c.access_channel and c.preparation  # 转 Candidate 时补合理默认（LIBRARY 无此二字段）
+
+
+def test_match_examples_empty_topic_returns_all():
+    hits = informants.match_examples("")
+    assert [h["type"] for h in hits] == list(informants.INFORMANT_LIBRARY)

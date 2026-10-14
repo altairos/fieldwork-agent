@@ -5,12 +5,16 @@
 
 约定：
 - ``INFORMANT_LIBRARY`` 的键即 ``InformantRecord.type`` 可登记的类型名；
-- 每条固定五个字段：``name``（展示名）、``approach``（接近策略）、
-  ``cautions``（注意事项）、``question_domains``（建议提问域）、``ethics``（伦理提示）；
+- 每条固定六个内容字段：``name``（展示名）、``approach``（接近策略）、
+  ``cautions``（注意事项）、``question_domains``（建议提问域）、``ethics``（伦理提示）、
+  ``examples``（2-3 条提问示例，末条为“追问：”句式）；
+- 本库定位是 ``InformantCandidate`` 的写法示范（few-shot 质量锚）与无 key 降级兜底，
+  **非枚举白名单**——候选的动态生成见 ``kernel/documents/informants.suggest_informants``；
 - 纯数据，无 I/O；``get_informant`` 返回深拷贝，宿主改动不会污染库本身。
 """
 
 import copy
+import re
 
 INFORMANT_LIBRARY: dict[str, dict] = {
     "长老": {
@@ -35,6 +39,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "录音与摘录前逐次确认；对在世者的负面评价默认匿名化；"
             "回访时说明材料将如何使用、保存多久。"
         ),
+        "examples": [
+            "咱们村最早是哪几家迁来的？这个地名是从哪儿来的？",
+            "您手上的族谱、老照片或契约，能不能指着给我讲讲上头的人和事？",
+            "追问：您说的全村祭祖，最近一次合族同祭是哪一年？跟二十年前比哪一步变化最大？",
+        ],
     },
     "宗族头人": {
         "name": "宗族头人 / 理事会议事者",
@@ -57,6 +66,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "族产与利益分配信息可能直接改变受访者处境，严格匿名并约定回看权限；"
             "涉财务记录只在获得明确同意后摘录。"
         ),
+        "examples": [
+            "今年祭祖的日子是怎么定的？钱怎么收、各家怎么分派？",
+            "上一回修谱是哪年？谁牵头、谁管账、谁执笔，人是怎么凑齐的？",
+            "追问：您说“现在族里的事不好办”，最近一桩是什么事？最后怎么议下来的？",
+        ],
     },
     "宗教人士": {
         "name": "宗教人士（僧道、师公、阿訇、端公等）",
@@ -79,6 +93,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "信仰体验属私人领域，引用前须二次确认；不得以“学术研究”为名索取"
             "仪式秘传内容或信众名册。"
         ),
+        "examples": [
+            "师父在这儿几年了？平常一个月有几场法事，都是哪些人家来请？",
+            "信众主要从哪些村子来？他们最看重的是哪一类仪式？",
+            "追问：您讲的这套规矩，跟二三十年前比是松了还是严了？哪一处变得最明显？",
+        ],
     },
     "村干部": {
         "name": "村干部（村支书、村委会主任、文书）",
@@ -101,6 +120,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "区分公务信息与个人意见并分别标注；引用可能构成职务评价的内容时"
             "以职务代称或化名处理，避免对其岗位造成影响。"
         ),
+        "examples": [
+            "全村现在常住多少户？人口结构和产业大致是什么样？",
+            "近几年的项目资金主要投在哪几块？村里自己出的是哪部分？",
+            "追问：您说的那件纠纷调解成了——当时双方各让了什么？能讲讲过程吗？",
+        ],
     },
     "驻村书记": {
         "name": "驻村第一书记 / 工作队员",
@@ -123,6 +147,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "涉及具体户信息与内部数据时脱敏；避免使其因一次访谈承担泄密或"
             "被追责的风险，敏感段落可当场商定不记录。"
         ),
+        "examples": [
+            "您进村头一个月看到的，和来之前听说的，差在哪儿？",
+            "能不能带我过一遍您平常的一天：都走了哪几户、见了谁、办了什么事？",
+            "追问：有没有一件事一直推不动？卡在哪一环，您觉得村里自己能接住吗？",
+        ],
     },
     "乡村教师": {
         "name": "乡村教师 / 代课教师",
@@ -145,6 +174,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "涉及未成年人的叙述一律去标识且不进入公开文本；"
             "校园观察避开可识别面孔，影像须获授权。"
         ),
+        "examples": [
+            "班里留守儿童大概几个？父母多久回来一次，平时怎么联系？",
+            "娃娃们在家说的语言和课堂上一样吗？家里一般讲什么话？",
+            "追问：您教过的学生里往外走的多还是留下的多？最近一两个出去的去向是什么？",
+        ],
     },
     "妇女": {
         "name": "妇女群体（留守妇女、已婚外来女性、老年妇女）",
@@ -167,6 +201,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "性别议题材料可能被社区内部解读，须单独约定存储与引用方式，"
             "必要时只做匿名汇总不出个体引语；涉及暴力经历时先评估安全风险再决定是否记录。"
         ),
+        "examples": [
+            "家里一年的开销大致怎么安排？哪几笔是您自己定的？",
+            "姐妹之间的互助会、储蓄组这类组织您参加过吗？当初怎么入的会？",
+            "追问：您说的那门亲事，两家当时是怎么坐下来议的？彩礼与陪嫁各怎么定？（须避开家中男性在场）",
+        ],
     },
     "返乡务工者": {
         "name": "返乡务工者 / 外出务工家庭",
@@ -189,6 +228,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "涉及劳资纠纷、欠薪、工伤等内容时先告知可寻求的正规渠道，"
             "再按其意愿记录；不代其作维权承诺。"
         ),
+        "examples": [
+            "您哪年出去的？在哪个城市、做的什么工种？后来怎么决定回来的？",
+            "在外挣的钱一般怎么寄回家？家里那几年的主要花销在哪？",
+            "追问：返乡后找活儿是怎么找的？最近一次谈工价的经过能讲讲吗？",
+        ],
     },
     "集市商户": {
         "name": "集市商户（本地摊贩、外来经营者）",
@@ -211,6 +255,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "涉税务、证照、无证经营等话题只作一般性描述，不形成可识别个案；"
             "拍摄摊位与价目须征得经营者同意。"
         ),
+        "examples": [
+            "您摊上的货从哪儿进的？一个月赶几个集，哪个集最旺？",
+            "熟客和过路客各占多少？价钱一般是怎么谈的？",
+            "追问：微信群、直播这些线上渠道对生意的影响，最近一单是怎么做成的？",
+        ],
     },
     "非遗传承人": {
         "name": "非遗传承人 / 手工艺艺人",
@@ -233,6 +282,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "未公开的配方、程式、唱本属知识财产，须书面授权后方可记录引用；"
             "署名方式、影像用途与收益约定应在访谈前书面确认。"
         ),
+        "examples": [
+            "能不能边做边讲一遍这道工序？哪一步最费功夫、最容易做错？",
+            "您当年是怎么拜的师？现在有没有想传的徒弟，卡在哪儿？",
+            "追问：展演和旅游化之后，最近一场流程跟您学的那版差在哪一步？",
+        ],
     },
     "乡医": {
         "name": "乡村医生 / 村医",
@@ -255,6 +309,11 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "不得索取可识别的患者信息；引用其判断时区分职业经验与个人观点，"
             "涉及具体诊疗争议时不记录可归因细节。"
         ),
+        "examples": [
+            "您一天出诊要走哪几个村子？这一年哪类人来得最多？",
+            "村里老人的药平时是怎么开、怎么拿的？医保报销顺不顺？",
+            "追问：村民小病、大病、拖久了各自是怎么选的？只说一般情况，不问具体是谁。",
+        ],
     },
 }
 
@@ -310,8 +369,77 @@ INTERVIEW_GUIDE_METHODOLOGY = """\
 - 回访时先反馈上一轮整理结果，请对方纠正；把纠正本身当作数据。
 """
 
+# ---------------------------------------------------------------- 提问示例访问与主题匹配
+
+
+#: 类型名 → 提问示例列表（由 ``INFORMANT_LIBRARY`` 派生的等价访问；
+#: 供 ``documents.informants.suggest_informants`` 做 few-shot 质量锚与无 key 降级兜底）。
+INFORMANT_EXAMPLES: dict[str, list[str]] = {
+    key: entry["examples"] for key, entry in INFORMANT_LIBRARY.items()
+}
+
+# 非空主题时的返回上限（``suggest_informants`` 的 1-6 类契约由此保底）
+MAX_MATCHES = 6
+
+# 转 InformantCandidate 时补齐的两字段通用默认（LIBRARY 条目未收录逐类渠道/行前保障）
+_DEFAULT_ACCESS_CHANNEL = (
+    "通用兜底：本类未收录专属渠道，建议经当地学术合作方、村干部或熟人引荐接触，"
+    "并在进入田野前与引荐人约定引介方式"
+)
+_DEFAULT_PREPARATION = (
+    "通用兜底：行前确认住宿与交通、备齐知情同意话术与记录设备，"
+    "并预案敏感话题的停录与回访安排"
+)
+
+# 二字组打分前剔除的标点/空白（中文无词边界，退化到字符二字组重叠做粗匹配）
+_PUNCT_RE = re.compile(r"[\s/、，。；：·（）()《》\-]+")
+
 
 def get_informant(type: str) -> dict | None:
     """按类型名取条目（与 ``InformantRecord.type`` 同键）；未收录返回 ``None``。"""
     entry = INFORMANT_LIBRARY.get(type)
     return copy.deepcopy(entry) if entry is not None else None
+
+
+def _bigrams(text: str) -> set[str]:
+    cleaned = _PUNCT_RE.sub("", text)
+    return {cleaned[i:i + 2] for i in range(len(cleaned) - 1)}
+
+
+def _to_archive(key: str, entry: dict) -> dict:
+    """LIBRARY 条目 → ``InformantCandidate`` 可 validate 的档案 dict（含 examples 附带键）。"""
+    return {
+        "type": key,
+        "approach": entry["approach"],
+        "cautions": entry["cautions"],
+        "question_domains": list(entry["question_domains"]),
+        "ethics": entry["ethics"],
+        "access_channel": _DEFAULT_ACCESS_CHANNEL,
+        "preparation": _DEFAULT_PREPARATION,
+        "examples": list(entry["examples"]),
+    }
+
+
+def match_examples(topic: str) -> list[dict]:
+    """按主题关键词粗匹配库条目，返回 ``InformantCandidate`` 字段可 validate 的档案 dict。
+
+    匹配策略为字符二字组重叠计分（中文无词边界的确定性纯函数）：
+    - 空主题 → 返回全部条目（全库导出，供调用方自行截断）；
+    - 非空主题 → 取分数 >0 的前 ``MAX_MATCHES`` 条，按分数降序、同分保持库内插入序；
+    - 全部落空 → 兜底返回全部：无 key 降级路径宁可给“参考起点”也不给空结果。
+    """
+    topic = (topic or "").strip()
+    if not topic:
+        return [_to_archive(k, v) for k, v in INFORMANT_LIBRARY.items()]
+    topic_bg = _bigrams(topic)
+    scored: list[tuple[int, int, str]] = []
+    for order, (key, entry) in enumerate(INFORMANT_LIBRARY.items()):
+        haystack = "".join([key, entry["name"], entry["approach"],
+                            *entry["question_domains"], *entry["examples"]])
+        score = len(topic_bg & _bigrams(haystack))
+        if score > 0:
+            scored.append((-score, order, key))
+    if not scored:
+        return [_to_archive(k, v) for k, v in INFORMANT_LIBRARY.items()]
+    scored.sort()
+    return [_to_archive(k, INFORMANT_LIBRARY[k]) for _, _, k in scored[:MAX_MATCHES]]
