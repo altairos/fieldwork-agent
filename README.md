@@ -11,33 +11,38 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│              CLI 交互界面                      │
+│         CLI 交互界面 (core/cli.py)            │
 │       prompt_toolkit 驱动的交互式终端           │
 └──────────────────┬──────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────┐
-│          Orchestrator (主控制器)               │
-│  · 对话生命周期管理                            │
-│  · FlyAI 8工具调用调度                         │
-│  · 方案生成编排                                │
-└──┬───────────────┬───────────────┬───────────┘
-   │               │               │
-┌──▼──────┐  ┌─────▼─────┐  ┌────▼───────┐
-│Dialogue  │  │  FlyAI    │  │ DashScope  │
-│Engine   │  │  Tools    │  │ Chat       │
-│四阶段状态机│  │飞猪旅行搜索 │  │千问模型对话 │
-│引导式提问 │  │8个工具全覆盖│  │            │
-└──────────┘  └───────────┘  └────────────┘
-   │               │               │
-   ▼               ▼               ▼
-┌─────────────────────────────────────────────┐
-│        ProjectState (项目状态持久化)            │
-│  · 本地 JSON 文件存储                        │
-│  · 知识库 CRUD                               │
-│  · 搜索结果缓存                              │
-│  · 提案文档管理                              │
+│     FieldAgent 内核宿主 (core/orchestrator)   │
+│  · 对话生命周期 + LLM function calling 决策    │
+│  · 取 registry schema → client_kernel_dispatch│
+│  · 轮末落盘 + check_advance 确定性推进         │
+│  · Config (core/config.py) 为无状态底座        │
+└──┬────────────────┬───────────────┬─────────┘
+   │                │               │
+┌──▼──────────┐ ┌───▼────────────┐ ┌▼─────────────────┐
+│ runtime/    │ │ kernel/        │ │ kernel/          │
+│ loop.py     │ │ sources/       │ │ guidance/        │
+│ 共用回合循环 │ │  flyai 8 搜索原语│ │ documents/       │
+│ LLM ↔ 工具   │ │ aggregation/   │ │ 五阶段推进·提取 ·  │
+│             │ │ 画像/行程聚合    │ │ 方案/提纲/候选生成  │
+└─────────────┘ └───┬────────────┘ └──────────────────┘
+                    │
+┌───────────────────▼─────────────────────────┐
+│  kernel/registry.py + kernel/models.py       │
+│  · 能力注册表：build_tool_schemas 单一来源     │
+│  · 统一包络 Envelope/ToolError + 共享契约模型   │
+├─────────────────────────────────────────────┤
+│  kernel/repository/  (JsonRepository)        │
+│  · 本地 JSON 项目状态 · 知识库 · 搜索缓存 · 方案 │
 └─────────────────────────────────────────────┘
 ```
+
+`kernel` 无状态、只依赖标准库 + pydantic，绝不反向 import `core/`/`runtime`；
+`kernel/llm.py` 提供 DashScope OpenAI 兼容端点的 `LLMClient`（function calling），由宿主注入。
 
 ## 快速开始
 
@@ -136,15 +141,23 @@ Agent 会同时调用多个 FlyAI 工具获取真实数据。
 
 ```
 fieldwork_agent/
-├── core/
+├── core/                    # 宿主层：编排与状态，不含业务规则
 │   ├── config.py            # 全局配置（本地优先，自动读取 flyai CLI 配置）
-│   ├── state.py             # 项目状态持久化（JSON 文件存储）
-│   ├── dialogue_engine.py   # 四阶段引导式对话引擎 + 工具决策器
-│   ├── orchestrator.py      # 主控制器
+│   ├── orchestrator.py      # FieldAgent 内核宿主：组装 + 分派 + 落盘 + 确定性推进
 │   └── cli.py               # 交互式终端界面
-├── tools/
-│   ├── flyai_tools.py       # 飞猪 FlyAI 全部 8 个工具封装
-│   └── dashscope_tools.py   # 百炼 DashScope SDK 集成
+├── runtime/                 # 共用回合循环（CLI/Web 同一套 LLM↔工具多轮逻辑）
+│   └── loop.py              # run_tool_loop
+├── kernel/                  # 无状态能力内核（只依赖标准库 + pydantic）
+│   ├── __init__.py          # 聚合导入各能力模块：裸 import kernel 即注册 13 项能力
+│   ├── registry.py          # 能力注册表 + build_tool_schemas（工具 schema 单一来源）
+│   ├── models.py            # 共享契约：Envelope/ToolError/SearchItem/ResearchContext…
+│   ├── llm.py               # LLMClient（DashScope OpenAI 兼容端点，function calling）
+│   ├── sources/             # flyai.py：FlyAIClient + 8 搜索原语（argv 拼装 → 归一化包络）
+│   ├── aggregation/         # site_profile.py 田野点画像 · itinerary.py 行程组合
+│   ├── documents/           # proposal.py 八章方案与访谈提纲 · informants.py 候选生成
+│   ├── guidance/            # phases.py 五阶段与 check_advance · extract.py · informants.py
+│   └── repository/          # protocol.py 契约 · json_repo.py JsonRepository 持久化
+├── tests/                   # 全 mock 测试（无 Key、不联网、不起子进程）
 ├── __init__.py
 ├── __main__.py              # 入口点
 └── README.md

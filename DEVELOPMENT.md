@@ -55,6 +55,7 @@ tests/
 ├── test_json_repo.py         # JsonRepository：契约实现 + 落盘布局 + 存量兼容 + 原子写
 ├── test_guidance.py          # 五阶段常量/提示词、check_advance 推进判定、extract 纯函数
 ├── test_models_registry.py   # 包络/模型与 registry 能力元数据契约
+├── test_registry_surface.py  # 生产态能力面：裸导入即注册 13 项 + registry handler 统一包络
 ├── test_sources_flyai.py     # 8 搜索原语 argv 拼装 + 异常折进包络
 ├── test_itinerary.py         # compose_itinerary 聚合（legs/stays/budget coverage）
 ├── test_site_profile.py      # profile_field_site 聚合分支
@@ -108,8 +109,14 @@ CLI (core/cli.py)
        ├─ kernel/documents/                 compose_proposal / compose_interview_guide / suggest_informants
        ├─ kernel/guidance/                  五阶段常量·提示词·check_advance + extract 纯函数
        ├─ kernel/repository/                ProjectRepository 协议 + JsonRepository 持久化
+       ├─ kernel/models.py                  共享 pydantic 契约：Envelope/ToolError/SearchItem/
+       │                                    ResearchContext/ProposalDoc/BudgetBreakdown…（全内核复用）
        └─ kernel/llm.py                     LLMClient（DashScope OpenAI 兼容端点，function calling）
 ```
+
+测试夹具（fixtures）：全部集中在 `tests/conftest.py` —— `FakeConfig`（tmp 目录底座）、
+`fake_llm`（ScriptedLLM 形状，按脚本返回 chat 响应并记录 messages）、`fake_flyai`（StubClient
+形状，8 原语恒返单条目成功包络并记录调用）；宿主/聚合测试一律注入这两个桩，不打真实网络。
 
 依赖方向单向：`cli → orchestrator → {runtime, kernel}`；`runtime` 只 import `kernel`；
 **`kernel` 绝不反向 import `core/`、`runtime` 或任何宿主**（只依赖标准库 + pydantic，无状态、
