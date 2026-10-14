@@ -5,7 +5,7 @@ FlyAI 工具封装 — 飞猪旅行搜索能力
 import json
 import subprocess
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class FlyAITools:
@@ -14,7 +14,7 @@ class FlyAITools:
     def __init__(self, api_key: str = ""):
         self.api_key = api_key
 
-    def _run_command(self, args: list) -> Dict[str, Any]:
+    def _run_command(self, args: list) -> dict[str, Any]:
         """执行 flyai 子命令，返回解析后的 JSON"""
         cmd = ["flyai"] + args
         try:
@@ -35,7 +35,7 @@ class FlyAITools:
     # ══════════════════════════════════════════
 
     def search_flight(self, origin: str, destination: str, dep_date: str = "",
-                      back_date: str = "", sort_type: str = "2", max_price: str = "") -> Dict[str, Any]:
+                      back_date: str = "", sort_type: str = "2", max_price: str = "") -> dict[str, Any]:
         """航班搜索 — 用于跨省/跨国调研交通规划"""
         args = ["search-flight", "--origin", origin, "--destination", destination]
         if dep_date:
@@ -50,7 +50,7 @@ class FlyAITools:
 
     def search_train(self, origin: str, destination: str, dep_date: str = "",
                      back_date: str = "", seat_class: str = "",
-                     journey_type: str = "", sort_type: str = "4") -> Dict[str, Any]:
+                     journey_type: str = "", sort_type: str = "4") -> dict[str, Any]:
         """火车搜索 — 高铁备选方案"""
         args = ["search-train", "--origin", origin, "--destination", destination]
         if dep_date:
@@ -67,7 +67,7 @@ class FlyAITools:
 
     def search_hotel(self, dest_name: str, check_in: str = "", check_out: str = "",
                      hotel_types: str = "", max_price: str = "", sort: str = "price_asc",
-                     poi_name: str = "", hotel_stars: str = "") -> Dict[str, Any]:
+                     poi_name: str = "", hotel_stars: str = "") -> dict[str, Any]:
         """酒店搜索 — 按距离/星级/类型筛选住宿"""
         args = ["search-hotel", "--dest-name", dest_name]
         if check_in:
@@ -87,7 +87,7 @@ class FlyAITools:
         return self._run_command(args)
 
     def search_poi(self, city_name: str, keyword: str = "", category: str = "",
-                   poi_level: str = "") -> Dict[str, Any]:
+                   poi_level: str = "") -> dict[str, Any]:
         """POI/景点搜索 — 了解当地文化场所、节庆活动"""
         args = ["search-poi", "--city-name", city_name]
         if keyword:
@@ -98,16 +98,16 @@ class FlyAITools:
             args.extend(["--poi-level", poi_level])
         return self._run_command(args)
 
-    def keyword_search(self, query: str) -> Dict[str, Any]:
+    def keyword_search(self, query: str) -> dict[str, Any]:
         """关键词搜索 — 广义覆盖（签证/租车/保险/美食等）"""
         return self._run_command(["keyword-search", "--query", query])
 
-    def ai_search(self, query: str) -> Dict[str, Any]:
+    def ai_search(self, query: str) -> dict[str, Any]:
         """AI语义搜索 — 自然语言理解复杂意图 ← 核心杀手锏"""
         return self._run_command(["ai-search", "--query", query])
 
     def search_marriott_hotel(self, dest_name: str, check_in: str = "", check_out: str = "",
-                              hotel_brands: str = "", max_price: str = "", sort: str = "price_asc") -> Dict[str, Any]:
+                              hotel_brands: str = "", max_price: str = "", sort: str = "price_asc") -> dict[str, Any]:
         """万豪旗下酒店搜索 — 高端备选"""
         args = ["search-marriott-hotel", "--dest-name", dest_name]
         if check_in:
@@ -122,7 +122,7 @@ class FlyAITools:
             args.extend(["--sort", sort])
         return self._run_command(args)
 
-    def search_marriott_package(self, keyword: str, sort_type: str = "price_asc") -> Dict[str, Any]:
+    def search_marriott_package(self, keyword: str, sort_type: str = "price_asc") -> dict[str, Any]:
         """万豪套餐搜索 — 体验产品/接待专家"""
         args = ["search-marriott-package", "--keyword", keyword]
         if sort_type:
@@ -136,7 +136,7 @@ class FlyAITools:
     def plan_field_site_access(
         self, departure_city: str, target_location: str, travel_date: str,
         budget_per_person: float = 1500
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         为田野点制定完整交通方案
         综合航班+火车+当地交通，输出最优路线
@@ -199,7 +199,7 @@ class FlyAITools:
     def find_accommodation_for_field_work(
         self, location: str, check_in: str = "", check_out: str = "",
         budget_per_night: float = 200, duration_days: int = 7
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         为田野工作查找住宿
         多策略：民宿优先 + 经济型酒店 + POI附近筛选
@@ -241,8 +241,8 @@ class FlyAITools:
         }
 
     def analyze_field_site_culture_and_attractions(
-        self, city_or_region: str, categories_of_interest: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+        self, city_or_region: str, categories_of_interest: list[str] | None = None
+    ) -> dict[str, Any]:
         """
         分析田野点的文化和景点资源
         支持按分类检索宗教场所、古镇古村、博物馆等
@@ -277,10 +277,10 @@ class FlyAITools:
         }
 
     def comprehensive_travel_plan(
-        self, departure: str, destinations: List[str], start_date: str,
+        self, departure: str, destinations: list[str], start_date: str,
         duration_days: int, budget_total: float = 20000,
         researcher_count: int = 1
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         综合旅行计划 — 整合所有 8 个工具的能力
         生成完整的田野调查旅行方案

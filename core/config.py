@@ -47,7 +47,7 @@ class Config:
         # 从自有配置文件加载
         if self.config_file.exists():
             try:
-                with open(self.config_file, "r", encoding="utf-8") as f:
+                with open(self.config_file, encoding="utf-8") as f:
                     data = json.load(f)
                 self.dashscope_api_key = data.get("dashscope_api_key", self.dashscope_api_key)
                 self.flyai_api_key = data.get("flyai_api_key", self.flyai_api_key)
@@ -55,19 +55,19 @@ class Config:
                 self.dingtalk_enabled = data.get("dingtalk_enabled", self.dingtalk_enabled)
                 self.chat_model = data.get("chat_model", self.chat_model)
                 self.system_model = data.get("system_model", self.system_model)
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass
 
         # 从 flyai CLI 配置文件读取 API Key
         flyai_config = Path.home() / ".flyai" / "config.json"
         if flyai_config.exists():
             try:
-                with open(flyai_config, "r", encoding="utf-8") as f:
+                with open(flyai_config, encoding="utf-8") as f:
                     flyai_data = json.load(f)
                 stored_key = flyai_data.get("key", "")
                 if stored_key and not self.flyai_api_key:
                     self.flyai_api_key = stored_key
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass
 
     def save(self):

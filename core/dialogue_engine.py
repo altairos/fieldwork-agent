@@ -2,7 +2,7 @@
 引导式对话引擎 — 四阶段访谈流程
 深度集成 FlyAI 8 个工具的意图识别和工具调用决策
 """
-from typing import Any, Dict, List
+from typing import Any
 
 from .state import ProjectState
 
@@ -118,7 +118,7 @@ class DialogueEngine:
     # 工具调用决策 — 深度意图识别
     # ══════════════════════════════════════════
 
-    def decide_tool_calls(self, user_message: str) -> List[Dict[str, Any]]:
+    def decide_tool_calls(self, user_message: str) -> list[dict[str, Any]]:
         """根据用户消息的意图决定需要调用的 FlyAI 工具"""
         info = self.project.get_all_researcher_info() if self.project else {}
         target_location = info.get("target_location", "")
@@ -401,7 +401,7 @@ class DialogueEngine:
 
     def _extract_locations_from_message(
         self, message: str, existing_info: dict
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """从消息中提取出发城市和目的地"""
         import re
         locations = {}
@@ -500,7 +500,7 @@ class DialogueEngine:
 
     # ─── 信息提取 ──────────────────────────────
 
-    def extract_researcher_info_from_message(self, message: str) -> Dict[str, str]:
+    def extract_researcher_info_from_message(self, message: str) -> dict[str, str]:
         """从自然语言回复中提取结构化信息"""
         info = {}
         lower = message.lower()
@@ -538,7 +538,7 @@ class DialogueEngine:
 
     # ─── 处理用户消息 ──────────────────────────────
 
-    def process_user_message(self, user_message: str) -> Dict[str, Any]:
+    def process_user_message(self, user_message: str) -> dict[str, Any]:
         msg_meta = {"phase": self.project.phase}
 
         # 记录用户消息

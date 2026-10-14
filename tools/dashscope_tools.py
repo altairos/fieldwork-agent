@@ -3,7 +3,7 @@
 提供文本对话、结构化输出等能力
 """
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 try:
     from dashscope import Generation
@@ -26,8 +26,8 @@ class DashScopeChat:
         if self.api_key:
             os.environ["DASHSCOPE_API_KEY"] = self.api_key
 
-    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7,
-             max_tokens: int = 4096, stream: bool = False) -> Dict[str, Any]:
+    def chat(self, messages: list[dict[str, str]], temperature: float = 0.7,
+             max_tokens: int = 4096, stream: bool = False) -> dict[str, Any]:
         """发送对话请求"""
         call_kwargs = {
             "model": self.model,
@@ -40,7 +40,7 @@ class DashScopeChat:
         else:
             return self._sync_call(call_kwargs)
 
-    def _sync_call(self, kwargs: dict) -> Dict[str, Any]:
+    def _sync_call(self, kwargs: dict) -> dict[str, Any]:
         response = Generation.call(**kwargs)
         if response.status_code != 200:
             return {"status": "error", "code": response.status_code, "message": response.message}

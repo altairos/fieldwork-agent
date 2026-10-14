@@ -4,7 +4,7 @@
 """
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..tools.dashscope_tools import DASHSCOPE_AVAILABLE, DashScopeChat
 from ..tools.flyai_tools import FlyAITools
@@ -16,9 +16,9 @@ from .state import ProjectState
 class FieldAgent:
     """田野罗盘 Agent — 核心控制器"""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Config | None = None):
         self.config = config or Config()
-        self.project: Optional[ProjectState] = None
+        self.project: ProjectState | None = None
         self.dialogue = None
         self.flyai = FlyAITools(self.config.flyai_api_key)
 
@@ -32,7 +32,7 @@ class FieldAgent:
 
     # ─── 项目管理 ──────────────────────────────
 
-    def create_project(self, project_id: Optional[str] = None) -> ProjectState:
+    def create_project(self, project_id: str | None = None) -> ProjectState:
         if not project_id:
             project_id = f"field_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.project = ProjectState(self.config, project_id)
@@ -47,12 +47,12 @@ class FieldAgent:
         self.dialogue = DialogueEngine(self.project)
         return self.project
 
-    def list_projects(self) -> List[Dict[str, Any]]:
+    def list_projects(self) -> list[dict[str, Any]]:
         projects = []
         for pdir in sorted(self.config.projects_dir.iterdir()):
             state_file = pdir / "state.json"
             if state_file.exists():
-                with open(state_file, "r", encoding="utf-8") as f:
+                with open(state_file, encoding="utf-8") as f:
                     state = json.load(f)
                 projects.append({
                     "id": state.get("project_id", pdir.name),
@@ -64,7 +64,7 @@ class FieldAgent:
 
     # ─── 核心对话循环 ──────────────────────────────
 
-    def chat(self, user_message: str, stream: bool = False) -> Dict[str, Any]:
+    def chat(self, user_message: str, stream: bool = False) -> dict[str, Any]:
         """处理一轮对话（非流式）"""
         if not self.project:
             return {"error": "No active project. Call create_project() first."}
@@ -127,7 +127,7 @@ class FieldAgent:
             "phase_transition": engine_result.get("msg_meta", {}).get("phase_transition"),
         }
 
-    def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """根据工具调用指令执行实际的工具调用"""
         results = []
         method_map = {
@@ -167,7 +167,7 @@ class FieldAgent:
 
         return results
 
-    def _format_tool_results_for_display(self, tool_results: List[Dict[str, Any]]) -> str:
+    def _format_tool_results_for_display(self, tool_results: list[dict[str, Any]]) -> str:
         """将工具调用结果格式化为可读文本"""
         display_parts = []
 
@@ -244,7 +244,7 @@ class FieldAgent:
 
     # ─── 方案生成 ──────────────────────────────
 
-    def generate_full_proposal(self) -> Optional[str]:
+    def generate_full_proposal(self) -> str | None:
         """基于当前所有状态生成完整研究方案"""
         if not self.project or not self.llm_client:
             return None

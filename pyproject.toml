@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "dashscope>=1.20.0",
     "prompt-toolkit>=3.0.0",
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ package-dir = { fieldwork_agent = "." }
 packages = [
     "fieldwork_agent",
     "fieldwork_agent.core",
+    "fieldwork_agent.kernel",
     "fieldwork_agent.tools",
 ]
 
@@ -46,5 +48,5 @@ target-version = "py310"
 exclude = [".venv", "build", "dist"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B"]
+select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501", "B008"]

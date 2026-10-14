@@ -4,7 +4,7 @@
 """
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from .config import Config
 
@@ -45,7 +45,7 @@ class ProjectState:
 
     def _load_state(self) -> dict:
         if self.state_file.exists():
-            with open(self.state_file, "r", encoding="utf-8") as f:
+            with open(self.state_file, encoding="utf-8") as f:
                 return json.load(f)
         return self._default_state()
 
@@ -103,7 +103,7 @@ class ProjectState:
     def get_all_researcher_info(self) -> dict:
         return self.state["researcher_info"]
 
-    def append_chat(self, role: str, content: str, metadata: Optional[dict] = None):
+    def append_chat(self, role: str, content: str, metadata: dict | None = None):
         entry = {
             "role": role,
             "content": content,
@@ -122,7 +122,7 @@ class ProjectState:
     def get_recent_messages(self, n: int = 30) -> list:
         msgs = list(self.state["dialogue_context"])
         if self.chat_log_file.exists():
-            with open(self.chat_log_file, "r", encoding="utf-8") as f:
+            with open(self.chat_log_file, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -133,7 +133,7 @@ class ProjectState:
 
     def add_knowledge_entry(
         self, title: str, content: str, source: str = "user",
-        tags: Optional[list] = None, category: str = "general"
+        tags: list | None = None, category: str = "general"
     ):
         entry_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(self.get_knowledge_entries())}"
         entry = {
@@ -151,11 +151,11 @@ class ProjectState:
         self.save_state()
         return entry_id
 
-    def get_knowledge_entries(self, category: Optional[str] = None, tags: Optional[list] = None) -> list:
+    def get_knowledge_entries(self, category: str | None = None, tags: list | None = None) -> list:
         entries = []
         for fpath in sorted(self.knowledge_dir.glob("*.json")):
             try:
-                with open(fpath, "r", encoding="utf-8") as f:
+                with open(fpath, encoding="utf-8") as f:
                     entry = json.load(f)
                 if category and entry.get("category") != category:
                     continue
@@ -163,7 +163,7 @@ class ProjectState:
                     if not any(t in entry.get("tags", []) for t in tags):
                         continue
                 entries.append(entry)
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 continue
         return entries
 
@@ -200,7 +200,7 @@ class ProjectState:
         results = list(self.state.get("search_results", []))
         for fpath in sorted(self.search_cache_dir.glob("*.json")):
             try:
-                with open(fpath, "r", encoding="utf-8") as f:
+                with open(fpath, encoding="utf-8") as f:
                     data = json.load(f)
                 cid = data.get("id", "")
                 if not any(r["id"] == cid for r in results):
@@ -210,14 +210,14 @@ class ProjectState:
                         "source_tool": data.get("source_tool", ""),
                         "cached_at": data.get("cached_at", ""),
                     })
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 continue
         return results
 
-    def get_search_result_by_id(self, cache_id: str) -> Optional[dict]:
+    def get_search_result_by_id(self, cache_id: str) -> dict | None:
         fpath = self.search_cache_dir / f"{cache_id}.json"
         if fpath.exists():
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, encoding="utf-8") as f:
                 return json.load(f)
         return None
 
@@ -236,7 +236,7 @@ class ProjectState:
         self.save_state()
         return filepath
 
-    def get_latest_proposal(self) -> Optional[str]:
+    def get_latest_proposal(self) -> str | None:
         if self.state.get("final_proposal"):
             fp = self.output_dir / self.state["final_proposal"]["filename"]
         elif self.state.get("proposal_draft"):
@@ -244,7 +244,7 @@ class ProjectState:
         else:
             return None
         if fp.exists():
-            with open(fp, "r", encoding="utf-8") as f:
+            with open(fp, encoding="utf-8") as f:
                 return f.read()
         return None
 
