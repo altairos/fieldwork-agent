@@ -6,15 +6,13 @@
 （年份硬编码、跨月/跨年必错），本模块一律
 ``datetime.strptime(start_date, "%Y-%m-%d") + timedelta``，不拼任何月/日。
 
-约定（与同目录 ``profile_field_site`` 口径一致）：
+约定：
 
 - 严格无状态：``client`` 经 keyword-only 参数注入，默认 None 时自建 ``FlyAIClient()``；
 - 逐调用失败隔离：单腿无可用价格 → 该腿 ``chosen=None`` + ``note`` 说明、预算不计该条；
   单地住宿无价 → 该条晚价留空、预算不计该条；交通与住宿调用**全部**失败才返回
   ``Envelope(ok=False, code="all_sources_failed")``；任何源异常都不逃逸出模块；
-- 跨点画像复用为"可选增强"：经 ``getattr`` + try/except 调 ``profile_field_site``
-  采集每点的备选住宿/文化点位/当地活动填入 ``alternatives``；纯搜索替身客户端不受影响，
-  画像不可用只置 ``degraded``、``alternatives`` 留空；
+- 备选：``plan.alternatives`` 由已抓到的未选交通候选汇成（零额外调用）；
 - 日历口径：末日为退房与返程日，故 ``end_date = start + (duration_days - 1) 天``，
   住宿总夜数 = ``duration_days - 1``，按目的地均分（余数分给靠前的点）；
 - 预算条目口径（金额来源全部标注 ``source``）：交通 = 所选最低价 × 人数 × 腿数
@@ -28,12 +26,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
 
-from fieldwork_agent.kernel.aggregation import site_profile
 from fieldwork_agent.kernel.models import (
     BudgetBreakdown,
     BudgetItem,
     Envelope,
-    FieldSiteProfile,
     ItemPage,
     ItineraryPlan,
     PhaseSegment,
@@ -57,11 +53,8 @@ RHYTHM_RATIOS: list[tuple[str, float, str]] = [
 # 市内交通与餐饮的估算系数（按总预算比例，source="estimate" 便于复核）
 CITY_MEAL_RATIO = 0.15
 
-# 备选条目截断：腿内备选与画像备选都只保留有限条数，避免包络膨胀
+# 备选条目截断：腿内备选只保留有限条数，避免包络膨胀
 MAX_ALTERNATIVES = 3
-
-# 跨点画像复用只取两类兴趣：可选增强不应产生大量远程调用
-REUSE_INTERESTS: list[str] = ["人文古迹", "宗教场所"]
 
 
 class ComposeItineraryArgs(BaseModel):
@@ -171,30 +164,6 @@ def _select(cands: list[dict], prefer_key: str | None = None
     return chosen, (priced[1:] + unpriced)[:MAX_ALTERNATIVES]
 
 
-def _dedupe_names(items: list[Any]) -> list[str]:
-    """按出现顺序去重取名称，丢弃空名。"""
-    out: list[str] = []
-    for entry in items:
-        name = entry.get("name", "") if isinstance(entry, dict) else getattr(entry, "name", "")
-        if name and name not in out:
-            out.append(str(name))
-    return out
-
-
-def _profile_enrich(dest: str, check_in: str, nightly_budget: float,
-                    client: Any) -> Envelope | None:
-    """可选增强：经 ``getattr`` 取 ``profile_field_site``，缺失或异常都折成 None。"""
-    fn = getattr(site_profile, "profile_field_site", None)
-    if not callable(fn):
-        return None
-    try:
-        env = fn(dest, budget_per_night=nightly_budget, interests=list(REUSE_INTERESTS),
-                 travel_date=check_in, max_items_per_section=MAX_ALTERNATIVES, client=client)
-    except Exception:
-        return None
-    return env if isinstance(env, Envelope) else None
-
-
 # ---------------------------------------------------------------- 能力实现
 
 
@@ -232,8 +201,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         prev = w["dest"]
     hops.append({"from": prev, "to": departure, "date": _fmt(end_dt), "direction": "return"})
 
-    # 2) 组装叶子调用（交通对比 / 住宿两策略 / 可选画像复用），并行执行
-    tasks: list[tuple[str, Any, Callable[[], Envelope | None]]] = []
+    # 2) 组装叶子调用（交通对比 / 住宿两策略），并行执行
+    tasks: list[tuple[str, Any, Callable[[], Envelope]]] = []
     for idx, hop in enumerate(hops):
         tasks.append(("transport", (idx, "flight"), lambda h=hop: _safe_call(
             client.search_flights, origin=h["from"], destination=h["to"], dep_date=h["date"])))
@@ -248,23 +217,15 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         tasks.append(("hotel", (idx, "酒店"), lambda w=w: _safe_call(
             client.search_hotels, w["dest"], check_in=w["check_in"],
             check_out=w["check_out"])))
-        # 复用 Task 5 画像采集跨点备选（可选增强，失败只让 alternatives 留空）
-        tasks.append(("profile", idx, lambda w=w: _profile_enrich(
-            w["dest"], w["check_in"], max(1.0, budget_total / max(1, duration_days)), client)))
 
     transport_cands: dict[int, list[dict]] = defaultdict(list)
     hotel_cands: dict[int, list[dict]] = defaultdict(list)
-    profiles: dict[int, FieldSiteProfile] = {}
     core_ok = 0
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = [pool.submit(fn) for _, _, fn in tasks]
         for (tag, meta, _), fut in zip(tasks, futures, strict=True):
             env = fut.result()
-            if tag == "profile":
-                if env is not None and env.ok and isinstance(env.data, FieldSiteProfile):
-                    profiles[meta] = env.data
-                continue
-            if env is not None and env.ok:
+            if env.ok:
                 core_ok += 1
             if tag == "transport":
                 idx, mode = meta
@@ -322,22 +283,11 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     budget = BudgetBreakdown(items=items, total=total, budget_total=budget_total,
                              over_budget=total > budget_total)
 
-    # 6) 备选（来自可选画像复用）；复用不可用只降级，不影响主产出
-    alternatives: list[dict[str, Any]] = []
-    for idx, w in enumerate(windows):
-        prof = profiles.get(idx)
-        if prof is None:
-            continue
-        alternatives.append({
-            "dest": w["dest"],
-            "accommodation": _dedupe_names(
-                prof.accommodation.items if prof.accommodation else [])[:MAX_ALTERNATIVES],
-            "culture": _dedupe_names(prof.culture)[:MAX_ALTERNATIVES],
-            "amenities": _dedupe_names(
-                prof.amenities.items if prof.amenities else [])[:MAX_ALTERNATIVES],
-        })
-    if any(w["nights"] > 0 for w in windows) and not alternatives:
-        notes.append("跨点画像复用不可用（画像能力缺失或调用失败），备选点位为空")
+    # 6) 备选：由已抓到的未选交通候选汇成（零额外调用）
+    alternatives: list[dict[str, Any]] = [
+        {"from": leg["from"], "to": leg["to"], "items": leg["alternatives"]}
+        for leg in legs if leg["alternatives"]
+    ]
 
     plan = ItineraryPlan(
         departure=departure,

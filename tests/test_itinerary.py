@@ -2,9 +2,8 @@
 
 from fieldwork_agent.kernel import build_tool_schemas
 from fieldwork_agent.kernel.aggregation import itinerary as itinerary_module
-from fieldwork_agent.kernel.aggregation import site_profile as site_profile_module
 from fieldwork_agent.kernel.aggregation.itinerary import compose_itinerary
-from fieldwork_agent.kernel.models import Envelope, FieldSiteProfile, ItemPage, SearchItem
+from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
 
 
 def _ok(pairs):
@@ -57,7 +56,7 @@ def test_legs_pick_cheapest_transport():
 
 # ────────────────────────────────────────────────────────────────
 # 以下为补充测试：日期铁律 / 多点滚动 / 节奏合并 / 预算口径 /
-# 失败隔离 / 可选画像复用 / 入参校验 / 注册面
+# 失败隔离 / alternatives 填充 / 入参校验 / 注册面
 # ────────────────────────────────────────────────────────────────
 
 
@@ -204,49 +203,18 @@ def test_invalid_inputs_return_error_envelope():
         assert env.error.message
 
 
-def test_profile_reuse_is_optional(monkeypatch):
-    """跨点画像复用是可选增强：不可用/抛异常都不影响主产出。"""
-    def boom(*a, **kw): raise RuntimeError("画像模块不可用")
-
-    monkeypatch.setattr(site_profile_module, "profile_field_site", boom)
+def test_plan_alternatives_collect_unselected_transport():
+    """plan.alternatives 由已抓到的未选交通候选汇成，零额外调用。"""
     env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, client=StubClient())
-    assert env.ok is True and env.data.stays
-    assert env.data.alternatives == []
-    assert env.degraded and "画像" in env.degraded
-
-    monkeypatch.setattr(site_profile_module, "profile_field_site", None)
-    env2 = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, client=StubClient())
-    assert env2.ok is True and env2.data.alternatives == []
-
-
-def test_profile_reuse_fills_alternatives(monkeypatch):
-    seen: list[tuple[str, str]] = []
-
-    def fake_profile(location, budget_per_night=200, interests=None, departure_city="",
-                     travel_date="", max_items_per_section=5, *, client=None):
-        seen.append((location, travel_date))
-        return Envelope(ok=True, data=FieldSiteProfile(
-            location=location,
-            accommodation=ItemPage(items=[SearchItem(name="驻村民宿", price=120.0)], total=1),
-            culture=[{"name": "祠堂", "category": "宗教场所"}],
-            amenities=ItemPage(items=[SearchItem(name="庙会")], total=1),
-        ))
-
-    monkeypatch.setattr(site_profile_module, "profile_field_site", fake_profile)
-    env = compose_itinerary("昆明", ["大理", "丽江"], "2026-11-01", 10, 20000, client=StubClient())
-    # 每点复用一次，travel_date 传该点入住日（timedelta 滚动结果）
-    assert seen == [("大理", "2026-11-01"), ("丽江", "2026-11-06")]
-    alt = env.data.alternatives
-    assert [a["dest"] for a in alt] == ["大理", "丽江"]
-    assert alt[0]["culture"] == ["祠堂"] and alt[0]["amenities"] == ["庙会"]
-    assert alt[0]["accommodation"] == ["驻村民宿"]
-
-
-def test_stub_client_without_profile_still_works():
-    """brief 的纯搜索 StubClient（不含任何画像依赖）可直接跑通。"""
-    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000, client=StubClient())
-    assert env.ok is True and env.data.alternatives  # 复用走通时备选点位有内容
-    assert env.data.alternatives[0]["culture"] == ["祠堂"]
+    alts = env.data.alternatives
+    assert alts  # StubClient 每腿给 flight(600)+train(350)，选 350 后 600 为次优
+    # 每条目形如 {"from", "to", "items"}
+    assert all({"from", "to", "items"} <= set(a) for a in alts)
+    # 次优项（MU 600）被收入
+    assert any(
+        any(item["name"] == "MU" for item in a["items"])
+        for a in alts
+    ), "未选交通候选 MU 应出现在 plan.alternatives 中"
 
 
 def test_registered_in_build_tool_schemas():
