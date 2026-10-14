@@ -1,5 +1,5 @@
 """
-田野旅行规划 Agent — CLI 交互界面
+田野罗盘 Agent — CLI 交互界面
 """
 import sys
 from prompt_toolkit import PromptSession
@@ -16,7 +16,7 @@ def main():
     agent = FieldAgent(config)
 
     print("=" * 60)
-    print("  田野旅行规划 Agent (Field Research Travel Planner)")
+    print("  田野罗盘 — 田野调查旅行规划 Agent")
     print("  基于飞猪 FlyAI 全品类旅行搜索能力")
     print("=" * 60)
     print()
@@ -242,7 +242,7 @@ def check_dependencies(config):
 
 def print_help():
     print("""\
-=== 田野旅行规划 Agent 帮助 ===
+=== 田野罗盘 Agent 帮助 ===
 
 【项目管理】
   new [name]        创建新项目

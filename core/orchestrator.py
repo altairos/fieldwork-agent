@@ -1,5 +1,5 @@
 """
-田野旅行规划 Agent — 主控制器
+田野罗盘 Agent — 主控制器
 协调对话引擎、FlyAI 工具调用、LLM 生成，输出完整研究方案
 """
 import json
@@ -15,7 +15,7 @@ from ..tools.dashscope_tools import DashScopeChat, DASHSCOPE_AVAILABLE
 
 
 class FieldAgent:
-    """田野旅行规划 Agent — 核心控制器"""
+    """田野罗盘 Agent — 核心控制器"""
 
     def __init__(self, config: Optional[Config] = None):
         self.config = config or Config()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""田野旅行规划 Agent — 主入口"""
+"""田野罗盘 Agent — 主入口"""
 import sys
 import os
 
