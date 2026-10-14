@@ -238,3 +238,86 @@ def test_orchestrator_no_llm_rule_fallback(fake_config):
     assert out["reply"]  # 规则文案非空
     assert out["tool_events"] == []
     assert out["phase"] == "research_positioning"
+
+
+# ------------------------------------- 验收 2：无 key 全链路 new→chat→status→generate
+
+
+def test_acceptance_smoke_no_key(fake_config):
+    """验收2 全链路（无 key）：新建项目 → chat 输入研究描述 → status 采集字段与阶段 → generate 八章。
+
+    本条同时补上 ``FieldAgent.generate_proposal`` 的宿主接线验证（此前零覆盖）。
+    全程 FakeConfig 无 dashscope/flyai key、不联网：
+    - chat 走 ``_rule_based_reply`` 降级文案，extract 仍确定性落采集字段；
+    - compose_proposal 的四硬渠道无 key 时拿不到真实 flyai 数据，故按宿主
+      ``_persist_events`` 的落盘形状预置（save_field_site / cache_search(compose_itinerary)
+      / save_informant）——等价于真实工具轮写进 repo 的内容；
+    - generate 走 ``llm=None`` 模板降级分支：严格 8 个 ``## `` 章并 save_proposal 落盘可见。
+    """
+    from pathlib import Path
+
+    from fieldwork_agent.core.orchestrator import FieldAgent
+    from fieldwork_agent.kernel.documents.proposal import PROPOSAL_SECTIONS
+    from fieldwork_agent.kernel.guidance.phases import (
+        PHASE_RESEARCH_POSITIONING,
+        PHASES,
+        REQUIRED_FIELDS,
+    )
+    from fieldwork_agent.kernel.models import ResearchContext
+
+    agent = FieldAgent(fake_config)
+    assert agent.llm is None and not fake_config.dashscope_available, "无 key 前提"
+    pid = agent.create_project("accept2")
+    assert agent.project_id == pid
+
+    # ① 研究描述 → 规则降级回复（四键契约不破）
+    out = agent.chat("我是人类学初学者，想去大理调研白族宗族，单人三个月预算2万")
+    assert set(out) == {"reply", "phase", "tool_events", "phase_transition"}
+    assert out["reply"].strip(), "无 key 必须给出降级文案而非空回复"
+    assert out["tool_events"] == []
+
+    # ② status 数据面：采集字段落 research_context、阶段合法且不足 4 项不冒进
+    state = agent.repo.get_state(pid)
+    ctx = state["research_context"]
+    assert ctx["target_location"] == "大理"
+    assert ctx["discipline"] == "人类学"
+    assert ctx["scale"] == "单人调研"
+    filled = {k for k, v in ctx.items() if k != "extras" and str(v).strip()}
+    assert filled <= set(ResearchContext.model_fields), "采集项必须是研究上下文槽位"
+    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == {"discipline", "scale"}
+    assert state["phase"] in PHASES
+    assert out["phase"] == state["phase"] == PHASE_RESEARCH_POSITIONING
+    assert out["phase_transition"] is None
+
+    # 渠道未齐时 generate 折成 {ok:False, error}（宿主 ValueError 分支），不裸抛
+    early = agent.generate_proposal()
+    assert early["ok"] is False and "缺少渠道" in early["error"]
+
+    # ③ 补齐四硬渠道（与宿主轮末落盘同形状）
+    agent.repo.save_field_site(pid, {
+        "name": "大理喜洲", "confirmed": True,
+        "profile": {"location": "大理喜洲", "generated_at": "2026-10-14T00:00:00"}})
+    agent.repo.save_informant(pid, {"code": "INF-01", "type": "长老",
+                                    "relation": "待经村干部引荐"})
+    agent.repo.cache_search(pid, "itinerary::大理", "compose_itinerary", {
+        "departure": "北京", "destinations": ["大理"],
+        "start_date": "2026-11-01", "end_date": "2026-12-05",
+        "legs": [{"from": "北京", "to": "大理", "direction": "outbound"}],
+        "stays": [{"dest": "大理", "nights": 34}],
+        "budget": {"total": 18000.0, "budget_total": 20000.0, "coverage": "unknown"}})
+
+    # ④ generate：无 key 模板降级 → 八章提案 + 落盘可见
+    result = agent.generate_proposal()
+    assert result["ok"] is True, result.get("error")
+    assert result["mode"] == "global"
+    assert result["sections"] == 8, "无 key 稿件必须是八章模板"
+
+    docs = agent.repo.list_proposals(pid)
+    assert docs, "save_proposal 后 list_proposals 应可见（status/导出链可用）"
+    assert result["id"] == docs[-1]["id"]
+    markdown = docs[-1]["content"]
+    assert [ln for ln in markdown.splitlines() if ln.startswith("## ")] == [
+        f"## {heading}" for heading in PROPOSAL_SECTIONS]
+    assert "模板降级" in markdown, "无 key 稿件需显式标注模板降级"
+    on_disk = Path(fake_config.projects_dir) / pid / "output" / docs[-1]["filename"]
+    assert on_disk.exists() and on_disk.read_text(encoding="utf-8") == markdown
