@@ -178,12 +178,18 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         "transport": transport.items if transport else [],
         "amenities": amenities.items if amenities else [],
     }
+    # R6：住宿段无任何可见供给（海外偏远点常态）→ 二段式建议，区分于"有供给但超预算"
+    hints: dict[str, str] = {}
+    if not final_items["accommodation"]:
+        hints["accommodation"] = ("平台未见住宿供给：建议以最近枢纽城市住宿为基地，"
+                                  "进村住宿通过当地学术合作方/接待方安排，需人工核实")
     summary = SummaryHints(
         section_counts={
             tag: len(items) for tag, items in final_items.items()
         } | {"culture": len(culture)},
         accommodation_nightly_min=_min_price(final_items["accommodation"]),
         transport_min=_min_price(final_items["transport"]),
+        hints=hints,
     )
 
     profile = FieldSiteProfile(
@@ -201,7 +207,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
 register(CapabilityMeta(
     name="profile_field_site",
     description="聚合目的地田野点画像：住宿（内核新增本地预算上浮1.5筛选）/大交通/"
-                "文化兴趣点/当地活动，并行调用数据源并逐段失败隔离；单段失败不影响整体。",
+                "文化兴趣点/当地活动，并行调用数据源并逐段失败隔离；单段失败不影响整体；"
+                "住宿零供给时 summary.hints 给出枢纽+学术接待二段式建议。",
     fn=profile_field_site,
     args_model=ProfileFieldSiteArgs,
 ))

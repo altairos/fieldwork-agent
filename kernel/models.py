@@ -6,6 +6,10 @@
   便于能力函数按需只填自己产出的部分；
 - 价格统一为 float（``price_raw`` 保留 CLI 原始字符串用于追溯）。
 """
+from __future__ import annotations
+
+import hashlib
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -57,11 +61,13 @@ class ItemPage(BaseModel):
 
 
 class SummaryHints(BaseModel):
-    """从田野点资料中抽取的量化提示（分节计数、住宿/交通最低价）。"""
+    """从田野点资料中抽取的量化提示（分节计数、住宿/交通最低价、降级建议）。"""
 
     section_counts: dict[str, int] = Field(default_factory=dict)
     accommodation_nightly_min: float | None = None
     transport_min: float | None = None
+    # 审阅意见 R5/无供给二段式：段名 → 人读建议（如"枢纽城市住宿+当地学术接待"）
+    hints: dict[str, str] = Field(default_factory=dict)
 
 
 class FieldSiteProfile(BaseModel):
@@ -88,20 +94,39 @@ class PhaseSegment(BaseModel):
 
 
 class BudgetItem(BaseModel):
-    """预算条目；``source`` 标注金额来源（search / cheapest / manual）以便复核。"""
+    """预算条目（审阅意见 R2）：金额必须携带可复核的计价口径与来源。
+
+    ``source`` 标注金额来源（search / cheapest / estimate / manual）；
+    报价类条目应同时填 ``priced_at``（报价时间）与 ``source_ref``（可追溯到
+    搜索结果条目的引用）；估算类条目用 ``unit``+``quantity``+``people`` 交代口径。
+    """
 
     name: str = ""
     amount: float = 0.0
     source: str = ""
+    currency: str = "CNY"
+    unit: str = ""
+    quantity: float = 1.0
+    people: int = 1
+    priced_at: str = ""
+    source_ref: str = ""
 
 
 class BudgetBreakdown(BaseModel):
-    """预算汇总与是否超支。"""
+    """预算汇总（审阅意见 R2）。
+
+    ``coverage``：``complete`` = 所有腿与住宿报价均已获取，``partial`` = 部分缺失，
+    ``unknown`` = 无任何报价。**仅 coverage==complete 时 ``over_budget`` 的结论才有
+    "完整方案是否超支"的意义**；否则 total 只是已知小计，宿主不得据此宣布"预算内"。
+    ``uncovered`` 列出缺失报价的条目名，供界面展示"预算不完整"原因。
+    """
 
     items: list[BudgetItem] = Field(default_factory=list)
     total: float = 0.0
     budget_total: float = 0.0
     over_budget: bool = False
+    coverage: str = "unknown"
+    uncovered: list[str] = Field(default_factory=list)
 
 
 class ItineraryPlan(BaseModel):
@@ -118,6 +143,8 @@ class ItineraryPlan(BaseModel):
     alternatives: list[dict[str, Any]] = Field(default_factory=list)
     budget: BudgetBreakdown = Field(default_factory=BudgetBreakdown)
     generated_at: str = ""
+    # 审阅意见 R3：产出时的关键输入哈希，宿主用于判断行程是否因输入变更而失效
+    inputs_hash: str = ""
 
 
 # ---------------------------------------------------------------- 研究上下文
@@ -135,6 +162,11 @@ class ResearchContext(BaseModel):
     departure_city: str = ""
     target_location: str = ""
     travel_date: str = ""
+    # 审阅意见 R1：输出用途（global|kaiti|grant|course，缺省视为 global）
+    purpose: str = ""
+    # 审阅意见 R3：非访谈型研究显式跳过访谈对象硬条件（附理由）
+    interviews_not_applicable: bool = False
+    interviews_na_reason: str = ""
     extras: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -170,13 +202,52 @@ class InformantRecord(BaseModel):
 class ProposalDoc(BaseModel):
     """提案/纪要文档，markdown 为唯一真源。
 
-    ``mode`` 记录请求的体例：``global``（当前唯一完整实现）/ ``kaiti`` / ``grant``
-    （后两者按 DEEP_RESEARCH 报告作为接口占位，未深化时回退 global 提纲并在
-    markdown 尾部追加提示，见 ``kernel.documents.proposal.MODE_FALLBACK_NOTE``）。
+    ``requested_mode`` 记录用户所选体例，``mode`` 记录**实际生成**体例（审阅意见 R1）：
+    ``global`` 为当前唯一完整实现；``kaiti``/``grant`` 回退 global 时两者不一致，
+    文档头部会前置声明能力限制（见 ``kernel.documents.proposal``）。
+    ``inputs_hash`` 供宿主做确认/失效判定（审阅意见 R3）。
     """
 
     markdown: str = ""
     kind: str = "proposal"
     version: str = "draft"
     sections: list[str] = Field(default_factory=list)
+    requested_mode: str = "global"
     mode: str = "global"
+    inputs_hash: str = ""
+
+
+class InformantCandidate(BaseModel):
+    """访谈对象候选档案（六字段，suggest_informants 产物/示范词条的目标结构）。"""
+
+    type: str = ""
+    approach: str = ""
+    cautions: str = ""
+    question_domains: list[str] = Field(default_factory=list)
+    ethics: str = ""
+    access_channel: str = ""
+    preparation: str = ""
+
+
+class ConfirmationRecord(BaseModel):
+    """用户确认记录（审阅意见 R3）：确认的是"产物+当时的关键输入"二元组。
+
+    ``kind``：site / itinerary / proposal；``subject``：项目内标识（如田野点名）。
+    输入变更后用 ``inputs_stale(record.inputs_hash, 当前哈希)`` 判断旧确认是否失效。
+    """
+
+    kind: str = ""
+    subject: str = ""
+    confirmed_at: str = ""
+    inputs_hash: str = ""
+
+
+def compute_inputs_hash(payload: dict[str, Any]) -> str:
+    """关键输入 → sha1 hex（键序无关；仅用于失效判定，不承担安全职责）。"""
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
+
+
+def inputs_stale(recorded_hash: str, current_hash: str) -> bool:
+    """旧确认记录的输入哈希与当前输入哈希不一致即失效（审阅意见 R3）。"""
+    return recorded_hash != current_hash

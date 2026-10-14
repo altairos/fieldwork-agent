@@ -46,6 +46,7 @@ def test_rhythm_and_budget():
     assert p.buffer_days >= 1
     assert p.budget.items and abs(p.budget.total - sum(i.amount for i in p.budget.items)) < 0.01
     assert p.budget.over_budget is (p.budget.total > 20000)
+    assert p.budget.coverage == "complete"  # 全报价可得（R2）
 
 
 def test_legs_pick_cheapest_transport():
@@ -108,28 +109,62 @@ def test_buffer_days_formula():
 
 
 def test_budget_items_formula_and_over_budget_flag():
-    """交通=所选单价×人数（去腿+返腿即 ×2）、住宿=每晚单价×夜数、市内与餐饮=0.15×预算。"""
+    """R2 口径：交通=单价×人数、住宿=晚价×夜数×房间数、市内与餐饮=人均日标准×人数×天数（估算）。"""
     env = compose_itinerary("昆明", ["大理"], "2026-11-01", 30, 20000, client=StubClient())
     b = env.data.budget
     by_name = {i.name: i for i in b.items}
     assert by_name["交通（昆明→大理）"].amount == 350.0       # 去程腿
     assert by_name["交通（大理→昆明）"].amount == 350.0       # 返程腿，两条腿合计=单价×人数×2
-    assert by_name["住宿（大理）"].amount == 150.0 * 29       # 150/晚 × 29 夜
-    assert by_name["市内与餐饮"].amount == 3000.0             # 0.15 × 20000
+    assert by_name["住宿（大理）"].amount == 150.0 * 29       # 150/晚 × 29 夜 × 1 间
+    meal = by_name["市内与餐饮"]
+    assert meal.amount == 150.0 * 1 * 30                     # 可调人均日标准×人数×天数
+    assert meal.source == "estimate" and meal.unit == "人均每日×人数×天数"
+    assert all(i.currency == "CNY" for i in b.items)
     assert all(i.source in ("cheapest", "estimate") for i in b.items)
-    assert b.total == 700.0 + 4350.0 + 3000.0
-    assert b.over_budget is False
+    assert b.total == 700.0 + 4350.0 + 4500.0
+    assert b.over_budget is False and b.coverage == "complete"
 
     tight = compose_itinerary("昆明", ["大理"], "2026-11-01", 30, 1000, client=StubClient())
     assert tight.data.budget.budget_total == 1000
-    assert tight.data.budget.over_budget is True
+    assert tight.data.budget.over_budget is True  # complete 时才允许下超支结论
+
+
+def test_coverage_partial_when_transport_unpriced():
+    """R2/R6：缺关键报价时只能给已知小计，不得宣布预算内/超支。"""
+    class NoTransportPrice(StubClient):
+        def search_flights(self, **kw): return _ok([("MU", None)])
+        def search_trains(self, **kw): return _ok([("G29", None)])
+
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 200, client=NoTransportPrice())
+    b = env.data.budget
+    assert b.coverage == "partial"
+    assert any("交通" in u for u in b.uncovered)
+    assert b.over_budget is False  # 即便 total>budget_total 也不得在 partial 下宣布
+
+
+def test_rooms_multiply_lodging_and_inputs_hash():
+    """多人住宿需显式房间数口径（2 人/间假设）；R3 输入哈希随产物落盘。"""
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, 3, client=StubClient())
+    b = env.data.budget
+    lodging = next(i for i in b.items if i.name.startswith("住宿"))
+    assert lodging.amount == 150.0 * 9 * 2          # 3 人→2 间（ceil(3/2)）
+    assert lodging.people == 2 and lodging.quantity == 9
+    assert len(env.data.inputs_hash) == 40
+
+
+def test_long_stay_flagged_unverified():
+    """R6：三个月驻村只有短住日价→标估算/待核验，不宣称长住已落实。"""
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 90, 60000, client=StubClient())
+    stay = env.data.stays[0]
+    assert stay["nights"] > 14 and stay["long_stay_unverified"] is True
+    assert env.degraded and "长住" in env.degraded
 
 
 def test_budget_scales_with_researcher_count():
     env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, 3, client=StubClient())
     by_name = {i.name: i.amount for i in env.data.budget.items}
     assert by_name["交通（昆明→大理）"] == 350.0 * 3          # 交通按人数计
-    assert by_name["市内与餐饮"] == 3000.0                    # 估算条目按 brief 公式不乘人数
+    assert by_name["市内与餐饮"] == 150.0 * 3 * 10            # R2：估算条目同样按人数×天数的可解释口径
 
 
 def test_stay_prefers_cheapest_and_breaks_tie_for_guesthouse():
@@ -156,6 +191,7 @@ def test_leg_without_price_degrades_instead_of_raising():
     assert p.legs[0]["chosen"] is None
     assert p.legs[0]["alternatives"] and p.legs[0]["note"]
     assert all(not i.name.startswith("交通") for i in p.budget.items)
+    assert p.budget.coverage == "partial" and any("交通" in u for u in p.budget.uncovered)
     assert env.degraded and "交通" in env.degraded
     assert p.stays[0]["nightly_price"] == 150.0               # 住宿仍可算
 

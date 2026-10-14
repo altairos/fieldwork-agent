@@ -15,9 +15,16 @@
 - 备选：``plan.alternatives`` 由已抓到的未选交通候选汇成（零额外调用）；
 - 日历口径：末日为退房与返程日，故 ``end_date = start + (duration_days - 1) 天``，
   住宿总夜数 = ``duration_days - 1``，按目的地均分（余数分给靠前的点）；
-- 预算条目口径（金额来源全部标注 ``source``）：交通 = 所选最低价 × 人数 × 腿数
-  （去程腿 + 返程腿即 brief 的 ×2，多目的地时逐腿取实价合计，避免低估）；
-  住宿 = 每晚最低价 × 该点夜数；``市内与餐饮`` = ``0.15 × budget_total``（estimate）。
+- 预算条目口径（审阅意见 R2，金额来源全部标注 ``source``）：交通 = 所选最低价 × 人数
+  （逐腿计，多目的地不低估）；住宿 = 每晚最低价 × 该点夜数 × 房间数（默认 2 人/间
+  假设，``rooms`` 可调）；``市内与餐饮`` = 人均日标准(``meals_local_per_person_day``，
+  默认 150) × 人数 × 天数（estimate，不再按总预算百分比）。每条携带
+  ``currency/unit/quantity/people/priced_at/source_ref`` 可复核口径；
+- **预算完整性**：``coverage`` complete/partial/unknown 按腿与住宿报价可得性判定，
+  缺失项进 ``uncovered``；``over_budget`` 仅在 complete 时为真——partial 时 total
+  只是已知小计，不得据此宣布"预算内/超支"；
+- 长住诚实：单点 > ``LONG_STAY_THRESHOLD`` 晚时，日价仅作估算线索，该 stay 标
+  ``long_stay_unverified=True`` 并写入 degraded，不宣称长期住宿已落实。
 """
 
 from collections import defaultdict
@@ -35,6 +42,7 @@ from fieldwork_agent.kernel.models import (
     PhaseSegment,
     SearchItem,
     ToolError,
+    compute_inputs_hash,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
@@ -50,8 +58,11 @@ RHYTHM_RATIOS: list[tuple[str, float, str]] = [
     ("补充期", 0.20, "补访核验、材料归档与离场前回访"),
 ]
 
-# 市内交通与餐饮的估算系数（按总预算比例，source="estimate" 便于复核）
-CITY_MEAL_RATIO = 0.15
+# 市内交通与餐饮估算的人均日标准（元/人·天，可由宿主调整；R2：不再按总预算百分比）
+MEALS_PER_PERSON_DAY_DEFAULT = 150.0
+
+# 单点住宿超过该夜数即视为长住：日价只能作估算线索（R2/R6）
+LONG_STAY_THRESHOLD = 14
 
 # 备选条目截断：腿内备选只保留有限条数，避免包络膨胀
 MAX_ALTERNATIVES = 3
@@ -66,6 +77,8 @@ class ComposeItineraryArgs(BaseModel):
     duration_days: int
     budget_total: float
     researcher_count: int = 1
+    rooms: int = 0  # 0 = 按 2 人/间假设自动推导
+    meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT
 
 
 # ---------------------------------------------------------------- 内部工具
@@ -147,8 +160,10 @@ def _page_items(env: Envelope | None) -> list[SearchItem]:
 
 
 def _candidates(items: list[SearchItem], mode: str, guesthouse: bool = False) -> list[dict]:
-    """条目转备选候选 dict：保留名称、价格与方式标签（price=None 也保留以便追溯）。"""
-    return [{"name": i.name, "price": i.price, "mode": mode, "guesthouse": guesthouse}
+    """条目转候选 dict：保留名称/价格/方式标签，并透传 ``price_raw`` 与 ``extra``
+    （R2：原始报价与时长/换乘等来源信息不得在候选阶段丢失）。"""
+    return [{"name": i.name, "price": i.price, "mode": mode, "guesthouse": guesthouse,
+             "price_raw": i.price_raw, "extra": i.extra}
             for i in items]
 
 
@@ -168,9 +183,10 @@ def _select(cands: list[dict], prefer_key: str | None = None
 
 
 def compose_itinerary(departure: str, destinations: list[str], start_date: str,
-                      duration_days: int, budget_total: float, researcher_count: int = 1, *,
-                      client: FlyAIClient | None = None) -> Envelope:
-    """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与预算（日期只用 timedelta）。"""
+                      duration_days: int, budget_total: float, researcher_count: int = 1,
+                      rooms: int = 0, meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT,
+                      *, client: FlyAIClient | None = None) -> Envelope:
+    """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与可复核预算（日期只用 timedelta）。"""
     if client is None:
         client = FlyAIClient()
     bad = _validate(departure, destinations, duration_days, budget_total, researcher_count)
@@ -260,28 +276,60 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         chosen, alts = _select(hotel_cands.get(idx, []), prefer_key="guesthouse")
         if chosen is None:
             notes.append(f"{w['dest']} 住宿无可用价格，预算未计该条")
-        stays.append({"dest": w["dest"], "check_in": w["check_in"], "check_out": w["check_out"],
-                      "nights": w["nights"],
-                      "nightly_price": chosen["price"] if chosen else None,
-                      "chosen": chosen, "alternatives": alts})
+        stay: dict[str, Any] = {"dest": w["dest"], "check_in": w["check_in"],
+                                "check_out": w["check_out"], "nights": w["nights"],
+                                "nightly_price": chosen["price"] if chosen else None,
+                                "chosen": chosen, "alternatives": alts}
+        # R2/R6：长住只拿到日价→标估算待核验，不宣称长期住宿已落实
+        if w["nights"] > LONG_STAY_THRESHOLD:
+            stay["long_stay_unverified"] = True
+            notes.append(f"{w['dest']} 长住 {w['nights']} 晚：日价为短住报价估算，"
+                         "未确认长期可订与月租口径，待人工核验")
+        stays.append(stay)
 
-    # 5) 预算：可算条目才计入；估算条目恒在（便于复核口径）
+    # 5) 预算（R2）：可算条目才计入；房间数默认 2 人/间；估算条目口径可解释
+    rooms_eff = rooms if rooms > 0 else max(1, (researcher_count + 1) // 2)
+    priced_at = datetime.now().isoformat()
     items: list[BudgetItem] = []
+    uncovered: list[str] = []
+    priced_count = 0
     for leg in legs:
         if leg["chosen"] is not None:
+            priced_count += 1
             items.append(BudgetItem(name=f"交通（{leg['from']}→{leg['to']}）",
                                     amount=round(leg["chosen"]["price"] * researcher_count, 2),
-                                    source="cheapest"))
+                                    source="cheapest", unit="票价×人数",
+                                    quantity=1.0, people=researcher_count,
+                                    priced_at=priced_at, source_ref=leg["chosen"]["name"]))
+        else:
+            uncovered.append(f"交通（{leg['from']}→{leg['to']}）")
     for stay in stays:
         if stay["nightly_price"] is not None:
+            priced_count += 1
             items.append(BudgetItem(name=f"住宿（{stay['dest']}）",
-                                    amount=round(stay["nightly_price"] * stay["nights"], 2),
-                                    source="cheapest"))
-    items.append(BudgetItem(name="市内与餐饮", amount=round(CITY_MEAL_RATIO * budget_total, 2),
-                            source="estimate"))
+                                    amount=round(stay["nightly_price"] * stay["nights"]
+                                                 * rooms_eff, 2),
+                                    source="cheapest", unit="每晚价×夜数×房间数",
+                                    quantity=float(stay["nights"]), people=rooms_eff,
+                                    priced_at=priced_at,
+                                    source_ref=stay["chosen"]["name"] if stay["chosen"] else ""))
+        else:
+            uncovered.append(f"住宿（{stay['dest']}）")
+    meal_amount = round(meals_local_per_person_day * researcher_count * duration_days, 2)
+    items.append(BudgetItem(name="市内与餐饮", amount=meal_amount, source="estimate",
+                            unit="人均每日×人数×天数", quantity=float(duration_days),
+                            people=researcher_count))
     total = round(sum(i.amount for i in items), 2)
+    # coverage：全部预期报价可得=complete；部分可得=partial；一条都没有=unknown
+    if not uncovered:
+        coverage = "complete"
+    elif priced_count > 0:
+        coverage = "partial"
+    else:
+        coverage = "unknown"
     budget = BudgetBreakdown(items=items, total=total, budget_total=budget_total,
-                             over_budget=total > budget_total)
+                             over_budget=coverage == "complete" and total > budget_total,
+                             coverage=coverage, uncovered=uncovered)
 
     # 6) 备选：由已抓到的未选交通候选汇成（零额外调用）
     alternatives: list[dict[str, Any]] = [
@@ -301,6 +349,11 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         alternatives=alternatives,
         budget=budget,
         generated_at=datetime.now().isoformat(),
+        inputs_hash=compute_inputs_hash({
+            "departure": departure, "destinations": list(destinations),
+            "start_date": start_date, "duration_days": duration_days,
+            "budget_total": budget_total, "researcher_count": researcher_count,
+            "rooms": rooms_eff}),
     )
     return Envelope(ok=True, data=plan, degraded="；".join(notes) if notes else None)
 
@@ -308,8 +361,9 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
 register(CapabilityMeta(
     name="compose_itinerary",
     description="组合多目的地调研行程：去回程交通取最低价并留备选、住宿按天数滚动分段"
-                "（日期一律 strptime+timedelta，跨月跨年不拼接）、30/50/20 调研节奏与缓冲日、"
-                "预算条目（交通/住宿/市内与餐饮估算）与超支标记；单腿无价只降级不报错。",
+                "（日期一律 strptime+timedelta）、30/50/20 调研节奏与缓冲日、"
+                "预算条目带币种/单位/数量/报价时间/来源引用，coverage 标记完整性"
+                "（仅 complete 才允许超支结论）、长住日价标待核验；单腿无价只降级不报错。",
     fn=compose_itinerary,
     args_model=ComposeItineraryArgs,
 ))

@@ -77,6 +77,7 @@ def test_guiding_questions_are_non_empty_strings():
 
 def test_check_advance_required_fields_shape():
     assert phases.REQUIRED_FIELDS["research_positioning"] == [
+        "purpose",
         "discipline",
         "topic",
         "scale",
@@ -132,11 +133,41 @@ def test_check_advance_c_to_d_and_d_to_finished():
 
     r2 = phases.check_advance("proposal_generation", ResearchContext(), [], [], True, False)
     assert not r2.can_advance and "proposal" in r2.missing_fields
-    ok2 = phases.check_advance("proposal_generation", ResearchContext(), [], [], True, True)
+    # 审阅意见 R3：草稿已生成≠用户确认，D→finished 必须 proposal_confirmed
+    draft_only = phases.check_advance("proposal_generation", ResearchContext(), [], [],
+                                      True, True)
+    assert not draft_only.can_advance
+    assert "proposal_confirmation" in draft_only.missing_fields
+    ok2 = phases.check_advance("proposal_generation", ResearchContext(), [], [], True, True,
+                               proposal_confirmed=True)
     assert ok2.can_advance and ok2.to_phase == "finished"
 
-    done = phases.check_advance("finished", ResearchContext(), [], [], True, True)
+    done = phases.check_advance("finished", ResearchContext(), [], [], True, True,
+                                proposal_confirmed=True)
     assert not done.can_advance and done.to_phase is None
+
+
+def test_check_advance_b_to_c_non_interview_method():
+    """审阅意见 R3：非访谈型研究可显式跳过访谈对象硬条件。"""
+    site = FieldSiteRecord(name="县档案馆", confirmed=True)
+    ctx = ResearchContext(interviews_not_applicable=True, interviews_na_reason="档案研究为主")
+    r = phases.check_advance("field_site_profiles", ctx, [site], [], False, False)
+    assert r.can_advance and r.to_phase == "itinerary_planning"
+
+
+def test_positioning_prompt_and_questions_ask_purpose_first():
+    """审阅意见 R1：用途采集前置到阶段 A。"""
+    assert "purpose" in phases.REQUIRED_FIELDS["research_positioning"]
+    qs = phases.guiding_questions("research_positioning")
+    assert "用途" in qs[0] or "场合" in qs[0]
+    assert "用途" in phases.phase_prompt("research_positioning")
+
+
+def test_prompts_are_honest_about_scope():
+    """审阅意见 R1：删除"基金委"过度承诺字样；文献红线入 D 阶段提示词。"""
+    for p in phases.PHASES:
+        assert "基金委" not in phases.phase_prompt(p)
+    assert "虚构" in phases.phase_prompt("proposal_generation")
 
 
 def test_extract_locations_respects_existing():
@@ -152,6 +183,17 @@ def test_extract_researcher_info_maps_to_context_keys():
     assert info["budget"] == "基金支持"
     assert info["extras.region"] == "云南"
     assert extract.extract_researcher_info("今天天气不错") == {}
+
+
+def test_extract_purpose():
+    """审阅意见 R1：用途关键词提取；"基金支持"只填 budget 不得误判为 grant。"""
+    assert extract.extract_researcher_info("明年三月要开题报告")["purpose"] == "kaiti"
+    assert extract.extract_researcher_info("准备申报国家社科项目活页")["purpose"] == "grant"
+    assert extract.extract_researcher_info("我要申请海外的phd项目")["purpose"] == "global"
+    assert extract.extract_researcher_info("课程作业要求写proposal")["purpose"] == "course"
+    assert "purpose" not in extract.extract_researcher_info("今天天气不错")
+    info = extract.extract_researcher_info("我是做人类学的，有基金支持")
+    assert info.get("budget") == "基金支持" and "purpose" not in info
 
 
 def test_informant_library_every_entry_complete():

@@ -59,10 +59,28 @@ def test_interview_guide_per_type():
 
 def test_mode_default_and_fallback():
     doc = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None)
-    assert doc.mode == "global"
+    assert doc.mode == "global" and doc.requested_mode == "global"
+    assert len(doc.inputs_hash) == 40  # R3：供宿主做确认/失效判定
     doc2 = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None,
                             mode="kaiti")
-    assert doc2.mode == "kaiti" and "待深化" in doc2.markdown  # 回退 global 提纲+提示
+    # 审阅意见 R1：请求体例与实际生成体例分开；回退提示头部前置而非仅尾注
+    assert doc2.requested_mode == "kaiti" and doc2.mode == "global"
+    assert doc2.markdown.startswith("> ⚠")
+    assert "待深化" in doc2.markdown
+
+
+def test_llm_prompt_has_reference_redline():
+    """审阅意见 R1：文献红线进 LLM 提示——只用所给条目，不得虚构。"""
+    llm = FakeLLM("## 一、研究背景\n内容")
+    compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=llm)
+    assert "不得虚构" in llm.messages[-1]["content"]
+
+
+def test_degrade_empty_knowledge_lists_retrieval_needs():
+    """无文献输入 → 第八章输出待补检索清单而非臆测引用。"""
+    doc = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None)
+    assert "待补检索清单" in doc.markdown
+    assert len(doc.sections) == 8  # 章数不变
 
 
 # ────────────────────────────────────────────────────────────────

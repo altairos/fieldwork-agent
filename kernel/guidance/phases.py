@@ -44,6 +44,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
 
 你需要通过温和但有结构的方式，帮助研究者厘清以下信息：
 
+0. **输出用途**：这份方案主要用在什么场合？（海外/港澳申请、高校开题、基金申报、课程作业）——先问这一项，它决定后续模板与能力边界。
 1. **学科取向**：人类学/社会学/政治学/跨学科？理论框架倾向？
 2. **研究问题**：初步的研究问题或关注焦点是什么？越具体越好。
 3. **田野点确定程度**：已明确地点 / 有区域范围 / 完全开放由你推荐？
@@ -78,7 +79,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
 5. **缓冲设计**：预留应对天气、交通延误的机动时间
 6. **备选路线**：如果首选不可达的替代方案
 
-使用飞猪搜索获取具体的航班、火车、酒店、POI信息，整合成可执行的日程表。输出要足够详细，达到可以直接提交给基金委审批的程度。嵌入图片链接和预订链接。""",
+使用飞猪搜索获取具体的航班、火车、酒店、POI信息，整合成可执行的日程表。输出要足够详细、可执行，能直接支撑开题汇报或申报材料中的可行性论证；预算标注来源与完整性，缺报价的条目如实标记待核验而非凑。嵌入图片链接和预订链接。""",
 
     PHASE_PROPOSAL_GENERATION: """\
 你是田野罗盘 Agent。当前处于"方案生成"阶段。
@@ -96,7 +97,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
 ## 七、预期成果
 ## 八、参考文献
 
-确保语言学术化、正式，符合基金委评审标准。数据具体而非泛泛而谈。适当嵌入图片链接和预订链接。""",
+确保语言学术化、正式，结构清晰。数据具体而非泛泛而谈。**参考文献红线**：只使用上下文中提供的资料条目，缺材料时在第八章列出"待补检索清单"，不得虚构或补造引用。当前输出为通用八章体例，开题/基金体例尚未实现时要如实声明。""",
 
     PHASE_FINISHED: """\
 田野旅行方案已完成。你可以：
@@ -112,6 +113,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
 # 各阶段的引导问题模板
 GUIDING_QUESTIONS: dict[str, list[str]] = {
     PHASE_RESEARCH_POSITIONING: [
+        "这份方案主要用在什么场合？（海外/港澳申请、高校开题、基金申报、课程作业）",
         "请问您的学科背景和研究取向是什么？（人类学/社会学/政治学/跨学科？）",
         "您初步的研究问题或关注焦点是什么？",
         "您对田野地点的确定程度如何？（已明确地点 / 有区域范围 / 希望我推荐）",
@@ -146,7 +148,8 @@ GUIDING_QUESTIONS: dict[str, list[str]] = {
 # 每阶段需要采集的 ResearchContext 字段名（供宿主渲染采集清单；
 # 仅研究定位阶段的 ``check_advance`` 直接用它做推进计数）
 REQUIRED_FIELDS: dict[str, list[str]] = {
-    PHASE_RESEARCH_POSITIONING: ["discipline", "topic", "scale", "budget", "time_window"],
+    PHASE_RESEARCH_POSITIONING: ["purpose", "discipline", "topic", "scale", "budget",
+                                 "time_window"],
     PHASE_FIELD_SITE_PROFILES: ["target_location", "site_status"],
     PHASE_ITINERARY_PLANNING: ["departure_city", "target_location", "travel_date"],
     PHASE_PROPOSAL_GENERATION: ["topic", "target_location"],
@@ -188,12 +191,15 @@ def check_advance(
     informants: list[InformantRecord],
     has_itinerary: bool,
     has_proposal: bool,
+    proposal_confirmed: bool = False,
 ) -> AdvanceResult:
-    """确定性判定能否推进到下一阶段（spec §2.1 四条件，纯函数无 I/O）。
+    """确定性判定能否推进（spec §2.1 + 审阅意见 R3 三态区分，纯函数无 I/O）。
 
-    ``missing_fields`` 返回仍未满足的项：A→B 为缺位的 ResearchContext 字段名；
-    B→C 为 ``confirmed_site`` / ``informant``；C→D 为 ``itinerary``；D→finished
-    为 ``proposal``。
+    推进可基于"信息齐备/草稿已生成"（允许先探索）；但 D→finished 额外要求
+    ``proposal_confirmed``——草稿存在不等于用户认可。``missing_fields`` 返回未满足项：
+    A→B 为缺位字段名；B→C 为 ``confirmed_site`` / ``informant``（非访谈型研究可在
+    ``ctx.interviews_not_applicable`` 下跳过后者）；C→D 为 ``itinerary``；
+    D→finished 为 ``proposal`` / ``proposal_confirmation``。
     """
     nxt = _next_phase(phase)
     if nxt is None:
@@ -212,7 +218,8 @@ def check_advance(
         missing = []
         if not any(s.confirmed for s in sites):
             missing.append("confirmed_site")
-        if len(informants) < 1:
+        # 审阅意见 R3：非访谈型研究显式声明后跳过访谈对象硬条件
+        if not informants and not ctx.interviews_not_applicable:
             missing.append("informant")
         if not missing:
             return AdvanceResult(can_advance=True, to_phase=nxt, missing_fields=[])
@@ -223,7 +230,10 @@ def check_advance(
             return AdvanceResult(can_advance=True, to_phase=nxt, missing_fields=[])
         return AdvanceResult(can_advance=False, to_phase=None, missing_fields=["itinerary"])
 
-    # PHASE_PROPOSAL_GENERATION
-    if has_proposal:
-        return AdvanceResult(can_advance=True, to_phase=nxt, missing_fields=[])
-    return AdvanceResult(can_advance=False, to_phase=None, missing_fields=["proposal"])
+    # PHASE_PROPOSAL_GENERATION（R3：草稿存在只算"已生成"，完成需用户确认）
+    if not has_proposal:
+        return AdvanceResult(can_advance=False, to_phase=None, missing_fields=["proposal"])
+    if not proposal_confirmed:
+        return AdvanceResult(can_advance=False, to_phase=None,
+                             missing_fields=["proposal_confirmation"])
+    return AdvanceResult(can_advance=True, to_phase=nxt, missing_fields=[])

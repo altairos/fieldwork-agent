@@ -95,9 +95,9 @@ def extract_locations(message: str, existing: dict) -> dict[str, str]:
 def extract_researcher_info(message: str) -> dict:
     """从自然语言回复中提取可映射到 ``ResearchContext`` 的结构化信息。
 
-    与引擎原实现等价：只识别学科/规模/经费来源/区域四类软线索，返回扁平 dict
-    （无命中则为空 dict）。研究问题、时间窗口、地点由对话其他环节采集，
-    本函数不做臆测。
+    与引擎原实现等价的四类软线索（学科/规模/经费来源/区域）之外，新增
+    **purpose 用途提取**（审阅意见 R1）：文体词优序 kaiti>grant>course>global；
+    无命中则不填（由宿主在阶段 A 首问里显式询问）。返回扁平 dict。
     """
     info: dict[str, str] = {}
     lower = message.lower()
@@ -123,6 +123,17 @@ def extract_researcher_info(message: str) -> dict:
         info["budget"] = "基金支持"
     elif "自费" in message or "self-funded" in lower:
         info["budget"] = "自费"
+
+    # 用途关键词（审阅意见 R1）：先辨文体词，避免"有基金支持"误触发 grant
+    if "开题" in message:
+        info["purpose"] = "kaiti"
+    elif "申报" in message or "活页" in message or "国家社科" in message:
+        info["purpose"] = "grant"
+    elif "课程" in message or "作业" in message:
+        info["purpose"] = "course"
+    elif ("海外" in message or "留学" in message or "申请" in message
+          or "proposal" in lower or "phd" in lower):
+        info["purpose"] = "global"
 
     # 地点关键词提取
     region = _first_match(message, _REGION_PLACES)

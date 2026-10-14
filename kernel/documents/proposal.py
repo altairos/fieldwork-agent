@@ -14,7 +14,11 @@ import re
 from typing import Any
 
 from fieldwork_agent.kernel.guidance import informants, phases
-from fieldwork_agent.kernel.models import ProposalDoc, ResearchContext
+from fieldwork_agent.kernel.models import (
+    ProposalDoc,
+    ResearchContext,
+    compute_inputs_hash,
+)
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from pydantic import BaseModel, Field
 
@@ -32,8 +36,12 @@ PROPOSAL_SECTIONS: list[str] = [
     "八、参考文献",
 ]
 
-# 非 global 模式的降级尾注（DEEP_RESEARCH 报告：开题/基金体例待后续实现）
-MODE_FALLBACK_NOTE = "> 注：开题/基金体例待深化，当前为通用八章结构"
+# 能力边界（审阅意见 R1）：当前仅 global 完整实现；回退时在文档**头部前置声明**
+# 而非仅尾注，避免用户误以为拿到的是目标体例的可直接提交材料。
+SUPPORTED_MODES = ("global",)
+MODE_FALLBACK_HEADER = ("> ⚠ 体例说明：您选择的「{mode}」体例尚未实现（开题/基金体例待深化），"
+                        "本稿实际为通用八章草稿（适用海外/港澳申请与课程场景），"
+                        "不构成可直接提交的申报材料。\n\n")
 
 # 模板降级尾注（无 llm / llm error 分支共用）
 TEMPLATE_DEGRADE_NOTE = "（模板降级版）"
@@ -205,7 +213,8 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
             "- 伦理安排：详见访谈提纲的知情同意话术条目（compose_interview_guide 产出）",
         ],
         ["- 待研究者补充（模板降级版不臆测成果形态）"],
-        _bullets_knowledge(knowledge) or ["- 待补充（知识库渠道为空）"],
+        _bullets_knowledge(knowledge) or ["- 待补检索清单（知识库渠道为空：请补充文献后再完善，"
+                                          "本稿不虚构引用）"],
     ]
     # strict=True：PROPOSAL_SECTIONS 与 bodies 若长度漂移，立即报错而不是静默丢章
     for heading, body in zip(PROPOSAL_SECTIONS, bodies, strict=True):
@@ -220,11 +229,14 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
 def _llm_full_proposal(context_block: str, llm: Any) -> str:
     """全量生成：system=phase_prompt("proposal_generation") + user=context_block+固定尾句。
 
-    ``chat()`` 的 error 分支（content 空串）返回空串，由调用方降级到模板路径。
+    尾句含文献红线（审阅意见 R1）。``chat()`` 的 error 分支（content 空串）返回空串，
+    由调用方降级到模板路径。
     """
     messages = [
         {"role": "system", "content": phases.phase_prompt("proposal_generation")},
-        {"role": "user", "content": f"{context_block}\n\n请生成完整研究方案"},
+        {"role": "user", "content": f"{context_block}\n\n请生成完整研究方案。"
+         "参考文献只能使用上下文提供的资料条目，缺材料时在第八章列出待补检索清单，"
+         "不得虚构或补造引用。"},
     ]
     resp = llm.chat(messages, slot="proposal", max_tokens=8192, temperature=0.5)
     return (resp or {}).get("content", "") or ""
@@ -290,13 +302,18 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
         markdown = (_llm_full_proposal(context_block, llm)
                     or _degrade_markdown(ctx, sites, itinerary, informants, knowledge))
 
-    if mode != "global":
-        markdown = markdown.rstrip() + "\n\n" + MODE_FALLBACK_NOTE + "\n"
+    requested = mode if mode in ("global", "kaiti", "grant") else "global"
+    effective = requested if requested in SUPPORTED_MODES else "global"
+    if effective != requested:
+        # 审阅意见 R1：能力限制头部前置声明（而非仅在文末附注）
+        markdown = MODE_FALLBACK_HEADER.format(mode=requested) + markdown
 
     return ProposalDoc(
         markdown=markdown,
         sections=_SECTION_RE.findall(markdown),
-        mode=mode,
+        requested_mode=requested,
+        mode=effective,
+        inputs_hash=compute_inputs_hash({"context_block": context_block}),
     )
 
 
@@ -409,10 +426,10 @@ def _proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
 
 register(CapabilityMeta(
     name="compose_proposal",
-    description="按结构化上下文（研究者/田野点/行程/访谈对象/知识库五渠道）生成八章研究方案；"
-                "documents 是 kernel 内唯一 LLM 消费者，无 key 时走模板降级、chat error 分支同样降级；"
-                "mode 枚举 global|kaiti|grant，非 global 当前回退 global 提纲并追加体例待深化提示；"
-                "section 非空则仅重写该章（配合 prior_markdown）。",
+    description="按结构化上下文（研究者/田野点/行程/访谈对象/知识库五渠道）生成研究方案草稿；"
+                "documents 是 kernel 内唯一 LLM 消费模块，无 key 时模板降级、chat error 分支同样降级；"
+                "mode 枚举 global|kaiti|grant，requested/actual 分开记录，不支持的体例在头部前置声明限制；"
+                "参考文献仅限所给条目不得虚构；section 非空则仅重写该章。",
     fn=_proposal_handler,
     args_model=ComposeProposalArgs,
 ))

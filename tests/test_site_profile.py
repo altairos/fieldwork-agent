@@ -196,3 +196,20 @@ def test_accommodation_all_fail_yields_none_not_empty_page():
     assert env.data.transport is not None                 # 航班成功，失败隔离仍守住
     assert env.data.culture                               # 其他段有内容
     assert env.data.summary.section_counts["accommodation"] == 0
+
+
+def test_no_supply_remote_hint():
+    """R6：海外偏远点无住宿供给→二段式建议（枢纽城市+学术接待），不当成"搜到了但超预算"。"""
+    class NoSupplyClient:
+        def search_hotels(self, dest_name, **kw):
+            return Envelope(ok=True, data=ItemPage(items=[], total=0))
+        def search_ai(self, query):
+            return Envelope(ok=True, data=ItemPage(items=[], total=0))
+        def search_keyword(self, query):
+            return Envelope(ok=True, data=ItemPage(items=[], total=0))
+        def search_pois(self, city_name, **kw):
+            return Envelope(ok=True, data=ItemPage(items=[], total=0))
+
+    env = profile_field_site("芒特哈根", client=NoSupplyClient())
+    assert env.ok
+    assert "枢纽" in env.data.summary.hints.get("accommodation", "")
