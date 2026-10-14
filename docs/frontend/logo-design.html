@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>田野罗盘 · Logo 设计板</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,600&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = { theme: { extend: { colors: {
+    paper:'#F9F6F0', paperdeep:'#F1ECE2', card:'#FDFCF9', cardsunk:'#F4F0E7',
+    ink:'#2A2724', inksoft:'#5F584C', inkfaint:'#948B7A', hairline:'#E2D9C8', hairsoft:'#EBE5D9',
+    cinnabar:'#A8412E', cinnabarwash:'#F6EBE6', indigo:'#3A5C74', indigowash:'#E9EEF1',
+    bamboo:'#5E7A4E', bamboowash:'#EBF0E5', ochre:'#A8802C', danger:'#9E2F26',
+  }, fontFamily:{ serif:['"Noto Serif SC"','"Songti SC"','"STSong"','"SimSun"','serif'], num:['"Fraunces"','"Noto Serif SC"','serif'] } } } }
+</script>
+<style>
+  html,body{background:#F9F6F0;color:#2A2724;}
+  body{font-family:"Noto Serif SC","Songti SC","STSong","SimSun",serif;-webkit-font-smoothing:auto;letter-spacing:.01em;
+    background-image:radial-gradient(circle at 18% 22%,rgba(168,65,46,.014),transparent 42%),radial-gradient(circle at 82% 78%,rgba(58,92,116,.014),transparent 46%);}
+  .num{font-family:"Fraunces","Noto Serif SC",serif;}
+  .hairline{border:1px solid #E2D9C8;}
+  .seal-mark{display:inline-flex;align-items:center;justify-content:center;}
+  /* Logo 三色变量：main=墨线 / accent=朱砂 / paper=镂空底 */
+  .v-full{--lm-main:#2A2724;--lm-accent:#A8412E;--lm-paper:#FDFCF9;}
+  .v-mono{--lm-main:#2A2724;--lm-accent:#2A2724;--lm-paper:#FDFCF9;}
+  .v-rev {--lm-main:#F9F6F0;--lm-accent:#F9F6F0;--lm-paper:#201D1A;}
+  .v-cin {--lm-main:#F9F6F0;--lm-accent:#F9F6F0;--lm-paper:#A8412E;}
+</style>
+</head>
+<body class="antialiased">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- A · 罗盘针 -->
+  <symbol id="lg-a" viewBox="0 0 64 64">
+    <circle cx="32" cy="32" r="26" fill="none" stroke="var(--lm-main)" stroke-width="3"/>
+    <path d="M9 32 L32 27.4 L55 32 L32 36.6 Z" fill="var(--lm-main)" opacity="0.22"/>
+    <path d="M32 56 L36.6 32 L27.4 32 Z" fill="var(--lm-main)"/>
+    <path d="M32 8 L36.6 32 L27.4 32 Z" fill="var(--lm-accent)"/>
+    <circle cx="32" cy="32" r="3.2" fill="var(--lm-paper)" stroke="var(--lm-main)" stroke-width="2"/>
+  </symbol>
+  <!-- B · 田 + 罗盘 -->
+  <symbol id="lg-b" viewBox="0 0 64 64">
+    <circle cx="32" cy="32" r="26" fill="none" stroke="var(--lm-main)" stroke-width="3"/>
+    <rect x="14" y="14" width="36" height="36" fill="none" stroke="var(--lm-main)" stroke-width="2.4"/>
+    <rect x="32" y="14" width="18" height="18" fill="var(--lm-accent)"/>
+    <path d="M32 14 V50 M14 32 H50" stroke="var(--lm-main)" stroke-width="2.4"/>
+    <circle cx="32" cy="32" r="2.7" fill="var(--lm-paper)" stroke="var(--lm-main)" stroke-width="1.6"/>
+  </symbol>
+  <!-- C · 篆刻「罗」 -->
+  <symbol id="lg-c" viewBox="0 0 64 64">
+    <rect x="6" y="6" width="52" height="52" rx="11" fill="var(--lm-accent)"/>
+    <rect x="11" y="11" width="42" height="42" rx="8" fill="none" stroke="var(--lm-paper)" stroke-width="1.4" opacity="0.42"/>
+    <text x="32" y="45.5" text-anchor="middle" font-family="'Noto Serif SC','Songti SC','SimSun',serif" font-size="33" font-weight="600" fill="var(--lm-paper)">罗</text>
+  </symbol>
+</svg>
+
+<header class="border-b border-hairline bg-paper/80 backdrop-blur sticky top-0 z-10">
+  <div class="max-w-[1100px] mx-auto px-6 h-14 flex items-center gap-3">
+    <span class="v-full"><svg class="w-7 h-7"><use href="#lg-b"/></svg></span>
+    <span class="font-serif text-[15px] font-600 tracking-wide">田野罗盘 · Logo 设计板</span>
+    <span class="ml-auto text-[11px] text-inkfaint">概念 B 已定案 · 生产 SVG/PNG 已导出 · 辅助印记用妙谧 M 印</span>
+  </div>
+</header>
+
+<main class="max-w-[1100px] mx-auto px-6 py-8">
+  <div class="max-w-3xl mb-9">
+    <div class="text-[11px] tracking-[.22em] text-cinnabar mb-2">BRAND MARK · 品牌标识</div>
+    <h1 class="font-serif text-[28px] font-600 leading-snug">为「田野罗盘」设计标识</h1>
+    <p class="text-inksoft text-[14px] mt-3 leading-relaxed">
+      品牌名直译即 <b class="text-ink">Field Compass</b>——为田野调查者指方向。标识须同时承载两层语义：<b class="text-ink">罗盘（方向/旅行）</b>与<b class="text-ink">田野（学术/田野点）</b>；气质对齐「学术档案·纸感温润」：墨线为骨、朱砂点睛、宋体立字。硬约束：单色可辨（印章/钢印/单色印刷）、反白可用（深底/App 图标）、缩到 16px favicon 不糊。以下三案均满足，附单色墨/反白/朱砂底/小尺寸四种验证。
+    </p>
+  </div>
+
+  <!-- ══════════ 概念 A ══════════ -->
+  <section class="hairline rounded-xl bg-card shadow-sm p-6 mb-6">
+    <div class="flex items-baseline gap-3 mb-1">
+      <span class="num text-[13px] text-cinnabar font-600">A</span>
+      <h2 class="font-serif text-[19px] font-600">罗盘针 · Compass Rose</h2>
+      <span class="chip text-[11px] px-2 py-0.5 rounded-full bg-cardsunk hairline text-inkfaint ml-auto">最通用/最安全</span>
+    </div>
+    <p class="text-[13px] text-inksoft leading-relaxed mb-5">经典罗盘四向针，北向朱砂、南向墨黑，外环定框。语义最直接（罗盘=方向），几何纯粹、辨识度稳，缺点是"田野/学术"这层没有独特表达，偏通用旅行罗盘。</p>
+    <div class="grid md:grid-cols-[auto_1fr] gap-6 items-center">
+      <div class="v-full grid place-items-center w-[132px] h-[132px] rounded-lg bg-paper hairline"><svg class="w-24 h-24"><use href="#lg-a"/></svg></div>
+      <div class="space-y-4">
+        <!-- lockup -->
+        <div class="v-full flex items-center gap-3">
+          <svg class="w-12 h-12"><use href="#lg-a"/></svg>
+          <div><div class="font-serif text-[22px] font-600 tracking-[.12em] text-ink">田野罗盘</div><div class="text-[9px] tracking-[.34em] text-inkfaint mt-0.5">FIELDWORK COMPASS</div></div>
+        </div>
+        <!-- variants -->
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="v-mono grid place-items-center w-14 h-14 rounded-md bg-paper hairline" title="单色墨"><svg class="w-9 h-9"><use href="#lg-a"/></svg></div>
+          <div class="v-rev grid place-items-center w-14 h-14 rounded-md" style="background:#201D1A" title="反白"><svg class="w-9 h-9"><use href="#lg-a"/></svg></div>
+          <div class="v-cin grid place-items-center w-14 h-14 rounded-md bg-cinnabar" title="朱砂底"><svg class="w-9 h-9"><use href="#lg-a"/></svg></div>
+          <div class="flex items-end gap-2 pl-2 border-l border-hairline">
+            <span class="v-full"><svg class="w-8 h-8"><use href="#lg-a"/></svg></span>
+            <span class="v-full"><svg class="w-6 h-6"><use href="#lg-a"/></svg></span>
+            <span class="v-full"><svg class="w-4 h-4"><use href="#lg-a"/></svg></span>
+            <span class="text-[10px] text-inkfaint ml-1">32/24/16px</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 概念 B ══════════ -->
+  <section class="hairline rounded-xl bg-card shadow-sm p-6 mb-6 ring-1 ring-cinnabar/25">
+    <div class="flex items-baseline gap-3 mb-1">
+      <span class="num text-[13px] text-cinnabar font-600">B</span>
+      <h2 class="font-serif text-[19px] font-600">田 · 罗盘 · Field Compass</h2>
+      <span class="chip text-[11px] px-2 py-0.5 rounded-full bg-cinnabarwash text-cinnabar border border-cinnabar/20 ml-auto">推荐 · 语义最贴</span>
+    </div>
+    <p class="text-[13px] text-inksoft leading-relaxed mb-5">
+      外环为<b class="text-ink">罗盘</b>，内嵌<b class="text-ink">「田」字</b>（方框+十字），一举双关「田野」；东北象限朱砂填实＝罗盘指向，也暗合产品的<b class="text-ink">四象限结构</b>——田野点四维（交通/住宿/文化/配套）与访谈四阶段（A/B/C/D）。几何方正、缩到 16px 仍是清晰的"环中方块"，独特性与语义俱佳。
+    </p>
+    <div class="grid md:grid-cols-[auto_1fr] gap-6 items-center">
+      <div class="v-full grid place-items-center w-[132px] h-[132px] rounded-lg bg-paper hairline"><svg class="w-24 h-24"><use href="#lg-b"/></svg></div>
+      <div class="space-y-4">
+        <div class="v-full flex items-center gap-3">
+          <svg class="w-12 h-12"><use href="#lg-b"/></svg>
+          <div><div class="font-serif text-[22px] font-600 tracking-[.12em] text-ink">田野罗盘</div><div class="text-[9px] tracking-[.34em] text-inkfaint mt-0.5">FIELDWORK COMPASS</div></div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="v-mono grid place-items-center w-14 h-14 rounded-md bg-paper hairline" title="单色墨"><svg class="w-9 h-9"><use href="#lg-b"/></svg></div>
+          <div class="v-rev grid place-items-center w-14 h-14 rounded-md" style="background:#201D1A" title="反白"><svg class="w-9 h-9"><use href="#lg-b"/></svg></div>
+          <div class="v-cin grid place-items-center w-14 h-14 rounded-md bg-cinnabar" title="朱砂底"><svg class="w-9 h-9"><use href="#lg-b"/></svg></div>
+          <div class="flex items-end gap-2 pl-2 border-l border-hairline">
+            <span class="v-full"><svg class="w-8 h-8"><use href="#lg-b"/></svg></span>
+            <span class="v-full"><svg class="w-6 h-6"><use href="#lg-b"/></svg></span>
+            <span class="v-full"><svg class="w-4 h-4"><use href="#lg-b"/></svg></span>
+            <span class="text-[10px] text-inkfaint ml-1">32/24/16px</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 概念 C ══════════ -->
+  <section class="hairline rounded-xl bg-card shadow-sm p-6 mb-8">
+    <div class="flex items-baseline gap-3 mb-1">
+      <span class="num text-[13px] text-cinnabar font-600">C</span>
+      <h2 class="font-serif text-[19px] font-600">篆刻「罗」· Seal</h2>
+      <span class="chip text-[11px] px-2 py-0.5 rounded-full bg-cardsunk hairline text-inkfaint ml-auto">已弃用 · 落款/头像改用妙谧 M 印</span>
+    </div>
+    <p class="text-[13px] text-inksoft leading-relaxed mb-5">
+      <b class="text-danger">状态：弃用。</b>朱砂方印内一个宋体「罗」字。原拟作辅助印记，但经确认<b class="text-ink">不保留 C 印章</b>——助手头像与提案落款统一改用妙谧智能官网既有的 <b class="text-ink">M 印</b>（<code class="num text-indigo">assets/mark-cinnabar.svg</code>，朱砂 #A8412F，与本品朱砂同族），以保持公司品牌资产的单一来源。此节仅作过程留档。
+    </p>
+    <div class="grid md:grid-cols-[auto_1fr] gap-6 items-center">
+      <div class="v-full grid place-items-center w-[132px] h-[132px] rounded-lg bg-paper hairline"><svg class="w-24 h-24"><use href="#lg-c"/></svg></div>
+      <div class="space-y-4">
+        <div class="v-full flex items-center gap-3">
+          <svg class="w-12 h-12"><use href="#lg-c"/></svg>
+          <div><div class="font-serif text-[22px] font-600 tracking-[.12em] text-ink">田野罗盘</div><div class="text-[9px] tracking-[.34em] text-inkfaint mt-0.5">FIELDWORK COMPASS</div></div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="v-mono grid place-items-center w-14 h-14 rounded-md bg-paper hairline" title="单色墨"><svg class="w-9 h-9"><use href="#lg-c"/></svg></div>
+          <div class="v-rev grid place-items-center w-14 h-14 rounded-md" style="background:#201D1A" title="反白"><svg class="w-9 h-9"><use href="#lg-c"/></svg></div>
+          <div class="v-cin grid place-items-center w-14 h-14 rounded-md bg-cinnabar" title="朱砂底"><svg class="w-9 h-9"><use href="#lg-c"/></svg></div>
+          <div class="flex items-end gap-2 pl-2 border-l border-hairline">
+            <span class="v-full"><svg class="w-8 h-8"><use href="#lg-c"/></svg></span>
+            <span class="v-full"><svg class="w-6 h-6"><use href="#lg-c"/></svg></span>
+            <span class="v-full"><svg class="w-4 h-4"><use href="#lg-c"/></svg></span>
+            <span class="text-[10px] text-inkfaint ml-1">32/24/16px</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 定案 -->
+  <div class="hairline rounded-xl bg-cinnabarwash/40 p-5">
+    <div class="font-serif text-[16px] font-600 mb-2 text-cinnabar">定案 · 品牌标识系统</div>
+    <p class="text-[13px] text-inksoft leading-relaxed">
+      <b class="text-ink">主标识 = B（田·罗盘）</b>：用于顶栏品牌位、工作台左栏、移动端 app bar、favicon / apple-touch-icon。语义独特（罗盘+田野四象限）、缩放稳健、方正合档案气质。<br/>
+      <b class="text-ink">辅助印记 = 妙谧 M 印</b>（公司既有资产 <code class="num text-indigo">mark-cinnabar.svg</code>）：用于助手头像、提案落款、加载页等"出品方"署名位，保持公司品牌单一来源；<b class="text-ink">不另造 C 罗印章</b>。<br/>
+      <b class="text-ink">A 案</b>留作备选（若日后需更通用的纯罗盘符号）。<br/>
+      <span class="text-inkfaint">生产资产已导出至 <code class="num">docs/frontend/logo/</code>：fieldwork-logo-{full,mono,reverse,cinnabar}.svg + favicon.svg + favicon-16/32、apple-touch-icon-180、logo-512.png（build_logo.py 可复跑）。Task 1 脚手架时拷入 <code class="num">web/public/</code>，M 印 SVG 一并拷入供头像/落款引用。</span>
+    </p>
+  </div>
+</main>
+</body>
+</html>

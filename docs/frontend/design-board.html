@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>田野罗盘 · 前端设计板（学术档案·纸感温润）</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,600&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          paper:      '#F9F6F0',
+          paperdeep:  '#F1ECE2',
+          card:       '#FDFCF9',
+          cardsunk:   '#F4F0E7',
+          ink:        '#2A2724',
+          inksoft:    '#5F584C',
+          inkfaint:   '#948B7A',
+          hairline:   '#E2D9C8',
+          hairsoft:   '#EBE5D9',
+          cinnabar:   '#A8412E',
+          cinnabarsoft:'#C9705C',
+          cinnabarwash:'#F6EBE6',
+          indigo:     '#3A5C74',
+          indigowash: '#E9EEF1',
+          bamboo:     '#5E7A4E',
+          bamboowash: '#EBF0E5',
+          ochre:      '#A8802C',
+          ochrewash:  '#F5EFDF',
+          danger:     '#9E2F26',
+        },
+        fontFamily: {
+          serif: ['"Noto Serif SC"','"Songti SC"','"STSong"','"SimSun"','serif'],
+          sans:  ['"Noto Serif SC"','"Songti SC"','"STSong"','"SimSun"','serif'],
+          num:   ['"Fraunces"','"Noto Serif SC"','"Songti SC"','serif'],
+        },
+        boxShadow: {
+          card: '0 1px 2px rgba(60,48,30,.05), 0 8px 24px rgba(60,48,30,.05)',
+          pop:  '0 2px 6px rgba(60,48,30,.10), 0 16px 40px rgba(60,48,30,.12)',
+        },
+      }
+    }
+  }
+</script>
+<style>
+  :root{
+    --paper:#F9F6F0; --card:#FDFCF9; --ink:#2A2724; --inksoft:#5F584C;
+    --hairline:#E2D9C8; --cinnabar:#A8412E; --indigo:#3A5C74;
+  }
+  html,body{background:var(--paper);color:var(--ink);}
+  body{
+    /* 全局宋体：单一衬线族贯穿标题/正文/UI，档案感一致；小字号靠字重与行高补偿笔画细 */
+    font-family:"Noto Serif SC","Songti SC","STSong","SimSun",serif;
+    -webkit-font-smoothing:auto;
+    letter-spacing:.01em;
+    /* 宣纸纤维暗纹：极低对比噪点，营造纸感（减淡：径向淡色与噪点均调低） */
+    background-image:
+      radial-gradient(circle at 18% 22%, rgba(168,65,46,.014), transparent 42%),
+      radial-gradient(circle at 82% 78%, rgba(58,92,116,.014), transparent 46%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.02'/%3E%3C/svg%3E");
+  }
+  .font-serif{font-family:"Noto Serif SC","Songti SC","SimSun",serif;}
+  .num{font-family:"Fraunces","Noto Serif SC",serif;font-variant-numeric:lining-nums;}
+  .hairline{border:1px solid var(--hairline);}
+  .rule{height:1px;background:var(--hairline);opacity:.7;}
+  .scroll::-webkit-scrollbar{width:8px;height:8px;}
+  .scroll::-webkit-scrollbar-thumb{background:#D8CDB8;border-radius:8px;}
+  .scroll::-webkit-scrollbar-track{background:transparent;}
+  .view{display:none;}
+  .view.active{display:block;}
+  .tabbtn[aria-selected="true"]{color:var(--cinnabar);border-color:var(--cinnabar);}
+  .rp-tab[aria-selected="true"]{background:#F6EBE6;color:#A8412E;border-color:#EBD5CD;}
+  details>summary{list-style:none;cursor:pointer;}
+  details>summary::-webkit-details-marker{display:none;}
+  .caret{transition:transform .18s ease;}
+  details[open] .caret{transform:rotate(90deg);}
+  .dot{width:6px;height:6px;border-radius:9999px;display:inline-block;}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:9999px;font-size:11.5px;line-height:18px;border:1px solid transparent;}
+  /* 手机框（移动端方案展示） */
+  .phone{width:300px;height:620px;border-radius:38px;background:#201D1A;padding:9px;box-shadow:0 2px 6px rgba(60,48,30,.14),0 24px 60px rgba(60,48,30,.20);}
+  .phone-screen{position:relative;width:100%;height:100%;border-radius:30px;overflow:hidden;background:var(--paper);display:flex;flex-direction:column;}
+  .notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:104px;height:22px;background:#201D1A;border-radius:0 0 14px 14px;z-index:30;}
+  .mstatus{height:34px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 16px 3px;font-size:10.5px;color:var(--ink);z-index:20;}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--hairline);border-radius:18px 18px 0 0;box-shadow:0 -8px 30px rgba(60,48,30,.12);z-index:25;}
+  .scrim{position:absolute;inset:0;background:rgba(38,35,32,.34);z-index:20;}
+  .fab{position:absolute;right:14px;bottom:74px;z-index:22;width:46px;height:46px;border-radius:9999px;background:#A8412E;color:#F7EFE6;display:grid;place-items:center;box-shadow:0 4px 14px rgba(168,65,46,.4);}
+</style>
+</head>
+<body class="antialiased">
+
+<!-- ══════════════════════════════ 顶部：设计板导航 ══════════════════════════════ -->
+<header class="sticky top-0 z-40 backdrop-blur bg-paper/85 border-b border-hairline">
+  <div class="max-w-[1440px] mx-auto px-6 h-14 flex items-center gap-6">
+    <div class="flex items-center gap-2.5 shrink-0">
+      <svg class="w-7 h-7"><use href="#lg-b"/></svg>
+      <div class="leading-tight">
+        <div class="font-serif text-[15px] font-600 tracking-wide">田野罗盘</div>
+        <div class="text-[10px] text-inkfaint tracking-[.18em]">FIELDWORK COMPASS</div>
+      </div>
+    </div>
+    <div class="h-6 w-px bg-hairline"></div>
+    <nav class="flex items-center gap-1 text-[13px]" role="tablist">
+      <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="true"  data-view="system">设计系统</button>
+      <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="hub">① 项目集 ProjectHub</button>
+      <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="workspace">② 工作台 Workspace</button>
+      <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="proposal">③ 提案 ProposalView</button>
+      <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="mobile">④ 移动端方案</button>
+    </nav>
+    <div class="ml-auto text-[11px] text-inkfaint hidden lg:block">高保真设计板 · 学术档案/纸感温润 · 非最终实装代码</div>
+  </div>
+</header>
+
+<!-- 通用 SVG 图标符号库（线形，1.5px 描边） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+  <symbol id="ic-compass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2.1 5-5 2.1 2.1-5z"/></symbol>
+  <symbol id="ic-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-5.6 7-11a7 7 0 1 0-14 0c0 5.4 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+  <symbol id="ic-plane" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 13.5 4 11l1.5-1.5 5 .5 3-3.5c.7-.8 2.3-1 3-.3s.5 2.3-.3 3L13 12.5l.5 5L12 19z"/></symbol>
+  <symbol id="ic-train" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="13" rx="3"/><path d="M5 10h14M8 20l2-3M16 20l-2-3"/><circle cx="9" cy="13" r=".6"/><circle cx="15" cy="13" r=".6"/></symbol>
+  <symbol id="ic-bed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-8m0 3h18v5M3 12h7a3 3 0 0 1 3 3v0"/><path d="M21 18v-3a3 3 0 0 0-3-3h-4"/><circle cx="7" cy="10" r="1.6"/></symbol>
+  <symbol id="ic-temple" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9 12 4l8 5M6 9v10m12-10v10M4 19h16M10 19v-5h4v5"/></symbol>
+  <symbol id="ic-wallet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16.5 14.5h1.5"/></symbol>
+  <symbol id="ic-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 6.2a3 3 0 0 1 0 5.6M17.5 19a5.4 5.4 0 0 0-2-4"/></symbol>
+  <symbol id="ic-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 5.5v15"/></symbol>
+  <symbol id="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></symbol>
+  <symbol id="ic-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="ic-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 2.8 20h18.4z"/><path d="M12 10v4M12 17.2v.2"/></symbol>
+  <symbol id="ic-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.8 2.8M14.9 14.9l2.8 2.8M17.7 6.3l-2.8 2.8M9.1 14.9l-2.8 2.8"/></symbol>
+  <symbol id="ic-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14"/></symbol>
+  <symbol id="ic-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 5l-7 15-2-6z"/></symbol>
+  <symbol id="ic-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="ic-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <!-- 品牌主标 · 概念 B（田·罗盘）full 态 -->
+  <symbol id="lg-b" viewBox="0 0 64 64">
+    <circle cx="32" cy="32" r="26" fill="none" stroke="#2A2724" stroke-width="3"/>
+    <rect x="14" y="14" width="36" height="36" fill="none" stroke="#2A2724" stroke-width="2.4"/>
+    <rect x="32" y="14" width="18" height="18" fill="#A8412E"/>
+    <path d="M32 14V50M14 32H50" stroke="#2A2724" stroke-width="2.4"/>
+    <circle cx="32" cy="32" r="2.7" fill="#FDFCF9" stroke="#2A2724" stroke-width="1.6"/>
+  </symbol>
+  <!-- 辅助印记 · 妙谧智能既有 M 印（公司品牌资产 mark-cinnabar.svg），用于助手头像/提案落款 -->
+  <symbol id="lg-mio" viewBox="289.54 319.77 239.47 239.47">
+    <path d="M 502.787 331.077 C 490.977 333.864, 464.084 350.285, 444.987 366.370 L 438.475 371.855 431.487 370.291 C 421.357 368.024, 398.803 368.031, 388.187 370.305 L 379.875 372.086 374.530 367.201 C 355.115 349.457, 325.635 332.503, 312.055 331.271 C 292.453 329.494, 289.608 342.603, 289.544 435 C 289.501 497.517, 290.470 506.181, 299.508 524.016 C 310.470 545.648, 340.211 556.705, 346.560 541.510 C 350.099 533.041, 347.246 527.567, 336.682 522.554 C 320.028 514.652, 318.508 507.371, 318.503 435.500 C 318.500 383.165, 319.099 370.044, 321.607 367.536 C 324.877 364.266, 339.667 373.152, 360.094 390.662 C 373.788 402.399, 372.699 402.087, 387.084 398.382 C 400.160 395.013, 422.939 395.242, 434 398.852 C 444.955 402.429, 445.574 402.242, 457.816 391.659 C 475.357 376.495, 492.759 365.203, 496.421 366.608 C 497.260 366.930, 498.295 368.837, 498.723 370.847 C 500.008 376.886, 499.581 484.403, 498.238 493 C 495.589 509.957, 491.382 517.500, 481.962 522.180 C 471.676 527.292, 468.281 535.029, 472.960 542.701 C 481.778 557.165, 508.893 544.545, 519.928 520.840 C 527.561 504.443, 528.979 490.266, 529.013 430 C 529.058 350.769, 526.377 334.976, 512.219 331.044 C 508.013 329.876, 507.875 329.876, 502.787 331.077" fill="#A8412F" fill-rule="evenodd"/>
+  </symbol>
+</svg>
+
+<main class="max-w-[1440px] mx-auto px-6 py-6">
+
+<!-- ══════════════════════════════════ 视图 0：设计系统 ══════════════════════════════════ -->
+<section class="view active" id="view-system">
+  <div class="max-w-3xl mb-8">
+    <div class="text-[11px] tracking-[.22em] text-cinnabar mb-2">DESIGN SYSTEM · 设计系统</div>
+    <h1 class="font-serif text-[30px] font-600 leading-snug">学术档案 · 纸感温润</h1>
+    <p class="text-inksoft text-[14px] mt-3 leading-relaxed">
+      田野罗盘服务社科研究者，产物是「可提交基金委的研究方案」。视觉取「学术档案」气质：宣纸米白为底、墨黑为文、朱砂点睛、靛蓝承载数据，宋体立标题，克制留白与方正圆角，避免消费级旅行 App 的艳丽与圆胖。数字与报价用等宽衬线（Fraunces）保证可复核、可溯源。
+    </p>
+  </div>
+
+  <!-- 色板 -->
+  <h2 class="font-serif text-[18px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>色板 Tokens</h2>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-10">
+    <!-- swatch template -->
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#F9F6F0"></div><div class="p-2.5"><div class="text-[12px] font-medium">paper 纸底</div><div class="text-[10.5px] text-inkfaint num">#F9F6F0 · 页面背景</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#F1ECE2"></div><div class="p-2.5"><div class="text-[12px] font-medium">paperdeep 次底</div><div class="text-[10.5px] text-inkfaint num">#F1ECE2 · 左/右栏</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#FDFCF9"></div><div class="p-2.5"><div class="text-[12px] font-medium">card 卡面</div><div class="text-[10.5px] text-inkfaint num">#FDFCF9 · 卡片</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#F4F0E7"></div><div class="p-2.5"><div class="text-[12px] font-medium">cardsunk 内嵌</div><div class="text-[10.5px] text-inkfaint num">#F4F0E7 · 代码/内凹</div></div></div>
+
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#2A2724"></div><div class="p-2.5"><div class="text-[12px] font-medium">ink 墨黑</div><div class="text-[10.5px] text-inkfaint num">#2A2724 · 主文/标题</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#5F584C"></div><div class="p-2.5"><div class="text-[12px] font-medium">inksoft 次文</div><div class="text-[10.5px] text-inkfaint num">#5F584C · 正文/说明</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#948B7A"></div><div class="p-2.5"><div class="text-[12px] font-medium">inkfaint 弱文</div><div class="text-[10.5px] text-inkfaint num">#948B7A · 占位/元信息</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#E2D9C8"></div><div class="p-2.5"><div class="text-[12px] font-medium">hairline 界线</div><div class="text-[10.5px] text-inkfaint num">#E2D9C8 · 描边/分隔</div></div></div>
+
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#A8412E"></div><div class="p-2.5"><div class="text-[12px] font-medium">cinnabar 朱砂</div><div class="text-[10.5px] text-inkfaint num">#A8412E · 品牌/进行中</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#3A5C74"></div><div class="p-2.5"><div class="text-[12px] font-medium">indigo 靛蓝</div><div class="text-[10.5px] text-inkfaint num">#3A5C74 · 数据/链接</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#5E7A4E"></div><div class="p-2.5"><div class="text-[12px] font-medium">bamboo 竹青</div><div class="text-[10.5px] text-inkfaint num">#5E7A4E · 完成/确认</div></div></div>
+    <div class="hairline rounded-lg overflow-hidden bg-card"><div class="h-16" style="background:#A8802C"></div><div class="p-2.5"><div class="text-[12px] font-medium">ochre 赭黄</div><div class="text-[10.5px] text-inkfaint num">#A8802C · 警告/缓冲日</div></div></div>
+  </div>
+
+  <div class="grid lg:grid-cols-2 gap-8 mb-10">
+    <!-- 字体 -->
+    <div>
+      <h2 class="font-serif text-[18px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>字体与层级</h2>
+      <div class="hairline rounded-lg bg-card p-5 space-y-4">
+        <div><div class="font-serif text-[28px] font-700 leading-tight">田野罗盘 · 白族村落宗族组织变迁</div><div class="text-[10.5px] text-inkfaint mt-1">H1 标题 / Noto Serif SC 700 / 28px · 宋体立骨</div></div>
+        <div class="rule"></div>
+        <div><div class="font-serif text-[19px] font-600">三、研究设计与方法论</div><div class="text-[10.5px] text-inkfaint mt-1">H2 章节 / Serif 600 / 19px</div></div>
+        <div class="rule"></div>
+        <div><div class="text-[14px] text-inksoft leading-relaxed">全局单一宋体族贯穿标题、正文与 UI，保证档案气质一致；小字号元信息靠 medium 字重与 1.7 行高补偿衬线细笔画，密排依旧可读。</div><div class="text-[10.5px] text-inkfaint mt-1">Body / Noto Serif SC / 14px · lh 1.7</div></div>
+        <div class="rule"></div>
+        <div class="flex items-baseline gap-3"><span class="num text-[24px] text-indigo">¥17,740</span><span class="text-[11px] text-inkfaint">数字/报价用 Fraunces 衬线等宽，右对齐便于逐条复核</span></div>
+      </div>
+    </div>
+    <!-- 圆角/间距/图标 -->
+    <div>
+      <h2 class="font-serif text-[18px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>圆角 · 描边 · 图标</h2>
+      <div class="hairline rounded-lg bg-card p-5 space-y-4">
+        <div class="flex items-center gap-3">
+          <div class="w-12 h-12 bg-cardsunk border border-hairline" style="border-radius:4px"></div>
+          <div class="w-12 h-12 bg-cardsunk border border-hairline" style="border-radius:8px"></div>
+          <div class="w-12 h-12 bg-cardsunk border border-hairline" style="border-radius:14px"></div>
+          <div class="text-[11px] text-inkfaint leading-relaxed">r-sm 4 / r-md 8 / r-lg 14<br/>档案感偏方正，克制圆角；<br/>分隔优先用 1px 界线而非阴影</div>
+        </div>
+        <div class="rule"></div>
+        <div>
+          <div class="text-[11px] text-inkfaint mb-2">线形图标库 · 1.5px 描边 · 20px · inksoft（界面禁 emoji）</div>
+          <div class="flex flex-wrap gap-2 text-inksoft">
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-compass"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-pin"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-plane"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-train"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-bed"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-temple"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-wallet"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-users"/></svg></span>
+            <span class="w-9 h-9 grid place-items-center hairline rounded-md bg-card"><svg class="w-5 h-5"><use href="#ic-book"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 组件规格 -->
+  <h2 class="font-serif text-[18px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>核心组件规格</h2>
+  <div class="grid md:grid-cols-2 gap-4 mb-10">
+    <div class="hairline rounded-lg bg-card p-5">
+      <div class="text-[11px] text-inkfaint mb-3">阶段状态徽标 PhaseBadge</div>
+      <div class="flex flex-wrap gap-2">
+        <span class="chip bg-bamboowash text-bamboo border-bamboo/25"><svg class="w-3 h-3"><use href="#ic-check"/></svg>A 研究定位 · 已完成</span>
+        <span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25"><span class="dot bg-cinnabar"></span>C 行程规划 · 进行中</span>
+        <span class="chip bg-cardsunk text-inkfaint border-hairline"><svg class="w-3 h-3"><use href="#ic-lock"/></svg>D 方案生成 · 未解锁</span>
+      </div>
+    </div>
+    <div class="hairline rounded-lg bg-card p-5">
+      <div class="text-[11px] text-inkfaint mb-3">按钮 Buttons</div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button class="h-9 px-4 rounded-md bg-cinnabar text-[#F7EFE6] text-[13px] font-medium hover:bg-[#96382a] transition">生成研究方案</button>
+        <button class="h-9 px-4 rounded-md hairline bg-card text-ink text-[13px] hover:bg-cardsunk transition">下载 .md</button>
+        <button class="h-9 px-4 rounded-md text-indigo text-[13px] hover:bg-indigowash transition">查看画像</button>
+      </div>
+    </div>
+    <div class="hairline rounded-lg bg-card p-5">
+      <div class="text-[11px] text-inkfaint mb-3">预算累计条 BudgetBar（超支红警）</div>
+      <div class="space-y-3">
+        <div>
+          <div class="flex justify-between text-[11.5px] mb-1"><span class="text-inksoft">正常 · ¥17,740 / ¥20,000</span><span class="num text-bamboo">89%</span></div>
+          <div class="h-2 rounded-full bg-cardsunk overflow-hidden"><div class="h-full rounded-full bg-bamboo" style="width:89%"></div></div>
+        </div>
+        <div>
+          <div class="flex justify-between text-[11.5px] mb-1"><span class="text-inksoft">超支 · ¥22,300 / ¥20,000</span><span class="num text-danger">112%</span></div>
+          <div class="h-2 rounded-full bg-cardsunk overflow-hidden"><div class="h-full rounded-full bg-danger" style="width:100%"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="hairline rounded-lg bg-card p-5">
+      <div class="text-[11px] text-inkfaint mb-3">工具活动条 ToolActivityStrip（失败灰显+降级）</div>
+      <div class="space-y-1.5">
+        <div class="flex items-center gap-2 text-[12px]"><span class="dot bg-bamboo"></span><span class="text-inksoft">compose_itinerary</span><span class="text-inkfaint">· 已生成 78 天行程</span></div>
+        <div class="flex items-center gap-2 text-[12px]"><span class="dot bg-cinnabar animate-pulse"></span><span class="text-inksoft">profile_field_site</span><span class="text-inkfaint">· 检索喜洲文化资源中…</span></div>
+        <div class="flex items-center gap-2 text-[12px] opacity-55"><span class="dot bg-inkfaint"></span><span class="text-inksoft line-through decoration-inkfaint/50">search_trains</span><span class="chip bg-ochrewash text-ochre border-ochre/25 ml-1">降级 · flyai_unavailable</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hairline rounded-lg bg-cinnabarwash/50 p-4 text-[12.5px] text-inksoft leading-relaxed">
+    <b class="text-cinnabar">设计红线：</b>① 右栏是「状态投影」不自动强切 Tab，阶段推进只发切换建议 toast，用户确认才切；② 工具结果卡是中栏时间线与右栏面板的<b>唯一同源数据</b>（<code class="num text-indigo">tool_completed</code> payload），数字不经 LLM 转述以防失真；③ 界面禁 emoji，图标一律线形 SVG；④ 所有报价标注来源（search/cheapest/manual）以便复核。
+  </div>
+</section>
+
+<!-- ══════════════════════════════════ 视图 1：ProjectHub ══════════════════════════════════ -->
+<section class="view" id="view-hub">
+  <div class="grid lg:grid-cols-[1fr_320px] gap-6">
+    <!-- 主区 -->
+    <div>
+      <div class="flex items-end justify-between mb-5">
+        <div>
+          <div class="text-[11px] tracking-[.2em] text-cinnabar mb-1.5">PROJECT HUB · 项目集</div>
+          <h1 class="font-serif text-[26px] font-600">你的田野调研项目</h1>
+        </div>
+        <button class="h-10 px-4 rounded-md bg-cinnabar text-[#F7EFE6] text-[13.5px] font-medium flex items-center gap-2 hover:bg-[#96382a] transition shadow-card"><svg class="w-4 h-4"><use href="#ic-plus"/></svg>新建项目</button>
+      </div>
+
+      <!-- 新建卡 -->
+      <div class="hairline rounded-lg bg-card shadow-card p-5 mb-6">
+        <div class="font-serif text-[16px] font-600 mb-1">从一个想法开始</div>
+        <p class="text-[12.5px] text-inkfaint mb-4">选择学科倾向与快速模板，或直接一句话描述你的田野计划——罗盘会通过四阶段访谈把它补全为完整研究方案。</p>
+        <div class="flex flex-wrap gap-2 mb-4">
+          <span class="text-[11.5px] text-inksoft mr-1 self-center">学科倾向</span>
+          <button class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25">人类学</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">社会学</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">民族学</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">公共卫生</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">教育学</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">建筑/乡建</button>
+        </div>
+        <div class="flex flex-wrap gap-2 mb-4">
+          <span class="text-[11.5px] text-inksoft mr-1 self-center">快速模板</span>
+          <button class="chip bg-indigowash text-indigo border-indigo/20">村落宗族组织研究</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">非遗传承调查</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">乡村教育民族志</button>
+          <button class="chip bg-card hairline text-inksoft hover:bg-cardsunk">基层医疗访谈</button>
+        </div>
+        <div class="hairline rounded-md bg-paper/60 p-3 flex items-start gap-3">
+          <svg class="w-5 h-5 text-inkfaint mt-0.5 shrink-0"><use href="#ic-spark"/></svg>
+          <div class="text-[13px] text-inkfaint leading-relaxed flex-1">研究西南少数民族村落的宗族组织变迁，单人驻村三个月，预算两万元，时间窗口明年 6–9 月……</div>
+          <button class="h-8 w-8 grid place-items-center rounded-md bg-cinnabar text-[#F7EFE6] shrink-0"><svg class="w-4 h-4"><use href="#ic-send"/></svg></button>
+        </div>
+      </div>
+
+      <!-- 项目列表 -->
+      <div class="text-[12px] text-inkfaint tracking-wide mb-3">进行中 / 已完成 · 4 个项目</div>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <!-- 项目卡 1 -->
+        <a class="hairline rounded-lg bg-card shadow-card p-4 block hover:border-cinnabar/40 hover:shadow-pop transition group">
+          <div class="flex items-start justify-between mb-2.5">
+            <div class="font-serif text-[16px] font-600 leading-snug group-hover:text-cinnabar transition">白族村落宗族组织变迁</div>
+            <span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25 shrink-0 ml-2"><span class="dot bg-cinnabar"></span>C 行程规划</span>
+          </div>
+          <div class="text-[12px] text-inksoft mb-3">社会学 · 单人 · 三个月 · 预算 ¥20,000</div>
+          <div class="flex items-center gap-4 text-[11.5px] text-inkfaint">
+            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-pin"/></svg>2 田野点</span>
+            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-users"/></svg>4 访谈对象</span>
+            <span class="ml-auto flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-clock"/></svg>2 小时前</span>
+          </div>
+          <div class="mt-3 flex gap-1"><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-cinnabar"></span><span class="h-1 flex-1 rounded-full bg-hairline"></span></div>
+        </a>
+        <!-- 项目卡 2 -->
+        <a class="hairline rounded-lg bg-card shadow-card p-4 block hover:border-cinnabar/40 hover:shadow-pop transition group">
+          <div class="flex items-start justify-between mb-2.5">
+            <div class="font-serif text-[16px] font-600 leading-snug group-hover:text-cinnabar transition">滇南白族扎染非遗传承</div>
+            <span class="chip bg-indigowash text-indigo border-indigo/20 shrink-0 ml-2"><span class="dot bg-indigo"></span>B 田野点画像</span>
+          </div>
+          <div class="text-[12px] text-inksoft mb-3">民族学 · 双人 · 六周 · 预算 ¥15,000</div>
+          <div class="flex items-center gap-4 text-[11.5px] text-inkfaint">
+            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-pin"/></svg>1 田野点</span>
+            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-users"/></svg>2 访谈对象</span>
+            <span class="ml-auto flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-clock"/></svg>昨天</span>
+          </div>
+          <div class="mt-3 flex gap-1"><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-indigo"></span><span class="h-1 flex-1 rounded-full bg-hairline"></span><span class="h-1 flex-1 rounded-full bg-hairline"></span></div>
+        </a>
+        <!-- 项目卡 3 -->
+        <a class="hairline rounded-lg bg-card shadow-card p-4 block hover:border-cinnabar/40 hover:shadow-pop transition group">
+          <div class="flex items-start justify-between mb-2.5">
+            <div class="font-serif text-[16px] font-600 leading-snug group-hover:text-cinnabar transition">滇西乡村教育民族志</div>
+            <span class="chip bg-bamboowash text-bamboo border-bamboo/25 shrink-0 ml-2"><svg class="w-3 h-3"><use href="#ic-check"/></svg>已完成</span>
+          </div>
+          <div class="text-[12px] text-inksoft mb-3">教育学 · 课题组 3 人 · 一学期 · 预算 ¥40,000</div>
+          <div class="flex items-center gap-4 text-[11.5px] text-inkfaint">
+            <span class="flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-book"/></svg>提案 final v2</span>
+            <span class="ml-auto flex items-center gap-1"><svg class="w-3.5 h-3.5"><use href="#ic-clock"/></svg>3 天前</span>
+          </div>
+          <div class="mt-3 flex gap-1"><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-bamboo"></span></div>
+        </a>
+        <!-- 项目卡 4 -->
+        <a class="hairline rounded-lg bg-card/60 border-dashed border-hairline p-4 block hover:bg-card transition flex flex-col items-center justify-center text-center min-h-[132px]">
+          <span class="w-9 h-9 grid place-items-center rounded-full hairline text-inkfaint mb-2"><svg class="w-4 h-4"><use href="#ic-plus"/></svg></span>
+          <div class="text-[13px] text-inksoft">新建空白项目</div>
+          <div class="text-[11px] text-inkfaint mt-0.5">从阶段 A 研究定位开始</div>
+        </a>
+      </div>
+    </div>
+
+    <!-- 侧栏：说明 -->
+    <aside class="space-y-4">
+      <div class="hairline rounded-lg bg-paperdeep p-5">
+        <div class="font-serif text-[15px] font-600 mb-3 flex items-center gap-2"><svg class="w-4 h-4 text-cinnabar"><use href="#ic-compass"/></svg>四阶段访谈</div>
+        <ol class="space-y-2.5 text-[12.5px]">
+          <li class="flex gap-2.5"><span class="num text-cinnabar font-600">A</span><span><b>研究定位</b><div class="text-inkfaint text-[11.5px]">学科·问题·规模·经费·时间窗</div></span></li>
+          <li class="flex gap-2.5"><span class="num text-cinnabar font-600">B</span><span><b>田野点画像</b><div class="text-inkfaint text-[11.5px]">交通·住宿·文化·配套四维</div></span></li>
+          <li class="flex gap-2.5"><span class="num text-cinnabar font-600">C</span><span><b>行程规划</b><div class="text-inkfaint text-[11.5px]">节奏·缓冲·预算·备选路线</div></span></li>
+          <li class="flex gap-2.5"><span class="num text-cinnabar font-600">D</span><span><b>方案生成</b><div class="text-inkfaint text-[11.5px]">八章 Research Proposal</div></span></li>
+        </ol>
+      </div>
+      <div class="hairline rounded-lg bg-card p-5">
+        <div class="font-serif text-[15px] font-600 mb-2">学术纵深</div>
+        <p class="text-[12px] text-inksoft leading-relaxed">内置 10+ 类访谈对象类型库（村落长老/宗族头人/宗教人士/基层干部/返乡务工者/非遗传承人…），每类含接近策略、注意事项、建议提问域与伦理提示，可自动生成半结构式访谈提纲并嵌入提案第三章。</p>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════ 视图 2：Workspace 三栏 ══════════════════════════════════ -->
+<section class="view" id="view-workspace">
+  <div class="hairline rounded-xl bg-card shadow-card overflow-hidden" style="height:calc(100vh - 130px);min-height:680px">
+    <div class="grid grid-cols-[212px_1fr_340px] h-full">
+
+      <!-- ── 左栏：阶段导航 ── -->
+      <div class="bg-paperdeep border-r border-hairline flex flex-col">
+        <div class="px-4 py-3.5 border-b border-hairline">
+          <div class="flex items-center gap-2 mb-1">
+            <svg class="w-6 h-6"><use href="#lg-b"/></svg>
+            <span class="font-serif text-[13.5px] font-600">田野罗盘</span>
+          </div>
+          <div class="text-[11px] text-inkfaint truncate">白族村落宗族组织变迁</div>
+        </div>
+        <div class="px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint">访谈阶段</div>
+        <nav class="px-3 space-y-1 flex-1">
+          <a class="flex items-start gap-2.5 p-2.5 rounded-md hover:bg-card/70 transition">
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-bamboo text-paper shrink-0 mt-0.5"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span>
+            <span><span class="text-[13px] text-inksoft block">A · 研究定位</span><span class="text-[10.5px] text-inkfaint">6/6 字段</span></span>
+          </a>
+          <a class="flex items-start gap-2.5 p-2.5 rounded-md hover:bg-card/70 transition">
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-bamboo text-paper shrink-0 mt-0.5"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span>
+            <span><span class="text-[13px] text-inksoft block">B · 田野点画像</span><span class="text-[10.5px] text-inkfaint">2 点 · 1 已确认</span></span>
+          </a>
+          <a class="flex items-start gap-2.5 p-2.5 rounded-md bg-card border border-cinnabar/30 shadow-card">
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-cinnabar text-paper shrink-0 mt-0.5 num text-[11px]">C</span>
+            <span><span class="text-[13px] text-cinnabar font-medium block">C · 行程规划</span><span class="text-[10.5px] text-inkfaint">进行中 · 78 天</span></span>
+          </a>
+          <a class="flex items-start gap-2.5 p-2.5 rounded-md opacity-55 hover:bg-card/70 transition">
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-hairline text-inksoft shrink-0 mt-0.5"><svg class="w-3 h-3"><use href="#ic-lock"/></svg></span>
+            <span><span class="text-[13px] text-inksoft block">D · 方案生成</span><span class="text-[10.5px] text-inkfaint">待行程确认</span></span>
+          </a>
+        </nav>
+        <div class="p-3 border-t border-hairline">
+          <button class="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft hover:bg-cardsunk transition flex items-center justify-center gap-1.5"><svg class="w-4 h-4"><use href="#ic-compass"/></svg>返回项目集</button>
+        </div>
+      </div>
+
+      <!-- ── 中栏：对话时间线 ── -->
+      <div class="flex flex-col bg-paper/40 min-w-0">
+        <!-- 阶段横幅 -->
+        <div class="px-6 py-2.5 bg-cinnabarwash/70 border-b border-cinnabar/15 flex items-center gap-2 text-[12.5px]">
+          <svg class="w-4 h-4 text-cinnabar"><use href="#ic-compass"/></svg>
+          <span class="text-cinnabar font-medium">已进入 阶段 C · 行程规划</span>
+          <span class="text-inkfaint">— 行程确认后即可解锁方案生成</span>
+        </div>
+        <div class="flex-1 overflow-y-auto scroll px-6 py-5 space-y-5">
+
+          <!-- 用户气泡 -->
+          <div class="flex justify-end">
+            <div class="max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card">
+              我从昆明出发，打算在喜洲驻村三个月做宗族组织变迁调查。帮我排一下行程节奏和预算，控制在两万以内，最好留出缓冲应对雨季。
+            </div>
+          </div>
+
+          <!-- 工具活动条 -->
+          <div class="hairline rounded-lg bg-card px-4 py-3 space-y-2">
+            <div class="text-[10.5px] tracking-[.16em] text-inkfaint mb-1">AGENT 工具活动</div>
+            <div class="flex items-center gap-2 text-[12.5px]"><span class="dot bg-bamboo"></span><span class="num text-inksoft">compose_itinerary</span><span class="text-inkfaint">· 昆明→喜洲 · 90 天 · 已生成三段节奏</span><svg class="w-3.5 h-3.5 text-bamboo ml-auto"><use href="#ic-check"/></svg></div>
+            <div class="flex items-center gap-2 text-[12.5px]"><span class="dot bg-bamboo"></span><span class="num text-inksoft">profile_field_site</span><span class="text-inkfaint">· 复用喜洲画像（交通/住宿/文化/配套）</span><svg class="w-3.5 h-3.5 text-bamboo ml-auto"><use href="#ic-check"/></svg></div>
+            <div class="flex items-center gap-2 text-[12.5px] opacity-60"><span class="dot bg-ochre"></span><span class="num text-inksoft line-through decoration-inkfaint/60">search_trains</span><span class="chip bg-ochrewash text-ochre border-ochre/25 ml-1">降级 · flyai_unavailable</span><span class="text-inkfaint ml-auto text-[11px]">已用航班数据替代</span></div>
+          </div>
+
+          <!-- 助手 markdown 流式 -->
+          <div class="flex gap-3">
+            <svg class="w-6 h-6 shrink-0 mt-0.5"><use href="#lg-mio"/></svg>
+            <div class="min-w-0 flex-1">
+              <div class="font-serif text-[14.5px] leading-[1.85] text-ink space-y-2.5">
+                <p>已按<b>三个月驻村</b>节奏排好行程，分三段推进，并预留 <span class="num text-cinnabar font-600">9 天缓冲</span>应对雨季交通中断与访谈对象临时变动：</p>
+                <ul class="space-y-1 text-[13.5px] text-inksoft list-none">
+                  <li class="flex gap-2"><span class="text-cinnabar">·</span><b class="text-ink">适应期（9 天）</b>：报到、熟悉村落格局、经介绍人首访长老与本主庙管事。</li>
+                  <li class="flex gap-2"><span class="text-cinnabar">·</span><b class="text-ink">深入期（45 天）</b>：参与式观察祠堂祭祖与议事、收集族谱碑刻、深度访谈 4 类报道人。</li>
+                  <li class="flex gap-2"><span class="text-cinnabar">·</span><b class="text-ink">补充期（24 天）</b>：补访缺口对象、三角互证资料、整理田野笔记后返程。</li>
+                </ul>
+                <p class="text-inksoft">预算合计 <span class="num text-indigo font-600">¥17,740</span>，在 ¥20,000 内留有 <span class="num">11%</span> 余量。下方是完整行程与报价明细，数字均来自飞猪实时搜索，可点开逐条复核。</p>
+              </div>
+
+              <!-- 工具结果卡：行程时间线（可折叠） -->
+              <details open class="mt-3 hairline rounded-lg bg-card overflow-hidden shadow-card">
+                <summary class="px-4 py-2.5 flex items-center gap-2 bg-cardsunk/60 border-b border-hairline">
+                  <svg class="w-4 h-4 text-cinnabar caret"><use href="#ic-caret"/></svg>
+                  <svg class="w-4 h-4 text-inksoft"><use href="#ic-compass"/></svg>
+                  <span class="text-[13px] font-medium">ItineraryTimeline · 昆明 → 喜洲 · 90 天</span>
+                  <span class="chip bg-bamboowash text-bamboo border-bamboo/25 ml-auto">预算内</span>
+                </summary>
+                <div class="p-4">
+                  <!-- 竖向时间线 -->
+                  <ol class="relative border-l border-hairline ml-2 space-y-4">
+                    <li class="pl-5 relative"><span class="absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-cinnabar"></span>
+                      <div class="flex items-baseline gap-2"><b class="text-[13.5px]">适应期</b><span class="num text-[11.5px] text-inkfaint">Day 1–9</span></div>
+                      <div class="text-[12.5px] text-inksoft mt-0.5">昆明→大理 航班 MU5843 <span class="num text-indigo">¥620</span>；入住喜洲客栈 <span class="num text-indigo">¥150</span>/晚。报到、熟悉村落、首访长老。</div>
+                    </li>
+                    <li class="pl-5 relative"><span class="absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-indigo"></span>
+                      <div class="flex items-baseline gap-2"><b class="text-[13.5px]">深入期</b><span class="num text-[11.5px] text-inkfaint">Day 10–54</span></div>
+                      <div class="text-[12.5px] text-inksoft mt-0.5">驻村参与式观察；祠堂祭祖与议事；族谱/碑刻收集；深度访谈宗族头人·妇女群体·返乡务工者·乡村教师。</div>
+                    </li>
+                    <li class="pl-5 relative"><span class="absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-bamboo"></span>
+                      <div class="flex items-baseline gap-2"><b class="text-[13.5px]">补充期</b><span class="num text-[11.5px] text-inkfaint">Day 55–78</span></div>
+                      <div class="text-[12.5px] text-inksoft mt-0.5">补访缺口对象、资料三角互证、田野笔记整理，返程。</div>
+                    </li>
+                    <li class="pl-5 relative"><span class="absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full bg-ochre"></span>
+                      <div class="flex items-baseline gap-2"><b class="text-[13.5px] text-ochre">缓冲日</b><span class="num text-[11.5px] text-inkfaint">9 天机动</span></div>
+                      <div class="text-[12.5px] text-inksoft mt-0.5">分散嵌入各段，应对雨季塌方/交通管制与访谈改期。</div>
+                    </li>
+                  </ol>
+                  <details class="mt-3 hairline rounded-md bg-cardsunk/50">
+                    <summary class="px-3 py-2 text-[12.5px] text-inksoft flex items-center gap-1.5"><svg class="w-3.5 h-3.5 caret"><use href="#ic-caret"/></svg>备选路线（1）· 高铁方案</summary>
+                    <div class="px-3 pb-3 text-[12px] text-inkfaint">昆明→大理 高铁 G29xx <span class="num">¥350</span>，较航班省 ¥270，但雨季晚点率高、大件行李不便，作为返程备选。</div>
+                  </details>
+                  <!-- BudgetBar -->
+                  <div class="mt-4 pt-4 border-t border-hairline">
+                    <div class="flex items-baseline justify-between mb-2"><span class="text-[12.5px] text-inksoft flex items-center gap-1.5"><svg class="w-4 h-4 text-indigo"><use href="#ic-wallet"/></svg>预算累计</span><span class="num text-[15px] font-600 text-bamboo">¥17,740 <span class="text-[11px] text-inkfaint font-normal">/ ¥20,000</span></span></div>
+                    <div class="h-2.5 rounded-full bg-cardsunk overflow-hidden flex">
+                      <div class="h-full bg-indigo" style="width:7%" title="交通 ¥1,240"></div>
+                      <div class="h-full bg-cinnabar" style="width:76%" title="住宿 ¥13,500"></div>
+                      <div class="h-full bg-ochre" style="width:17%" title="市内餐饮 ¥3,000"></div>
+                    </div>
+                    <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-inkfaint">
+                      <span class="flex items-center gap-1"><span class="dot bg-indigo"></span>交通 ¥1,240 · search</span>
+                      <span class="flex items-center gap-1"><span class="dot bg-cinnabar"></span>住宿 ¥13,500 · 90晚×¥150 cheapest</span>
+                      <span class="flex items-center gap-1"><span class="dot bg-ochre"></span>市内餐饮 ¥3,000 · estimate</span>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+
+        <!-- 输入框 -->
+        <div class="border-t border-hairline bg-card px-6 py-3.5">
+          <div class="hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
+            <textarea rows="1" class="flex-1 bg-transparent resize-none outline-none text-[13.5px] leading-relaxed placeholder:text-inkfaint" placeholder="继续描述你的调研安排，或让罗盘细化某一段行程…"></textarea>
+            <button class="h-9 w-9 grid place-items-center rounded-md bg-cinnabar text-[#F7EFE6] shrink-0 hover:bg-[#96382a] transition"><svg class="w-4 h-4"><use href="#ic-send"/></svg></button>
+          </div>
+          <div class="flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint">
+            <span>阶段推进由可验证条件判定，非模型自由发挥</span>
+            <span class="ml-auto">qwen3.8-flash · function calling</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 右栏：上下文面板（状态投影） ── -->
+      <div class="bg-paperdeep border-l border-hairline flex flex-col min-w-0 relative">
+        <!-- 切换建议 toast（不自动切） -->
+        <div class="absolute top-2 left-3 right-3 z-10 rounded-lg bg-card shadow-pop hairline p-3 flex items-start gap-2.5">
+          <svg class="w-4 h-4 text-cinnabar mt-0.5 shrink-0"><use href="#ic-spark"/></svg>
+          <div class="flex-1 min-w-0">
+            <div class="text-[12px] text-ink leading-snug">行程已生成，建议切换到「预算」面板查看累计支出</div>
+            <div class="flex gap-2 mt-1.5"><button class="text-[11.5px] text-cinnabar font-medium">查看</button><button class="text-[11.5px] text-inkfaint">稍后</button></div>
+          </div>
+        </div>
+
+        <div class="px-4 pt-3 pb-2 border-b border-hairline">
+          <div class="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 状态投影</div>
+          <div class="flex gap-1 flex-wrap" role="tablist">
+            <button class="rp-tab text-[11.5px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft" role="tab" aria-selected="false" data-rp="progress">进度</button>
+            <button class="rp-tab text-[11.5px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft" role="tab" aria-selected="true" data-rp="site">田野点</button>
+            <button class="rp-tab text-[11.5px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft" role="tab" aria-selected="false" data-rp="informant">访谈对象</button>
+            <button class="rp-tab text-[11.5px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft" role="tab" aria-selected="false" data-rp="budget">预算</button>
+            <button class="rp-tab text-[11.5px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft" role="tab" aria-selected="false" data-rp="kb">知识库</button>
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto scroll p-4">
+          <!-- 田野点面板：SiteProfilePanel -->
+          <div data-rp-panel="site">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <div class="font-serif text-[16px] font-600 flex items-center gap-1.5"><svg class="w-4 h-4 text-cinnabar"><use href="#ic-pin"/></svg>喜洲镇</div>
+                <div class="text-[11px] text-inkfaint">云南 · 大理 · 白族聚居</div>
+              </div>
+              <span class="chip bg-bamboowash text-bamboo border-bamboo/25"><svg class="w-3 h-3"><use href="#ic-check"/></svg>已确认</span>
+            </div>
+
+            <!-- 交通 -->
+            <div class="hairline rounded-lg bg-card p-3 mb-3">
+              <div class="text-[11.5px] text-inksoft mb-2 flex items-center gap-1.5"><svg class="w-4 h-4 text-indigo"><use href="#ic-plane"/></svg>交通可达</div>
+              <div class="space-y-2">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-8 h-8 rounded-md bg-cardsunk grid place-items-center shrink-0"><svg class="w-4 h-4 text-inksoft"><use href="#ic-plane"/></svg></div>
+                  <div class="flex-1 min-w-0"><div class="text-[12.5px] truncate">昆明 ⇄ 大理 · MU5843</div><div class="text-[10.5px] text-inkfaint">直飞 55min · search</div></div>
+                  <span class="num text-[13px] text-indigo">¥620</span>
+                </div>
+                <div class="flex items-center gap-2.5 opacity-55">
+                  <div class="w-8 h-8 rounded-md bg-cardsunk grid place-items-center shrink-0"><svg class="w-4 h-4 text-inksoft"><use href="#ic-train"/></svg></div>
+                  <div class="flex-1 min-w-0"><div class="text-[12.5px] truncate">高铁 G29xx · 备选</div><div class="text-[10.5px] text-ochre">search_trains 降级</div></div>
+                  <span class="num text-[13px] text-inkfaint">¥350</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 住宿 -->
+            <div class="hairline rounded-lg bg-card p-3 mb-3">
+              <div class="text-[11.5px] text-inksoft mb-2 flex items-center justify-between"><span class="flex items-center gap-1.5"><svg class="w-4 h-4 text-cinnabar"><use href="#ic-bed"/></svg>长住住宿</span><span class="text-[10.5px] text-inkfaint">≤¥300 · 3 家</span></div>
+              <div class="flex gap-2 overflow-x-auto scroll pb-1">
+                <div class="shrink-0 w-[124px] hairline rounded-md bg-card overflow-hidden">
+                  <div class="h-14 bg-gradient-to-br from-[#E7DCC7] to-[#D8CBB2] grid place-items-center text-inkfaint"><svg class="w-5 h-5"><use href="#ic-bed"/></svg></div>
+                  <div class="p-2"><div class="text-[11.5px] truncate">喜洲客栈·院</div><div class="num text-[12px] text-cinnabar">¥150<span class="text-[9.5px] text-inkfaint">/晚</span></div></div>
+                </div>
+                <div class="shrink-0 w-[124px] hairline rounded-md bg-card overflow-hidden">
+                  <div class="h-14 bg-gradient-to-br from-[#E3DACB] to-[#D2C6B0] grid place-items-center text-inkfaint"><svg class="w-5 h-5"><use href="#ic-bed"/></svg></div>
+                  <div class="p-2"><div class="text-[11.5px] truncate">稻田边·民居</div><div class="num text-[12px] text-cinnabar">¥180<span class="text-[9.5px] text-inkfaint">/晚</span></div></div>
+                </div>
+                <div class="shrink-0 w-[124px] hairline rounded-md bg-card overflow-hidden">
+                  <div class="h-14 bg-gradient-to-br from-[#E7DFD0] to-[#D9CDB6] grid place-items-center text-inkfaint"><svg class="w-5 h-5"><use href="#ic-bed"/></svg></div>
+                  <div class="p-2"><div class="text-[11.5px] truncate">古镇内·院落</div><div class="num text-[12px] text-cinnabar">¥260<span class="text-[9.5px] text-inkfaint">/晚</span></div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 文化资源 POI -->
+            <div class="hairline rounded-lg bg-card p-3 mb-3">
+              <div class="text-[11.5px] text-inksoft mb-2 flex items-center gap-1.5"><svg class="w-4 h-4 text-indigo"><use href="#ic-temple"/></svg>文化资源图谱</div>
+              <div class="flex flex-wrap gap-1.5">
+                <span class="chip bg-indigowash text-indigo border-indigo/15">严家大院</span>
+                <span class="chip bg-indigowash text-indigo border-indigo/15">董氏宗祠</span>
+                <span class="chip bg-indigowash text-indigo border-indigo/15">本主庙</span>
+                <span class="chip bg-indigowash text-indigo border-indigo/15">三道茶民俗</span>
+                <span class="chip bg-indigowash text-indigo border-indigo/15">古镇博物馆</span>
+              </div>
+            </div>
+
+            <!-- summary_hints -->
+            <div class="rounded-lg bg-cardsunk hairline p-3 grid grid-cols-3 text-center">
+              <div><div class="num text-[15px] text-indigo font-600">¥350</div><div class="text-[10px] text-inkfaint mt-0.5">交通最低</div></div>
+              <div class="border-x border-hairline"><div class="num text-[15px] text-cinnabar font-600">¥150</div><div class="text-[10px] text-inkfaint mt-0.5">住宿/晚起</div></div>
+              <div><div class="num text-[15px] text-ink font-600">5</div><div class="text-[10px] text-inkfaint mt-0.5">文化点位</div></div>
+            </div>
+          </div>
+
+          <!-- 进度面板 -->
+          <div data-rp-panel="progress" class="hidden">
+            <div class="font-serif text-[15px] font-600 mb-3">采集进度 · 阶段 A</div>
+            <ul class="space-y-2">
+              <li class="flex items-center gap-2.5 text-[13px]"><span class="w-4.5 h-4.5 grid place-items-center rounded-full bg-bamboo text-paper shrink-0" style="width:18px;height:18px"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span><span class="text-inksoft">学科背景 · 社会学</span></li>
+              <li class="flex items-center gap-2.5 text-[13px]"><span class="grid place-items-center rounded-full bg-bamboo text-paper shrink-0" style="width:18px;height:18px"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span><span class="text-inksoft">研究问题 · 宗族组织变迁</span></li>
+              <li class="flex items-center gap-2.5 text-[13px]"><span class="grid place-items-center rounded-full bg-bamboo text-paper shrink-0" style="width:18px;height:18px"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span><span class="text-inksoft">田野点确定度 · 已明确</span></li>
+              <li class="flex items-center gap-2.5 text-[13px]"><span class="grid place-items-center rounded-full bg-bamboo text-paper shrink-0" style="width:18px;height:18px"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span><span class="text-inksoft">调研规模 · 单人</span></li>
+              <li class="flex items-center gap-2.5 text-[13px]"><span class="grid place-items-center rounded-full bg-bamboo text-paper shrink-0" style="width:18px;height:18px"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span><span class="text-inksoft">经费 · ¥20,000</span></li>
+              <li class="flex items-center gap-2.5 text-[13px]"><span class="grid place-items-center rounded-full bg-bamboo text-paper shrink-0" style="width:18px;height:18px"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span><span class="text-inksoft">时间窗口 · 明年 6–9 月</span></li>
+            </ul>
+            <div class="rule my-4"></div>
+            <div class="font-serif text-[15px] font-600 mb-2">阶段 B→C 推进条件</div>
+            <ul class="space-y-2 text-[12.5px]">
+              <li class="flex items-center gap-2 text-bamboo"><svg class="w-4 h-4"><use href="#ic-check"/></svg>已有 confirmed 田野点</li>
+              <li class="flex items-center gap-2 text-bamboo"><svg class="w-4 h-4"><use href="#ic-check"/></svg>已登记 ≥1 个访谈对象</li>
+            </ul>
+          </div>
+
+          <!-- 访谈对象面板 -->
+          <div data-rp-panel="informant" class="hidden">
+            <div class="font-serif text-[15px] font-600 mb-3">访谈对象 · 4</div>
+            <div class="space-y-2">
+              <div class="hairline rounded-lg bg-card p-3"><div class="flex items-center justify-between"><span class="num text-[12px] text-cinnabar">P1</span><span class="chip bg-cardsunk text-inksoft hairline">村落长老</span></div><div class="text-[12.5px] text-inksoft mt-1.5">董氏宗族 · 经介绍人引荐</div><div class="text-[11px] text-inkfaint mt-1">伦理：知情同意 · 口述史录音需授权</div></div>
+              <div class="hairline rounded-lg bg-card p-3"><div class="flex items-center justify-between"><span class="num text-[12px] text-cinnabar">P2</span><span class="chip bg-cardsunk text-inksoft hairline">宗族头人</span></div><div class="text-[12.5px] text-inksoft mt-1.5">主持祭祖与议事</div></div>
+              <div class="hairline rounded-lg bg-card p-3"><div class="flex items-center justify-between"><span class="num text-[12px] text-cinnabar">P3</span><span class="chip bg-cardsunk text-inksoft hairline">返乡务工者</span></div><div class="text-[12.5px] text-inksoft mt-1.5">宗族认同变迁视角</div></div>
+              <div class="hairline rounded-lg bg-card p-3"><div class="flex items-center justify-between"><span class="num text-[12px] text-cinnabar">P4</span><span class="chip bg-cardsunk text-inksoft hairline">乡村教师</span></div><div class="text-[12.5px] text-inksoft mt-1.5">代际教育与传统</div></div>
+            </div>
+          </div>
+
+          <!-- 预算面板 -->
+          <div data-rp-panel="budget" class="hidden">
+            <div class="font-serif text-[15px] font-600 mb-3">预算累计</div>
+            <div class="num text-[26px] font-600 text-bamboo mb-1">¥17,740</div>
+            <div class="text-[12px] text-inkfaint mb-3">预算 ¥20,000 · 余 ¥2,260</div>
+            <div class="h-2.5 rounded-full bg-cardsunk overflow-hidden mb-4"><div class="h-full bg-bamboo" style="width:89%"></div></div>
+            <div class="space-y-2">
+              <div class="flex justify-between text-[12.5px] py-1.5 border-b border-hairsoft"><span class="text-inksoft">住宿（90晚×¥150）</span><span class="num">¥13,500</span></div>
+              <div class="flex justify-between text-[12.5px] py-1.5 border-b border-hairsoft"><span class="text-inksoft">市内与餐饮</span><span class="num">¥3,000</span></div>
+              <div class="flex justify-between text-[12.5px] py-1.5 border-b border-hairsoft"><span class="text-inksoft">往返交通</span><span class="num">¥1,240</span></div>
+            </div>
+          </div>
+
+          <!-- 知识库面板 -->
+          <div data-rp-panel="kb" class="hidden">
+            <div class="font-serif text-[15px] font-600 mb-3">知识库摘要</div>
+            <div class="space-y-2">
+              <div class="hairline rounded-lg bg-card p-3"><div class="text-[12.5px] font-medium">喜洲镇志·宗族篇（节选）</div><div class="text-[11px] text-inkfaint mt-1">来源：user · 村落史</div></div>
+              <div class="hairline rounded-lg bg-card p-3"><div class="text-[12.5px] font-medium">本主信仰与村落治理</div><div class="text-[11px] text-inkfaint mt-1">来源：文献 · 宗教</div></div>
+            </div>
+            <div class="hairline rounded-lg bg-paper/60 p-3 mt-3 flex items-center gap-2 text-[12px] text-inkfaint"><svg class="w-4 h-4"><use href="#ic-plus"/></svg>添加自有资料（FTS5 全文检索）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════ 视图 3：ProposalView ══════════════════════════════════ -->
+<section class="view" id="view-proposal">
+  <div class="hairline rounded-xl bg-card shadow-card overflow-hidden" style="height:calc(100vh - 130px);min-height:680px">
+    <div class="grid grid-cols-[240px_1fr] h-full">
+      <!-- 八章导航 + 版本 -->
+      <div class="bg-paperdeep border-r border-hairline flex flex-col">
+        <div class="px-4 py-3.5 border-b border-hairline flex items-center justify-between">
+          <div>
+            <div class="text-[10.5px] tracking-[.16em] text-inkfaint">RESEARCH PROPOSAL</div>
+            <div class="font-serif text-[14px] font-600 leading-tight mt-0.5">白族村落宗族组织变迁</div>
+          </div>
+        </div>
+        <div class="px-4 py-3 border-b border-hairline">
+          <div class="text-[10.5px] text-inkfaint mb-2">版本</div>
+          <div class="flex gap-1">
+            <button class="chip bg-card hairline text-inkfaint">draft v1</button>
+            <button class="chip bg-card hairline text-inkfaint">draft v2</button>
+            <button class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25">final</button>
+          </div>
+        </div>
+        <nav class="flex-1 overflow-y-auto scroll px-3 py-3 space-y-0.5 text-[13px]">
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">一 · 选题依据</a>
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">二 · 田野点选择与可行性</a>
+          <a class="block px-2.5 py-1.5 rounded-md bg-card border border-cinnabar/25 text-cinnabar font-medium">三 · 研究设计与方法论</a>
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">四 · 详细行程安排</a>
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">五 · 实时报价与预算</a>
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">六 · 风险评估与伦理预案</a>
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">七 · 预期成果</a>
+          <a class="block px-2.5 py-1.5 rounded-md text-inksoft hover:bg-card/70">八 · 参考文献与附录</a>
+        </nav>
+        <div class="p-3 border-t border-hairline space-y-2">
+          <button class="w-full h-9 rounded-md bg-cinnabar text-[#F7EFE6] text-[12.5px] font-medium flex items-center justify-center gap-1.5 hover:bg-[#96382a] transition"><svg class="w-4 h-4"><use href="#ic-download"/></svg>下载 .md</button>
+          <button class="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center justify-center gap-1.5 hover:bg-cardsunk transition"><svg class="w-4 h-4"><use href="#ic-book"/></svg>访谈提纲（kind 切换）</button>
+        </div>
+      </div>
+
+      <!-- 正文 -->
+      <div class="overflow-y-auto scroll bg-paper/40">
+        <div class="max-w-[720px] mx-auto px-10 py-10">
+          <div class="text-center mb-8">
+            <div class="text-[11px] tracking-[.24em] text-cinnabar mb-3">国家社科基金青年项目 · 研究方案</div>
+            <h1 class="font-serif text-[30px] font-700 leading-snug">白族村落宗族组织变迁研究</h1>
+            <div class="text-[12.5px] text-inkfaint mt-3">田野点：云南大理喜洲镇 · 单人驻村三个月 · 预算 ¥20,000</div>
+            <div class="mt-4 flex justify-center"><svg class="w-9 h-9"><use href="#lg-mio"/></svg></div>
+          </div>
+
+          <div class="rule mb-8"></div>
+
+          <section class="mb-8">
+            <h2 class="font-serif text-[21px] font-600 mb-1">三、研究设计与方法论</h2>
+            <div class="text-[11px] text-inkfaint mb-4 num">3.1 方法 · 3.2 访谈对象 · 3.3 伦理</div>
+            <p class="font-serif text-[15px] leading-[1.95] text-ink mb-4">本研究采用<b>民族志参与式观察</b>与<b>半结构式深度访谈</b>相结合的混合方法，以喜洲镇董氏宗族为核心个案，辅以周边村落的比较观察。田野周期 90 天，按「适应—深入—补充」三段节奏推进，确保在有限驻村时间内完成从建立关系到资料饱和的完整闭环。</p>
+            <p class="font-serif text-[15px] leading-[1.95] text-inksoft mb-4">访谈对象覆盖村落长老、宗族头人、返乡务工者、乡村教师四类报道人（详见附录访谈提纲），通过代际与身份差异实现资料的三角互证。</p>
+
+            <!-- 访谈提纲引用块 -->
+            <blockquote class="border-l-2 border-cinnabar bg-cinnabarwash/40 pl-4 pr-3 py-3 my-5 rounded-r-md">
+              <div class="text-[11px] text-cinnabar mb-1.5 tracking-wide">半结构式访谈提纲 · 村落长老（节选）</div>
+              <ul class="font-serif text-[13.5px] leading-[1.9] text-inksoft space-y-1 list-none">
+                <li>· 开场：请老人讲讲「小时候村里过年祭祖是怎么办的」。</li>
+                <li>· 主问：这些年祠堂议事还管不管用？谁在牵头？</li>
+                <li>· 追问：年轻人外出后，族里的事谁接手？</li>
+                <li class="text-inkfaint">· 知情同意话术：说明研究用途、录音授权、可随时中止、匿名处理。</li>
+              </ul>
+            </blockquote>
+          </section>
+
+          <section class="mb-8">
+            <h2 class="font-serif text-[21px] font-600 mb-4">五、实时报价与预算</h2>
+            <div class="hairline rounded-lg overflow-hidden">
+              <table class="w-full text-[13px]">
+                <thead class="bg-cardsunk text-inksoft"><tr><th class="text-left px-4 py-2.5 font-medium">条目</th><th class="text-left px-4 py-2.5 font-medium">来源</th><th class="text-right px-4 py-2.5 font-medium">金额</th></tr></thead>
+                <tbody class="font-serif">
+                  <tr class="border-t border-hairsoft"><td class="px-4 py-2.5">往返交通（昆明⇄大理）</td><td class="px-4 py-2.5 text-[11.5px] text-inkfaint font-sans">search</td><td class="px-4 py-2.5 text-right num">¥1,240</td></tr>
+                  <tr class="border-t border-hairsoft"><td class="px-4 py-2.5">住宿（90 晚 × ¥150）</td><td class="px-4 py-2.5 text-[11.5px] text-inkfaint font-sans">cheapest</td><td class="px-4 py-2.5 text-right num">¥13,500</td></tr>
+                  <tr class="border-t border-hairsoft"><td class="px-4 py-2.5">市内交通与餐饮</td><td class="px-4 py-2.5 text-[11.5px] text-inkfaint font-sans">estimate</td><td class="px-4 py-2.5 text-right num">¥3,000</td></tr>
+                  <tr class="border-t border-hairline bg-cardsunk/60"><td class="px-4 py-3 font-600">合计</td><td class="px-4 py-3 text-[11.5px] text-bamboo font-sans">预算内 · 89%</td><td class="px-4 py-3 text-right num font-600 text-bamboo">¥17,740</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="text-[11.5px] text-inkfaint mt-2 leading-relaxed">全部报价来自飞猪 FlyAI 实时搜索的归一化数据，保留原始字符串 <code class="num text-indigo">price_raw</code> 可溯源；estimate 项为按预算比例的保守估算，答辩时可据实调整。</p>
+          </section>
+
+          <div class="rule my-8"></div>
+          <div class="text-center text-[11.5px] text-inkfaint">
+            <svg class="w-5 h-5 mr-2 align-middle inline-block"><use href="#lg-mio"/></svg>
+            田野罗盘 · 由结构化田野数据自动生成 · Markdown 为唯一事实源
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════ 视图 4：移动端方案 ══════════════════════════════════ -->
+<section class="view" id="view-mobile">
+  <div class="max-w-3xl mb-7">
+    <div class="text-[11px] tracking-[.22em] text-cinnabar mb-2">MOBILE · 移动端方案</div>
+    <h1 class="font-serif text-[28px] font-600 leading-snug">窄屏重构：单列时间线 + 顶部阶段条 + 底部抽屉</h1>
+    <p class="text-inksoft text-[14px] mt-3 leading-relaxed">
+      三栏工作台在手机上收敛为单列：桌面左栏「阶段导航」升为<b class="text-ink">顶部横向 stepper</b>（始终可见、可点按），桌面右栏「上下文面板」降为<b class="text-ink">底部抽屉 bottom sheet</b>（悬浮按钮或 stepper 唤起，用后即收）。核心原则不变——<b class="text-ink">中栏时间线为主，右栏状态按需调出，且不自动强切</b>：切换建议改为抽屉入口红点 + 顶部横幅，用户主动展开才切 Tab。
+    </p>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-7 justify-items-center mb-10">
+
+    <!-- ── M1 ProjectHub ── -->
+    <div>
+      <div class="phone"><div class="phone-screen">
+        <div class="notch"></div>
+        <div class="mstatus"><span class="num">9:41</span><span class="flex items-center gap-1 text-inksoft">●●● <span class="num">100%</span></span></div>
+        <!-- app bar -->
+        <div class="px-4 h-12 flex items-center gap-2 border-b border-hairline bg-paper/80">
+          <svg class="w-6 h-6"><use href="#lg-b"/></svg>
+          <span class="font-serif text-[14px] font-600">田野罗盘</span>
+          <button class="ml-auto w-8 h-8 grid place-items-center rounded-full bg-cinnabar text-[#F7EFE6]"><svg class="w-4 h-4"><use href="#ic-plus"/></svg></button>
+        </div>
+        <div class="flex-1 overflow-y-auto scroll px-4 py-3">
+          <div class="font-serif text-[19px] font-600 mb-0.5">你的田野调研</div>
+          <div class="text-[11.5px] text-inkfaint mb-3">从一个想法开始</div>
+          <!-- 学科横滑 chips -->
+          <div class="flex gap-1.5 overflow-x-auto scroll pb-2 -mx-1 px-1 mb-3">
+            <span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25 shrink-0">人类学</span>
+            <span class="chip bg-card hairline text-inksoft shrink-0">社会学</span>
+            <span class="chip bg-card hairline text-inksoft shrink-0">民族学</span>
+            <span class="chip bg-card hairline text-inksoft shrink-0">公共卫生</span>
+            <span class="chip bg-card hairline text-inksoft shrink-0">教育学</span>
+          </div>
+          <!-- 描述输入 -->
+          <div class="hairline rounded-lg bg-card p-2.5 mb-4 flex items-start gap-2">
+            <svg class="w-4 h-4 text-inkfaint mt-0.5 shrink-0"><use href="#ic-spark"/></svg>
+            <div class="text-[11.5px] text-inkfaint leading-relaxed flex-1">研究西南少数民族村落的宗族组织变迁，单人三个月，预算两万…</div>
+          </div>
+          <div class="text-[11px] text-inkfaint tracking-wide mb-2">进行中 · 4 个项目</div>
+          <div class="space-y-2.5">
+            <div class="hairline rounded-lg bg-card shadow-card p-3">
+              <div class="flex items-start justify-between gap-2 mb-1"><div class="font-serif text-[14px] font-600 leading-snug">白族村落宗族组织变迁</div><span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25 shrink-0">C</span></div>
+              <div class="text-[11px] text-inksoft mb-2">社会学 · 单人 · 三个月 · ¥20,000</div>
+              <div class="flex items-center gap-3 text-[10.5px] text-inkfaint"><span class="flex items-center gap-1"><svg class="w-3 h-3"><use href="#ic-pin"/></svg>2</span><span class="flex items-center gap-1"><svg class="w-3 h-3"><use href="#ic-users"/></svg>4</span><span class="ml-auto">2 小时前</span></div>
+              <div class="mt-2 flex gap-1"><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-cinnabar"></span><span class="h-1 flex-1 rounded-full bg-hairline"></span></div>
+            </div>
+            <div class="hairline rounded-lg bg-card shadow-card p-3">
+              <div class="flex items-start justify-between gap-2 mb-1"><div class="font-serif text-[14px] font-600 leading-snug">滇南白族扎染非遗</div><span class="chip bg-indigowash text-indigo border-indigo/20 shrink-0">B</span></div>
+              <div class="text-[11px] text-inksoft mb-2">民族学 · 双人 · 六周 · ¥15,000</div>
+              <div class="mt-0 flex gap-1"><span class="h-1 flex-1 rounded-full bg-bamboo"></span><span class="h-1 flex-1 rounded-full bg-indigo"></span><span class="h-1 flex-1 rounded-full bg-hairline"></span><span class="h-1 flex-1 rounded-full bg-hairline"></span></div>
+            </div>
+            <div class="hairline rounded-lg bg-card shadow-card p-3">
+              <div class="flex items-start justify-between gap-2 mb-1"><div class="font-serif text-[14px] font-600 leading-snug">滇西乡村教育民族志</div><span class="chip bg-bamboowash text-bamboo border-bamboo/25 shrink-0"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span></div>
+              <div class="text-[11px] text-inksoft">教育学 · 课题组 · 提案 final v2</div>
+            </div>
+          </div>
+        </div>
+        <!-- bottom tab bar -->
+        <div class="h-14 border-t border-hairline bg-card flex items-center justify-around text-inkfaint">
+          <span class="flex flex-col items-center gap-0.5 text-cinnabar"><svg class="w-5 h-5"><use href="#ic-compass"/></svg><span class="text-[9.5px]">项目</span></span>
+          <span class="flex flex-col items-center gap-0.5"><svg class="w-5 h-5"><use href="#ic-book"/></svg><span class="text-[9.5px]">知识库</span></span>
+          <span class="flex flex-col items-center gap-0.5"><svg class="w-5 h-5"><use href="#ic-users"/></svg><span class="text-[9.5px]">我的</span></span>
+        </div>
+      </div></div>
+      <div class="w-[300px] mt-3 text-[11.5px] text-inksoft leading-relaxed"><b class="text-ink">M1 · 项目集</b>：单列卡片流；学科 chips 横滑；新建收敛为右上角 + 号；底部 Tab 栏（项目/知识库/我的）为移动端新增导航提案。</div>
+    </div>
+
+    <!-- ── M2 Workspace 对话态 ── -->
+    <div>
+      <div class="phone"><div class="phone-screen">
+        <div class="notch"></div>
+        <div class="mstatus"><span class="num">9:41</span><span class="flex items-center gap-1 text-inksoft">●●● <span class="num">100%</span></span></div>
+        <!-- app bar -->
+        <div class="px-3 h-12 flex items-center gap-2 border-b border-hairline bg-paper/85">
+          <svg class="w-5 h-5 text-inksoft"><use href="#ic-caret" transform="rotate(180 12 12)"/></svg>
+          <div class="min-w-0 flex-1"><div class="font-serif text-[13px] font-600 truncate">白族村落宗族组织变迁</div><div class="text-[10px] text-inkfaint">阶段 C · 行程规划</div></div>
+          <button class="relative w-8 h-8 grid place-items-center rounded-full hairline bg-card text-inksoft"><svg class="w-4 h-4"><use href="#ic-wallet"/></svg><span class="absolute top-1 right-1 w-2 h-2 rounded-full bg-cinnabar"></span></button>
+        </div>
+        <!-- 顶部横向 stepper（替代左栏 rail） -->
+        <div class="px-4 py-2.5 border-b border-hairline bg-paperdeep flex items-center">
+          <div class="flex items-center flex-1">
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-bamboo text-paper shrink-0"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span>
+            <span class="flex-1 h-px bg-bamboo"></span>
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-bamboo text-paper shrink-0"><svg class="w-3 h-3"><use href="#ic-check"/></svg></span>
+            <span class="flex-1 h-px bg-cinnabar"></span>
+            <span class="w-6 h-6 grid place-items-center rounded-full bg-cinnabar text-paper shrink-0 num text-[11px] ring-4 ring-cinnabar/15">C</span>
+            <span class="flex-1 h-px bg-hairline"></span>
+            <span class="w-5 h-5 grid place-items-center rounded-full bg-hairline text-inksoft shrink-0"><svg class="w-3 h-3"><use href="#ic-lock"/></svg></span>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto scroll px-3.5 py-3 space-y-3">
+          <div class="flex justify-end"><div class="max-w-[85%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-3 py-2 text-[12px] leading-relaxed">从昆明出发，喜洲驻村三个月做宗族调查，排行程和预算，控制两万内，留缓冲应对雨季。</div></div>
+          <!-- 紧凑工具活动条 -->
+          <div class="hairline rounded-lg bg-card px-3 py-2 space-y-1.5">
+            <div class="flex items-center gap-1.5 text-[11px]"><span class="dot bg-bamboo"></span><span class="num text-inksoft">compose_itinerary</span><svg class="w-3 h-3 text-bamboo ml-auto"><use href="#ic-check"/></svg></div>
+            <div class="flex items-center gap-1.5 text-[11px] opacity-60"><span class="dot bg-ochre"></span><span class="num text-inksoft line-through">search_trains</span><span class="chip bg-ochrewash text-ochre border-ochre/25 ml-auto">降级</span></div>
+          </div>
+          <!-- 助手正文 -->
+          <div class="flex gap-2">
+            <svg class="w-5 h-5 shrink-0"><use href="#lg-mio"/></svg>
+            <div class="min-w-0 flex-1 font-serif text-[12.5px] leading-[1.8] text-ink space-y-1.5">
+              <p>已按三个月驻村排好行程，分三段并留 <span class="num text-cinnabar">9 天缓冲</span>：</p>
+              <p class="text-inksoft">适应期 9 天 · 深入期 45 天 · 补充期 24 天。预算合计 <span class="num text-indigo">¥17,740</span>，在两万内留 11% 余量。</p>
+            </div>
+          </div>
+          <!-- 折叠行程卡（默认收起省纵向空间） -->
+          <details class="hairline rounded-lg bg-card overflow-hidden">
+            <summary class="px-3 py-2.5 flex items-center gap-1.5 bg-cardsunk/60">
+              <svg class="w-3.5 h-3.5 text-cinnabar caret"><use href="#ic-caret"/></svg>
+              <span class="text-[11.5px] font-medium">行程时间线 · 90 天</span>
+              <span class="chip bg-bamboowash text-bamboo border-bamboo/25 ml-auto">预算内</span>
+            </summary>
+            <div class="p-3"><ol class="relative border-l border-hairline ml-1.5 space-y-2.5 text-[11.5px]">
+              <li class="pl-4 relative"><span class="absolute -left-[4px] top-1 w-2 h-2 rounded-full bg-cinnabar"></span><b>适应期</b> <span class="num text-inkfaint">D1–9</span><div class="text-inksoft">航班 ¥620 · 客栈 ¥150/晚</div></li>
+              <li class="pl-4 relative"><span class="absolute -left-[4px] top-1 w-2 h-2 rounded-full bg-indigo"></span><b>深入期</b> <span class="num text-inkfaint">D10–54</span><div class="text-inksoft">参与式观察 · 深访 4 类</div></li>
+              <li class="pl-4 relative"><span class="absolute -left-[4px] top-1 w-2 h-2 rounded-full bg-bamboo"></span><b>补充期</b> <span class="num text-inkfaint">D55–78</span></li>
+              <li class="pl-4 relative"><span class="absolute -left-[4px] top-1 w-2 h-2 rounded-full bg-ochre"></span><b class="text-ochre">缓冲日</b> <span class="num text-inkfaint">9 天机动</span></li>
+            </ol></div>
+          </details>
+        </div>
+        <!-- 固定底部 Composer -->
+        <div class="border-t border-hairline bg-card px-3 py-2.5">
+          <div class="hairline rounded-lg bg-paper/60 px-3 py-2 flex items-center gap-2">
+            <input class="flex-1 bg-transparent outline-none text-[12.5px] placeholder:text-inkfaint" placeholder="继续描述调研安排…" />
+            <button class="w-7 h-7 grid place-items-center rounded-md bg-cinnabar text-[#F7EFE6] shrink-0"><svg class="w-4 h-4"><use href="#ic-send"/></svg></button>
+          </div>
+        </div>
+      </div></div>
+      <div class="w-[300px] mt-3 text-[11.5px] text-inksoft leading-relaxed"><b class="text-ink">M2 · 工作台（对话态）</b>：阶段 stepper 恒显顶部；工具卡默认折叠省纵向；右上「上下文」按钮带红点提示有新数据（不自动弹）；Composer 固定底部避开键盘安全区。</div>
+    </div>
+
+    <!-- ── M3 Workspace 抽屉态 ── -->
+    <div>
+      <div class="phone"><div class="phone-screen">
+        <div class="notch"></div>
+        <div class="mstatus"><span class="num">9:41</span><span class="flex items-center gap-1 text-inksoft">●●● <span class="num">100%</span></span></div>
+        <div class="px-3 h-12 flex items-center gap-2 border-b border-hairline bg-paper/85">
+          <svg class="w-5 h-5 text-inksoft"><use href="#ic-caret" transform="rotate(180 12 12)"/></svg>
+          <div class="min-w-0 flex-1"><div class="font-serif text-[13px] font-600 truncate">白族村落宗族组织变迁</div><div class="text-[10px] text-inkfaint">阶段 C · 行程规划</div></div>
+        </div>
+        <!-- 背后对话（被遮罩压暗） -->
+        <div class="flex-1 overflow-hidden px-3.5 py-3 space-y-3 opacity-90">
+          <div class="flex justify-end"><div class="max-w-[85%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-3 py-2 text-[12px]">排行程和预算，控制两万内。</div></div>
+          <div class="flex gap-2"><svg class="w-5 h-5 shrink-0"><use href="#lg-mio"/></svg><div class="font-serif text-[12.5px] leading-[1.8] text-inksoft">已生成三段节奏行程，预算 ¥17,740…</div></div>
+        </div>
+        <div class="scrim"></div>
+        <!-- 底部抽屉（半开） -->
+        <div class="sheet" style="height:74%">
+          <div class="flex justify-center pt-2 pb-1"><span class="w-9 h-1 rounded-full bg-hairline"></span></div>
+          <div class="px-4 pb-2 flex items-center gap-2">
+            <span class="font-serif text-[14px] font-600">上下文 · 喜洲镇</span>
+            <span class="chip bg-bamboowash text-bamboo border-bamboo/25 ml-auto"><svg class="w-3 h-3"><use href="#ic-check"/></svg>已确认</span>
+          </div>
+          <!-- 切换建议横幅（在抽屉内，非自动切） -->
+          <div class="mx-4 mb-2 rounded-md bg-cinnabarwash/70 border border-cinnabar/15 px-3 py-1.5 flex items-center gap-2 text-[11px]"><svg class="w-3.5 h-3.5 text-cinnabar"><use href="#ic-spark"/></svg><span class="text-inksoft flex-1">行程已生成，可查看「预算」累计</span><span class="text-cinnabar font-medium">去查看</span></div>
+          <div class="px-4 pb-2 flex gap-1 overflow-x-auto scroll">
+            <button class="rp-tab text-[11px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft shrink-0">进度</button>
+            <button class="rp-tab text-[11px] px-2.5 py-1 rounded-md hairline bg-cinnabarwash text-cinnabar border-cinnabar/25 shrink-0" aria-selected="true">田野点</button>
+            <button class="rp-tab text-[11px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft shrink-0">访谈对象</button>
+            <button class="rp-tab text-[11px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft shrink-0">预算</button>
+            <button class="rp-tab text-[11px] px-2.5 py-1 rounded-md hairline bg-card text-inksoft shrink-0">知识库</button>
+          </div>
+          <div class="flex-1 overflow-y-auto scroll px-4 pb-4 space-y-2.5" style="max-height:calc(74% - 116px)">
+            <div class="hairline rounded-lg bg-card p-2.5">
+              <div class="text-[11px] text-inksoft mb-1.5 flex items-center gap-1.5"><svg class="w-4 h-4 text-indigo"><use href="#ic-plane"/></svg>交通可达</div>
+              <div class="flex items-center gap-2"><div class="flex-1 min-w-0"><div class="text-[11.5px] truncate">昆明⇄大理 MU5843</div><div class="text-[10px] text-inkfaint">直飞 55min · search</div></div><span class="num text-[12.5px] text-indigo">¥620</span></div>
+            </div>
+            <div class="hairline rounded-lg bg-card p-2.5">
+              <div class="text-[11px] text-inksoft mb-1.5 flex items-center justify-between"><span class="flex items-center gap-1.5"><svg class="w-4 h-4 text-cinnabar"><use href="#ic-bed"/></svg>长住住宿</span><span class="text-[10px] text-inkfaint">≤¥300 · 3 家</span></div>
+              <div class="flex gap-1.5 overflow-x-auto scroll">
+                <div class="shrink-0 w-[76px] hairline rounded-md overflow-hidden bg-card"><div class="h-10 bg-gradient-to-br from-[#E7DCC7] to-[#D8CBB2]"></div><div class="p-1.5"><div class="text-[10px] truncate">喜洲客栈</div><div class="num text-[11px] text-cinnabar">¥150</div></div></div>
+                <div class="shrink-0 w-[76px] hairline rounded-md overflow-hidden bg-card"><div class="h-10 bg-gradient-to-br from-[#E3DACB] to-[#D2C6B0]"></div><div class="p-1.5"><div class="text-[10px] truncate">稻田民居</div><div class="num text-[11px] text-cinnabar">¥180</div></div></div>
+                <div class="shrink-0 w-[76px] hairline rounded-md overflow-hidden bg-card"><div class="h-10 bg-gradient-to-br from-[#E7DFD0] to-[#D9CDB6]"></div><div class="p-1.5"><div class="text-[10px] truncate">古镇院落</div><div class="num text-[11px] text-cinnabar">¥260</div></div></div>
+              </div>
+            </div>
+            <div class="hairline rounded-lg bg-card p-2.5">
+              <div class="text-[11px] text-inksoft mb-1.5 flex items-center gap-1.5"><svg class="w-4 h-4 text-indigo"><use href="#ic-temple"/></svg>文化资源</div>
+              <div class="flex flex-wrap gap-1"><span class="chip bg-indigowash text-indigo border-indigo/15">严家大院</span><span class="chip bg-indigowash text-indigo border-indigo/15">董氏宗祠</span><span class="chip bg-indigowash text-indigo border-indigo/15">本主庙</span><span class="chip bg-indigowash text-indigo border-indigo/15">三道茶</span></div>
+            </div>
+            <div class="rounded-lg bg-cardsunk hairline p-2.5 grid grid-cols-3 text-center">
+              <div><div class="num text-[13px] text-indigo font-600">¥350</div><div class="text-[9.5px] text-inkfaint">交通最低</div></div>
+              <div class="border-x border-hairline"><div class="num text-[13px] text-cinnabar font-600">¥150</div><div class="text-[9.5px] text-inkfaint">住宿/晚</div></div>
+              <div><div class="num text-[13px] text-ink font-600">5</div><div class="text-[9.5px] text-inkfaint">文化点位</div></div>
+            </div>
+          </div>
+        </div>
+      </div></div>
+      <div class="w-[300px] mt-3 text-[11.5px] text-inksoft leading-relaxed"><b class="text-ink">M3 · 工作台（上下文抽屉）</b>：右栏面板→底部 sheet，遮罩压暗对话；Tab 横滑；切换建议做成抽屉内横幅，用户点「去查看」才切，严守不自动强切。下拉 grabber 可收。</div>
+    </div>
+
+    <!-- ── M4 ProposalView ── -->
+    <div>
+      <div class="phone"><div class="phone-screen">
+        <div class="notch"></div>
+        <div class="mstatus"><span class="num">9:41</span><span class="flex items-center gap-1 text-inksoft">●●● <span class="num">100%</span></span></div>
+        <div class="px-3 h-12 flex items-center gap-2 border-b border-hairline bg-paper/85">
+          <svg class="w-5 h-5 text-inksoft"><use href="#ic-caret" transform="rotate(180 12 12)"/></svg>
+          <div class="min-w-0 flex-1"><div class="font-serif text-[13px] font-600 truncate">研究方案</div></div>
+          <span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25 shrink-0">final</span>
+          <button class="w-8 h-8 grid place-items-center rounded-full hairline bg-card text-inksoft shrink-0"><svg class="w-4 h-4"><use href="#ic-book"/></svg></button>
+        </div>
+        <!-- 章节横滑导航（替代左侧八章栏） -->
+        <div class="px-3 py-2 border-b border-hairline bg-paperdeep flex gap-1.5 overflow-x-auto scroll">
+          <span class="chip bg-card hairline text-inksoft shrink-0 text-[10.5px]">一 选题</span>
+          <span class="chip bg-card hairline text-inksoft shrink-0 text-[10.5px]">二 田野点</span>
+          <span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25 shrink-0 text-[10.5px]">三 方法论</span>
+          <span class="chip bg-card hairline text-inksoft shrink-0 text-[10.5px]">四 行程</span>
+          <span class="chip bg-card hairline text-inksoft shrink-0 text-[10.5px]">五 预算</span>
+          <span class="chip bg-card hairline text-inksoft shrink-0 text-[10.5px]">六 伦理</span>
+        </div>
+        <div class="flex-1 overflow-y-auto scroll px-5 py-4">
+          <div class="text-center mb-4">
+            <div class="text-[9.5px] tracking-[.2em] text-cinnabar mb-1.5">国家社科基金青年项目</div>
+            <div class="font-serif text-[18px] font-700 leading-snug">白族村落宗族组织变迁研究</div>
+            <div class="text-[10.5px] text-inkfaint mt-1.5">喜洲镇 · 单人三个月 · ¥20,000</div>
+          </div>
+          <div class="rule mb-4"></div>
+          <div class="font-serif text-[15px] font-600 mb-2">三、研究设计与方法论</div>
+          <p class="font-serif text-[12.5px] leading-[1.9] text-inksoft mb-3">采用民族志参与式观察与半结构式深度访谈相结合的混合方法，以喜洲董氏宗族为核心个案，田野周期 90 天，按「适应—深入—补充」三段推进。</p>
+          <blockquote class="border-l-2 border-cinnabar bg-cinnabarwash/40 pl-3 pr-2 py-2 my-3 rounded-r-md">
+            <div class="text-[10px] text-cinnabar mb-1">访谈提纲 · 村落长老（节选）</div>
+            <ul class="font-serif text-[11.5px] leading-[1.8] text-inksoft space-y-0.5 list-none">
+              <li>· 开场：讲讲小时候村里祭祖怎么办。</li>
+              <li>· 主问：祠堂议事还管不管用？</li>
+              <li class="text-inkfaint">· 知情同意：录音授权、可中止、匿名。</li>
+            </ul>
+          </blockquote>
+          <div class="font-serif text-[15px] font-600 mb-2 mt-4">五、实时报价与预算</div>
+          <div class="hairline rounded-lg overflow-hidden text-[11.5px]">
+            <div class="flex justify-between px-3 py-1.5 bg-cardsunk text-inksoft"><span>条目</span><span>金额</span></div>
+            <div class="flex justify-between px-3 py-1.5 border-t border-hairsoft font-serif"><span>往返交通</span><span class="num">¥1,240</span></div>
+            <div class="flex justify-between px-3 py-1.5 border-t border-hairsoft font-serif"><span>住宿 90 晚</span><span class="num">¥13,500</span></div>
+            <div class="flex justify-between px-3 py-1.5 border-t border-hairsoft font-serif"><span>市内餐饮</span><span class="num">¥3,000</span></div>
+            <div class="flex justify-between px-3 py-2 border-t border-hairline bg-cardsunk/60 font-600 font-serif"><span>合计</span><span class="num text-bamboo">¥17,740</span></div>
+          </div>
+        </div>
+        <!-- 固定底部：下载 -->
+        <div class="border-t border-hairline bg-card px-3 py-2.5 flex items-center gap-2">
+          <button class="flex-1 h-9 rounded-md hairline bg-card text-[12px] text-inksoft flex items-center justify-center gap-1.5"><svg class="w-4 h-4"><use href="#ic-book"/></svg>访谈提纲</button>
+          <button class="flex-1 h-9 rounded-md bg-cinnabar text-[#F7EFE6] text-[12px] font-medium flex items-center justify-center gap-1.5"><svg class="w-4 h-4"><use href="#ic-download"/></svg>下载 .md</button>
+        </div>
+      </div></div>
+      <div class="w-[300px] mt-3 text-[11.5px] text-inksoft leading-relaxed"><b class="text-ink">M4 · 提案阅读</b>：左侧八章栏→顶部横滑章节 chips（当前章朱砂高亮）；版本收进右上角 chip；正文宋体纸面阅读；底部固定「下载 .md / 访谈提纲 kind 切换」操作栏。</div>
+    </div>
+  </div>
+
+  <!-- 响应式策略说明 -->
+  <div class="hairline rounded-lg bg-card p-5 max-w-4xl">
+    <div class="font-serif text-[16px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>桌面 → 移动端 映射与断点</div>
+    <div class="grid md:grid-cols-2 gap-x-8 gap-y-2 text-[12.5px]">
+      <div class="flex gap-2"><span class="text-cinnabar">·</span><span><b>左栏 PhaseRail</b> → 顶部横向 stepper（恒显、可点按跳章）</span></div>
+      <div class="flex gap-2"><span class="text-cinnabar">·</span><span><b>右栏 ContextPanel</b> → 底部抽屉 bottom sheet（悬浮按钮/stepper 唤起）</span></div>
+      <div class="flex gap-2"><span class="text-cinnabar">·</span><span><b>切换建议 toast</b> → 抽屉入口红点 + 抽屉内横幅（仍不自动切 Tab）</span></div>
+      <div class="flex gap-2"><span class="text-cinnabar">·</span><span><b>工具结果卡</b> → 默认折叠，点开看详情，省纵向滚动</span></div>
+      <div class="flex gap-2"><span class="text-cinnabar">·</span><span><b>八章导航</b> → 顶部横滑 chips + 当前章高亮</span></div>
+      <div class="flex gap-2"><span class="text-cinnabar">·</span><span><b>Composer / 下载栏</b> → 固定底部 + 键盘安全区 inset</span></div>
+    </div>
+    <div class="rule my-4"></div>
+    <div class="text-[12px] text-inksoft leading-relaxed">
+      <b class="text-ink">断点策略：</b>Tailwind <code class="num text-indigo">sm 640 / md 768 / lg 1024</code>。<code class="num text-indigo">&lt;lg</code> 时 Workspace 三栏折叠为「单列时间线 + 抽屉」；<code class="num text-indigo">≥lg</code> 恢复三栏。组件复用同一批卡片渲染器（<code class="num">toolCards.ts</code>），仅容器布局随断点切换，<b>不重写业务组件</b>——移动端与桌面端同源同数据，只是投影容器不同。
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+  // 主视图切换
+  const tabs = document.querySelectorAll('.tabbtn');
+  const views = document.querySelectorAll('.view');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(x => x.setAttribute('aria-selected', x === t));
+    views.forEach(v => v.classList.toggle('active', v.id === 'view-' + t.dataset.view));
+    window.scrollTo({top:0, behavior:'smooth'});
+  }));
+  // 右栏面板切换（手动，不自动强切）
+  const rpTabs = document.querySelectorAll('.rp-tab');
+  rpTabs.forEach(t => t.addEventListener('click', () => {
+    rpTabs.forEach(x => x.setAttribute('aria-selected', x === t));
+    document.querySelectorAll('[data-rp-panel]').forEach(p =>
+      p.classList.toggle('hidden', p.dataset.rpPanel !== t.dataset.rp));
+  }));
+</script>
+</body>
+</html>

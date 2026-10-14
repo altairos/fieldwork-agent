@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="田野罗盘">
+  <circle cx="32" cy="32" r="26" fill="none" stroke="#2A2724" stroke-width="3"/>
+  <rect x="14" y="14" width="36" height="36" fill="none" stroke="#2A2724" stroke-width="2.4"/>
+  <rect x="32" y="14" width="18" height="18" fill="#A8412E"/>
+  <path d="M32 14V50M14 32H50" stroke="#2A2724" stroke-width="2.4"/>
+  <circle cx="32" cy="32" r="2.7" fill="#FDFCF9" stroke="#2A2724" stroke-width="1.6"/>
+</svg>
