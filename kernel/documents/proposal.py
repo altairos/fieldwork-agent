@@ -15,12 +15,14 @@ from typing import Any
 
 from fieldwork_agent.kernel.guidance import informants, phases
 from fieldwork_agent.kernel.models import (
+    Envelope,
     ProposalDoc,
     ResearchContext,
+    ToolError,
     compute_inputs_hash,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 # 八章标题（与 phases.phase_prompt("proposal_generation") 内的模板一致；
 # 迁移源：core/orchestrator.py `generate_full_proposal` 使用的 SYSTEM_PROMPTS[PROPOSAL]）
@@ -389,8 +391,14 @@ def compose_interview_guide(topic: str, informant_types: list[str], *,
 
 # ---------------------------------------------------------------- 能力注册
 #
-# ``llm`` 是注入参数、不进宿主 schema；``ctx`` 走 dict（宿主 JSON 直传），
-# registry 侧的分派函数负责 model_validate 为 ResearchContext。
+# 两个 handler 是 **registry 侧的分派入口**（``CapabilityMeta.fn``），与搜索原语/聚合
+# 能力同构：接 JSON 友好的入参、``llm`` 为宿主注入的 keyword-only 参数（不进 schema）、
+# 一律返回 ``Envelope``（spec §2.4 统一包络）。为此它们负责把宿主 JSON 直传的 ``ctx``
+# ``model_validate`` 为 ``ResearchContext``（否则底层按对象访问 ``ctx.extras`` 会炸），
+# 并把 ``build_context_block`` 的缺渠道 ValueError 折成 ok=False 包络。
+#
+# 例外：宿主 ``FieldAgent.generate_proposal`` 是"命令式直调"而非工具分派，继续直调底层
+# ``compose_proposal``，其 ValueError→{ok:False} 语义与既有测试逐字不动。
 
 
 class ComposeProposalArgs(BaseModel):
@@ -413,15 +421,33 @@ class ComposeInterviewGuideArgs(BaseModel):
     informant_types: list[str] = Field(default_factory=list)
 
 
-def _proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
-                      informants: list, knowledge: list, section: str | None = None,
-                      mode: str = "global", prior_markdown: str = "") -> ProposalDoc:
-    """registry 分派入口：宿主以 JSON 传 ``ctx`` dict，内核转 ResearchContext 后调用实现。"""
-    return compose_proposal(
-        ResearchContext.model_validate(ctx or {}), sites or [], itinerary,
-        informants or [], knowledge or [],
-        section=section, mode=mode, prior_markdown=prior_markdown,
-    )
+def proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
+                     informants: list, knowledge: list, *, llm: Any = None,
+                     section: str | None = None, mode: str = "global",
+                     prior_markdown: str = "") -> Envelope:
+    """registry 分派入口：宿主以 JSON 传 ``ctx`` dict，内核转 ResearchContext 后统一包络。"""
+    try:
+        doc = compose_proposal(
+            ResearchContext.model_validate(ctx or {}), sites or [], itinerary,
+            informants or [], knowledge or [],
+            llm=llm, section=section, mode=mode, prior_markdown=prior_markdown,
+        )
+    except ValidationError as exc:  # ctx 形状不合 ResearchContext（先于 ValueError 捕获）
+        return Envelope(ok=False, error=ToolError(
+            code="invalid_arguments", message=f"ctx 校验失败：{exc}",
+            hint="ctx 需为 ResearchContext 槽位形状的 dict"))
+    except ValueError as exc:
+        # build_context_block 的四个硬渠道缺失（消息形如 "缺少渠道: 行程"）
+        return Envelope(ok=False, error=ToolError(
+            code="missing_channel", message=str(exc),
+            hint="先补齐研究者信息/田野点/行程/访谈对象四渠道，再生成方案"))
+    return Envelope(ok=True, data=doc)
+
+
+def guide_handler(topic: str, informant_types: list, *, llm: Any = None) -> Envelope:
+    """registry 分派入口：逐类提纲折进 ``Envelope.data``（``dict[str, str]``）。"""
+    return Envelope(ok=True,
+                    data=compose_interview_guide(topic, informant_types or [], llm=llm))
 
 
 register(CapabilityMeta(
@@ -430,7 +456,7 @@ register(CapabilityMeta(
                 "documents 是 kernel 内唯一 LLM 消费模块，无 key 时模板降级、chat error 分支同样降级；"
                 "mode 枚举 global|kaiti|grant，requested/actual 分开记录，不支持的体例在头部前置声明限制；"
                 "参考文献仅限所给条目不得虚构；section 非空则仅重写该章。",
-    fn=_proposal_handler,
+    fn=proposal_handler,
     args_model=ComposeProposalArgs,
 ))
 
@@ -439,6 +465,6 @@ register(CapabilityMeta(
     description="为每类报道人（INFORMANT_LIBRARY 键）生成半结构式访谈提纲；"
                 "user prompt 固定包含 INTERVIEW_GUIDE_METHODOLOGY 与知情同意话术字样，"
                 "无 llm 时走模板降级、直嵌条目字段与方法论全文。",
-    fn=compose_interview_guide,
+    fn=guide_handler,
     args_model=ComposeInterviewGuideArgs,
 ))
