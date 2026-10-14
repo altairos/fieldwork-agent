@@ -1,8 +1,8 @@
 """documents/informants — 访谈对象候选的动态生成（suggest_informants）。
 
-修订计划 Task 7+ 的内核化能力：候选生成**不限于示范库 11 类**——
-- 有 llm：以 ``guidance.informants.INFORMANT_LIBRARY``（含 examples 提问示例）的 JSON 体
-  作 few-shot 质量锚，user prompt 要求"输出 JSON 数组"，返回逐条
+修订计划 Task 7+ 的内核化能力：候选生成**不限于示范库类型**——
+- 有 llm：以 ``guidance.informants.INFORMANT_EXAMPLES``（精选 5-6 条含 examples 的示范
+  词条）的 JSON 体作 few-shot 质量锚，user prompt 要求"输出 JSON 数组"，返回逐条
   ``InformantCandidate.model_validate`` 校验；非法条目丢弃、全部非法 →
   ``Envelope(ok=False, error.code="generation_invalid")``；
 - 无 llm：``match_examples`` 关键词粗匹配降级，degraded 标注"参考起点，非完整覆盖"。
@@ -45,9 +45,9 @@ def _user_prompt(research_topic: str, discipline: str, site_profile: dict | None
     if site_profile:
         parts.append("田野点画像（供参考）：" + json.dumps(site_profile, ensure_ascii=False))
     parts.append(
-        "示范词条（type/approach/cautions/question_domains/ethics/examples 的写法与"
-        "颗粒度质量锚，仅示范写法、不是枚举白名单）：\n"
-        + json.dumps(informant_lib.INFORMANT_LIBRARY, ensure_ascii=False)
+        "示范词条（type/approach/cautions/question_domains/ethics/access_channel/"
+        "preparation/examples 的写法与颗粒度质量锚，仅示范写法、不是枚举白名单）：\n"
+        + json.dumps(informant_lib.INFORMANT_EXAMPLES, ensure_ascii=False)
     )
     parts.append(
         "请为该研究主题设计 4-6 类互不重复、覆盖不同立场与权力位置的访谈对象候选，"
@@ -105,10 +105,10 @@ def suggest_informants(research_topic: str, discipline: str = "",
 
 register(CapabilityMeta(
     name="suggest_informants",
-    description="为研究主题动态生成 1-6 类访谈对象候选（InformantCandidate）：有 llm 时以示范库"
-                "（含提问示例 examples）JSON 体做 few-shot 质量锚并要求输出 JSON 数组，逐条 schema "
-                "校验、非法条目丢弃、全非法报 generation_invalid；无 llm 时按关键词匹配示范库降级，"
-                "degraded 标注“参考起点，非完整覆盖”。示范库不是枚举白名单。",
+    description="为研究主题动态生成 1-6 类访谈对象候选（InformantCandidate）：有 llm 时以精选示范库"
+                "（INFORMANT_EXAMPLES，含提问示例 examples）JSON 体做 few-shot 质量锚并要求输出 JSON "
+                "数组，逐条 schema 校验、非法条目丢弃、全非法报 generation_invalid；无 llm 时按关键词"
+                "匹配示范库降级，degraded 标注“参考起点，非完整覆盖”。示范库不是枚举白名单。",
     fn=suggest_informants,
     args_model=SuggestInformantsArgs,
 ))

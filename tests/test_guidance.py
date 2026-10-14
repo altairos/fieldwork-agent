@@ -209,6 +209,9 @@ def test_informant_library_every_entry_complete():
         assert all(isinstance(d, str) and d for d in entry["question_domains"])
         assert entry["ethics"], key
         assert entry["cautions"], key
+        # get_informant 返回含 access_channel/preparation 的完整档案（田野保障方案数据源）
+        assert entry["access_channel"], key
+        assert entry["preparation"], key
     assert informants.get_informant("长老") is not None
     assert informants.get_informant("不存在的类型") is None
     assert informants.get_informant("") is None
@@ -221,7 +224,7 @@ def test_interview_guide_methodology_sections():
         assert token in text
 
 
-# ---------------------------------------------------------------- 动态生成支撑（Task 4+ 补漏）
+# ---------------------------------------------------------------- 精选示范词条与主题匹配
 
 
 def test_informant_library_entries_have_examples():
@@ -235,12 +238,25 @@ def test_informant_library_entries_have_examples():
     assert one is not None and one["examples"]  # get_informant 兼容：深拷贝后仍含 examples
 
 
-def test_informant_examples_constant():
-    """INFORMANT_EXAMPLES：类型名→提问示例列表（由 LIBRARY 派生的等价访问）。"""
-    assert len(informants.INFORMANT_EXAMPLES) >= 5
+def test_informant_examples_shape():
+    """INFORMANT_EXAMPLES：精选 5-6 条示范词条（brief task-4 逐字形状）。"""
+    assert len(informants.INFORMANT_EXAMPLES) >= 5          # 示范库是质量锚非枚举白名单
+    one = informants.get_informant("长老") or next(iter(informants.INFORMANT_EXAMPLES.values()))
+    assert one["approach"] and one["question_domains"] and one["ethics"]
+    assert "access_channel" in one and "preparation" in one  # 进入田野途径与行前保障(田野保障方案数据源)
+
+
+def test_informant_examples_are_curated_candidate_archives():
+    """精选集是 LIBRARY 的类型覆盖子集，每条值本身即 InformantCandidate 可 validate 的档案 dict。"""
+    assert 5 <= len(informants.INFORMANT_EXAMPLES) <= 6
     assert set(informants.INFORMANT_EXAMPLES) <= set(informants.INFORMANT_LIBRARY)
-    assert all(isinstance(v, list) and v for v in informants.INFORMANT_EXAMPLES.values())
-    assert informants.INFORMANT_EXAMPLES["长老"] == informants.INFORMANT_LIBRARY["长老"]["examples"]
+    for key, archive in informants.INFORMANT_EXAMPLES.items():
+        assert archive["type"] == key
+        assert archive["access_channel"] and archive["preparation"]  # 逐类实质文案，非统一兜底句
+        assert archive["access_channel"] != archive["preparation"]
+        assert archive["examples"]
+        c = InformantCandidate.model_validate(archive)
+        assert c.type == key and c.question_domains and c.access_channel
 
 
 def test_match_examples_returns_candidate_validatable_dicts():
@@ -249,9 +265,16 @@ def test_match_examples_returns_candidate_validatable_dicts():
     for h in hits:
         c = InformantCandidate.model_validate(h)  # 形状 = InformantCandidate 字段可 validate
         assert c.type and c.approach and c.question_domains and c.ethics
-        assert c.access_channel and c.preparation  # 转 Candidate 时补合理默认（LIBRARY 无此二字段）
+        # access_channel/preparation 为精选词条自带的逐类实质文案（不再是统一兜底句）
+        assert c.access_channel and c.preparation
 
 
 def test_match_examples_empty_topic_returns_all():
-    hits = informants.match_examples("")
-    assert [h["type"] for h in hits] == list(informants.INFORMANT_LIBRARY)
+    """空主题全返——恢复 brief task-4 逐字等值语义。"""
+    assert informants.match_examples("") == list(informants.INFORMANT_EXAMPLES.values())
+
+
+def test_match_examples_garbage_topic_falls_back_to_all():
+    """全部落空的主题 → 兜底返回全部示范词条（降级路径宁给参考起点也不给空结果）。"""
+    # "饕餮貔貅" 的二字组在精选集 approach/question_domains/examples 中必然零命中
+    assert informants.match_examples("饕餮貔貅") == list(informants.INFORMANT_EXAMPLES.values())

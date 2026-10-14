@@ -5,10 +5,13 @@
 
 约定：
 - ``INFORMANT_LIBRARY`` 的键即 ``InformantRecord.type`` 可登记的类型名；
-- 每条固定六个内容字段：``name``（展示名）、``approach``（接近策略）、
+- 每条固定八个内容字段：``name``（展示名）、``approach``（接近策略）、
   ``cautions``（注意事项）、``question_domains``（建议提问域）、``ethics``（伦理提示）、
+  ``access_channel``（进入田野途径）、``preparation``（行前保障）、
   ``examples``（2-3 条提问示例，末条为“追问：”句式）；
-- 本库定位是 ``InformantCandidate`` 的写法示范（few-shot 质量锚）与无 key 降级兜底，
+- ``INFORMANT_EXAMPLES`` 是从库中精选的 5-6 条**示范词条**（各含 type + 六个内容字段
+  approach/cautions/question_domains/ethics/access_channel/preparation，并附 examples），
+  定位是 ``InformantCandidate`` 的写法示范（few-shot 质量锚）与无 key 降级兜底，
   **非枚举白名单**——候选的动态生成见 ``kernel/documents/informants.suggest_informants``；
 - 纯数据，无 I/O；``get_informant`` 返回深拷贝，宿主改动不会污染库本身。
 """
@@ -39,6 +42,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "录音与摘录前逐次确认；对在世者的负面评价默认匿名化；"
             "回访时说明材料将如何使用、保存多久。"
         ),
+        "access_channel": (
+            "经村两委或本地乡贤引荐入户，初次由引荐人在场作保；"
+            "可请其推荐族内其他长者，形成多源互证的访谈链条。"
+        ),
+        "preparation": (
+            "行前备好录音设备与知情同意话术，预约 40-60 分钟短访谈并安排多次回访；"
+            "带上族谱、老照片、契约复印件等实物作话头，先查清本村大姓与房支结构。"
+        ),
         "examples": [
             "咱们村最早是哪几家迁来的？这个地名是从哪儿来的？",
             "您手上的族谱、老照片或契约，能不能指着给我讲讲上头的人和事？",
@@ -65,6 +76,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
         "ethics": (
             "族产与利益分配信息可能直接改变受访者处境，严格匿名并约定回看权限；"
             "涉财务记录只在获得明确同意后摘录。"
+        ),
+        "access_channel": (
+            "由本族熟人或祠堂理事引荐，最好在祠堂、祭祖筹备等其主持的场合当面结识；"
+            "避免绕过头人直接单访普通族人后再回头对质。"
+        ),
+        "preparation": (
+            "行前摸清该族房支与派系结构以防踩雷；就族产账目预先约定“只摘不抄、"
+            "不回传”，并与受访者签署材料回看与引用权限的口头或书面协议。"
         ),
         "examples": [
             "今年祭祖的日子是怎么定的？钱怎么收、各家怎么分派？",
@@ -93,6 +112,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "信仰体验属私人领域，引用前须二次确认；不得以“学术研究”为名索取"
             "仪式秘传内容或信众名册。"
         ),
+        "access_channel": (
+            "经寺观管委会、宗教事务所或居士熟人引荐，先以访客或信众身份参与一次活动、"
+            "建立信任后再提出正式访谈。"
+        ),
+        "preparation": (
+            "行前学习该教派的称谓、合十/施礼等礼仪与禁忌，着装得体；"
+            "对秘传内容、法事收入当场约定不记录不外传，涉及信众名册一律不索取。"
+        ),
         "examples": [
             "师父在这儿几年了？平常一个月有几场法事，都是哪些人家来请？",
             "信众主要从哪些村子来？他们最看重的是哪一类仪式？",
@@ -119,6 +146,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
         "ethics": (
             "区分公务信息与个人意见并分别标注；引用可能构成职务评价的内容时"
             "以职务代称或化名处理，避免对其岗位造成影响。"
+        ),
+        "access_channel": (
+            "凭高校/研究机构介绍信或导师的当地政务关系对接村委会，"
+            "正式预约办公时间、在其办公室访谈，以示研究的正式与无害。"
+        ),
+        "preparation": (
+            "行前准备书面访谈提纲与材料索取清单（村志、统计台账、项目清单），"
+            "预留听其讲述工作难处的时间；对可能构成职务评价的内容预设匿名与职务代称处理。"
         ),
         "examples": [
             "全村现在常住多少户？人口结构和产业大致是什么样？",
@@ -147,6 +182,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "涉及具体户信息与内部数据时脱敏；避免使其因一次访谈承担泄密或"
             "被追责的风险，敏感段落可当场商定不记录。"
         ),
+        "access_channel": (
+            "经其派出单位或县委组织部、乡村振兴局对接联系，宜借其下乡、村务间隙"
+            "在食堂、村道等非正式场合攀谈，勿在其陪同下访谈村民。"
+        ),
+        "preparation": (
+            "行前避免安排其在场陪同的敏感对象访谈；就帮扶数据与到户信息预先约定脱敏、"
+            "不点名，敏感段落当场商定不记录以免其承担追责风险。"
+        ),
         "examples": [
             "您进村头一个月看到的，和来之前听说的，差在哪儿？",
             "能不能带我过一遍您平常的一天：都走了哪几户、见了谁、办了什么事？",
@@ -173,6 +216,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
         "ethics": (
             "涉及未成年人的叙述一律去标识且不进入公开文本；"
             "校园观察避开可识别面孔，影像须获授权。"
+        ),
+        "access_channel": (
+            "经中心校或校长同意后入校访谈，也可由学生家长、亲属中的教师引荐到家访；"
+            "访谈须在学校安排与家长许可的框架内进行。"
+        ),
+        "preparation": (
+            "行前准备未成年人材料的去标识与不公开方案，绝不索要个案姓名；"
+            "就编制、待遇、家校矛盾等敏感点按“先问制度后问个人”的顺序做提问预案。"
         ),
         "examples": [
             "班里留守儿童大概几个？父母多久回来一次，平时怎么联系？",
@@ -201,6 +252,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "性别议题材料可能被社区内部解读，须单独约定存储与引用方式，"
             "必要时只做匿名汇总不出个体引语；涉及暴力经历时先评估安全风险再决定是否记录。"
         ),
+        "access_channel": (
+            "由女性研究者、妇联或邻里姐妹引荐，安排在赶集、洗衣、备节庆食物等"
+            "女性聚集的共同劳作场合边做边聊，尽量确保无家中男性在场。"
+        ),
+        "preparation": (
+            "行前单独预约女性可自由开口的时段与场合；备情绪降速与安全评估预案，"
+            "对性别议题材料预先约定单独存储、必要时只做匿名汇总不出个体引语。"
+        ),
         "examples": [
             "家里一年的开销大致怎么安排？哪几笔是您自己定的？",
             "姐妹之间的互助会、储蓄组这类组织您参加过吗？当初怎么入的会？",
@@ -227,6 +286,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
         "ethics": (
             "涉及劳资纠纷、欠薪、工伤等内容时先告知可寻求的正规渠道，"
             "再按其意愿记录；不代其作维权承诺。"
+        ),
+        "access_channel": (
+            "经用工方、工友微信群或村中已返乡熟人介绍，在厂区、工地或家中访谈；"
+            "节假日返乡团聚期是集中触达外出的务工者的窗口。"
+        ),
+        "preparation": (
+            "行前准备“外出年份—目的地—工种—返乡原因”的时间线提纲；"
+            "就劳资纠纷、欠薪、工伤内容预先备好正规维权渠道清单，先告知再按意愿记录、不代作承诺。"
         ),
         "examples": [
             "您哪年出去的？在哪个城市、做的什么工种？后来怎么决定回来的？",
@@ -255,6 +322,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "涉税务、证照、无证经营等话题只作一般性描述，不形成可识别个案；"
             "拍摄摊位与价目须征得经营者同意。"
         ),
+        "access_channel": (
+            "以顾客身份在开市前、收摊后的闲时逐摊结识，借固定集期反复跟访滚熟关系；"
+            "可经市场管理方或商会介绍外来经营者。"
+        ),
+        "preparation": (
+            "行前备好集期表与“巡摊式”短访谈节奏，避开其忙时；拍摄摊位、价目前征得经营者同意，"
+            "涉税、证照、无证经营话题只做一般性描述、不落到可识别个案。"
+        ),
         "examples": [
             "您摊上的货从哪儿进的？一个月赶几个集，哪个集最旺？",
             "熟客和过路客各占多少？价钱一般是怎么谈的？",
@@ -282,6 +357,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
             "未公开的配方、程式、唱本属知识财产，须书面授权后方可记录引用；"
             "署名方式、影像用途与收益约定应在访谈前书面确认。"
         ),
+        "access_channel": (
+            "经文旅部门、非遗协会或师徒关系引荐，先安排观看一场展演或技艺演示、"
+            "在其示范后再进入深谈。"
+        ),
+        "preparation": (
+            "行前准备技艺演示的观察提纲；配方、程式、唱本等知识财产须取得书面授权才记录引用，"
+            "署名方式、影像用途与收益约定应在访谈前书面确认，绝不为取材承诺推广或帮忙申报。"
+        ),
         "examples": [
             "能不能边做边讲一遍这道工序？哪一步最费功夫、最容易做错？",
             "您当年是怎么拜的师？现在有没有想传的徒弟，卡在哪儿？",
@@ -308,6 +391,14 @@ INFORMANT_LIBRARY: dict[str, dict] = {
         "ethics": (
             "不得索取可识别的患者信息；引用其判断时区分职业经验与个人观点，"
             "涉及具体诊疗争议时不记录可归因细节。"
+        ),
+        "access_channel": (
+            "经乡镇卫生院或村卫生室安排、由其熟人引荐，在坐诊、出诊间隙访谈；"
+            "可请其带走过一遍出诊路线以自然带出话题。"
+        ),
+        "preparation": (
+            "行前明确“只问总体模式与比例、不问个案”以避开医疗保密义务；"
+            "对药品、收入、医保报销话题避免当场核算，涉及可识别患者信息一律不索取、不记录可归因细节。"
         ),
         "examples": [
             "您一天出诊要走哪几个村子？这一年哪类人来得最多？",
@@ -369,30 +460,11 @@ INTERVIEW_GUIDE_METHODOLOGY = """\
 - 回访时先反馈上一轮整理结果，请对方纠正；把纠正本身当作数据。
 """
 
-# ---------------------------------------------------------------- 提问示例访问与主题匹配
+# ---------------------------------------------------------------- 精选示范词条与主题匹配
 
-
-#: 类型名 → 提问示例列表（由 ``INFORMANT_LIBRARY`` 派生的等价访问；
-#: 供 ``documents.informants.suggest_informants`` 做 few-shot 质量锚与无 key 降级兜底）。
-INFORMANT_EXAMPLES: dict[str, list[str]] = {
-    key: entry["examples"] for key, entry in INFORMANT_LIBRARY.items()
-}
-
-# 非空主题时的返回上限（``suggest_informants`` 的 1-6 类契约由此保底）
-MAX_MATCHES = 6
-
-# 转 InformantCandidate 时补齐的两字段通用默认（LIBRARY 条目未收录逐类渠道/行前保障）
-_DEFAULT_ACCESS_CHANNEL = (
-    "通用兜底：本类未收录专属渠道，建议经当地学术合作方、村干部或熟人引荐接触，"
-    "并在进入田野前与引荐人约定引介方式"
-)
-_DEFAULT_PREPARATION = (
-    "通用兜底：行前确认住宿与交通、备齐知情同意话术与记录设备，"
-    "并预案敏感话题的停录与回访安排"
-)
-
-# 二字组打分前剔除的标点/空白（中文无词边界，退化到字符二字组重叠做粗匹配）
-_PUNCT_RE = re.compile(r"[\s/、，。；：·（）()《》\-]+")
+# 从 INFORMANT_LIBRARY 中精选的 5-6 类示范词条（brief task-4 :47 点名的六类；
+# “妇女群体”对应库内键 “妇女”）。定位是质量锚与降级兜底，非枚举白名单。
+_EXAMPLE_TYPES = ("长老", "妇女", "宗教人士", "村干部", "返乡务工者", "乡村教师")
 
 
 def get_informant(type: str) -> dict | None:
@@ -401,45 +473,58 @@ def get_informant(type: str) -> dict | None:
     return copy.deepcopy(entry) if entry is not None else None
 
 
-def _bigrams(text: str) -> set[str]:
-    cleaned = _PUNCT_RE.sub("", text)
-    return {cleaned[i:i + 2] for i in range(len(cleaned) - 1)}
-
-
 def _to_archive(key: str, entry: dict) -> dict:
-    """LIBRARY 条目 → ``InformantCandidate`` 可 validate 的档案 dict（含 examples 附带键）。"""
+    """LIBRARY 条目 → ``InformantCandidate`` 可 validate 的档案 dict（含附带 examples）。"""
     return {
         "type": key,
         "approach": entry["approach"],
         "cautions": entry["cautions"],
         "question_domains": list(entry["question_domains"]),
         "ethics": entry["ethics"],
-        "access_channel": _DEFAULT_ACCESS_CHANNEL,
-        "preparation": _DEFAULT_PREPARATION,
+        "access_channel": entry["access_channel"],
+        "preparation": entry["preparation"],
         "examples": list(entry["examples"]),
     }
 
 
+#: 精选示范词条（type → 含 type + 六字段 + examples 的档案 dict）；
+#: 供 ``documents.informants.suggest_informants`` 做 few-shot 质量锚与无 key 降级兜底。
+INFORMANT_EXAMPLES: dict[str, dict] = {
+    key: _to_archive(key, INFORMANT_LIBRARY[key]) for key in _EXAMPLE_TYPES
+}
+
+# 非空主题时的返回上限（``suggest_informants`` 的 1-6 类契约由此保底）
+MAX_MATCHES = 6
+
+# 二字组打分前剔除的标点/空白（中文无词边界，退化到字符二字组重叠做粗匹配）
+_PUNCT_RE = re.compile(r"[\s/、，。；：·（）()《》\-]+")
+
+
+def _bigrams(text: str) -> set[str]:
+    cleaned = _PUNCT_RE.sub("", text)
+    return {cleaned[i:i + 2] for i in range(len(cleaned) - 1)}
+
+
 def match_examples(topic: str) -> list[dict]:
-    """按主题关键词粗匹配库条目，返回 ``InformantCandidate`` 字段可 validate 的档案 dict。
+    """按主题关键词粗匹配精选示范词条，返回 ``InformantCandidate`` 字段可 validate 的档案 dict。
 
     匹配策略为字符二字组重叠计分（中文无词边界的确定性纯函数）：
-    - 空主题 → 返回全部条目（全库导出，供调用方自行截断）；
-    - 非空主题 → 取分数 >0 的前 ``MAX_MATCHES`` 条，按分数降序、同分保持库内插入序；
+    - 空主题 → 返回全部示范词条（``list(INFORMANT_EXAMPLES.values())``）；
+    - 非空主题 → 取分数 >0 的前 ``MAX_MATCHES`` 条，按分数降序、同分保持精选序；
     - 全部落空 → 兜底返回全部：无 key 降级路径宁可给“参考起点”也不给空结果。
     """
     topic = (topic or "").strip()
     if not topic:
-        return [_to_archive(k, v) for k, v in INFORMANT_LIBRARY.items()]
+        return list(INFORMANT_EXAMPLES.values())
     topic_bg = _bigrams(topic)
     scored: list[tuple[int, int, str]] = []
-    for order, (key, entry) in enumerate(INFORMANT_LIBRARY.items()):
-        haystack = "".join([key, entry["name"], entry["approach"],
-                            *entry["question_domains"], *entry["examples"]])
+    for order, (key, archive) in enumerate(INFORMANT_EXAMPLES.items()):
+        haystack = "".join([key, archive["approach"],
+                            *archive["question_domains"], *archive["examples"]])
         score = len(topic_bg & _bigrams(haystack))
         if score > 0:
             scored.append((-score, order, key))
     if not scored:
-        return [_to_archive(k, v) for k, v in INFORMANT_LIBRARY.items()]
+        return list(INFORMANT_EXAMPLES.values())
     scored.sort()
-    return [_to_archive(k, INFORMANT_LIBRARY[k]) for _, _, k in scored[:MAX_MATCHES]]
+    return [INFORMANT_EXAMPLES[k] for _, _, k in scored[:MAX_MATCHES]]
