@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """田野罗盘 Agent — 主入口"""
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

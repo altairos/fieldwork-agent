@@ -3,7 +3,7 @@
 提供文本对话、结构化输出等能力
 """
 import os
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List
 
 try:
     from dashscope import Generation

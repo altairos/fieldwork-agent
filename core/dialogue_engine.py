@@ -2,8 +2,7 @@
 引导式对话引擎 — 四阶段访谈流程
 深度集成 FlyAI 8 个工具的意图识别和工具调用决策
 """
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List
 
 from .state import ProjectState
 
@@ -139,7 +138,6 @@ class DialogueEngine:
         target_location = info.get("target_location", target_location)
         departure_city = info.get("departure_city", departure_city)
 
-        lower_msg = user_message.lower()
         calls = []
 
         # ═══════════════════════════════════════
@@ -235,12 +233,12 @@ class DialogueEngine:
                         "tool": "search_hotel",
                         "args": {"dest_name": target_location, "hotel_types": "民宿,客栈",
                                  "sort": "price_asc"},
-                        "purpose": f"田野点附近住宿(民宿优先)",
+                        "purpose": "田野点附近住宿(民宿优先)",
                     },
                     {
                         "tool": "search_hotel",
                         "args": {"dest_name": target_location, "sort": "distance_asc"},
-                        "purpose": f"按距离筛选住宿",
+                        "purpose": "按距离筛选住宿",
                     },
                     {
                         "tool": "search_poi",
@@ -255,7 +253,7 @@ class DialogueEngine:
                     {
                         "tool": "keyword_search",
                         "args": {"query": f"{target_location} 租车 交通出行"},
-                        "purpose": f"当地租车和交通服务",
+                        "purpose": "当地租车和交通服务",
                     },
                     {
                         "tool": "ai_search",
@@ -407,7 +405,6 @@ class DialogueEngine:
         """从消息中提取出发城市和目的地"""
         import re
         locations = {}
-        lower = message.lower()
 
         # 中文城市/地名列表（用于匹配）
         known_cities = [
@@ -490,7 +487,6 @@ class DialogueEngine:
 
     def _infer_location_from_context(self, message: str, info: dict) -> str:
         """当没有预存地点时，从消息中推断一个合理的地点用于工具调用"""
-        import re
         known_cities = [
             "北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆",
             "武汉", "西安", "长沙", "昆明", "贵阳", "大理", "丽江",

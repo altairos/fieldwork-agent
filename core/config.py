@@ -6,7 +6,6 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 CONFIG_DIR = Path.home() / ".fieldwork_agent"
 PROJECTS_DIR = CONFIG_DIR / "projects"

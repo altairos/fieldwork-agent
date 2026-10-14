@@ -3,9 +3,8 @@
 每个田野调查项目独立存储，支持多轮对话、知识库、搜索结果缓存
 """
 import json
-from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List, Any
+from typing import Any, Optional
 
 from .config import Config
 

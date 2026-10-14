@@ -2,11 +2,11 @@
 田野罗盘 Agent — CLI 交互界面
 """
 import sys
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
-from datetime import datetime
 
-from .config import Config, CONFIG_DIR
+from .config import CONFIG_DIR, Config
 from .orchestrator import FieldAgent
 
 
@@ -197,7 +197,7 @@ def main():
                 p = agent.project
                 print(f"项目ID: {p.project_id}")
                 print(f"阶段: {p.phase}")
-                print(f"研究者信息:")
+                print("研究者信息:")
                 for k, v in p.get_all_researcher_info().items():
                     print(f"  • {k}: {v}")
                 print(f"知识库条目: {len(p.get_knowledge_entries())}")

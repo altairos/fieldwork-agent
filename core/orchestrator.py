@@ -3,15 +3,14 @@
 协调对话引擎、FlyAI 工具调用、LLM 生成，输出完整研究方案
 """
 import json
-import os
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Generator
+from typing import Any, Dict, List, Optional
 
-from .config import Config
-from .state import ProjectState
-from .dialogue_engine import DialogueEngine
+from ..tools.dashscope_tools import DASHSCOPE_AVAILABLE, DashScopeChat
 from ..tools.flyai_tools import FlyAITools
-from ..tools.dashscope_tools import DashScopeChat, DASHSCOPE_AVAILABLE
+from .config import Config
+from .dialogue_engine import DialogueEngine
+from .state import ProjectState
 
 
 class FieldAgent:

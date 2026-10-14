@@ -5,7 +5,7 @@ FlyAI 工具封装 — 飞猪旅行搜索能力
 import json
 import subprocess
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 
 class FlyAITools:
