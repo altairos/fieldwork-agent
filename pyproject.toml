@@ -13,6 +13,8 @@ dependencies = [
     "dashscope>=1.20.0",
     "prompt-toolkit>=3.0.0",
     "pydantic>=2.7",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +22,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
     "ruff>=0.6",
+    "httpx>=0.27",
 ]
 mcp = [
     # Task 5 实测：接线用低层 Server.add_request_handler + Server.run 形状，为 2.x API
@@ -29,6 +32,7 @@ mcp = [
 [project.scripts]
 fieldwork = "fieldwork_agent.core.cli:main"
 fieldwork-mcp = "fieldwork_agent.mcp_server.server:run_stdio"
+fieldwork-web = "fieldwork_agent.web_host.app:main"
 
 [tool.setuptools]
 # 仓库根即包目录，映射为顶层包 fieldwork_agent；子包相对其自动解析
@@ -45,6 +49,9 @@ packages = [
     "fieldwork_agent.kernel.repository",
     "fieldwork_agent.runtime",
     "fieldwork_agent.mcp_server",
+    "fieldwork_agent.web_host",
+    "fieldwork_agent.web_host.agent",
+    "fieldwork_agent.web_host.api",
 ]
 
 [tool.pytest.ini_options]
