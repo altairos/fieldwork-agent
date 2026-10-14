@@ -20,5 +20,6 @@ def test_annotations_groups():
     # 文档组：无外部世界调用（llm 由注入决定），非只读
     assert tools["compose_proposal"].annotations.read_only_hint is False
     assert tools["suggest_informants"].annotations.read_only_hint is False
-    assert {"search_flights", "compose_itinerary", "compose_proposal",
-            "profile_field_site"} <= set(TOOL_GROUPS)
+    # 全等 + 数量钉死：TOOL_GROUPS 键集必须与注册表完全一致
+    assert set(TOOL_GROUPS) == {t.name for t in capability_tools()}
+    assert len(TOOL_GROUPS) == 13
