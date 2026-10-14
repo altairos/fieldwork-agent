@@ -96,7 +96,7 @@ data: {"turn_id":"...","seq":N,...payload}
 | 即时持久化 | Task 6: run_turn 中用户消息/工具结果即时写 repo |
 | 取消=停调度 | Task 6: cancel_event 检查；Task 7: cancel 端点 |
 | 单项目单写回合 | Task 3: acquire_write_lock；Task 7: is_writing → 409 |
-| 进程重启→interrupted | Task 7: lifespan 中 recover_interrupted |
+| 进程重启→interrupted | Task 3: deps.py 中 recover_interrupted |
 | 事件保留期限 | Task 3: meta.json 记 created_at；清理策略留 Plan 5 |
 
 ---
@@ -214,7 +214,6 @@ def init_deps(app, *, config=None, repo=None) -> None:
     from fieldwork_agent.core.config import Config
     from fieldwork_agent.kernel.repository.json_repo import JsonRepository
     from fieldwork_agent.kernel.sources.flyai import FlyAIClient
-    from fieldwork_agent.web_host.turn_manager import TurnManager
 
     cfg = config or Config()
     if repo is None:
@@ -222,7 +221,7 @@ def init_deps(app, *, config=None, repo=None) -> None:
     app.state.config = cfg
     app.state.repo = repo
     app.state.flyai = FlyAIClient(getattr(cfg, "flyai_api_key", ""))
-    app.state.turn_manager = TurnManager(root=cfg.projects_dir)
+    app.state.turn_manager = None   # Task 3 创建后替换
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
         from fieldwork_agent.kernel.llm import LLMClient
@@ -230,9 +229,9 @@ def init_deps(app, *, config=None, repo=None) -> None:
             app.state.llm = LLMClient(cfg.dashscope_api_key, cfg.llm_models)
         except RuntimeError:
             pass
-    # R4：进程重启后遗留 running → interrupted
-    pids = [p["project_id"] for p in repo.list_projects()]
-    app.state.turn_manager.recover_interrupted(pids)
+    # R4：进程重启后遗留 running → interrupted（Task 3 创建 TurnManager 后启用）
+    # pids = [p["project_id"] for p in repo.list_projects()]
+    # app.state.turn_manager.recover_interrupted(pids)
 
 
 def get_repo(request: Request):
@@ -415,6 +414,7 @@ def sse_response(generator: AsyncIterator[str]) -> StreamingResponse:
 
 **Files:**
 - Create: `web_host/turn_manager.py`
+- Modify: `web_host/deps.py`（init_deps 中 import TurnManager 并替换 None 占位；追加 recover_interrupted 调用）
 - Test: `tests/test_web_turn_manager.py`
 
 **Interfaces:**
