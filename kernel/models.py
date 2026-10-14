@@ -168,9 +168,15 @@ class InformantRecord(BaseModel):
 
 
 class ProposalDoc(BaseModel):
-    """提案/纪要文档，markdown 为唯一真源。"""
+    """提案/纪要文档，markdown 为唯一真源。
+
+    ``mode`` 记录请求的体例：``global``（当前唯一完整实现）/ ``kaiti`` / ``grant``
+    （后两者按 DEEP_RESEARCH 报告作为接口占位，未深化时回退 global 提纲并在
+    markdown 尾部追加提示，见 ``kernel.documents.proposal.MODE_FALLBACK_NOTE``）。
+    """
 
     markdown: str = ""
     kind: str = "proposal"
     version: str = "draft"
     sections: list[str] = Field(default_factory=list)
+    mode: str = "global"
