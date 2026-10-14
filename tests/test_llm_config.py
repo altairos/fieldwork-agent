@@ -1,5 +1,6 @@
 """kernel.llm + Config 模型三槽 — 全 mock，不联网、不需要真实 API Key。"""
 import json
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fieldwork_agent.core import config as config_mod
@@ -140,3 +141,35 @@ def test_llm_chat_bad_arguments_json_tolerated(monkeypatch):
     client = LLMClient(api_key="k", models={"proposal": "m"})
     out = client.chat([{"role": "user", "content": "hi"}], slot="proposal", tools=[{}])
     assert out["tool_calls"] is None
+
+
+# ---------------------------------------------------------------- chat_stream 流式
+
+
+def test_chat_stream_yields_deltas_then_final():
+    """mock DashScope stream 响应：逐 chunk yield delta，最终 yield 四键。"""
+    client = LLMClient.__new__(LLMClient)
+    client.api_key = "fake"
+    client.models = {"interview": "q", "proposal": "q", "extract": "q"}
+
+    chunks = [
+        MagicMock(status_code=200, output=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="你", tool_calls=None),
+                      finish_reason="null")]), usage=None),
+        MagicMock(status_code=200, output=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="好", tool_calls=None),
+                      finish_reason="null")]), usage=None),
+        MagicMock(status_code=200, output=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="", tool_calls=None),
+                      finish_reason="stop")]), usage={"total_tokens": 10}),
+    ]
+    with patch("fieldwork_agent.kernel.llm.Generation") as MockGen:
+        MockGen.call.return_value = iter(chunks)
+        results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                          slot="interview"))
+    deltas = [r for r in results if "delta" in r]
+    assert "".join(d["delta"] for d in deltas) == "你好"
+    final = results[-1]
+    assert final["content"] == "你好" and final["finish_reason"] == "stop"
+    assert final["usage"] == {"total_tokens": 10}
+    assert final["tool_calls"] is None

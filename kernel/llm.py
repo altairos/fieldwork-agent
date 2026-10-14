@@ -93,3 +93,45 @@ class LLMClient:
             "finish_reason": _field(choice, "finish_reason") or "",
             "usage": response.usage,
         }
+
+    def chat_stream(self, messages: list[dict], *, slot: str = "interview",
+                    tools: list[dict] | None = None, temperature: float = 0.7,
+                    max_tokens: int = 4096):
+        """流式对话：逐 token yield {"delta": str}，最终 yield 四键终止帧。
+
+        DashScope stream=True + incremental_output=True：每 chunk 只含增量文本。
+        tool_calls 在流式中仅出现在最终 chunk（DashScope 行为），故终止帧统一解析。
+        """
+        call_kwargs: dict[str, Any] = {
+            "model": self.models[slot], "messages": messages,
+            "api_key": self.api_key, "result_format": "message",
+            "temperature": temperature, "max_tokens": max_tokens,
+            "stream": True, "incremental_output": True,
+        }
+        if tools:
+            call_kwargs["tools"] = tools
+        accumulated = ""
+        final_tool_calls = None
+        finish_reason = ""
+        usage: dict = {}
+        for response in Generation.call(**call_kwargs):
+            if response.status_code != 200:
+                yield {"content": "", "tool_calls": None, "finish_reason": "",
+                       "usage": {}, "error": str(response.message)}
+                return
+            choice = response.output.choices[0]
+            message = choice.message
+            delta = _field(message, "content") or ""
+            if delta:
+                accumulated += delta
+                yield {"delta": delta}
+            tc = _parse_tool_calls(_field(message, "tool_calls"))
+            if tc:
+                final_tool_calls = tc
+            fr = _field(choice, "finish_reason") or ""
+            if fr and fr != "null":
+                finish_reason = fr
+            if response.usage:
+                usage = response.usage
+        yield {"content": accumulated, "tool_calls": final_tool_calls,
+               "finish_reason": finish_reason, "usage": usage}
