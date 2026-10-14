@@ -1,5 +1,57 @@
-"""项目 CRUD 路由（占位）。"""
+# web_host/api/projects.py
+"""项目 CRUD 路由（spec §3.2）。"""
+from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from fieldwork_agent.web_host.deps import get_repo
+from pydantic import BaseModel
 
-router = APIRouter()
+router = APIRouter(tags=["projects"])
+
+
+class CreateProjectRequest(BaseModel):
+    project_id: str | None = None
+    discipline: str = ""
+    topic: str = ""
+    purpose: str = ""
+
+
+@router.post("/projects", status_code=201)
+async def create_project(body: CreateProjectRequest, repo=Depends(get_repo)):
+    pid = body.project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
+    repo.create(pid)
+    patch = {k: v for k, v in {"discipline": body.discipline,
+                                "topic": body.topic, "purpose": body.purpose}.items() if v}
+    if patch:
+        repo.update_research_context(pid, patch)
+    return {"project_id": pid, "phase": repo.get_phase(pid)}
+
+
+@router.get("/projects")
+async def list_projects(repo=Depends(get_repo)):
+    results = []
+    for summary in repo.list_projects():
+        pid = summary["project_id"]
+        ctx = repo.get_research_context(pid)
+        results.append({**summary, "research_context": ctx,
+                        "counts": {"sites": len(repo.list_field_sites(pid)),
+                                   "informants": len(repo.list_informants(pid)),
+                                   "proposals": len(repo.list_proposals(pid))}})
+    return results
+
+
+@router.get("/projects/{project_id}")
+async def get_project(project_id: str, repo=Depends(get_repo)):
+    try:
+        state = repo.get_state(project_id)
+    except KeyError:
+        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    return {"project_id": project_id, "phase": state["phase"],
+            "research_context": repo.get_research_context(project_id),
+            "field_sites": repo.list_field_sites(project_id),
+            "informants": repo.list_informants(project_id),
+            "proposals": [{"id": p["id"], "kind": p.get("kind"),
+                           "version": p.get("version"), "created_at": p.get("created_at")}
+                          for p in repo.list_proposals(project_id)],
+            "phase_history": state.get("phase_history", []),
+            "updated_at": state.get("updated_at")}
