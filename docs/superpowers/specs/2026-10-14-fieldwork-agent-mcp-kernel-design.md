@@ -39,22 +39,24 @@
 
 | 模块 | 职责 | 与现有代码关系 |
 |------|------|----------------|
-| `kernel/sources/flyai.py` | 8 个原子搜索原语，返回**归一化结果**（`¥1,234`→`float price`，统一 `name/price/jump_url/pic_url`）；subprocess argv 拼装保留 | 迁移自 `tools/flyai_tools.py` 直接映射部分；4 个组合策略方法剥离至 aggregation |
-| `kernel/aggregation/site_profile.py` | `profile_field_site()`：并行调原语 → `FieldSiteProfile`（交通/住宿/文化/配套四段 + summary_hints） | 吸收 `plan_field_site_access`、`find_accommodation_for_field_work`、`analyze_field_site_culture_and_attractions` |
-| `kernel/aggregation/itinerary.py` | `compose_itinerary()`：路线对比、分段住宿、调研节奏（适应/深入/补充期）、缓冲日、备选路线 → `ItineraryPlan` | 吸收 `comprehensive_travel_plan`；修复硬编码日期 bug（`check_out_dt = f"2026-12-{...}"`） |
-| `kernel/documents/proposal.py` | `compose_proposal()`：结构化输入 → 八章 Research Proposal Markdown；**kernel 内唯一 LLM 消费者**；可选 `section` 参数单章重写；`compose_interview_guide()` 生成半结构式访谈提纲 | 迁移自 orchestrator `generate_full_proposal`/`_build_proposal_context`，上下文从拼字符串改为传结构化对象 |
-| `kernel/guidance/phases.py` | 五阶段定义、system prompts、引导问题模板、推进判定纯函数 `check_advance(phase, research_context, field_sites, informants)` | 拆自 `DialogueEngine`；`decide_tool_calls` 的关键词路由**整体废弃**（职责由 MCP 工具 schema + 宿主 LLM 接管） |
+| `kernel/sources/flyai.py` | 8 个原子搜索原语，返回**归一化结果**；覆盖范围＝国内 + 港澳台 + 海外主流目的地（2026-10-14 实测：曼谷航班/清迈民宿/加德满都文化POI/深港火车通票均可用）；航班/火车为 `journeys[].segments[]`+`ticketPrice` 形态、酒店/POI 为平铺形态，normalize 分形态处理；体验模式 `systemMessage` 透传为 `degraded` | 迁移自 `tools/flyai_tools.py` 直接映射部分；4 个组合策略方法剥离至 aggregation |
+| `kernel/aggregation/site_profile.py` | `profile_field_site()`：并行调原语 → `FieldSiteProfile`（交通/住宿/文化/配套四段 + summary_hints）；海外偏远田野点（平台无村级供给）→ 住宿段置空并在 hints 给出"枢纽城市住宿 + 当地学术接待方安排进村"二段式建议 | 吸收 `plan_field_site_access`、`find_accommodation_for_field_work`、`analyze_field_site_culture_and_attractions` |
+| `kernel/aggregation/itinerary.py` | `compose_itinerary()`：路线对比、分段住宿（房间数/入住假设显式）、调研节奏（适应/深入/补充期）、缓冲日（计入日历分配，与调研日不重复占用）、备选路线 → `ItineraryPlan`；**预算完整性契约（R2）**：`BudgetItem` 带币种/计价单位/数量/人数或房间数/报价时间/来源引用；`BudgetBreakdown.coverage ∈ {complete, partial, unknown}`，仅 complete 才允许得出"预算内/超支"结论；餐饮市内交通用"人均/天×天数"可调节数量单价模型（非总预算百分比）；长住日价未确认可订时标 `estimate/待核验`；交通选择同时展示价格+时长+换乘，最低价仅作排序 | 吸收 `comprehensive_travel_plan`；修复硬编码日期 bug；预算覆盖度为审阅意见 R2 新增 |
+| `kernel/documents/proposal.py` | `compose_proposal(mode)`：结构化输入 → 研究方案 Markdown；`mode="global"`（默认，八章英式结构，适用海外/港澳申请与课程场景）已完整实现；`mode="kaiti"/"grant"`（开题版/国社科活页版，体例依据见 DEEP_RESEARCH 报告）为接口占位，参赛阶段后 flesh out；**documents/ 为 kernel 内唯一 LLM 消费模块**（proposal/guide/informants 生成共享此定位）；可选 `section` 参数单章重写；`compose_interview_guide()` 基于已确认对象档案（suggest 产物或用户提供，type 为自由文本）生成半结构式访谈提纲 | 迁移自 orchestrator `generate_full_proposal`/`_build_proposal_context`，上下文从拼字符串改为传结构化对象 |
+| `kernel/guidance/phases.py` | 五阶段定义、system prompts、引导问题模板、推进判定纯函数 `check_advance(phase, research_context, field_sites, informants, has_itinerary, has_proposal, proposal_confirmed)`（三态区分见公理 4，非访谈型可 `interviews_not_applicable` 跳过访谈硬条件，D→finished 需 `proposal_confirmed`）；阶段 A 首要采集**输出用途/用户身份**（海外港澳申请/高校开题/基金申报/课程作业 → `ctx.purpose`，映射 compose_proposal.mode） | 拆自 `DialogueEngine`；`decide_tool_calls` 的关键词路由**整体废弃**（职责由 MCP 工具 schema + 宿主 LLM 接管） |
 | `kernel/guidance/extract.py` | 地点/研究者信息提取纯函数 | 迁移自 `_extract_locations_from_message`、`extract_researcher_info_from_message` |
-| `kernel/guidance/informants.py` | 访谈对象类型库（结构化数据，初版人工 10-15 类：村落长老/宗族头人/宗教人士/基层干部/乡村教师/妇女群体/返乡务工者/集市商户/非遗传承人等），每类含接近策略、注意事项、建议提问域、伦理提示 | 新增（学术纵深） |
+| `kernel/guidance/informants.py` | 示范档案库 `INFORMANT_EXAMPLES`（人工精选 5-6 类高质量词条：村落长老/妇女群体/宗教人士/基层干部/返乡务工者等）：**不是枚举白名单**，而是 `InformantCandidate` 六字段（approach/cautions/question_domains/ethics/access_channel/preparation）的写法示范（few-shot 质量锚）与无 key 降级兜底；附纯函数 `match_examples(topic)`（兜底粗匹配） | 新增（学术纵深） |
+| `kernel/documents/informants.py` | `suggest_informants(research_topic, discipline, site_profile?, llm)`：LLM 按研究主题**动态生成 4-6 类候选访谈对象**（含敏感群体等主题专属角色），pydantic schema 校验结构完整性，宿主呈现、用户最终决定后 `save_informant`；无 llm 时降级为 `match_examples` 兜底并标注"参考起点，非完整覆盖"；用 proposal 档模型（低频、学术建议质量敏感） | 新增（用户决策 2026-10-14：固定库改为混合式生成） |
 | `kernel/repository/` | `protocol.py`（`ProjectRepository` Protocol）、`json_repo.py`（承接 state.py）、`sqlite_repo.py`（里程碑2）。**kernel 能力函数不碰 repository**，落盘由宿主显式执行 | 拆自 `core/state.py`：状态读写归 repository，PHASES_ORDER/推进语义归 guidance |
-| `kernel/models.py` | pydantic 数据契约：`FieldSiteProfile`、`ItineraryPlan`、`BudgetBreakdown`、`ResearchContext`、`ProposalDoc`、统一返回包络 | 新增 |
+| `kernel/models.py` | pydantic 数据契约：`FieldSiteProfile`、`ItineraryPlan`、`BudgetBreakdown`、`ResearchContext`、`ProposalDoc`、`InformantCandidate`（六字段候选档案）、统一返回包络 | 新增 |
 | `kernel/llm.py` | DashScopeChat 迁入 + function-calling 支持（OpenAI 兼容端点）+ 模型分档配置 | 迁移自 `tools/dashscope_tools.py` |
 
-### 1.3 三条公理
+### 1.3 核心公理
 
-1. **能力函数严格无状态**：入参→出参，不读写项目状态；副作用由宿主经 repository 显式执行。
-2. **LLM 只出现在两处**：`documents/`（内核内）与宿主 agent loop（内核外）。搜索/聚合返回轻量 `summary_hints`（纯统计），不做解读文案。
+1. **能力函数不隐式读写项目状态**（R5 措辞修正）：入参→出参，副作用由宿主经 repository 显式执行；但能力依赖外部服务（搜索/LLM），**不是纯函数**——无 key/体验模式/源失败都可能发生，宿主必须按包络处理降级。
+2. **LLM 只出现在两处**：`documents/` 能力实现（内核内，经注入客户端）与宿主 Agent 循环（内核外；共享循环位于 `runtime/` 模块而非 kernel，R5 修正）。搜索/聚合返回轻量 `summary_hints`（纯统计），不做解读文案。
 3. **生长式迁移**：`kernel/` 与现有 `core/`、`tools/` 并存，逐能力迁移+测试转绿；`orchestrator` 改为 kernel 之上第一个宿主（CLI 变薄壳），最后删除旧决策逻辑。每步 CI 可过。
+4. **三态区分（R3 新增）**："信息齐备"（`check_advance` 可判）、"草稿已生成"（产物存在）、"用户已确认"（`ConfirmationRecord`：确认时间+关键输入哈希）是三个独立状态；阶段推进可基于前两态（允许先探索），但项目完成（D→finished）必须要求 `proposal_confirmed`；关键输入（日期/地点/人数/预算）变化后，依赖产物按输入哈希不匹配自动标记 `needs_revalidation`，旧确认不得沿用于新方案；非访谈型研究可记录 `interviews_not_applicable + 理由` 跳过访谈对象硬条件。
 
 ### 1.4 模型分档（用户指定）
 
@@ -70,7 +72,7 @@ FA_EXTRACT_MODEL   = qwen3.8-flash   # 结构化信息提炼小任务
 
 官方 `mcp` Python SDK，stdio 传输；Streamable HTTP 留作后续可选。Server 是 kernel 薄壳：schema 翻译 + 参数校验 + repository 接线，零业务逻辑。repository 暴露为工具（MCP Server 作为宿主有权组合 kernel+repo；约束只针对 kernel 内部）。
 
-### 2.1 Tools（21 个，四类）
+### 2.1 Tools（22 个，四类）
 
 **① 原子搜索（8 个，全部独立暴露）**：`search_flights`、`search_trains`、`search_hotels`、`search_pois`、`search_keyword`、`search_ai`、`search_marriott_hotels`、`search_marriott_packages`——与 sources 一一映射，只读；返回归一化 `items[]`。description 写明田野场景语义（宿主 LLM 靠 schema+description 选型，替代关键词路由）。
 
@@ -78,9 +80,10 @@ FA_EXTRACT_MODEL   = qwen3.8-flash   # 结构化信息提炼小任务
 - `profile_field_site(location, budget_per_night?, interests?, departure_city?, travel_date?, max_items_per_section?)` → `FieldSiteProfile`（默认截断防宿主上下文爆炸）；
 - `compose_itinerary(departure, destinations[], start_date, duration_days, budget_total, researcher_count)` → `ItineraryPlan`。
 
-**③ 文档能力（2 个，内部用 LLM）**：
-- `compose_proposal(结构化 context 或 project_id, section?)` → Markdown；无 key 时模板拼接降级；
-- `compose_interview_guide(research_topic, informant_types[], project_id?)` → 每类对象的半结构式提纲（开场/主问/追问/敏感问题处理/知情同意话术），供提案第三章引用。
+**③ 文档能力（3 个，内部用 LLM）**：
+- `suggest_informants(research_topic, discipline, site_profile?)` → `list[InformantCandidate]`：按研究主题动态生成候选访谈对象（六字段 schema 校验），宿主呈现、用户确认后 save_informant 落盘；无 key 时示范库粗匹配降级；
+- `compose_proposal(结构化 context 或 project_id, section?, mode?="global")` → Markdown；无 key 时模板拼接降级；`mode` 枚举 `global/kaiti/grant`，非 global 当前回退 global 提纲；**R1 契约**：`ProposalDoc.requested_mode`（用户所选）与 `mode`（实际生成）分开记录，回退时在文档**头部前置声明**能力限制（不仅尾注）；**文献红线**：参考文献仅用用户提供的知识库条目，缺材料时输出"待补检索清单"，禁止模型编造引用；
+- `compose_interview_guide(research_topic, informant_types[], project_id?)` → 每类对象的半结构式提纲（开场/主问/追问/敏感问题处理/知情同意话术），供提案第三章引用；informant_types 为自由文本（suggest 产物或用户自定，不限于示范库）。
 
 **④ 状态与引导（9 个，Server 接线 repository/guidance）**：
 `create_project`、`list_projects`、`get_project`、`update_research_context`、`save_field_site`、`save_informant`、`add_knowledge_entry`、`search_knowledge`（FTS5 版）、`check_phase_advance(project_id)` → `{can_advance, to_phase, missing_fields}`。
@@ -93,8 +96,8 @@ FA_EXTRACT_MODEL   = qwen3.8-flash   # 结构化信息提炼小任务
 fieldwork://guidance/phases                  四阶段流程总览+推进条件
 fieldwork://guidance/questions/{phase}       引导问题模板
 fieldwork://guidance/checklists/{phase}      需采集字段清单
-fieldwork://guidance/informants/library      访谈对象类型库
-fieldwork://guidance/informants/{type}       单一类型档案模板
+fieldwork://guidance/informants/library      示范档案库（写法示范+降级兜底，非枚举白名单）
+fieldwork://guidance/informants/{type}       单一示范词条完整档案
 fieldwork://guidance/interview-guide/methodology  半结构式访谈方法论
 fieldwork://templates/proposal-outline       八章 Proposal 模板
 fieldwork://project/{id}/summary             项目快照
@@ -108,7 +111,7 @@ fieldwork://project/{id}/informants          已登记访谈对象清单
 
 ### 2.4 统一约定
 
-- 返回包络：`{ok, data?, error?: {code, message, hint}, degraded?}`；flyai 缺失返回 `ok:false, code:"flyai_unavailable"`，不抛异常。
+- 返回包络：`{ok, data?, error?: {code, message, hint}, degraded?}`；flyai 缺失返回 `ok:false, code:"flyai_unavailable"`，不抛异常；体验模式（无正式 Key，价格脱敏/结果受限）时 `systemMessage` 透传进 `degraded`。
 - annotations：①②组 `readOnlyHint + openWorldHint`；④组 `destructiveHint:false`。
 - `project_id` 只出现在状态类与 `compose_proposal(from_repo)`；搜索/聚合类不带。
 
@@ -148,7 +151,9 @@ web_host/
    check_phase_advance → 可推进则更新 phase 并发 phase_transition
 ```
 
-取舍：LLM 选型完全交给 function calling（零关键词路由）；阶段推进判定确定性（`check_advance`），不由 LLM 宣布，防幻觉推进。
+取舍：LLM 选型完全交给 function calling（零关键词路由）；阶段推进判定确定性（`check_advance`），不由 LLM 宣布，防幻觉推进；**回合内预算除迭代数外，还限总时长/工具调用数/费用上限（R5）**；工具结果进 LLM 消息用结构化摘要（条数/极值/coverage/完整结果引用）而非直接截 JSON（R5）。
+
+**回合生命周期协议（R4，Web 宿主与 MCP 并存时的硬契约，写 Plan 3 时逐条落实）**：创建回合与订阅事件分离（POST 返回 `turn_id`，事件流按 `turn_id` 订阅）；请求带幂等键，重复提交/重连返回原回合不重执行工具；每事件带单调序号，前端对全部事件去重（非仅工具结果）；回合状态机 `running/completed/failed/cancelled/interrupted`，唯一终止事件；事件保留期限与过期后回放降级为快照恢复；用户消息/工具结果/状态变化即时持久化（不等轮末）；取消=停止后续调度，迟到结果落盘但不再改变回合状态；同一项目同时只允许一个写回合，MCP 与 Web 并存时写入经 repository 单写者协调；进程重启后遗留 running 标记 `interrupted` 并提供显式恢复入口。若协议所需的事件持久化 JSON 层扛不住，**触发条件提前落地最小 SQLite**（原 §5 里程碑 2 的开关条件相应前移）。
 
 ### 3.4 SSE 事件协议
 
@@ -243,9 +248,12 @@ schema_meta     (key, value)
 - **L4 端到端冒烟（CI）**：Playwright 一条剧本（新建→阶段A→右栏清单打勾→阶段B卡片价格与 mock 一致→generate→八章可见），后端 fake flyai stub + 录制回放 fake LLM，无 key 可跑。真实链路发布前手动 `make demo-check`，不进 CI。
 - **行为评估集**：`evals/scenarios/` 5-8 个 golden 对话脚本（含"云南白族村落宗族研究/2万/三个月"），检查点=调用工具集合/采集字段完整度/禁止行为（未确认田野点不得进阶段 C）。真模型手动跑，不进 CI 门禁；prompt/模型档位变更后的回归安全网。
 - **CI**：扩展现有双平台矩阵：`ruff → L1+L2 → L3`（每次 push），`L4`（每次 push，装 Node）；L4 不允许静默 skip。
+- **业务边界场景（R6，纳入 L1-L4 与评估集，防"流程跑通但方案不可用"）**：三个月驻村仅有短住报价→长住标估算/待核验；多点部分费用未知→coverage≠complete、预算不完整可见；修改已确认日期→旧行程/预算/提案失效可见；SSE 断线重连/重复事件→工具只执行一次、正文卡片不重复；取消时工具在跑→终止状态明确、迟到结果不翻转；无文献输入→不虚构引用；非访谈型研究→可跳过访谈对象完成流程；体验模式脱敏价→不当作零元；偏远点无供给→区分已搜到的枢纽方案与待联系的当地接待。
 
 ## 7. 边界与留作后续
 
+- 开题版/基金申请版 proposal 模式的体例深化（完整改写提纲：创新之处/重点难点/框架大纲/研究基础/三科目预算/匿名规则；依据 `DEEP_RESEARCH_社科research-proposal体例核验.md`）——参赛阶段后启动；
+- 当前产品重心：**行程安排 + 田野保障方案**（选点依据、进入田野策略/介绍信与知情同意流程、报道人接触与物资准备、食宿与通讯可达性）打磨到最优（用户决策 2026-10-14）；
 - 向量化知识库检索（当前 FTS5 关键词/全文）；
 - MCP Streamable HTTP 传输、多用户/鉴权、部署形态；
 - DOCX/PDF/XLSX 导出与地图可视化（交付物专业化，作为后续独立设计）；

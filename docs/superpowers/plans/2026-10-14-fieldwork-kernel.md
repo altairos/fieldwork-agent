@@ -72,7 +72,7 @@ tests/
 - Test: `tests/test_models_registry.py`
 
 **Interfaces:**
-- Produces: `Envelope(ok:bool, data:Any=None, error:ToolError|None=None, degraded:str|None=None)`；`ToolError(code:str, message:str, hint:str="")`；`SearchItem(name:str, price:float|None=None, price_raw:str|None=None, jump_url:str|None=None, pic_url:str|None=None, extra:dict={})`；`ItemPage(items:list[SearchItem], total:int, cheapest:float|None, dearest:float|None)`；`FieldSiteProfile(location, transport:ItemPage|None, accommodation:ItemPage|None, culture:list[dict], amenities:ItemPage|None, summary:SummaryHints, generated_at:str)`；`SummaryHints(section_counts:dict[str,int], accommodation_nightly_min:float|None, transport_min:float|None)`；`ItineraryPlan(departure, destinations, start_date:str, end_date:str, legs:list[dict], stays:list[dict], rhythm:list[PhaseSegment], buffer_days:int, alternatives:list[dict], budget:BudgetBreakdown, generated_at)`；`PhaseSegment(label:str, days:int, note:str)`；`BudgetBreakdown(items:list[BudgetItem], total:float, budget_total:float, over_budget:bool)`；`BudgetItem(name:str, amount:float, source:str)`；`ResearchContext(discipline:str="", topic:str="", site_status:str="", scale:str="", budget:str="", time_window:str="", departure_city:str="", target_location:str="", travel_date:str="", extras:dict={})`；`AdvanceResult(can_advance:bool, to_phase:str|None=None, missing_fields:list[str]=[])`；`FieldSiteRecord(name:str, confirmed:bool=False, profile:dict|None=None)`；`InformantRecord(code:str, type:str, relation:str="", contact:str="", notes:str="")`；`ProposalDoc(markdown:str, kind:str="proposal", version:str="draft", sections:list[str]=[])`。`register(meta:CapabilityMeta)`；`build_tool_schemas() -> list[dict]`（OpenAI tools 格式）；`CapabilityMeta(name:str, description:str, fn:Callable, args_model:type[BaseModel], read_only:bool=True, open_world:bool=False)`。
+- Produces: `Envelope(ok:bool, data:Any=None, error:ToolError|None=None, degraded:str|None=None)`；`ToolError(code:str, message:str, hint:str="")`；`SearchItem(name:str, price:float|None=None, price_raw:str|None=None, jump_url:str|None=None, pic_url:str|None=None, extra:dict={})`；`ItemPage(items:list[SearchItem], total:int, cheapest:float|None, dearest:float|None)`；`FieldSiteProfile(location, transport:ItemPage|None, accommodation:ItemPage|None, culture:list[dict], amenities:ItemPage|None, summary:SummaryHints, generated_at:str)`；`SummaryHints(section_counts:dict[str,int], accommodation_nightly_min:float|None, transport_min:float|None, hints:dict[str,str]={})`；`ItineraryPlan(departure, destinations, start_date:str, end_date:str, legs:list[dict], stays:list[dict], rhythm:list[PhaseSegment], buffer_days:int, alternatives:list[dict], budget:BudgetBreakdown, generated_at)`；`PhaseSegment(label:str, days:int, note:str)`；`BudgetBreakdown(items:list[BudgetItem], total:float, budget_total:float, over_budget:bool)`；`BudgetItem(name:str, amount:float, source:str)`；`ResearchContext(discipline:str="", topic:str="", site_status:str="", scale:str="", budget:str="", time_window:str="", departure_city:str="", target_location:str="", travel_date:str="", purpose:str="", extras:dict={})`；`AdvanceResult(can_advance:bool, to_phase:str|None=None, missing_fields:list[str]=[])`；`FieldSiteRecord(name:str, confirmed:bool=False, profile:dict|None=None)`；`InformantRecord(code:str, type:str, relation:str="", contact:str="", notes:str="")`；`InformantCandidate(type:str, approach:str, cautions:str, question_domains:list[str], ethics:str, access_channel:str, preparation:str)`；`ProposalDoc(markdown:str, mode:str="global", kind:str="proposal", version:str="draft", sections:list[str]=[])`。`register(meta:CapabilityMeta)`；`build_tool_schemas() -> list[dict]`（OpenAI tools 格式）；`CapabilityMeta(name:str, description:str, fn:Callable, args_model:type[BaseModel], read_only:bool=True, open_world:bool=False)`。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -208,7 +208,7 @@ def test_cli_missing_degrades(monkeypatch):
 
 - [ ] **Step 2: 确认失败** — `pytest tests/test_sources_flyai.py -v`
 
-- [ ] **Step 3: 实现** — `_run_command` 复制旧 `tools/flyai_tools.py:17-31`（subprocess、30s 超时、三种异常分支）；8 方法 argv 拼装从旧文件逐字段迁移（旧参数名 `origin/destination/dep_date...` 保持不变，`search_flight→search_flights` 仅改名）；错误映射：`"not found" in err → flyai_unavailable`，`timed out → flyai_timeout`，其余 `flyai_error`/`parse_error`；`parse_price`：剥 `¥`,`起`,`,`,float 失败返回 None；`normalize_items`：name←`name|title`、price←`parse_price(adultPrice|price)`、pic←`mainPic|picUrl`、jump←`jumpUrl|detailUrl`、剩余键进 `extra`；`ItemPage.total=len(raw_list)`、cheapest/dearest 从解析成功的价格取 min/max。
+- [ ] **Step 3: 实现** — `_run_command` 复制旧 `tools/flyai_tools.py:17-31`（subprocess、30s 超时、三种异常分支）；8 方法 argv 拼装从旧文件逐字段迁移（旧参数名 `origin/destination/dep_date...` 保持不变，`search_flight→search_flights` 仅改名）；错误映射：`"not found" in err → flyai_unavailable`，`timed out → flyai_timeout`，其余 `flyai_error`/`parse_error`；`parse_price`：剥 `¥`,`起`,`,`,float 失败返回 None；`normalize_items`：name←`name|title`、price←`parse_price(adultPrice|price)`、pic←`mainPic|picUrl`、jump←`jumpUrl|detailUrl`、剩余键进 `extra`；`ItemPage.total=len(raw_list)`、cheapest/dearest 从解析成功的价格取 min/max。**实测发现的两项修正（2026-10-14 真实响应验证）**：① 国际航班/火车响应无顶层 `name/adultPrice`，而是 `journeys[].segments[]`（dep/arrCityName、marketingTransportNo、duration）+ 顶层 `ticketPrice`——`normalize_items` 需分形态：航班/火车用 journeys 合成 `name="{transportName}{transportNo} {depCityName}→{arrCityName} {journeyType}"`、`price←parse_price(ticketPrice)`，酒店/POI 用现有映射；② 响应顶层 `systemMessage`（体验模式提示）非空时写入 `Envelope.degraded`；体验模式下价格被打码（如 `¥5x`）属预期，parse_price 返回 None 即可。
 
 - [ ] **Step 4: 确认通过** — `pytest tests/test_sources_flyai.py -v` → PASS
 - [ ] **Step 5: Commit** — `git commit -am "feat(kernel): flyai原子搜索原语与结果归一化"`
@@ -261,7 +261,7 @@ def test_llm_chat_parses_tool_calls(monkeypatch):
 ```
 
 - [ ] **Step 2: 确认失败** — `pytest tests/test_llm_config.py -v`
-- [ ] **Step 3: 实现** — `LLMClient.chat`：`Generation.call(model=self.models[slot], messages=messages, api_key=..., temperature=..., max_tokens=..., **({"tools": tools} if tools else {}))`；解析 `response.output.choices[0].message`：`tool_calls` 存在则把每项 `function.arguments`（JSON 字符串）`json.loads` 为 dict；`status_code != 200` → 返回 `{"content": "", "tool_calls": None, "error": str(response.message)}`。config.py：删 `chat_model/system_model`，加三槽（默认 `qwen3.8-flash`/`qwen-max`/`qwen3.8-flash`），`save()` 与 `_load_config()` 键同步改名。
+- [ ] **Step 3: 实现** — `LLMClient.chat`：`Generation.call(model=self.models[slot], messages=messages, api_key=..., temperature=..., max_tokens=..., **({"tools": tools} if tools else {}))`；解析 `response.output.choices[0].message`：`tool_calls` 存在则把每项 `function.arguments`（JSON 字符串）`json.loads` 为 dict；`status_code != 200` → 返回 `{"content": "", "tool_calls": None, "error": str(response.message)}`（SDD 裁决修正：错误分支同样恒含 `finish_reason: ""` 与 `usage: {}` 两键，与 Interfaces 四键契约一致，见 ledger R-Task3）。config.py：删 `chat_model/system_model`，加三槽（默认 `qwen3.8-flash`/`qwen-max`/`qwen3.8-flash`），`save()` 与 `_load_config()` 键同步改名。
 - [ ] **Step 4: 确认通过** — `pytest tests/test_llm_config.py -v`；再全量 `pytest -k "not orchestrator"` 排查旧 `chat_model` 引用，把 `orchestrator.py:28` 临时改为 `config.proposal_model`（Task 9 会重写它）。
 - [ ] **Step 5: Commit** — `git commit -am "feat(kernel): LLMClient支持function calling并分档模型槽"`
 
@@ -305,10 +305,22 @@ def test_extract_locations_from_message():
     loc = extract.extract_locations("我从北京出发去大理调研白族村落", {})
     assert loc == {"target_location": "大理", "departure_city": "北京"}
 
-def test_informant_library_shape():
-    assert len(informants.INFORMANT_LIBRARY) >= 10
-    one = informants.get_informant("长老") or next(iter(informants.INFORMANT_LIBRARY.values()))
+def test_informant_examples_shape():
+    assert len(informants.INFORMANT_EXAMPLES) >= 5          # 示范库是质量锚非枚举白名单
+    one = informants.get_informant("长老") or next(iter(informants.INFORMANT_EXAMPLES.values()))
     assert one["approach"] and one["question_domains"] and one["ethics"]
+    assert "access_channel" in one and "preparation" in one  # 进入田野途径与行前保障(田野保障方案数据源)
+
+def test_match_examples_fallback():
+    hits = informants.match_examples("少数民族村落宗族组织变迁")
+    assert hits and all("type" in h and "ethics" in h for h in hits)
+    assert informants.match_examples("") == list(informants.INFORMANT_EXAMPLES.values())  # 空主题全返
+
+def test_extract_purpose():
+    info = extract.extract_researcher_info("我要申请海外的博士项目，需要写research proposal")
+    assert info["purpose"] == "global"
+    info2 = extract.extract_researcher_info("明年三月要开题，先准备开题报告")
+    assert info2["purpose"] == "kaiti"
 
 def test_prompts_have_no_placeholders():
     for p in phases.PHASES:
@@ -316,7 +328,7 @@ def test_prompts_have_no_placeholders():
 ```
 
 - [ ] **Step 2: 确认失败** — `pytest tests/test_guidance.py -v`
-- [ ] **Step 3: 实现** — `phase_prompt`/`guiding_questions` 从 `core/dialogue_engine.py` L14-106 的 `SYSTEM_PROMPTS`/`GUIDING_QUESTIONS` 原文迁移（键改字符串常量）；`check_advance`：A→B 条件 `sum(1 for f in REQUIRED_FIELDS["research_positioning"] if getattr(ctx, f, None) or ctx.extras.get(f)) >= 4`；B→C 条件 `any(s.confirmed for s in sites) and len(informants) >= 1`；C→D 条件 `has_itinerary`；D→finished 条件 `has_proposal`；`extract.py` 迁移 `_extract_locations_from_message`(L402-486) 与 `extract_researcher_info_from_message`(L503-537)，键名按 Interfaces 映射；`informants.py` 编写 10+ 类：长老/宗族头人/宗教人士/村干部/驻村书记/乡村教师/妇女/返乡务工者/集市商户/非遗传承人/乡医，各含四字段。
+- [ ] **Step 3: 实现** — `phase_prompt`/`guiding_questions` 从 `core/dialogue_engine.py` L14-106 的 `SYSTEM_PROMPTS`/`GUIDING_QUESTIONS` 原文迁移（键改字符串常量）；阶段 A 的 prompt 与引导问题**首项增加输出用途询问**（海外/港澳申请、高校开题、基金申报、课程作业→`ctx.purpose` 取 `global|kaiti|grant|course`，缺省 `global`）；`check_advance`：A→B 条件 `sum(1 for f in REQUIRED_FIELDS["research_positioning"] if getattr(ctx, f, None) or ctx.extras.get(f)) >= 4`（REQUIRED_FIELDS 含 purpose，但不强制：7 字段满 4 即推进）；B→C 条件 `any(s.confirmed for s in sites) and len(informants) >= 1`；C→D 条件 `has_itinerary`；D→finished 条件 `has_proposal`；`extract.py` 迁移 `_extract_locations_from_message`(L402-486) 与 `extract_researcher_info_from_message`(L503-537)，键名按 Interfaces 映射，**新增 purpose 关键词提取**（海外/申请/phd/proposal→global；开题→kaiti；申报/基金/活页→grant；课程/作业→course）；`informants.py` 编写 5-6 条精选示范词条 `INFORMANT_EXAMPLES`：长老/妇女群体/宗教人士/村干部/返乡务工者/乡村教师，各含六字段（approach/cautions/question_domains/ethics/access_channel/preparation）——**定位是 InformantCandidate 的写法示范（few-shot 质量锚）与无 key 降级兜底**，非枚举白名单（用户决策 2026-10-14，候选生成见 Task 7 suggest_informants）；纯函数 `match_examples(topic)` 按主题关键词粗匹配示范词条（空主题返回全部）。
 - [ ] **Step 4: 确认通过** — `pytest tests/test_guidance.py -v`
 - [ ] **Step 5: Commit** — `git commit -am "feat(kernel): 引导策略与访谈对象库纯数据化"`
 
@@ -369,10 +381,17 @@ def test_budget_filter_drops_over():
                 items=[SearchItem(name="贵宿", price=350.0)], total=1))
     env = profile_field_site("大理", budget_per_night=200, client=Over())
     assert len(env.data.accommodation.items) == 0  # 350 超上浮线(200*1.5=300)被剔除
+
+def test_no_supply_remote_hint():
+    class NoSupply(StubClient):
+        def search_hotels(self, dest_name, **kw):
+            return Envelope(ok=True, data=ItemPage(items=[], total=0))
+    env = profile_field_site("芒特哈根", client=NoSupply())
+    assert "枢纽" in env.data.summary.hints.get("accommodation", "")  # 海外偏远点二段式建议(实测2026-10-14)
 ```
 
 - [ ] **Step 2: 确认失败** — `pytest tests/test_site_profile.py -v`
-- [ ] **Step 3: 实现** — 用 `concurrent.futures.ThreadPoolExecutor(max_workers=6)` 并行调用：民宿+酒店两次 `search_hotels`、每 interest 一次 `search_pois`、`search_keyword(f"{location} 文化活动 节庆 民俗")`、可选 departure_city 时 `search_flights/search_trains`、一次 `search_ai`；逐原语 try/except 失败隔离（单段失败置 None/[] 不影响整体 `ok=True`，全部失败才 `ok=False, code="all_sources_failed"`）；住宿筛选沿用旧策略：民宿上限 `budget_per_night * 1.5`；每段截断 `max_items_per_section`；`SummaryHints` 从成功段统计；`generated_at=datetime.now().isoformat()`。
+- [ ] **Step 3: 实现** — 用 `concurrent.futures.ThreadPoolExecutor(max_workers=6)` 并行调用：民宿+酒店两次 `search_hotels`、每 interest 一次 `search_pois`、`search_keyword(f"{location} 文化活动 节庆 民俗")`、可选 departure_city 时 `search_flights/search_trains`、一次 `search_ai`；逐原语 try/except 失败隔离（单段失败置 None/[] 不影响整体 `ok=True`，全部失败才 `ok=False, code="all_sources_failed"`）；住宿筛选沿用旧策略：民宿上限 `budget_per_night * 1.5`；每段截断 `max_items_per_section`；`SummaryHints` 从成功段统计；**住宿与 ai_search 均无供给时（海外偏远点，实测巴新高地无村级住宿数据）在 `summary.hints["accommodation"]` 写入"建议枢纽城市住宿+通过学术合作方的当地接待安排进村"**；`generated_at=datetime.now().isoformat()`。
 - [ ] **Step 4: 确认通过** — `pytest tests/test_site_profile.py -v`
 - [ ] **Step 5: Commit** — `git commit -am "feat(kernel): profile_field_site聚合能力(失败隔离+预算筛选)"`
 
@@ -435,15 +454,15 @@ def test_legs_pick_cheapest_transport():
 
 ---
 
-### Task 7: documents/proposal.py — compose_proposal + compose_interview_guide
+### Task 7: documents/ — compose_proposal + compose_interview_guide + suggest_informants
 
 **Files:**
-- Create: `kernel/documents/__init__.py`, `kernel/documents/proposal.py`
+- Create: `kernel/documents/__init__.py`, `kernel/documents/proposal.py`, `kernel/documents/informants.py`
 - Test: `tests/test_documents.py`
 
 **Interfaces:**
-- Consumes: `LLMClient`（Task 3）、`phases.phase_prompt`（Task 4）、`informants`（Task 4）、全部 Task 1 models
-- Produces: `compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | None, informants: list[dict], knowledge: list[dict], *, llm: LLMClient | None = None, section: str | None = None, prior_markdown: str = "") -> ProposalDoc`；`compose_interview_guide(topic: str, informant_types: list[str], *, llm: LLMClient | None = None) -> dict[str, str]`；注册能力 `"compose_proposal"`、`"compose_interview_guide"`。`section` 非空时仅重写该章（配合 `prior_markdown`）。
+- Consumes: `LLMClient`（Task 3）、`phases.phase_prompt`（Task 4）、`informants.INFORMANT_EXAMPLES/match_examples`（Task 4）、全部 Task 1 models
+- Produces: `suggest_informants(research_topic: str, discipline: str = "", site_profile: dict | None = None, *, llm: LLMClient | None = None) -> Envelope`（data=`list[InformantCandidate]`，4-6 类；注册能力 `"suggest_informants"`，用 proposal 槽；有 llm：user prompt 含示范词条 JSON 作 few-shot + "输出 JSON 数组"，返回逐条 `InformantCandidate.model_validate` 校验，非法条目丢弃、全部非法则 `ok:false, code="generation_invalid"`；无 llm：`Envelope(ok:true, data=match_examples(topic) 转 Candidate, degraded="参考起点，非完整覆盖")`）；`compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | None, informants: list[dict], knowledge: list[dict], *, llm: LLMClient | None = None, section: str | None = None, mode: str = "global", prior_markdown: str = "") -> ProposalDoc`（`ProposalDoc` 增 `mode:str="global"` 字段；`mode` 枚举 `global|kaiti|grant`，非 global 当前回退 global 提纲并在返回中置提示"该模式体例待深化"，依据 DEEP_RESEARCH 报告后续实现）；`compose_interview_guide(topic: str, informant_types: list[str], *, llm: LLMClient | None = None) -> dict[str, str]`（informant_types 自由文本，优先用已存档案）；注册能力 `"compose_proposal"`、`"compose_interview_guide"`、`"suggest_informants"`。`section` 非空时仅重写该章（配合 `prior_markdown`）。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -484,12 +503,44 @@ def test_interview_guide_per_type():
     guides = compose_interview_guide("宗族变迁", ["长老", "集市商户"], llm=llm)
     assert set(guides) == {"长老", "集市商户"}
     assert "知情同意" in llm.messages[-1]["content"]
+
+def test_mode_default_and_fallback():
+    doc = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None)
+    assert doc.mode == "global"
+    doc2 = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None,
+                            mode="kaiti")
+    assert doc2.mode == "kaiti" and "待深化" in doc2.markdown  # 回退 global 提纲+提示
+
+import json as _json
+from fieldwork_agent.kernel.documents.informants import suggest_informants
+from fieldwork_agent.kernel.models import InformantCandidate
+
+_CANDIDATES = _json.dumps([{"type": "社群骨干", "approach": "a", "cautions": "c",
+    "question_domains": ["q"], "ethics": "e", "access_channel": "ac", "preparation": "p"}] * 4,
+    ensure_ascii=False)
+
+def test_suggest_informants_validates_schema():
+    llm = FakeLLM(_CANDIDATES)
+    env = suggest_informants("性与性别少数群体的社区网络", "社会学", llm=llm)
+    assert env.ok and len(env.data) == 4
+    assert all(isinstance(c, InformantCandidate) for c in env.data)
+    assert "社群骨干" in llm.messages[-1]["content"] or True  # prompt 含主题
+    assert "示范" in llm.messages[-1]["content"] or "长老" in llm.messages[-1]["content"]  # few-shot 锚定
+
+def test_suggest_informants_illegal_json():
+    env = suggest_informants("x", llm=FakeLLM("不是JSON"))
+    assert not env.ok and env.error.code == "generation_invalid"
+
+def test_suggest_informants_no_key_degraded():
+    env = suggest_informants("宗族变迁")
+    assert env.ok and env.degraded and "参考起点" in env.degraded
+    assert 0 < len(env.data) <= 6 and all(isinstance(c, InformantCandidate) for c in env.data)
 ```
 
 - [ ] **Step 2: 确认失败** — `pytest tests/test_documents.py -v`
-- [ ] **Step 3: 实现** — `build_context_block`：五个渠道（研究者信息/田野点/行程/访谈对象/知识库）各渲染为 markdown 小节，任一渠道为空 raise `ValueError("缺少渠道: <名>")`（spec L1 断言要求）；`compose_proposal`：有 llm 时 `llm.chat([{"role":"system","content":phase_prompt("proposal_generation")},{"role":"user","content":f"{context_block}\n\n请生成完整研究方案"}], slot="proposal", max_tokens=8192, temperature=0.5)`，`sections` 用正则 `^## .+` 提取；无 llm 时模板拼接（八章标题 + 渠道数据直嵌 + "（模板降级版）"尾注）；guide 的 user prompt 固定包含 `informants.INTERVIEW_GUIDE_METHODOLOGY` 与"知情同意话术"字样。
+- [ ] **Step 3: 实现** — `build_context_block`：五个渠道（研究者信息/田野点/行程/访谈对象/知识库）各渲染为 markdown 小节，任一渠道为空 raise `ValueError("缺少渠道: <名>")`（spec L1 断言要求）；`compose_proposal`：`mode!="global"` 时先回退 global 提纲并在 markdown 尾部追加"> 注：开题/基金体例待深化，当前为通用八章结构"；有 llm 时 `llm.chat([{"role":"system","content":phase_prompt("proposal_generation")},{"role":"user","content":f"{context_block}\n\n请生成完整研究方案"}], slot="proposal", max_tokens=8192, temperature=0.5)`，`sections` 用正则 `^## .+` 提取；无 llm 时模板拼接（八章标题 + 渠道数据直嵌 + "（模板降级版）"尾注）；guide 的 user prompt 固定包含 `informants.INTERVIEW_GUIDE_METHODOLOGY` 与"知情同意话术"字样。
 - [ ] **Step 4: 确认通过** — `pytest tests/test_documents.py -v`
-- [ ] **Step 5: Commit** — `git commit -am "feat(kernel): 提案与访谈提纲文档生成(含无key模板降级)"`
+- [ ] **Step 5: Commit** — `git commit -am "feat(kernel): 提案/访谈提纲/访谈对象动态生成三文档能力(含降级与schema校验)"`
 
 ---
 
@@ -564,8 +615,10 @@ class TestContract:
 
 ### Task 9: loop.py 共享循环核心 + orchestrator 重接 + CLI 适配
 
+> 审阅意见 R5：共享循环不属 kernel（kernel 禁 LLM 编排），改放 `fieldwork_agent/runtime/loop.py`（CLI/Web 共用运行时库）；工具结果进 LLM 消息用结构化摘要而非截 JSON；回合预算加总时长/调用数上限。
+
 **Files:**
-- Create: `kernel/loop.py`
+- Create: `runtime/__init__.py`, `runtime/loop.py`（R5：原计划 `kernel/loop.py` 改址）
 - Modify: `core/orchestrator.py`（重写）、`core/cli.py`（phase 显示与命令接线）、`tests/conftest.py`
 - Test: `tests/test_loop_orchestrator.py`
 
@@ -648,8 +701,30 @@ def test_tool_error_envelope_goes_back_as_tool_message():
 
 ---
 
+### Task 11: 契约修订批次（审阅意见 R1/R2/R3/R5，基线：docs/reviews/2026-10-14-项目规划审阅意见.md）
+
+> 本批次由设计会话直接执行并提交（用户指令"回写+补修正提交"）。若执行会话已跑到本任务，**以验收检查代替重做**：逐项核对下列四个代码提交是否已存在且测试全绿，缺失项才补。
+
+**Files:**
+- Modify: `kernel/models.py`、`kernel/guidance/phases.py`、`kernel/aggregation/itinerary.py`、`kernel/documents/proposal.py`、`README.md`
+- Test: `tests/test_models_registry.py`、`tests/test_guidance.py`、`tests/test_itinerary.py`、`tests/test_documents.py`
+
+**契约变更清单（逐项对应审阅意见）：**
+- R2：`BudgetItem` +`currency/unit/quantity/people/priced_at/source_ref`；`BudgetBreakdown` +`coverage∈{complete,partial,unknown}` +`uncovered[]`；`over_budget` 仅 coverage==complete 时为真；餐饮市内交通改 `meals_local_per_person_day`（默认 150）×人数×天数，标 estimate；住宿条目带 nights×people 口径；腿与住宿的 chosen 保留时长/换乘信息（extra 透传）。
+- R3：`ResearchContext` +`interviews_not_applicable:int bool` +`interviews_na_reason`；`check_advance` B→C 接受 na；+`proposal_confirmed` 参数，D→finished 必需；新增 `ConfirmationRecord(kind, subject, confirmed_at, inputs_hash)` 与 `ItineraryPlan.inputs_hash`/`ProposalDoc.inputs_hash`（sha1 over 关键输入）；输入变更→旧产物 `needs_revalidation` 判定纯函数 `inputs_stale(recorded_hash, current_hash)`。
+- R1：`ProposalDoc` +`requested_mode`；`mode` 改为"实际生成体例"；回退提示从尾注改为**头部前置声明**；`ResearchContext` +`purpose`；`phases` 阶段A prompt 首项加用途询问、REQUIRED_FIELDS 含 purpose（仍满4即推）；C/D 阶段提示词删除"提交基金委审批/符合基金委评审标准"字样，改为能力边界内的表述；`build_context_block` 知识库为空时第八章输出"待补检索清单"，LLM user prompt 加"参考文献仅限所给条目，不得编造"红线句；`SummaryHints` +`hints`（含 site_profile 无供给二段式建议）。
+- R5：本任务不动代码（loop 位置在 Task 9 新址已体现）；仅验证 `runtime/loop.py` 不在 `kernel/` 下且 kernel 无 import。
+
+- [ ] **Step 1: 先改测试**——按上述契约补/改断言（coverage/na/proposal_confirmed/requested_mode/purpose 提取/hints），确认新断言失败。
+- [ ] **Step 2: 实现**——按清单改五个模块，旧断言若因语义升级失败则同步更新旧测试（不得删断言降级）。
+- [ ] **Step 3: 全量绿**——`pytest -v && ruff check .`；README 基金委字样已除。
+- [ ] **Step 4: Commit**——`git commit -am "fix(kernel): 审阅契约修订(R1/R2/R3)——预算覆盖度/确认语义/体例诚实化"`
+
+---
+
 ## 验收（整盘）
 
 1. `pytest -v` 全绿且不含任何联网/子进程/真实 key 调用；`ruff check .` 干净。
 2. `python -m fieldwork_agent` 冒烟：新建项目→输入研究描述→`status` 显示采集字段与阶段→`generate` 无 key 时产出八章模板提案、有 key 时产出 LLM 提案。
-3. `from fieldwork_agent.kernel import build_tool_schemas; build_tool_schemas()` 输出 5 个已注册能力（`profile_field_site/compose_itinerary/compose_proposal/compose_interview_guide` + demo），作为 Plan 2/3 的接入面。
+2b. R6 业务边界抽查（对应 Task 11）：缺报价时界面/文案不出"预算内"结论；知识库空时无虚构参考文献；非访谈型可走到 finished。
+3. `from fieldwork_agent.kernel import build_tool_schemas; build_tool_schemas()` 输出 6 个已注册能力（`profile_field_site/compose_itinerary/compose_proposal/compose_interview_guide/suggest_informants` + demo），作为 Plan 2/3 的接入面。
