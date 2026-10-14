@@ -7,8 +7,10 @@
   ``FlyAIClient()``；不读写任何项目状态；
 - 逐原语失败隔离：单段失败（ok=False 或抛异常）置 None/[]，不影响整体
   ``ok=True``；全部源失败才返回 ``Envelope(ok=False, code="all_sources_failed")``；
-- 住宿预算筛选沿用旧策略：条目价格不得超过上浮线 ``budget_per_night * 1.5``
-  （无价格的条目无法判定，予以保留）；
+- 住宿预算本地筛选为内核新增策略：条目价格不得超过上浮线
+  ``budget_per_night * 1.5``、无价格条目原样保留（旧住宿段
+  ``tools/flyai_tools.py`` ``find_accommodation_for_field_work`` 不做本地筛选、
+  只把 ``max_price`` 交给远端；"解析失败即丢"是旧交通段口径，非住宿策略）；
 - 每段截断 ``max_items_per_section``；``SummaryHints`` 从成功段统计。
 """
 
@@ -33,7 +35,7 @@ from pydantic import BaseModel
 # 默认文化兴趣（search_pois 的 category 值），每项发起一次 POI 搜索
 DEFAULT_INTERESTS: list[str] = ["人文古迹", "宗教场所", "古镇古村", "博物馆"]
 
-# 住宿预算上浮系数（旧策略：允许超预算 50%）
+# 住宿预算上浮系数（内核新增：本地按 budget*1.5 剔除超价条目）
 BUDGET_MARKUP = 1.5
 
 
@@ -97,7 +99,7 @@ def profile_field_site(location: str, budget_per_night: float = 200,
 
     # 每个任务 = (段名, 段内元信息, 无参调用)，并行提交到线程池
     tasks: list[tuple[str, str, Callable[[], Envelope]]] = [
-        # 住宿三策略（旧策略）：民宿优先 + 酒店备选 + AI 语义（驻村意图）
+        # 住宿三策略：民宿优先 + 酒店备选 + AI 语义（驻村意图，结果并入住宿段）
         ("accommodation", "", lambda: _safe_call(
             client.search_hotels, location, check_in=travel_date,
             hotel_types="民宿,客栈", max_price=str(int(budget_per_night)))),
@@ -145,7 +147,9 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     def merged_items(tag: str) -> list[SearchItem]:
         return [i for _, page in by_tag.get(tag, []) for i in page.items]
 
-    # 住宿段：合并三策略结果并按上浮线筛选（350 > 300 剔除，180 ≤ 300 保留）
+    # 住宿段：合并三策略（含 AI 归段）结果并按上浮线本地筛选；
+    # price=None 原样保留，price>cap 剔除（350>300 剔除，180≤300 保留）。
+    # 三策略全失败 → by_tag 缺 "accommodation" 键 → 该段为 None（非空页）。
     cap = budget_per_night * BUDGET_MARKUP
     acc_candidates = merged_items("accommodation")
     acc_filtered = [i for i in acc_candidates if i.price is None or i.price <= cap]
@@ -196,8 +200,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
 
 register(CapabilityMeta(
     name="profile_field_site",
-    description="聚合目的地田野点画像：住宿（预算上浮1.5筛选）/大交通/文化兴趣点/"
-                "当地活动，并行调用数据源并逐段失败隔离；单段失败不影响整体。",
+    description="聚合目的地田野点画像：住宿（内核新增本地预算上浮1.5筛选）/大交通/"
+                "文化兴趣点/当地活动，并行调用数据源并逐段失败隔离；单段失败不影响整体。",
     fn=profile_field_site,
     args_model=ProfileFieldSiteArgs,
 ))

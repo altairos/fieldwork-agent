@@ -131,3 +131,68 @@ def test_default_client_self_built(monkeypatch):
     env = profile_field_site("大理")
     assert built == [""]
     assert env.ok is False and env.error.code == "all_sources_failed"
+
+
+# ────────────────────────────────────────────────────────────────
+# 评审补测（Task 5 review-fix）：
+#   1) AI 归段 + price=None 保留（site_profile.py:107-108 + :147-151 分支）
+#   2) 整段全失败 → 该段为 None（此前仅 pin 了 culture 的 [] 路径）
+# ────────────────────────────────────────────────────────────────
+
+
+def test_ai_results_merged_into_accommodation_and_budget_filter():
+    """AI 语义搜索成功结果并入住宿段并参与预算筛选：
+
+    - 两个 ``search_hotels`` 都失败 → 若 accommodation 仍非 None，其条目
+      只能来自 AI 调用路径（这是本用例最强的路径证据）；
+    - ``budget_per_night=200`` → ``cap=300``：price=None 原样保留、
+      price=180 保留、price=350 剔除。
+    """
+    class AIMerge(StubClient):
+        def search_hotels(self, dest_name, **kw):
+            self.calls.append(("hotel", kw.get("hotel_types", "")))
+            return Envelope(ok=False)  # 两策略都失败，逼出 AI 分支
+        def search_ai(self, query):
+            self.calls.append(("ai", query))
+            return self._page([
+                SearchItem(name="AI-招待所无价", price=None),  # 保留
+                SearchItem(name="AI-村内民宿", price=180.0),   # 保留（≤300）
+                SearchItem(name="AI-贵宿", price=350.0),       # 剔除（>300）
+            ])
+    c = AIMerge()
+    env = profile_field_site("大理", budget_per_night=200, client=c)
+
+    # 路径证据：hotel 两次调用都失败；ai 至少被调用一次
+    assert sum(1 for kind, _ in c.calls if kind == "hotel") == 2
+    assert sum(1 for kind, _ in c.calls if kind == "ai") == 1
+
+    assert env.ok is True
+    acc = env.data.accommodation
+    assert acc is not None, "AI 成功 → accommodation 段不应为 None"
+    # 条目全部来自 AI 路径（两个 hotel 均失败，by_tag 只可能带 ai 页）
+    assert [i.name for i in acc.items] == ["AI-招待所无价", "AI-村内民宿"]
+    assert acc.total == 2, "total 记截断前（筛选后）条数：3-1(超线)=2"
+    # price=None 项保留不会污染最低价统计：min 只看有价条目
+    assert env.data.summary.accommodation_nightly_min == 180.0
+
+
+def test_accommodation_all_fail_yields_none_not_empty_page():
+    """三策略全失败但其他段成功 → accommodation=None（区分于筛选后为空的 ItemPage）。
+
+    此前仅 culture=[] 路径被 ``test_exception_is_isolated_per_source`` pin 住；
+    本用例补 pin "整段全失败 → None"，锁死"空页 vs 缺段"的语义差异。
+    """
+    class AccAllFail(StubClient):
+        def search_hotels(self, dest_name, **kw):
+            self.calls.append(("hotel", kw.get("hotel_types", "")))
+            return Envelope(ok=False)
+        def search_ai(self, query):
+            self.calls.append(("ai", query))
+            return Envelope(ok=False)
+    env = profile_field_site("大理", client=AccAllFail(), departure_city="昆明",
+                             travel_date="2026-11-01")
+    assert env.ok is True
+    assert env.data.accommodation is None                 # 整段缺位 → None
+    assert env.data.transport is not None                 # 航班成功，失败隔离仍守住
+    assert env.data.culture                               # 其他段有内容
+    assert env.data.summary.section_counts["accommodation"] == 0
