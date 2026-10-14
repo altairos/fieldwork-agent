@@ -56,8 +56,13 @@ def call_capability(name: str, arguments: dict, ctx: dict) -> dict:
                       "先 list_tools 获取可用工具名")
     try:
         parameters = inspect.signature(fn).parameters
-        injected = dict(arguments)
+        injected = dict(arguments)   # 副本上动手，不污染调用方 dict
         for key in RESERVED_KEYS:
+            # 信任边界（评审 Important#1）：先无条件剥离客户端可能塞入的同名值，
+            # 再按双条件由 ctx 回填——确保 ``ctx`` 是保留键的唯一来源，与
+            # ``RESERVED_KEYS`` 顶部注释承诺一致；否则 Task 5 直接透传原始
+            # arguments 时，``{"client":"x"}`` 会让下游把字符串当 FlyAIClient 用。
+            injected.pop(key, None)
             # 双条件：fn 声明了该保留键，且宿主 ctx 提供了它——
             # ctx 没有就不注入，让 fn 走自建默认（FlyAIClient() / 模板降级）。
             if key in ctx and _declares(parameters, key):

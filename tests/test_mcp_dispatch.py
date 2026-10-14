@@ -70,6 +70,40 @@ def test_reserved_keys_never_leak_into_var_keyword_fn(monkeypatch):
     assert set(calls) == {"dest_name"}
 
 
+def test_client_supplied_reserved_keys_are_stripped(monkeypatch):
+    """信任边界：客户端 ``arguments`` 里塞入的保留键必须被剥离，宿主 ``ctx`` 是唯一来源。
+
+    评审 Important#1：Task 5 会把 MCP 原始 arguments 直接透传，若不剥离，
+    ``{"client":"x"}`` 会让 flyai.py 把字符串当 FlyAIClient 用（AttributeError→
+    internal_error），与 ``RESERVED_KEYS`` 注释承诺相反。ctx 提供时应以 ctx 为准；
+    ctx 未提供时也不得让客户端值蒙混注入 fn 形参默认。
+    """
+    calls = {}
+
+    def fake_search(dest_name, *, llm=None, client=None, **kw):
+        # 即便 fn 显式声明了这两个形参，客户端塞的值也不能穿透；
+        # dispatch 未从 ctx 回填时，fn 只能看到自己的默认 None（走自建降级）。
+        calls["dest_name"] = dest_name
+        calls["llm"] = llm
+        calls["client"] = client
+        calls["extra"] = kw
+        return Envelope(ok=True, data={"ok": 1})
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_hotels", fake_search)
+
+    arguments = {"dest_name": "大理", "llm": "客户端伪装", "client": "客户端伪装"}
+    snapshot = dict(arguments)   # 断言不污染调用方 dict：dispatch 必须工作在副本上
+
+    out = dispatch.call_capability("search_hotels", arguments, ctx={})
+
+    assert out["ok"] is True
+    # 客户端塞入值被剥离后，fn 看到的是自己声明的默认 None，而不是客户端字符串
+    assert calls["llm"] is None
+    assert calls["client"] is None
+    assert calls["extra"] == {}
+    # 顺带钉住：dispatch 通过 ``dict(arguments)`` 复制后才动手，原参数不受影响
+    assert arguments == snapshot
+
+
 def test_client_injected_only_when_ctx_provides_it(monkeypatch):
     """ctx 提供 client 才注入；ctx 没有就不注入，让 fn 走自建 FlyAIClient() 默认。"""
     seen = {}
