@@ -1,0 +1,60 @@
+{
+  "project_id": "legacy_project",
+  "created_at": "2026-01-05T09:30:00",
+  "updated_at": "2026-01-05T10:20:00",
+  "phase": "field_site_profiles",
+  "phase_history": [
+    {
+      "from": "research_positioning",
+      "to": "field_site_profiles",
+      "at": "2026-01-05T10:00:00"
+    }
+  ],
+  "dialogue_context": [
+    {
+      "role": "user",
+      "content": "人类学，研究白族宗族组织变迁，预算两万，三个月",
+      "ts": "2026-01-05T09:40:00",
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "建议把田野点锁定在喜洲与大理两地。",
+      "ts": "2026-01-05T09:41:00",
+      "metadata": {
+        "tool_calls": 2
+      }
+    }
+  ],
+  "researcher_info": {
+    "research_discipline": "人类学",
+    "scale": "团队调研",
+    "budget": "2万"
+  },
+  "field_sites": [
+    {
+      "name": "喜洲",
+      "confirmed": true
+    }
+  ],
+  "travel_plan": null,
+  "proposal_draft": {
+    "filename": "proposal_draft_20260105_101500.md",
+    "saved_at": "2026-01-05T10:15:00"
+  },
+  "final_proposal": null,
+  "search_results": [
+    {
+      "id": "20260105100000_0",
+      "query": "大理住宿",
+      "source_tool": "search_hotel",
+      "cached_at": "2026-01-05T10:00:00"
+    }
+  ],
+  "notes": [
+    {
+      "content": "备忘：带录音笔",
+      "created_at": "2026-01-05T10:05:00"
+    }
+  ]
+}

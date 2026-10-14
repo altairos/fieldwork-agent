@@ -1,0 +1,9 @@
+{
+  "id": "20260105100000_0",
+  "query": "大理住宿",
+  "result": {
+    "hotel": ["大理古城客栈"]
+  },
+  "source_tool": "search_hotel",
+  "cached_at": "2026-01-05T10:00:00"
+}
