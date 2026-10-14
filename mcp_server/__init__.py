@@ -2,3 +2,6 @@
 
 依赖方向单向：本包可 import `kernel/` 与 `core.config`，kernel 不得反向依赖 mcp SDK。
 """
+from fieldwork_agent.mcp_server.server import create_server
+
+__all__ = ["create_server"]

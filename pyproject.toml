@@ -18,15 +18,16 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=1.0",
     "ruff>=0.6",
 ]
 mcp = [
-    "mcp>=1.2",
+    # Task 5 实测：接线用低层 Server.add_request_handler + Server.run 形状，为 2.x API
+    "mcp>=2,<3",
 ]
 
 [project.scripts]
 fieldwork = "fieldwork_agent.core.cli:main"
-# server.py 属 Task 5；此处仅登记入口字符串，editable 安装不因未实现模块报错
 fieldwork-mcp = "fieldwork_agent.mcp_server.server:run_stdio"
 
 [tool.setuptools]
@@ -50,6 +51,8 @@ packages = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra -q"
+# L3 契约测试为 async（真实 ClientSession ↔ Server 内存会话），auto 模式免逐个标记
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
