@@ -5,6 +5,7 @@
   * FlyAI：环境变量优先，缺失时回退 ~/.flyai/config.json
 """
 import json
+import os
 import pathlib
 
 import pytest
@@ -19,7 +20,8 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config_mod, "PROJECTS_DIR", projects)
     monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
-    for var in ("DASHSCOPE_API_KEY", "FLYAI_API_KEY", "FA_CHAT_MODEL", "FA_SYSTEM_MODEL"):
+    for var in ("DASHSCOPE_API_KEY", "FLYAI_API_KEY",
+                "FA_INTERVIEW_MODEL", "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
 
@@ -28,7 +30,9 @@ def test_defaults_isolated(isolated_home):
     cfg = Config()
     assert cfg.dashscope_api_key == ""
     assert cfg.flyai_api_key == ""
-    assert cfg.chat_model == "qwen-max"
+    assert cfg.interview_model == "qwen3.8-flash"
+    assert cfg.proposal_model == "qwen-max"
+    assert cfg.extract_model == "qwen3.8-flash"
     assert cfg.dashscope_available is False
     assert cfg.flyai_available is False
     assert cfg.dingtalk_available is False
@@ -36,26 +40,25 @@ def test_defaults_isolated(isolated_home):
 
 
 def test_env_reads_keys(isolated_home):
-    import os
     os.environ["DASHSCOPE_API_KEY"] = "sk-env"
-    os.environ["FA_CHAT_MODEL"] = "qwen-plus"
+    os.environ["FA_PROPOSAL_MODEL"] = "qwen-plus"
     cfg = Config()
     assert cfg.dashscope_api_key == "sk-env"
-    assert cfg.chat_model == "qwen-plus"
+    assert cfg.proposal_model == "qwen-plus"
     assert cfg.dashscope_available is True
 
 
 def test_own_config_file_overrides_env(isolated_home):
-    import os
     os.environ["DASHSCOPE_API_KEY"] = "sk-env"
+    os.environ["FA_EXTRACT_MODEL"] = "env-extract"
     (isolated_home / "config.json").write_text(
-        json.dumps({"dashscope_api_key": "sk-file", "chat_model": "qwen-turbo"}),
+        json.dumps({"dashscope_api_key": "sk-file", "extract_model": "file-extract"}),
         encoding="utf-8",
     )
     cfg = Config()
     # 自有配置文件优先于环境变量
     assert cfg.dashscope_api_key == "sk-file"
-    assert cfg.chat_model == "qwen-turbo"
+    assert cfg.extract_model == "file-extract"
 
 
 def test_flyai_from_cli_config(isolated_home):
@@ -68,7 +71,6 @@ def test_flyai_from_cli_config(isolated_home):
 
 
 def test_flyai_env_wins_over_file(isolated_home):
-    import os
     os.environ["FLYAI_API_KEY"] = "fk-env"
     flyai_dir = isolated_home / ".flyai"
     flyai_dir.mkdir()
@@ -82,13 +84,20 @@ def test_save_roundtrip(isolated_home):
     cfg.dashscope_api_key = "sk-save"
     cfg.dingtalk_webhook = "https://hook"
     cfg.dingtalk_enabled = True
+    cfg.extract_model = "qwen-save"
     cfg.save()
     reloaded = Config()
     assert reloaded.dashscope_api_key == "sk-save"
     assert reloaded.dingtalk_available is True
+    # save()/_load_config() 的三槽键名同步（interview/proposal/extract_model）
+    assert reloaded.extract_model == "qwen-save"
+    saved = json.loads((isolated_home / "config.json").read_text(encoding="utf-8"))
+    assert "chat_model" not in saved and "system_model" not in saved
 
 
 def test_corrupt_config_file_ignored(isolated_home):
     (isolated_home / "config.json").write_text("{ not json", encoding="utf-8")
     cfg = Config()  # 不应抛异常，回落默认值
     assert cfg.dashscope_api_key == ""
+    assert cfg.llm_models == {"interview": "qwen3.8-flash", "proposal": "qwen-max",
+                              "extract": "qwen3.8-flash"}

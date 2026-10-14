@@ -28,9 +28,10 @@ class Config:
         # FlyAI（自动从 CLI 配置文件读取）
         self.flyai_api_key: str = os.getenv("FLYAI_API_KEY", "")
 
-        # 模型选择
-        self.chat_model: str = os.getenv("FA_CHAT_MODEL", "qwen-max")
-        self.system_model: str = os.getenv("FA_SYSTEM_MODEL", "qwen-turbo")  # 用于结构化任务
+        # 模型分档三槽：对话推进 / 长文方案 / 结构化抽取
+        self.interview_model: str = os.getenv("FA_INTERVIEW_MODEL", "qwen3.8-flash")
+        self.proposal_model: str = os.getenv("FA_PROPOSAL_MODEL", "qwen-max")
+        self.extract_model: str = os.getenv("FA_EXTRACT_MODEL", "qwen3.8-flash")
 
         # 云同步（钉钉）
         self.dingtalk_webhook: str = ""
@@ -53,8 +54,9 @@ class Config:
                 self.flyai_api_key = data.get("flyai_api_key", self.flyai_api_key)
                 self.dingtalk_webhook = data.get("dingtalk_webhook", self.dingtalk_webhook)
                 self.dingtalk_enabled = data.get("dingtalk_enabled", self.dingtalk_enabled)
-                self.chat_model = data.get("chat_model", self.chat_model)
-                self.system_model = data.get("system_model", self.system_model)
+                self.interview_model = data.get("interview_model", self.interview_model)
+                self.proposal_model = data.get("proposal_model", self.proposal_model)
+                self.extract_model = data.get("extract_model", self.extract_model)
             except (OSError, json.JSONDecodeError):
                 pass
 
@@ -76,11 +78,21 @@ class Config:
             "flyai_api_key": self.flyai_api_key,
             "dingtalk_webhook": self.dingtalk_webhook,
             "dingtalk_enabled": self.dingtalk_enabled,
-            "chat_model": self.chat_model,
-            "system_model": self.system_model,
+            "interview_model": self.interview_model,
+            "proposal_model": self.proposal_model,
+            "extract_model": self.extract_model,
         }
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+
+    @property
+    def llm_models(self) -> dict[str, str]:
+        """三槽模型映射，直接用于 kernel.llm.LLMClient(models=...)。"""
+        return {
+            "interview": self.interview_model,
+            "proposal": self.proposal_model,
+            "extract": self.extract_model,
+        }
 
     @property
     def dashscope_available(self) -> bool:

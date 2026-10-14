@@ -25,7 +25,7 @@ class FieldAgent:
         if DASHSCOPE_AVAILABLE:
             self.llm_client = DashScopeChat(
                 api_key=self.config.dashscope_api_key,
-                model=self.config.chat_model,
+                model=self.config.proposal_model,
             )
         else:
             self.llm_client = None

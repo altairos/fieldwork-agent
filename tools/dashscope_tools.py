@@ -63,5 +63,5 @@ def create_chat_client(config) -> DashScopeChat:
     """根据 Config 创建聊天客户端"""
     return DashScopeChat(
         api_key=config.dashscope_api_key,
-        model=config.chat_model,
+        model=config.proposal_model,
     )
