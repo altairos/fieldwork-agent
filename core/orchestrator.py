@@ -7,10 +7,14 @@ Task 9 重写：从"关键词路由 + DialogueEngine/FlyAITools/DashScopeChat �
 
 - 组装 ``JsonRepository`` / ``FlyAIClient`` / ``LLMClient``（可选）/ guidance；
 - ``client_kernel_dispatch``：把 LLM 的 function calling 分派到 registry 能力
-  （搜索类透传 flyai，聚合/文档类注入 client/llm），任何异常统一折进包络；
+  （搜索类注入 flyai client，聚合/文档类注入 client/llm），一律经 args_model 校验，
+  任何异常统一折进包络；
 - ``chat``：extract 采集 → 落研究上下文 → 组装 system → run_tool_loop →
   轮末事件落盘 → ``check_advance`` **确定性**判定推进（绝不由 LLM 宣布）；
 - 无 LLM 时回落旧 ``_rule_based_reply`` 规则文案路径（降级可用）。
+
+工具 schema **单一来源**：8 搜索原语与聚合/文档能力全部经 ``registry.build_tool_schemas()``
+生成（spec §3.1；MCP/Web 共用同一面），宿主不再手搓搜索 schema。
 
 依赖方向：core/orchestrator → runtime → kernel；kernel 绝不反向 import 本模块。
 """
@@ -37,76 +41,46 @@ from fieldwork_agent.kernel.models import (
 )
 from fieldwork_agent.kernel.registry import build_tool_schemas, capabilities
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
-from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from fieldwork_agent.kernel.sources.flyai import (
+    FlyAIClient,
+    search_ai,
+    search_flights,
+    search_hotels,
+    search_keyword,
+    search_marriott_hotels,
+    search_marriott_packages,
+    search_pois,
+    search_trains,
+)
 from fieldwork_agent.runtime.loop import run_tool_loop
 from pydantic import ValidationError
 
 from .config import Config
 
-# registry 全局表只供 schema，不经由它裸调：宿主用下表把能力名绑到真实实现与注入方式
-# inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm
+# registry 全局表只供 schema 与 args_model，不经由它裸调：宿主用下表把能力名绑到
+# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm。
+# 8 搜索原语的 fn 即 flyai 模块级注入式包装（与 profile/compose 同一 client 注入模式）。
 _CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str]] = {
     "profile_field_site": (profile_field_site, "client"),
     "compose_itinerary": (compose_itinerary, "client"),
     "compose_proposal": (compose_proposal, "llm"),
     "compose_interview_guide": (compose_interview_guide, "llm"),
     "suggest_informants": (suggest_informants, "llm"),
+    "search_flights": (search_flights, "client"),
+    "search_trains": (search_trains, "client"),
+    "search_hotels": (search_hotels, "client"),
+    "search_marriott_hotels": (search_marriott_hotels, "client"),
+    "search_marriott_packages": (search_marriott_packages, "client"),
+    "search_pois": (search_pois, "client"),
+    "search_keyword": (search_keyword, "client"),
+    "search_ai": (search_ai, "client"),
 }
 
-# FlyAIClient 的 8 个原子搜索原语（透传，不经 registry args_model 校验）
+# 搜索原语名集：轮末落盘分类用（成功→cache_search）；dispatch 已并入 _CAPABILITY_DISPATCH
 _SEARCH_METHODS: frozenset[str] = frozenset({
     "search_flights", "search_trains", "search_hotels", "search_marriott_hotels",
     "search_marriott_packages", "search_pois", "search_keyword", "search_ai",
 })
-
-
-def _s(name: str, description: str, props: dict, required: list[str]) -> dict:
-    """构造一条 OpenAI function 工具 schema（供搜索原语进 schema）。"""
-    return {"type": "function", "function": {
-        "name": name, "description": description,
-        "parameters": {"type": "object", "properties": props, "required": required}}}
-
-
-def _str_prop(desc: str) -> dict:
-    return {"type": "string", "description": desc}
-
-
-# 8 个搜索工具的 schema（与 FlyAIClient 方法形参逐一对齐；聚合/文档工具走 build_tool_schemas）
-_SEARCH_TOOL_SCHEMAS: list[dict] = [
-    _s("search_flights", "航班搜索：跨省/跨国调研大交通", {
-        "origin": _str_prop("出发城市"), "destination": _str_prop("目的地"),
-        "dep_date": _str_prop("出发日期 YYYY-MM-DD"), "back_date": _str_prop("返程日期"),
-        "sort_type": _str_prop("排序方式"), "max_price": _str_prop("最高价")},
-        ["origin", "destination"]),
-    _s("search_trains", "火车搜索：高铁/普速备选", {
-        "origin": _str_prop("出发城市"), "destination": _str_prop("目的地"),
-        "dep_date": _str_prop("出发日期 YYYY-MM-DD"), "back_date": _str_prop("返程日期"),
-        "seat_class": _str_prop("席别"), "journey_type": _str_prop("行程类型"),
-        "sort_type": _str_prop("排序方式")},
-        ["origin", "destination"]),
-    _s("search_hotels", "酒店/民宿搜索：按价格、POI 距离筛选住宿", {
-        "dest_name": _str_prop("目的地城市"), "check_in": _str_prop("入住日期"),
-        "check_out": _str_prop("退房日期"), "hotel_types": _str_prop("类型如 民宿,客栈"),
-        "max_price": _str_prop("每晚最高价"), "sort": _str_prop("排序"),
-        "poi_name": _str_prop("邻近POI"), "hotel_stars": _str_prop("星级")},
-        ["dest_name"]),
-    _s("search_marriott_hotels", "万豪旗下酒店搜索：高端备选", {
-        "dest_name": _str_prop("目的地"), "check_in": _str_prop("入住日期"),
-        "check_out": _str_prop("退房日期"), "hotel_brands": _str_prop("品牌"),
-        "max_price": _str_prop("最高价"), "sort": _str_prop("排序")},
-        ["dest_name"]),
-    _s("search_marriott_packages", "万豪套餐搜索：体验产品/接待", {
-        "keyword": _str_prop("关键词"), "sort_type": _str_prop("排序")},
-        ["keyword"]),
-    _s("search_pois", "POI/景点搜索：文化场所、节庆活动", {
-        "city_name": _str_prop("城市"), "keyword": _str_prop("关键词"),
-        "category": _str_prop("分类"), "poi_level": _str_prop("等级")},
-        ["city_name"]),
-    _s("search_keyword", "关键词搜索：签证/租车/保险/美食等广义覆盖", {
-        "query": _str_prop("查询串")}, ["query"]),
-    _s("search_ai", "AI语义搜索：自然语言理解复杂意图（核心能力）", {
-        "query": _str_prop("自然语言查询")}, ["query"]),
-]
 
 # 追加到 system 的工具使用指引（phase_prompt 之外，指导 LLM 何时调用工具）
 _TOOL_GUIDANCE = (
@@ -175,13 +149,13 @@ class FieldAgent:
     # ─── 能力分派（统一兜底，绝不裸抛）──────────────
 
     def client_kernel_dispatch(self, name: str, args: dict) -> Envelope:
-        """把一次工具调用分派到能力/搜索原语，任何异常折进 Envelope(ok=False)。
+        """把一次工具调用分派到 registry 能力，任何异常折进 Envelope(ok=False)。
 
-        - registry 能力：先用 args_model 预校验，失败 → code="invalid_arguments"；
-          注入 client/llm 后调用，非包络返回值（如 ProposalDoc/dict）包成 ok=True；
-          调用期异常（含 compose_proposal 缺渠道 ValueError）→ code="internal_error"。
-        - 搜索原语：透传 flyai（其内部已把失败折成包络）；参数不符 TypeError → internal_error。
-        - 未知工具名：code="unknown_tool"。
+        搜索原语与聚合/文档能力走同一条路径（schema 单一来源）：
+        - 先用 ``args_model`` 预校验，失败 → code="invalid_arguments"；
+        - 注入 client/llm 后调用，非包络返回值（如 ProposalDoc/dict）包成 ok=True；
+        - 调用期异常（含 compose_proposal 缺渠道 ValueError）→ code="internal_error"；
+        - 未知工具名 → code="unknown_tool"。
         """
         args = args if isinstance(args, dict) else {}
 
@@ -207,18 +181,9 @@ class FieldAgent:
                     hint="能力执行异常，可换参数或稍后重试"))
             return result if isinstance(result, Envelope) else Envelope(ok=True, data=result)
 
-        if name in _SEARCH_METHODS:
-            method = getattr(self.flyai, name)
-            try:
-                env = method(**args)
-            except Exception as exc:  # noqa: BLE001 — 未知/非法参数兜底
-                return Envelope(ok=False, error=ToolError(
-                    code="internal_error", message=str(exc),
-                    hint="请按搜索工具 schema 提供参数"))
-            return env if isinstance(env, Envelope) else Envelope(ok=True, data=env)
-
         return Envelope(ok=False, error=ToolError(
-            code="unknown_tool", message=f"未知工具: {name}", hint="可用: 搜索8原语+registry能力"))
+            code="unknown_tool", message=f"未知工具: {name}",
+            hint="可用: 搜索8原语+registry能力"))
 
     # ─── 核心对话循环 ──────────────────────────────
 
@@ -264,8 +229,8 @@ class FieldAgent:
     # ─── system 组装与快照 ──────────────────────────────
 
     def _build_tools(self) -> list[dict]:
-        """8 个搜索原语 schema + registry 能力 schema（单一来源 build_tool_schemas）。"""
-        return _SEARCH_TOOL_SCHEMAS + build_tool_schemas()
+        """工具 schema 单一来源：registry 全部能力（含 8 搜索原语）经 build_tool_schemas 生成。"""
+        return build_tool_schemas()
 
     def _snapshot(self, pid: str) -> str:
         """repo 快照摘要：已采集上下文 + 各渠道计数，帮 LLM 掌握现状不重复问。"""

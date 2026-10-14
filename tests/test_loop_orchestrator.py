@@ -6,6 +6,12 @@ ScriptedLLM 脚本驱动、dispatch 用桩，不联网、不调 subprocess、无
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.runtime.loop import LoopResult, run_tool_loop
 
+# 8 搜索原语名集（与 kernel.sources.flyai 注册一致；import 即触发 register）
+_SEARCH_NAMES = {
+    "search_flights", "search_trains", "search_hotels", "search_marriott_hotels",
+    "search_marriott_packages", "search_pois", "search_keyword", "search_ai",
+}
+
 
 class ScriptedLLM:
     """按脚本顺序返回 chat 响应；记录每次收到的 messages/kw 供断言。"""
@@ -151,7 +157,11 @@ def test_orchestrator_dispatch_unknown_and_invalid(fake_config):
 
 
 def test_orchestrator_dispatch_search_stub_injects_flyai(fake_config, fake_flyai):
-    """搜索类透传注入的 flyai；成功 data 供轮末落盘。"""
+    """搜索类经 registry args_model 校验后注入 flyai；成功 data 供轮末落盘。
+
+    registry 校验会把 args_model 全部字段（含默认值）透传给 client，
+    故断言方法名与关键入参（dest_name），而非仅原始两键 dict。
+    """
     from fieldwork_agent.core.orchestrator import FieldAgent
 
     agent = FieldAgent(fake_config)
@@ -159,7 +169,9 @@ def test_orchestrator_dispatch_search_stub_injects_flyai(fake_config, fake_flyai
 
     env = agent.client_kernel_dispatch("search_hotels", {"dest_name": "大理"})
     assert env.ok is True
-    assert fake_flyai.calls == [("search_hotels", {"dest_name": "大理"})]
+    name, kwargs = fake_flyai.calls[0]
+    assert name == "search_hotels"
+    assert kwargs["dest_name"] == "大理"
 
 
 def test_orchestrator_profile_event_persists_field_site(fake_config, fake_flyai, fake_llm):
@@ -183,3 +195,46 @@ def test_orchestrator_profile_event_persists_field_site(fake_config, fake_flyai,
     assert out["tool_events"][0]["ok"] is True
     sites = agent.repo.list_field_sites("p_site")
     assert any(s["name"] == "大理" for s in sites)
+
+
+# ------------------------------------------------- 搜索原语单一来源（Task 9 修复）
+
+
+def test_search_primitives_all_registered():
+    """8 搜索原语进 registry：名字集合可从 build_tool_schemas 全见（单一来源）。"""
+    import fieldwork_agent.kernel.sources.flyai  # noqa: F401 — 触发 register
+    from fieldwork_agent.kernel import build_tool_schemas
+
+    names = {t["function"]["name"] for t in build_tool_schemas()}
+    assert _SEARCH_NAMES <= names, f"缺失搜索原语注册: {_SEARCH_NAMES - names}"
+    # 抽一条校验 schema 形状：search_hotels 带 dest_name 必填、client 注入参数不进 schema
+    hotel = [t for t in build_tool_schemas() if t["function"]["name"] == "search_hotels"][0]
+    params = hotel["function"]["parameters"]
+    assert "dest_name" in params["properties"]
+    assert "dest_name" in params["required"]
+    assert "client" not in params["properties"]
+
+
+def test_orchestrator_dispatch_search_invalid_arguments(fake_config):
+    """dispatch 对搜索原语走 registry args 校验：缺必填 dest_name → invalid_arguments。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    # 未注入 flyai 也无妨：校验在调用前失败，不触达 client
+    env = agent.client_kernel_dispatch("search_hotels", {})
+    assert env.ok is False and env.error.code == "invalid_arguments"
+
+
+def test_orchestrator_no_llm_rule_fallback(fake_config):
+    """无 LLM（FakeConfig 无 key、agent.llm=None）降级：chat 返回严格四键且 reply 非空。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    assert agent.llm is None  # FakeConfig.dashscope_available=False → 不构造 LLM
+    agent.create_project("p_nokey")
+
+    out = agent.chat("我想去大理做白族田野调查")
+    assert set(out) == {"reply", "phase", "tool_events", "phase_transition"}
+    assert out["reply"]  # 规则文案非空
+    assert out["tool_events"] == []
+    assert out["phase"] == "research_positioning"
