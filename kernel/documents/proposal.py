@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 # 八章标题（与 phases.phase_prompt("proposal_generation") 内的模板一致；
 # 迁移源：core/orchestrator.py `generate_full_proposal` 使用的 SYSTEM_PROMPTS[PROPOSAL]）
+# 模板降级 (_degrade_markdown) 的章节标题也由此常量派生，做到"字面单一来源"
 PROPOSAL_SECTIONS: list[str] = [
     "一、研究背景与问题提出",
     "二、田野点选择依据（含交通/住宿可行性分析）",
@@ -182,27 +183,33 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
                       informant_items: list[dict], knowledge: list[dict]) -> str:
     """无 llm（或 llm 返回错误分支）时的八章模板拼接：渠道数据直嵌 + 尾注。
 
-    结构上严格保证只出现 8 行 ``^## ``（渠道 bullets 一律 `- `/`  - ` 起头），
-    使 ``sections`` 抽取结果稳定 8 项——这是 brief Step 1 断言 `len(sections) == 8` 的前提。
+    章节标题一律派生自 ``PROPOSAL_SECTIONS``（与 phases.phase_prompt 的字面同源），
+    章内正文按下标一一对应。结构上严格保证只出现 8 行 ``^## ``（渠道 bullets
+    一律 `- `/`  - ` 起头），使 ``sections`` 抽取结果稳定 8 项——这是 brief Step 1
+    断言 `len(sections) == 8` 的前提。
     """
     title = ctx.topic or ctx.target_location or "未命名"
     lines: list[str] = [f"# 研究方案：{title}", ""]
 
-    lines += ["## 一、研究背景与问题提出", *_bullets_researcher(ctx), ""]
-    lines += ["## 二、田野点选择依据（含交通/住宿可行性分析）", *_bullets_sites(sites), ""]
-    lines += ["## 三、研究设计与方法论", *_bullets_informants(informant_items), ""]
-    lines += ["## 四、详细行程安排（含具体航班/车次/酒店信息）",
-              *_bullets_itinerary(itinerary), ""]
-    lines += ["## 五、预算明细（基于实时搜索数据）",
-              f"- 预算：{ctx.budget or '待补充'}",
-              "- 数据来源：本方案为模板降级版，未接入 LLM 与飞猪实价，请宿主补录", ""]
-    lines += ["## 六、风险评估与伦理预案",
-              f"- 时间窗口：{ctx.time_window or '待确认'}",
-              "- 伦理安排：详见访谈提纲的知情同意话术条目（compose_interview_guide 产出）", ""]
-    lines += ["## 七、预期成果",
-              "- 待研究者补充（模板降级版不臆测成果形态）", ""]
-    kb = _bullets_knowledge(knowledge)
-    lines += ["## 八、参考文献", *(kb or ["- 待补充（知识库渠道为空）"]), ""]
+    bodies: list[list[str]] = [
+        _bullets_researcher(ctx),
+        _bullets_sites(sites),
+        _bullets_informants(informant_items),
+        _bullets_itinerary(itinerary),
+        [
+            f"- 预算：{ctx.budget or '待补充'}",
+            "- 数据来源：本方案为模板降级版，未接入 LLM 与飞猪实价，请宿主补录",
+        ],
+        [
+            f"- 时间窗口：{ctx.time_window or '待确认'}",
+            "- 伦理安排：详见访谈提纲的知情同意话术条目（compose_interview_guide 产出）",
+        ],
+        ["- 待研究者补充（模板降级版不臆测成果形态）"],
+        _bullets_knowledge(knowledge) or ["- 待补充（知识库渠道为空）"],
+    ]
+    # strict=True：PROPOSAL_SECTIONS 与 bodies 若长度漂移，立即报错而不是静默丢章
+    for heading, body in zip(PROPOSAL_SECTIONS, bodies, strict=True):
+        lines += [f"## {heading}", *body, ""]
     lines.append(TEMPLATE_DEGRADE_NOTE)
     return "\n".join(lines)
 

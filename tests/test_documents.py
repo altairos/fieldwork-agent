@@ -2,6 +2,7 @@
 import pytest
 from fieldwork_agent.kernel import build_tool_schemas
 from fieldwork_agent.kernel.documents.proposal import (
+    PROPOSAL_SECTIONS,
     build_context_block,
     compose_interview_guide,
     compose_proposal,
@@ -14,9 +15,14 @@ SITES = [{"name": "喜洲", "confirmed": True, "profile": {"accommodation": "...
 
 
 class FakeLLM:
-    def __init__(self, out): self.out, self.messages = out, []
+    """记录最近一次 chat 的 messages 与 kwargs——kwargs 用于钉死 spec 精确参数契约。"""
+
+    def __init__(self, out):
+        self.out, self.messages, self.kwargs = out, [], {}
+
     def chat(self, messages, **kw):
         self.messages = messages
+        self.kwargs = kw
         return {"content": self.out, "tool_calls": None, "finish_reason": "stop", "usage": {}}
 
 
@@ -36,6 +42,8 @@ def test_degrade_without_llm():
     doc = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None)
     assert doc.markdown.startswith("# ") and "## 四、详细行程安排" in doc.markdown
     assert len(doc.sections) == 8
+    # 八章标题字面单一来源：降级输出的 ## 序列 == PROPOSAL_SECTIONS
+    assert doc.sections == [f"## {h}" for h in PROPOSAL_SECTIONS]
 
 
 def test_interview_guide_per_type():
@@ -43,6 +51,10 @@ def test_interview_guide_per_type():
     guides = compose_interview_guide("宗族变迁", ["长老", "集市商户"], llm=llm)
     assert set(guides) == {"长老", "集市商户"}
     assert "知情同意" in llm.messages[-1]["content"]
+    # 钉死 guide 路径的 LLM 参数（spec 公理 2 精确值；两类报道人共用同一参数组）
+    assert llm.kwargs["slot"] == "interview"
+    assert llm.kwargs["max_tokens"] == 4096
+    assert llm.kwargs["temperature"] == 0.5
 
 
 def test_mode_default_and_fallback():
@@ -95,23 +107,36 @@ def test_llm_success_extracts_sections_and_uses_phase_prompt():
     # user 消息 = context_block + 固定尾句"请生成完整研究方案"
     assert "请生成完整研究方案" in llm.messages[-1]["content"]
     assert "宗族变迁" in llm.messages[-1]["content"]
+    # 钉死 brief 逐字规定的 LLM 参数契约（任何默认值漂移都应红在此处、而不是静默通过 134 全绿）
+    assert llm.kwargs["slot"] == "proposal"
+    assert llm.kwargs["max_tokens"] == 8192
+    assert llm.kwargs["temperature"] == 0.5
 
 
 def test_llm_error_content_falls_back_to_template():
     """controller 裁决：chat() 的 error 分支（content 空串）也走模板降级、不抛异常。"""
+
     class ErrLLM:
-        def __init__(self): self.messages = []
+        def __init__(self):
+            self.messages, self.kwargs = [], {}
+
         def chat(self, messages, **kw):
             self.messages = messages
+            self.kwargs = kw
             return {"content": "", "tool_calls": None, "finish_reason": "",
                     "usage": {}, "error": "upstream 500"}
 
+    llm = ErrLLM()
     doc = compose_proposal(
-        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}], [], llm=ErrLLM()
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}], [], llm=llm
     )
     # 走模板降级路径：markdown 含 "（模板降级版）" 尾注 + 八章 sections
     assert "（模板降级版）" in doc.markdown
     assert len(doc.sections) == 8
+    # error 分支同样命中 _llm_full_proposal，参数契约与成功路径一致
+    assert llm.kwargs["slot"] == "proposal"
+    assert llm.kwargs["max_tokens"] == 8192
+    assert llm.kwargs["temperature"] == 0.5
 
 
 def test_interview_guide_unmatched_type_still_includes_methodology():
@@ -148,6 +173,10 @@ def test_section_rewrite_replaces_only_target_block():
     assert "新行程" in doc.markdown and "旧行程" not in doc.markdown
     # 其他段落保持不变
     assert "旧内容 A" in doc.markdown and "旧文献" in doc.markdown
+    # 单章重写复用同一 LLM 参数组（slot=proposal）
+    assert llm.kwargs["slot"] == "proposal"
+    assert llm.kwargs["max_tokens"] == 8192
+    assert llm.kwargs["temperature"] == 0.5
 
 
 def test_compose_proposal_registered():
