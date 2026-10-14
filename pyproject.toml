@@ -31,6 +31,7 @@ packages = [
     "fieldwork_agent",
     "fieldwork_agent.core",
     "fieldwork_agent.kernel",
+    "fieldwork_agent.kernel.sources",
     "fieldwork_agent.tools",
 ]
 
