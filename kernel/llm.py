@@ -3,9 +3,9 @@
 约定：
 - 构造无 api_key 或 SDK 缺失时抛 ``RuntimeError``（调用方以 ``Config.dashscope_available`` 预判）；
 - ``models`` 为槽位→模型名映射（键 ``"interview"|"proposal"|"extract"``），本模块不 import Config；
-- ``chat()`` 成功返回 ``{"content", "tool_calls", "finish_reason", "usage"}``，
-  ``tool_calls`` 为 ``[{"id", "name", "arguments": dict}]`` 或 ``None``；
-- HTTP 非 200 返回 ``{"content": "", "tool_calls": None, "error": str}``，不抛异常。
+- ``chat()`` 返回恒含 ``{"content", "tool_calls", "finish_reason", "usage"}`` 四键（成功与错误
+  路径皆然，消费方可直读任意键），``tool_calls`` 为 ``[{"id", "name", "arguments": dict}]`` 或 ``None``；
+- HTTP 非 200 不抛异常，返回四键的零值形态并附 ``error`` 字符串（loop 无异常通道，错误须有去处）。
 """
 import json
 from typing import Any
@@ -82,7 +82,9 @@ class LLMClient:
             call_kwargs["tools"] = tools
         response = Generation.call(**call_kwargs)
         if response.status_code != 200:
-            return {"content": "", "tool_calls": None, "error": str(response.message)}
+            # 契约四键恒在：消费方（宿主/loop）可无条件读 usage 等键，error 为附加错误通道。
+            return {"content": "", "tool_calls": None, "finish_reason": "",
+                    "usage": {}, "error": str(response.message)}
         choice = response.output.choices[0]
         message = choice.message
         return {

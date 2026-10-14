@@ -121,11 +121,13 @@ def test_llm_chat_plain_content(monkeypatch):
 
 
 def test_llm_chat_error_status(monkeypatch):
+    """非 200 不抛异常，但契约四键恒在（宿主直读 out["usage"] 不得 KeyError）。"""
     resp = _fake_response(status_code=400, message="bad request")
     monkeypatch.setattr(llm_mod.Generation, "call", lambda **kw: resp)
     client = LLMClient(api_key="k", models={"proposal": "m"})
     out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
-    assert out == {"content": "", "tool_calls": None, "error": "bad request"}
+    assert out == {"content": "", "tool_calls": None, "finish_reason": "",
+                   "usage": {}, "error": "bad request"}
 
 
 def test_llm_chat_bad_arguments_json_tolerated(monkeypatch):
