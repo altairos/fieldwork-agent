@@ -20,9 +20,14 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+mcp = [
+    "mcp>=1.2",
+]
 
 [project.scripts]
 fieldwork = "fieldwork_agent.core.cli:main"
+# server.py 属 Task 5；此处仅登记入口字符串，editable 安装不因未实现模块报错
+fieldwork-mcp = "fieldwork_agent.mcp_server.server:run_stdio"
 
 [tool.setuptools]
 # 仓库根即包目录，映射为顶层包 fieldwork_agent；子包相对其自动解析
@@ -38,6 +43,7 @@ packages = [
     "fieldwork_agent.kernel.documents",
     "fieldwork_agent.kernel.repository",
     "fieldwork_agent.runtime",
+    "fieldwork_agent.mcp_server",
 ]
 
 [tool.pytest.ini_options]
