@@ -27,7 +27,7 @@ _FULL_ARGS = {
     "ctx": {"discipline": "社会学", "topic": "宗族变迁", "target_location": "喜洲"},
     "sites": [{"name": "喜洲", "confirmed": True}],
     "itinerary": {"legs": [{"from": "昆明", "to": "大理"}]},
-    "informants": [{"code": "P1", "type": "长老"}],
+    "informants": [{"code": "P1", "type": "村干部"}],
     "knowledge": [],
 }
 
@@ -92,10 +92,10 @@ def test_compose_interview_guide_registered_fn_returns_envelope():
     """guide 注册 fn 同样返 Envelope，data 为 类型→提纲 的 dict（无 llm 走模板降级）。"""
     meta = capabilities()["compose_interview_guide"]
     assert meta.fn is guide_handler
-    env = meta.fn(topic="宗族变迁", informant_types=["长老"])
+    env = meta.fn(topic="宗族变迁", informant_types=["村干部"])
     assert isinstance(env, Envelope) and env.ok is True
-    assert isinstance(env.data, dict) and "长老" in env.data
-    assert "知情同意" in env.data["长老"]
+    assert isinstance(env.data, dict) and "村干部" in env.data
+    assert "知情同意" in env.data["村干部"]
 
 
 # ---------------------------------------------------------------- 宿主 dispatch 形状
@@ -117,9 +117,9 @@ def test_dispatch_interview_guide_returns_envelope(fake_config):
 
     agent = FieldAgent(fake_config)
     env = agent.client_kernel_dispatch(
-        "compose_interview_guide", {"topic": "宗族变迁", "informant_types": ["集市商户"]})
+        "compose_interview_guide", {"topic": "宗族变迁", "informant_types": ["返乡务工者"]})
     assert isinstance(env, Envelope) and env.ok is True
-    assert isinstance(env.data, dict) and "集市商户" in env.data
+    assert isinstance(env.data, dict) and "返乡务工者" in env.data
 
 
 def test_dispatch_missing_channel_becomes_missing_channel_code(fake_config):

@@ -470,7 +470,7 @@ register(CapabilityMeta(
 register(CapabilityMeta(
     name="compose_interview_guide",
     description="为每类报道人（INFORMANT_LIBRARY 键）生成半结构式访谈提纲；"
-                "user prompt 固定包含 INTERVIEW_GUIDE_METHODOLOGY 与知情同意话术字样，"
+                "user prompt 固定包含访谈方法要点与知情同意说明字样，"
                 "无 llm 时走模板降级、直嵌条目字段与方法论全文。",
     fn=guide_handler,
     args_model=ComposeInterviewGuideArgs,

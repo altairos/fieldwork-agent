@@ -201,7 +201,7 @@ def _build_static_resources() -> list[Resource]:
     # 6. guidance/interview-guide/methodology
     items.append(Resource(
         uri="fieldwork://guidance/interview-guide/methodology",
-        name="半结构式访谈方法论",
+        name="访谈方法论",
         mimeType="text/markdown",
     ))
     # 7. templates/proposal-outline

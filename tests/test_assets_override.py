@@ -72,7 +72,7 @@ def test_informants_module_switches(fake_pkg):
     assert set(informants.INFORMANT_LIBRARY) == {"测试甲", "测试乙"}
     assert set(informants.INFORMANT_EXAMPLES) == {"测试甲"}
     assert informants.get_informant("测试甲")["approach"] == "甲式接触"
-    assert informants.get_informant("长老") is None
+    assert informants.get_informant("虚构访谈对象") is None
     assert informants.INTERVIEW_GUIDE_METHODOLOGY == "# 端到端假方法论"
 
 

@@ -100,6 +100,23 @@ def test_bad_json_raises(tmp_path):
         assets.informant_library()
 
 
+def test_library_entry_missing_field_raises(tmp_path):
+    """词条缺任一必备字段 → AssetsError，消息含词条键与资产文件名。"""
+    broken = {"测试甲": {k: v for k, v in FAKE_LIBRARY["测试甲"].items()
+                        if k != "ethics"}}
+    assets.reload(_write_pkg(tmp_path / "pkg", library=broken))
+    with pytest.raises(assets.AssetsError, match="informant_library.json"):
+        assets.informant_library()
+
+
+def test_library_entry_question_domains_not_list_raises(tmp_path):
+    """question_domains 非 list → AssetsError，消息含资产文件名。"""
+    broken = {"测试甲": dict(FAKE_LIBRARY["测试甲"], question_domains="域一")}
+    assets.reload(_write_pkg(tmp_path / "pkg", library=broken))
+    with pytest.raises(assets.AssetsError, match="informant_library.json"):
+        assets.informant_library()
+
+
 def test_example_types_beyond_library_raises(tmp_path):
     pkg = _write_pkg(tmp_path / "pkg", library=FAKE_LIBRARY,
                      types=["测试甲", "幽灵"])

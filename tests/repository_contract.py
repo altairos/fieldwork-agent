@@ -107,9 +107,9 @@ class TestContract:
 
     def test_informants_and_sites(self, repo):
         repo.save_field_site("p1", {"name": "喜洲", "confirmed": True})
-        repo.save_informant("p1", {"code": "P1", "type": "长老"})
+        repo.save_informant("p1", {"code": "P1", "type": "村干部"})
         assert repo.list_field_sites("p1")[0]["confirmed"] is True
-        assert repo.list_informants("p1")[0]["type"] == "长老"
+        assert repo.list_informants("p1")[0]["type"] == "村干部"
 
     def test_record_without_id_gets_one(self, repo):
         sid = repo.save_field_site("p1", {"name": "大理"})

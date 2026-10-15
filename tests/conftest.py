@@ -109,7 +109,13 @@ def fake_flyai():
 @pytest.fixture(autouse=True)
 def _public_assets(tmp_path, monkeypatch):
     """全部测试默认运行在 Tier P 公开版资产下：指向空目录，禁用本地
-    repo/secrets 与 ~/.fieldwork_agent/assets 覆盖，避免私有包泄入测试。"""
+    repo/secrets 与 ~/.fieldwork_agent/assets 覆盖，避免私有包泄入测试。
+
+    边界（终审 INFO-3，挂账）：本 fixture 只管测试**运行期**的资产访问；
+    ``mcp_server/resources.STATIC_RESOURCES`` 在模块导入（collection）期
+    构建、早于任何 fixture 生效——dev 机带 secrets/ 时该快照含私有词条，
+    对 catalog 写形状断言前须先将其惰性化。
+    """
     empty = tmp_path / "_empty_assets"
     empty.mkdir()
     monkeypatch.delenv("FIELDWORK_ASSETS_DIR", raising=False)

@@ -25,7 +25,7 @@ def test_check_advance_b_to_c_requires_site_and_informant():
     no_informant = phases.check_advance("field_site_profiles", ctx, [site], [], False, False)
     assert not no_informant.can_advance, "B→C 缺访谈对象必须不推进(spec §2.1)"
     ok = phases.check_advance(
-        "field_site_profiles", ctx, [site], [InformantRecord(code="P1", type="长老")], False, False
+        "field_site_profiles", ctx, [site], [InformantRecord(code="P1", type="村干部")], False, False
     )
     assert ok.can_advance and ok.to_phase == "itinerary_planning"
 
@@ -123,7 +123,7 @@ def test_check_advance_b_to_c_missing_keys():
         "field_site_profiles",
         ResearchContext(),
         [site],
-        [InformantRecord(code="P1", type="长老")],
+        [InformantRecord(code="P1", type="村干部")],
         False,
         False,
     )

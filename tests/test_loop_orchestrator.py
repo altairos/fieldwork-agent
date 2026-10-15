@@ -297,7 +297,7 @@ def test_acceptance_smoke_no_key(fake_config):
     agent.repo.save_field_site(pid, {
         "name": "大理喜洲", "confirmed": True,
         "profile": {"location": "大理喜洲", "generated_at": "2026-10-14T00:00:00"}})
-    agent.repo.save_informant(pid, {"code": "INF-01", "type": "长老",
+    agent.repo.save_informant(pid, {"code": "INF-01", "type": "村干部",
                                     "relation": "待经村干部引荐"})
     agent.repo.cache_search(pid, "itinerary::大理", "compose_itinerary", {
         "departure": "北京", "destinations": ["大理"],

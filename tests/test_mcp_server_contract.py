@@ -104,7 +104,7 @@ async def test_compose_proposal_degraded_visible_without_key(server):
         "ctx": {"discipline": "社会学", "topic": "宗族变迁", "target_location": "喜洲"},
         "sites": [{"name": "喜洲", "confirmed": True}],
         "itinerary": {"legs": [{"from": "昆明", "to": "大理"}]},
-        "informants": [{"code": "P1", "type": "长老"}],
+        "informants": [{"code": "P1", "type": "村干部"}],
         "knowledge": [],
     }
     async with _session(server) as client:

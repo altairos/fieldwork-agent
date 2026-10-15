@@ -30,9 +30,9 @@ class FakeLLM:
 
 
 def test_context_block_contains_all_channels():
-    block = build_context_block(CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}],
+    block = build_context_block(CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}],
                                 [{"title": "旧笔记"}])
-    for token in ["宗族变迁", "喜洲", "legs", "长老", "旧笔记"]:
+    for token in ["宗族变迁", "喜洲", "legs", "村干部", "旧笔记"]:
         assert token in block
 
 
@@ -51,8 +51,8 @@ def test_degrade_without_llm():
 
 def test_interview_guide_per_type():
     llm = FakeLLM("提纲正文")
-    guides = compose_interview_guide("宗族变迁", ["长老", "集市商户"], llm=llm)
-    assert set(guides) == {"长老", "集市商户"}
+    guides = compose_interview_guide("宗族变迁", ["村干部", "乡村教师"], llm=llm)
+    assert set(guides) == {"村干部", "乡村教师"}
     assert "知情同意" in llm.messages[-1]["content"]
     # 钉死 guide 路径的 LLM 参数（spec 公理 2 精确值；两类报道人共用同一参数组）
     assert llm.kwargs["slot"] == "interview"
@@ -116,7 +116,7 @@ _EIGHT = "\n".join([
 def test_llm_success_extracts_sections_and_uses_phase_prompt():
     llm = FakeLLM(_EIGHT)
     doc = compose_proposal(
-        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}], [], llm=llm
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}], [], llm=llm
     )
     assert isinstance(doc, ProposalDoc) and doc.mode == "global"
     # sections 用正则 `^## .+` 提取 → 8 章标题（`# ` 一级标题不计入）
@@ -149,7 +149,7 @@ def test_llm_error_content_falls_back_to_template():
 
     llm = ErrLLM()
     doc = compose_proposal(
-        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}], [], llm=llm
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}], [], llm=llm
     )
     # 走模板降级路径：markdown 含 "（模板降级版）" 尾注 + 八章 sections
     assert "（模板降级版）" in doc.markdown
@@ -235,7 +235,7 @@ def test_suggest_informants_validates_schema():
     assert env.ok and len(env.data) == 4
     assert all(isinstance(c, InformantCandidate) for c in env.data)
     assert "社群骨干" in llm.messages[-1]["content"] or True  # prompt 含主题
-    assert "示范" in llm.messages[-1]["content"] or "长老" in llm.messages[-1]["content"]  # few-shot 锚定
+    assert "示范" in llm.messages[-1]["content"] or "村干部" in llm.messages[-1]["content"]  # few-shot 锚定
 
 
 def test_suggest_informants_illegal_json():

@@ -41,6 +41,13 @@ _ASSET_FILES = {
     "generation_prompts": "generation_prompts.json",
 }
 
+# informant_library 每个词条的必备字段（type 为兼容公开版的附加键，不作硬要求）。
+_ENTRY_REQUIRED_FIELDS = (
+    "approach", "cautions", "question_domains", "ethics",
+    "access_channel", "preparation", "examples",
+)
+_ENTRY_LIST_FIELDS = ("question_domains", "examples")
+
 
 class AssetsError(RuntimeError):
     """资产覆盖包缺失/损坏/校验失败。消息含出错文件路径。"""
@@ -297,11 +304,20 @@ def _load_override(asset_key: str) -> Any:
 def informant_library() -> dict[str, dict]:
     value = _load_override("informant_library")
     data = _PUBLIC_INFORMANT_LIBRARY if value is _MISSING else value
+    filename = _ASSET_FILES["informant_library"]
     if not isinstance(data, dict) or not data:
-        raise AssetsError("informant_library.json 必须是非空对象（键=词条 type）")
+        raise AssetsError(f"{filename} 必须是非空对象（键=词条 type）")
     for key, entry in data.items():
         if not isinstance(entry, dict):
-            raise AssetsError(f"词条 {key!r} 必须是对象")
+            raise AssetsError(f"词条 {key!r} 必须是对象（文件: {filename}）")
+        missing = [f for f in _ENTRY_REQUIRED_FIELDS if f not in entry]
+        if missing:
+            raise AssetsError(
+                f"词条 {key!r} 缺字段 {missing}（文件: {filename}）")
+        for field in _ENTRY_LIST_FIELDS:
+            if not isinstance(entry[field], list):
+                raise AssetsError(
+                    f"词条 {key!r} 字段 {field!r} 必须是列表（文件: {filename}）")
     return copy.deepcopy(data)
 
 

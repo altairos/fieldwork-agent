@@ -56,7 +56,7 @@ def test_save_site_and_informant(tmp_path):
     assert h["save_field_site"](project_id="p1",
                                 record={"name": "喜洲", "confirmed": True})["ok"]
     assert h["save_informant"](project_id="p1",
-                               record={"code": "P1", "type": "长老"})["ok"]
+                               record={"code": "P1", "type": "村干部"})["ok"]
     r = h["check_phase_advance"](project_id="p1")
     assert r["data"]["can_advance"] is True   # confirmed site + ≥1 informant → B→C 由宿主 set_phase 落地
 
