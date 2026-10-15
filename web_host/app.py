@@ -44,7 +44,8 @@ def _mount_frontend(app: FastAPI, web_dist=None) -> None:
     - /assets → StaticFiles（JS/CSS/字体等带哈希产物）
     - catch-all GET /{full_path} → SPA fallback：命中真实静态文件则返回该文件，
       否则返回 index.html（支持 BrowserRouter 深链如 /p/:id 刷新）。
-    - 安全：resolve 后校验路径仍在 dist 内，防目录穿越。
+    - 安全：resolve 后校验路径仍在 dist 内，防目录穿越；resolve 本身对畸形路径
+      （如含 NUL 字节的 /%00）会抛 ValueError/OSError，一并落回 index.html 而非 500。
     """
     from pathlib import Path
 
@@ -69,7 +70,11 @@ def _mount_frontend(app: FastAPI, web_dist=None) -> None:
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
         if full_path:
-            candidate = (dist / full_path).resolve()
+            try:
+                candidate = (dist / full_path).resolve()
+            except (ValueError, OSError):
+                # 畸形路径（NUL 字节 / 平台不接受的字符）：不 500，落回 SPA 入口
+                return FileResponse(index)
             # 防目录穿越：candidate 必须严格在 dist 内且是文件
             # （用 is_relative_to 而非 startswith，避免 dist_backup 等同前缀兄弟目录误判）
             if candidate.is_relative_to(dist_resolved) and candidate.is_file():

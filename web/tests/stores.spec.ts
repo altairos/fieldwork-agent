@@ -53,6 +53,49 @@ describe("conversation store 流式拼接", () => {
   });
 });
 
+describe("conversation store failTurn（回合创建被拒时回滚乐观 UI）", () => {
+  test("弹出刚 push 的 user 消息 + turnRunning=false + 清 buffer（光标不再永久脉冲）", () => {
+    useConversationStore.getState().pushUser("帮我排行程");
+    useConversationStore.getState().beginTurn();
+    expect(useConversationStore.getState().turnRunning).toBe(true);
+    useConversationStore.getState().failTurn();
+    const after = useConversationStore.getState();
+    expect(after.messages).toEqual([]);          // 被拒消息不留痕
+    expect(after.turnRunning).toBe(false);
+    expect(after.streamBuffer).toBe("");
+  });
+  test("只弹末条 user，历史轮次原样保留", () => {
+    useConversationStore.setState({
+      messages: [{ role: "user", content: "上一轮" }, { role: "assistant", content: "上一轮回复" }],
+      streamBuffer: "", turnRunning: false, lastUsage: {},
+    });
+    useConversationStore.getState().pushUser("这一轮");
+    useConversationStore.getState().beginTurn();
+    useConversationStore.getState().failTurn();
+    expect(useConversationStore.getState().messages.map((m) => m.content)).toEqual(["上一轮", "上一轮回复"]);
+  });
+  test("末条是 assistant（消息已被后端接受）时不误弹，仅复位运行态", () => {
+    useConversationStore.setState({
+      messages: [{ role: "user", content: "问" }, { role: "assistant", content: "答" }],
+      streamBuffer: "", turnRunning: true, lastUsage: {},
+    });
+    useConversationStore.getState().failTurn();
+    expect(useConversationStore.getState().messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(useConversationStore.getState().turnRunning).toBe(false);
+  });
+  test("半截流式缓冲一并清掉（不留残字）", () => {
+    useConversationStore.getState().pushUser("问");
+    useConversationStore.getState().applyEvent(ev({ event: "message_delta", text: "半截" }));
+    useConversationStore.getState().failTurn();
+    expect(useConversationStore.getState().streamBuffer).toBe("");
+  });
+  test("空会话调用幂等（不抛错、不造消息）", () => {
+    useConversationStore.getState().failTurn();
+    expect(useConversationStore.getState().messages).toEqual([]);
+    expect(useConversationStore.getState().turnRunning).toBe(false);
+  });
+});
+
 describe("project + ui 阶段推进(右栏不自动切)", () => {
   test("phase_transition 改 phase，ui.activeTab 不变，pendingSuggestion 置位", () => {
     useUiStore.getState().setActiveTab("progress");

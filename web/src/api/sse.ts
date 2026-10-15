@@ -10,17 +10,19 @@ export function parseSseFrames(buffer: string): ParseResult {
   for (const block of blocks) {
     const lines = block.split("\n");
     let event = "";
-    let dataStr = "";
+    const dataLines: string[] = [];
     let id = "";
     let isCommentOnly = true;
     for (const line of lines) {
       if (line.startsWith(":")) continue;                 // 注释/心跳
       isCommentOnly = false;
       if (line.startsWith("event:")) event = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+      // SSE 规范：data 值只去掉冒号后的**单个**前导空格（不是 trim 掉全部空白）
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
       else if (line.startsWith("id:")) id = line.slice(3).trim();
     }
-    if (isCommentOnly || !dataStr) continue;              // 纯心跳或无 data：跳过
+    if (isCommentOnly || dataLines.length === 0) continue; // 纯心跳或无 data：跳过
+    const dataStr = dataLines.join("\n");                  // 多行 data 按规范以 \n 连接
     try {
       const data = JSON.parse(dataStr) as Record<string, unknown>;
       const seq = typeof data.seq === "number" ? data.seq : Number(id);
@@ -61,17 +63,25 @@ export async function streamTurnEvents(
       const decoder = new TextDecoder();
       let buffer = "";
       let closed = false;
-      while (!closed) {
-        const { value, done } = await reader.read();
-        if (done) { closed = true; break; }
-        buffer += decoder.decode(value, { stream: true });
-        const { frames, rest } = parseSseFrames(buffer);
-        buffer = rest;
-        for (const f of frames) {
-          if (f.seq > lastId) lastId = f.seq;
-          opts.onEvent(f);
-          if (f.event === "turn_done" || f.event === "error") { closed = true; }
+      try {
+        while (!closed) {
+          const { value, done } = await reader.read();
+          if (done) { closed = true; break; }
+          buffer += decoder.decode(value, { stream: true });
+          const { frames, rest } = parseSseFrames(buffer);
+          buffer = rest;
+          for (const f of frames) {
+            if (f.seq > lastId) lastId = f.seq;
+            opts.onEvent(f);
+            if (f.event === "turn_done" || f.event === "error") { closed = true; }
+          }
         }
+      } finally {
+        // 无论 turn_done/error 提前终止、流自然结束（done）还是 read 抛出，都取消 reader 释放底层连接：
+        // 后端发完 turn_done 后仍阻塞在 queue.get() 等哨兵（心跳续命），不主动关流；客户端只是停止
+        // 读取会让 TCP 连接滞留，多回合后耗尽浏览器同域并发上限（HTTP/1.1 ~6）导致前端卡死。
+        // abort 场景已由 signal 断开，cancel 幂等安全，其可能的拒绝一并吞掉。
+        await reader.cancel().catch(() => {});
       }
       opts.onClose?.();
       return;                               // 正常结束（turn_done/error 或流关闭）
