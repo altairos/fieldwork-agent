@@ -70,8 +70,9 @@ def _mount_frontend(app: FastAPI, web_dist=None) -> None:
     async def spa_fallback(full_path: str):
         if full_path:
             candidate = (dist / full_path).resolve()
-            # 防目录穿越：candidate 必须在 dist 内且是文件
-            if str(candidate).startswith(str(dist_resolved)) and candidate.is_file():
+            # 防目录穿越：candidate 必须严格在 dist 内且是文件
+            # （用 is_relative_to 而非 startswith，避免 dist_backup 等同前缀兄弟目录误判）
+            if candidate.is_relative_to(dist_resolved) and candidate.is_file():
                 return FileResponse(candidate)
         return FileResponse(index)
 
