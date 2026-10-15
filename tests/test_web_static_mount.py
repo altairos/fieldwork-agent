@@ -77,6 +77,37 @@ def test_traversal_does_not_leak_outside_dist(app, tmp_path):
             assert "TOP-SECRET" not in resp.text
 
 
+def test_traversal_variants_blocked_direct(app, fake_dist):
+    """穿越防护（多变体）：dist **父目录**的秘密文件任何 `..` 变体都拿不到。
+
+    上一条用例的 %2e%2e 变体会被客户端解码后原样传给 handler（覆盖 is_relative_to 分支），
+    而字面 `/../secret.txt` 会被 httpx 按 RFC 3986 规范化成 `/secret.txt`（走 fallback）。
+    这里把两种情况一起断言：命中防护分支或落回 index.html 都算通过——关键是 secret 绝不泄露，
+    且任何变体都不得让请求 5xx（TestClient 默认 raise_server_exceptions=True，异常会直接抛出）。
+    """
+    (fake_dist.parent / "secret.txt").write_text("TOPSECRET", encoding="utf-8")
+    with TestClient(app) as client:
+        for path in (
+            "/../secret.txt",                # 客户端规范化 → /secret.txt → fallback
+            "/..%5csecret.txt",              # 反斜杠变体（Windows 分隔符）→ 穿越分支
+            "/%2e%2e/secret.txt",            # 编码点段 → 解码后原样进 handler → 穿越分支
+            "/assets/../../secret.txt",      # 多级穿越（规范化后）→ fallback
+            "/assets/%2e%2e/%2e%2e/secret.txt",  # 多级编码穿越 → 穿越分支
+        ):
+            resp = client.get(path)
+            assert resp.status_code < 500, path
+            assert "TOPSECRET" not in resp.text, path
+
+
+def test_malformed_path_returns_index_not_500(app):
+    """畸形路径（NUL 字节）不得 500：resolve 抛 ValueError → 落回 index.html（SPA 入口）。"""
+    with TestClient(app) as client:
+        for path in ("/%00", "/%00secret.txt", "/p/%00"):
+            resp = client.get(path)
+            assert resp.status_code == 200, path
+            assert "Fieldwork" in resp.text
+
+
 def test_no_dist_skips_mount(fake_config, tmp_path):
     """dist 不存在 → 不挂载，API 仍正常，catch-all 不存在（根路径 404 而非崩溃）。"""
     from fieldwork_agent.kernel.repository.json_repo import JsonRepository
