@@ -19,6 +19,9 @@ env/
 history.txt
 .env
 
+# 技术秘密（Tier S 资产包，独立私有仓库管理，勿提交主仓）
+secrets/
+
 # 编辑器 / 系统
 .vscode/
 .idea/
