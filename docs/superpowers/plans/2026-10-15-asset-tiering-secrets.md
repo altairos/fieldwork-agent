@@ -1291,8 +1291,11 @@ def main() -> int:
     if tracked:
         problems.append(f"secrets/ 下有被跟踪文件: {tracked}")
     for s in MINIMAL_FEATURE_STRINGS:
-        # git grep 无匹配时 exit 1、stdout 空——只看 stdout 非空即命中
-        hits = run_git("grep", "-l", "--fixed-strings", s).strip()
+        # git grep 无匹配时 exit 1、stdout 空——只看 stdout 非空即命中。
+        # pathspec 排除 docs/（计划与 spec 文档含特征串明文，其清洗由 M3 历史
+        # 重写兜底）与本脚本自身（特征串字面量所在）——否则 guard 永远自命中。
+        hits = run_git("grep", "-l", "--fixed-strings", s, "--",
+                       ":(exclude)docs", ":(exclude)tools/check_secrets_leak.py").strip()
         if hits:
             problems.append(f"特征串 {s!r} 命中被跟踪文件:\n{hits}")
     if problems:
