@@ -2,6 +2,7 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fieldwork_agent.web_host.api.guard import checked_pid
 from fieldwork_agent.web_host.deps import get_llm, get_repo, get_turn_manager
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
@@ -27,6 +28,10 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
     repo = get_repo(request)
     tm = get_turn_manager(request)
     llm = get_llm(request)
+    # 终审 C1（HTTP 侧）：守卫必须先于 repo/TurnManager——tm.create_turn 以
+    # root/pid/turns/tid 拼路径，穿越 id 可在 projects 根外建目录写 meta.json。
+    # turn_id 不在本次范围（客户端 turn_id 只能命中内存注册表的 uuid 键，见 guard-report）
+    project_id = checked_pid(project_id, repo)
     try:
         repo.get_state(project_id)
     except KeyError:
@@ -52,6 +57,8 @@ async def _execute_turn(app, pid, tid, text, llm):
 
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
 async def stream_events(project_id: str, turn_id: str, request: Request):
+    # 守卫先于 tm（tm.replay 以 root/pid/turns/tid 拼 events.jsonl 路径）
+    project_id = checked_pid(project_id, get_repo(request))
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:
@@ -86,6 +93,7 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
 async def cancel_turn(project_id: str, turn_id: str, request: Request):
+    project_id = checked_pid(project_id, get_repo(request))
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:

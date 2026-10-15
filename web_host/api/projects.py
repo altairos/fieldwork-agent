@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fieldwork_agent.web_host.api.guard import checked_pid
 from fieldwork_agent.web_host.deps import get_repo
 from pydantic import BaseModel
 
@@ -18,7 +19,10 @@ class CreateProjectRequest(BaseModel):
 
 @router.post("/projects", status_code=201)
 async def create_project(body: CreateProjectRequest, repo=Depends(get_repo)):
-    pid = body.project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
+    # 终审 C1（HTTP 侧）：body.project_id 客户端可控且 repo.create 以 root/pid 直拼路径，
+    # 统一对最终 pid 过守卫（自动生成的 field_<时间戳> 天然合法，也走同一接入点）；
+    # 必须先于 repo.create，否则穿越 id 可在 projects 根外任意建目录并写 state.json
+    pid = checked_pid(body.project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}", repo)
     repo.create(pid)
     patch = {k: v for k, v in {"discipline": body.discipline,
                                 "topic": body.topic, "purpose": body.purpose}.items() if v}
@@ -29,6 +33,7 @@ async def create_project(body: CreateProjectRequest, repo=Depends(get_repo)):
 
 @router.get("/projects")
 async def list_projects(repo=Depends(get_repo)):
+    # pid 取自 repo.list_projects()（磁盘目录名，非客户端可控），无需守卫
     results = []
     for summary in repo.list_projects():
         pid = summary["project_id"]
@@ -42,6 +47,9 @@ async def list_projects(repo=Depends(get_repo)):
 
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str, repo=Depends(get_repo)):
+    # Starlette 在进 handler 前已解码 path 参数（..%2F 到手已是 ../），满足守卫前提；
+    # 非法 → 400，先于 repo.get_state（否则穿越 id 可越根读状态）
+    project_id = checked_pid(project_id, repo)
     try:
         state = repo.get_state(project_id)
     except KeyError:
