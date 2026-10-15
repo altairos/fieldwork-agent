@@ -1,12 +1,17 @@
+import { useEffect } from "react";
 import { BrowserRouter, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { rest } from "./api/rest";
+import { Composer } from "./components/chat/Composer";
+import { PhaseBanner } from "./components/chat/PhaseBanner";
+import { Timeline } from "./components/chat/Timeline";
 import { Header } from "./components/layout/Header";
 import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
-import { EmptyState } from "./components/ui/EmptyState";
-import { IconCompass } from "./components/ui/icons";
+import { useTurn } from "./hooks/useTurn";
 import { useProjectStore } from "./stores/project";
+import { useUiStore } from "./stores/ui";
 
-// 三路由占位：后续 Task 分别替换为 ProjectHub / Workspace / ProposalView 真实页面
+// ProjectHub / ProposalView 仍为占位：分别由后续 Task 替换为真实页面（不在本 Task 范围）
 function ProjectHub() {
   return (
     <div className="font-serif text-ink">
@@ -18,14 +23,46 @@ function ProjectHub() {
 
 /**
  * Workspace 三栏骨架（设计板 lines 388-674）：
- * Header 顶栏 + 左栏 PhaseRail(212px) + 中栏对话流占位(1fr) + 右栏上下文面板(340px)。
- * 中栏对话流与各面板内容由 Task 7 填充。
+ * Header 顶栏 + 左栏 PhaseRail(212px) + 中栏对话流(1fr) + 右栏上下文面板(340px)。
+ *
+ * 中栏（设计板 line 426 `flex flex-col bg-paper/40 min-w-0`）= PhaseBanner(428-432)
+ *   + Timeline(433-514，flex-1 滚动) + Composer(516-526)。
+ * 回合所有权单一：`useTurn(projectId)` 只在此处调用一次，句柄注入 Composer
+ *   （Composer 自身不再建第二个回合，避免并发 SSE 流）。
+ * 初始快照：`GET /projects/{id}` → `project.loadSnapshot`（右栏五面板的 REST 侧数据源）；
+ *   失败经 ui store 的 error 事件如实上屏（PhaseBanner 的降级横幅），不静默吞错、不伪造空快照。
  */
 function Workspace() {
   const { id } = useParams();
+  const projectId = id ?? "";
   const navigate = useNavigate();
   const phase = useProjectStore((s) => s.phase);
   const topic = useProjectStore((s) => s.snapshot?.research_context?.topic);
+  const loadSnapshot = useProjectStore((s) => s.loadSnapshot);
+  const turn = useTurn(projectId);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    rest
+      .getProject(projectId)
+      .then((snap) => {
+        if (alive) loadSnapshot(snap);
+      })
+      .catch((err: unknown) => {
+        if (!alive) return;
+        useUiStore.getState().applyEvent({
+          event: "error",
+          code: "snapshot_failed",
+          message: `项目快照加载失败：${String(err)}`,
+          hint: "请刷新重试",
+        });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, loadSnapshot]);
+
   return (
     <div className="h-full flex flex-col">
       <Header
@@ -38,12 +75,10 @@ function Workspace() {
       />
       <div className="flex-1 grid grid-cols-[212px_1fr_340px] min-h-0">
         <LeftRail phase={phase} onBack={() => navigate("/")} />
-        <main className="bg-paper/40 min-w-0 flex flex-col items-center justify-center">
-          <EmptyState
-            icon={<IconCompass className="w-4 h-4" />}
-            title="对话流建设中"
-            hint="阶段访谈与工具结果卡将在此呈现（Task 7 接入 SSE 时间线）"
-          />
+        <main className="flex flex-col bg-paper/40 min-w-0 min-h-0">
+          <PhaseBanner />
+          <Timeline />
+          <Composer turn={turn} />
         </main>
         <RightDock />
       </div>

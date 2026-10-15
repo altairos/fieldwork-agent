@@ -1,0 +1,34 @@
+import { MarkdownBody } from "./AssistantStream";
+
+/**
+ * MessageBubble — 时间线单条消息（历史）。
+ *
+ * 设计板同源：
+ *   user lines 436-440：`flex justify-end` 外层 + 气泡
+ *     `max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-4 py-2.5
+ *      text-[13.5px] leading-relaxed shadow-card`
+ *     （`#EDF1F4` 为设计板 line 437 的 token 外用值 —— 靛蓝底上的气泡文字色，按约束保留并注行号）
+ *   assistant lines 451-462：`flex gap-3` + 头像 `w-6 h-6 shrink-0 mt-0.5`（line 452）+
+ *     `min-w-0 flex-1` 内嵌宋体 markdown（复用 MarkdownBody，与流式缓冲同一渲染口径）
+ *
+ * 红线：正文原样呈现（user 用 whitespace-pre-wrap 保留换行；assistant 走 markdown），不改写、不补数字。
+ */
+export function MessageBubble({ role, content }: { role: "user" | "assistant"; content: string }) {
+  if (role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card whitespace-pre-wrap break-words">
+          {content}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex gap-3">
+      <img src="/miovelle-mark-cinnabar.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
+      <div className="min-w-0 flex-1">
+        <MarkdownBody text={content} />
+      </div>
+    </div>
+  );
+}

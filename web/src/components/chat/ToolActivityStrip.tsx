@@ -1,0 +1,89 @@
+import { Chip } from "../ui/Chip";
+import { PulseDot, type DotTone } from "../ui/PulseDot";
+import { IconAlert, IconCheck } from "../ui/icons";
+import { useToolsStore, type ToolCall } from "../../stores/tools";
+
+/**
+ * ToolActivityStrip — AGENT 工具活动条（紧凑列表，一行一次调用）。
+ *
+ * 设计板同源：中栏工具活动条 lines 443-448
+ *   容器 line 443 `hairline rounded-lg bg-card px-4 py-3 space-y-2`
+ *   小标 line 444 `text-[10.5px] tracking-[.16em] text-inkfaint mb-1`「AGENT 工具活动」
+ *   行 line 445 `flex items-center gap-2 text-[12.5px]` + `dot`（PulseDot）+
+ *      工具名 `num text-inksoft`（line 445 `compose_itinerary`）+ 简述 `text-inkfaint`（「· 昆明→喜洲 · 90 天」）
+ *   完成态 line 445 尾部 `w-3.5 h-3.5 text-bamboo ml-auto` check 图标
+ *   降级态 line 447：整行 `opacity-60` + 工具名 `line-through decoration-inkfaint/60` +
+ *      `chip bg-ochrewash text-ochre border-ochre/25 ml-1`「降级 · flyai_unavailable」+ 尾部 `text-inkfaint ml-auto text-[11px]`
+ *   进行中：`dot bg-cinnabar animate-pulse`（设计板 line 264 的进行中态语义，PulseDot 已内建）
+ *
+ * 同源红线②：只读 tools store（tool_started/tool_completed 归约结果），不发请求、不转述数字；
+ * 简述取内核下发的 `purpose` 原文，缺失时回落 `args` 的标量键值（原样呈现，不加工、不猜语义）。
+ */
+
+/** args → 简述：只取标量值（字符串/数字/布尔），最多 3 项，原样 `key value`。 */
+function argsSummary(args: Record<string, unknown>, limit = 3): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    if (parts.length >= limit) break;
+    if (typeof value === "string" && value.trim()) parts.push(`${key} ${value.trim()}`);
+    else if (typeof value === "number" && Number.isFinite(value)) parts.push(`${key} ${value}`);
+    else if (typeof value === "boolean") parts.push(`${key} ${value}`);
+  }
+  return parts.join(" · ");
+}
+
+function Row({ call }: { call: ToolCall }) {
+  const degraded = Boolean(call.degraded);
+  const failed = call.status === "failed";
+  const running = call.status === "running";
+  const dot: DotTone = running ? "cinnabar" : failed ? "ochre" : "bamboo";
+  const desc = call.purpose || argsSummary(call.args);
+  const tail = running
+    ? "进行中"
+    : failed
+      ? call.data === null || call.data === undefined
+        ? "未取得数据"
+        : "调用失败"
+      : "";
+
+  return (
+    <li className={`flex items-center gap-2 text-[12.5px] ${failed || degraded ? "opacity-60" : ""}`.trim()}>
+      <PulseDot tone={dot} pulsing={running} />
+      <span
+        className={`num text-inksoft ${failed ? "line-through decoration-inkfaint/60" : ""}`.trim()}
+      >
+        {call.tool}
+      </span>
+      {desc && <span className="text-inkfaint truncate">· {desc}</span>}
+      {degraded && <Chip tone="ochre" className="ml-1 shrink-0">降级 · {call.degraded}</Chip>}
+      {running ? (
+        <span className="text-cinnabar ml-auto text-[11px] shrink-0">{tail}</span>
+      ) : failed ? (
+        <span className="text-inkfaint ml-auto text-[11px] shrink-0 flex items-center gap-1">
+          <IconAlert className="w-3.5 h-3.5 text-ochre" />
+          {tail}
+        </span>
+      ) : (
+        <IconCheck className="w-3.5 h-3.5 text-bamboo ml-auto shrink-0" />
+      )}
+    </li>
+  );
+}
+
+/** 工具活动条；本回合尚无任何调用时不渲染（不留空壳）。 */
+export function ToolActivityStrip() {
+  const byCallId = useToolsStore((s) => s.byCallId);
+  const order = useToolsStore((s) => s.order);
+  if (order.length === 0) return null;
+  const calls = order.map((id) => byCallId[id]).filter((c): c is ToolCall => Boolean(c));
+  return (
+    <div className="hairline rounded-lg bg-card px-4 py-3 space-y-2">
+      <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-1">AGENT 工具活动</div>
+      <ul className="space-y-2">
+        {calls.map((call) => (
+          <Row key={call.call_id} call={call} />
+        ))}
+      </ul>
+    </div>
+  );
+}
