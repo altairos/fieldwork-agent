@@ -108,6 +108,36 @@ fieldwork-web                    # 启动在 http://127.0.0.1:8300
 - `GET /projects/{id}/proposal` — 最新提案
 - `GET /projects/{id}/proposal/download` — 下载 .md
 
+## Web 前端
+
+前端在 `web/`（Vite + React + TypeScript + Tailwind），消费 Web 宿主的 REST + SSE。
+
+### 开发
+
+```powershell
+cd web
+npm install
+npm run dev          # vite dev :5173，proxy /projects → :8300
+```
+
+另起 Web 宿主：`fieldwork-web`（:8300）。无后端时可用 mock 联调：`npm run mock`（:8301，两步式 SSE 回放）。
+
+### 构建与挂载
+
+```powershell
+cd web && npm run build   # 产物 → web/dist
+```
+
+`web/dist` 存在时，Web 宿主（`fieldwork-web`）自动挂载到 `/`（API 路由优先，SPA 深链 fallback）。访问 `http://127.0.0.1:8300/`。
+
+### 测试
+
+```powershell
+cd web
+npm run test         # vitest 单元/组件
+npm run test:e2e     # Playwright L4 端到端（首次需 npx playwright install）
+```
+
 ## 🎯 飞猪 FlyAI 全部 8 个工具深度集成
 
 | 工具 | 田野调查场景 | 调用策略 |
