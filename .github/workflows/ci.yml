@@ -35,3 +35,31 @@ jobs:
       # 测试全部基于 mock，无需 DASHSCOPE_API_KEY / flyai CLI / 联网
       - name: Test (pytest)
         run: pytest -ra
+
+  # 前端独立 job（Task 9）：vitest 单测 + Playwright L4 端到端冒烟。
+  # 不混入 Python 矩阵；e2e 跑在扩展后的 mock server（纯 Node、确定性），
+  # 无需 Python 后端 / DASHSCOPE_API_KEY / flyai。L4 不允许静默 skip（spec §6.CI）。
+  frontend:
+    name: frontend (vitest + playwright L4)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Unit/component (vitest)
+        run: npx vitest run
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E (L4, no silent skip)
+        run: npm run test:e2e
