@@ -24,3 +24,13 @@ history.txt
 .idea/
 .DS_Store
 Thumbs.db
+
+# 宣传
+docs/promo/
+
+# 前期研究
+# 前端 web/ 工程
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/
