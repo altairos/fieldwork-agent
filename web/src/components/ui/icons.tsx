@@ -93,3 +93,77 @@ export function IconAlert(props: IconProps) {
     </Line>
   );
 }
+
+// ── Task 6 追加：工具卡片所需图标（同一 symbol 库逐条提取，禁 emoji 红线）──
+
+/** 折叠箭头（details 展开态由 tokens.css `.caret` 旋转 90°） · line 135 #ic-caret（1.8px 描边） */
+export function IconCaret(props: IconProps) {
+  return <Line strokeWidth={1.8} {...props}><path d="m9 6 6 6-6 6" /></Line>;
+}
+
+/** 航班（大交通） · line 123 #ic-plane */
+export function IconPlane(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="M10.5 13.5 4 11l1.5-1.5 5 .5 3-3.5c.7-.8 2.3-1 3-.3s.5 2.3-.3 3L13 12.5l.5 5L12 19z" />
+    </Line>
+  );
+}
+
+/** 火车/高铁（大交通备选） · line 124 #ic-train */
+export function IconTrain(props: IconProps) {
+  return (
+    <Line {...props}>
+      <rect x="5" y="3" width="14" height="13" rx="3" />
+      <path d="M5 10h14M8 20l2-3M16 20l-2-3" />
+      <circle cx="9" cy="13" r=".6" />
+      <circle cx="15" cy="13" r=".6" />
+    </Line>
+  );
+}
+
+/** 床（住宿） · line 125 #ic-bed */
+export function IconBed(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="M3 18v-8m0 3h18v5M3 12h7a3 3 0 0 1 3 3v0" />
+      <path d="M21 18v-3a3 3 0 0 0-3-3h-4" />
+      <circle cx="7" cy="10" r="1.6" />
+    </Line>
+  );
+}
+
+/** 庙宇（文化资源/兴趣点） · line 126 #ic-temple */
+export function IconTemple(props: IconProps) {
+  return <Line {...props}><path d="M4 9 12 4l8 5M6 9v10m12-10v10M4 19h16M10 19v-5h4v5" /></Line>;
+}
+
+/** 钱包（预算） · line 127 #ic-wallet */
+export function IconWallet(props: IconProps) {
+  return (
+    <Line {...props}>
+      <rect x="3" y="6" width="18" height="13" rx="2.5" />
+      <path d="M3 10h18M16.5 14.5h1.5" />
+    </Line>
+  );
+}
+
+/** 人群（访谈对象） · line 128 #ic-users */
+export function IconUsers(props: IconProps) {
+  return (
+    <Line {...props}>
+      <circle cx="9" cy="8" r="3" />
+      <path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 6.2a3 3 0 0 1 0 5.6M17.5 19a5.4 5.4 0 0 0-2-4" />
+    </Line>
+  );
+}
+
+/** 书本（提案/访谈提纲文档） · line 129 #ic-book */
+export function IconBook(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5z" />
+      <path d="M4 5.5v15" />
+    </Line>
+  );
+}

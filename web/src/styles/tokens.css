@@ -25,6 +25,14 @@
   .rule { height: 1px; background: #E2D9C8; opacity: .7; }
   .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px;
           border-radius: 9999px; font-size: 11.5px; line-height: 18px; border: 1px solid transparent; }
+  /* 状态点（工具活动条/图例）：设计板 line 80 同源；PulseDot 与 Header 已引用 */
+  .dot { width: 6px; height: 6px; border-radius: 9999px; display: inline-block; }
+  /* 折叠卡（工具结果卡外壳）：去掉浏览器默认三角，改用线形 caret 图标并随开合旋转
+     — 设计板 lines 76-79 逐条同源 */
+  details > summary { list-style: none; cursor: pointer; }
+  details > summary::-webkit-details-marker { display: none; }
+  .caret { transition: transform .18s ease; }
+  details[open] .caret { transform: rotate(90deg); }
 }
 
 /* 滚动条 */
