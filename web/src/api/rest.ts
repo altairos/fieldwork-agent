@@ -11,6 +11,14 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
 }
 
+/** 提案版本列表项（GET /projects/{id}/proposals，web_host/api/exports.py::list_proposals）。 */
+export interface ProposalMeta {
+  id: string;
+  kind?: string;
+  version?: string;
+  created_at?: string;
+}
+
 export const rest = {
   createProject: (body: { project_id?: string; discipline?: string; topic?: string; purpose?: string }) =>
     req<{ project_id: string; phase: string }>("/projects", { method: "POST", body: JSON.stringify(body) }),
@@ -22,5 +30,6 @@ export const rest = {
   cancelTurn: (id: string, turnId: string) =>
     req<{ turn_id: string; status: string }>(`/projects/${id}/turns/${turnId}/cancel`, { method: "POST" }),
   getProposal: (id: string) => req<ProposalDoc & { id: string }>(`/projects/${id}/proposal`),
+  listProposals: (id: string) => req<ProposalMeta[]>(`/projects/${id}/proposals`),
   proposalDownloadUrl: (id: string) => `/projects/${id}/proposal/download`,
 };

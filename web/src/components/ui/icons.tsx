@@ -167,3 +167,15 @@ export function IconBook(props: IconProps) {
     </Line>
   );
 }
+
+// ── Task 8 追加：ProjectHub 项目卡所需（同一 symbol 库提取）──
+
+/** 时钟（更新时间） · line 138 #ic-clock */
+export function IconClock(props: IconProps) {
+  return (
+    <Line {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </Line>
+  );
+}

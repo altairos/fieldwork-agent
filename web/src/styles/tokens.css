@@ -33,6 +33,11 @@
   details > summary::-webkit-details-marker { display: none; }
   .caret { transition: transform .18s ease; }
   details[open] .caret { transform: rotate(90deg); }
+  /* 提案正文（ProposalViewer）：访谈提纲引用块内段落收小排印
+     — 设计板 lines 731-739 同源（块内 13.5px / 1.9 行高，宋体列表节奏） */
+  .proposal-body blockquote p { font-size: 13.5px; line-height: 1.9; margin-bottom: 4px; }
+  .proposal-body blockquote p:last-child { margin-bottom: 0; }
+  .proposal-body blockquote ul, .proposal-body blockquote ol { font-size: 13.5px; line-height: 1.9; margin-bottom: 0; }
 }
 
 /* 滚动条 */
