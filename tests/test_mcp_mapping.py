@@ -23,3 +23,19 @@ def test_annotations_groups():
     # 全等 + 数量钉死：TOOL_GROUPS 键集必须与注册表完全一致
     assert set(TOOL_GROUPS) == {t.name for t in capability_tools()}
     assert len(TOOL_GROUPS) == 13
+
+
+def test_annotations_follow_tool_groups_for_every_tool():
+    """终审①：组标签 → annotations 的映射全量表驱动钉死（抽样 5 个之外，13 个逐一）。
+
+    ``TOOL_GROUPS[t.name]`` 直接下标取值：新工具漏进组标签表会当场 KeyError，
+    不会静默落到 ``_annotations`` 的 document 默认分支上蒙混过关。
+    """
+    tools = capability_tools()
+    assert len(tools) == 13
+    # 只读：搜索/聚合组 True（只出网读数据），文档组 False（生成内容、会写项目状态）
+    assert all(t.annotations.read_only_hint is (TOOL_GROUPS[t.name] != "document")
+               for t in tools)
+    # 开放世界：搜索/聚合组 True（flyai CLI / 外部检索），文档组 False（llm 由宿主注入）
+    assert all(t.annotations.open_world_hint is
+               (TOOL_GROUPS[t.name] in ("search", "aggregation")) for t in tools)

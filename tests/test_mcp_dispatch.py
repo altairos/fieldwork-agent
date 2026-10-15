@@ -22,6 +22,17 @@ def _meta(name: str, fn) -> CapabilityMeta:
     return CapabilityMeta(name=name, description="测试条目", fn=fn, args_model=ToolError)
 
 
+def _patch_both_tables(monkeypatch, name: str, fn) -> None:
+    """把替身塞进两张分派表。
+
+    ``_resolve`` 先看 ``_CLIENTLESS_SINGLETONS``（server 组装时填真实 partial，模块级
+    状态跨测试残留），只 patch ``_CAPABILITY_FNS`` 可能仍打到真实 handler——测试
+    一律两表同换，确保离线、不触真 fn、不起 subprocess。
+    """
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, name, fn)
+    monkeypatch.setitem(dispatch._CLIENTLESS_SINGLETONS, name, fn)
+
+
 class Echo:
     """搜索原语替身：记录收到的参数并返回包络（证明分派只透传业务 kwargs）。"""
 
@@ -81,10 +92,23 @@ def test_snapshot_table_wins_over_live_registry(monkeypatch):
     assert out["ok"] is True and out["data"] == {"from": "snapshot"}
 
 
-def test_invalid_args_envelope():
-    # 多余/强转参数不报错（真实 fn 只会走 CLI 降级），只有缺参才算 invalid：
-    dispatch.call_capability("search_hotels", {"dest_name": 1, "hotel_types": None}, ctx={})
-    out2 = dispatch.call_capability("search_hotels", {}, ctx={})
+def test_invalid_args_envelope(monkeypatch):
+    """终审②：INVALID_ARGS 的两个来源都用替身钉死——不触达真实 handler、不起 subprocess。
+
+    原首行以 ``dest_name=1`` 调真实 ``search_hotels``：既无断言，又把"离线安全"押在
+    CPython 参数转换先于 spawn 的实现细节上。替身同时覆盖两条路径：
+    体内校验抛 TypeError（pydantic/类型校验的同款出口）、以及 ``fn(**arguments)`` 绑定缺参。
+    """
+    def fake_search(dest_name, **kw):
+        raise TypeError("dest_name 须为非空字符串")
+    _patch_both_tables(monkeypatch, "search_hotels", fake_search)
+
+    out = dispatch.call_capability("search_hotels", {"dest_name": 1, "hotel_types": None},
+                                   ctx={})
+    assert out["ok"] is False and out["error"]["code"] == dispatch.INVALID_ARGS
+    assert out["error"]["hint"]   # 客户端可自救：hint 指向 inputSchema
+
+    out2 = dispatch.call_capability("search_hotels", {}, ctx={})   # 缺参 → 绑定失败
     assert out2["ok"] is False and out2["error"]["code"] == dispatch.INVALID_ARGS
 
 
@@ -228,6 +252,29 @@ def test_envelope_dict_json_serializable_and_keeps_degraded():
     assert json.dumps(dumped, ensure_ascii=False)
     assert dumped["degraded"] == "单段失败已隔离"
     assert dumped["data"]["items"][0]["name"] == "古城客栈"
+
+
+def test_business_failure_envelope_passes_through_untouched(monkeypatch):
+    """终审④：``ok=False`` 的业务包络必须原样透传，不得被改写成协议级错误码。
+
+    业务失败（flyai 无 key 的体验降级）走包络不走协议异常；若 dispatch 把它折成
+    invalid_args/internal_error 或丢掉 ``degraded``，客户端就无法区分"我传错了"
+    与"服务端降级了"。整包等值断言：任何字段改写/丢失都当场暴露。
+    """
+    def degraded(**kw) -> Envelope:
+        return Envelope(
+            ok=False,
+            error=ToolError(code="flyai_unavailable", message="flyai CLI 不可用",
+                            hint="配置 FLYAI_API_KEY 后重试"),
+            degraded="体验模式")
+    _patch_both_tables(monkeypatch, "search_hotels", degraded)
+
+    out = dispatch.call_capability("search_hotels", {"dest_name": "大理"}, ctx={})
+
+    assert out == {"ok": False,
+                   "error": {"code": "flyai_unavailable", "message": "flyai CLI 不可用",
+                             "hint": "配置 FLYAI_API_KEY 后重试"},
+                   "degraded": "体验模式"}
 
 
 def test_non_envelope_result_is_wrapped(monkeypatch):

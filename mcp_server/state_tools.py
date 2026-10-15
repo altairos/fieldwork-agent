@@ -191,7 +191,15 @@ def _annotations() -> ToolAnnotations:
     return ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 
 
-_PID = {"type": "string", "description": "项目唯一标识；未知 project_id 返回 project_not_found"}
+def _pid_schema(description: str = "项目唯一标识；未知 project_id 返回 project_not_found") -> dict:
+    """``project_id`` 子 schema 工厂（终审⑨）：每次返回**新** dict。
+
+    原 ``_PID`` 常量是同一个 dict 对象被 7 个 Tool 的 inputSchema 共享（pydantic 不拷贝
+    dict 字段），日后给单个工具定制描述会静默串改其余工具。工厂化后各工具各持一份，
+    schema 内容与此前逐字一致。
+    """
+    return {"type": "string", "description": description}
+
 
 STATE_TOOLS: list[Tool] = [
     Tool(name="create_project",
@@ -199,8 +207,8 @@ STATE_TOOLS: list[Tool] = [
                      "project_id 缺省时自动生成 field_<时间戳>；新项目从 research_positioning 阶段开始。",
          inputSchema={"type": "object",
                       "properties": {
-                          "project_id": {"type": "string",
-                                         "description": "项目唯一标识；缺省自动生成 field_<时间戳>"}}},
+                          "project_id": _pid_schema(
+                              "项目唯一标识；缺省自动生成 field_<时间戳>")}},
          annotations=_annotations()),
     Tool(name="list_projects",
          description="列出全部项目摘要（project_id/phase/created_at/updated_at）；无需参数。",
@@ -208,13 +216,13 @@ STATE_TOOLS: list[Tool] = [
          annotations=_annotations()),
     Tool(name="get_project",
          description="读取整份项目状态（副本，含 phase/research_context/field_sites/informants/proposals 等）。",
-         inputSchema={"type": "object", "properties": {"project_id": _PID},
+         inputSchema={"type": "object", "properties": {"project_id": _pid_schema()},
                       "required": ["project_id"]},
          annotations=_annotations()),
     Tool(name="update_research_context",
          description="按 patch 浅合并更新研究上下文（只覆盖 patch 中出现的键），返回更新后的完整上下文。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _PID,
+                      "properties": {"project_id": _pid_schema(),
                                      "patch": {"type": "object",
                                                "description": "要合并的键值对（如 discipline/topic/scale/budget）"}},
                       "required": ["project_id", "patch"]},
@@ -222,7 +230,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="save_field_site",
          description="保存田野点记录（record 带 id 则更新，否则新建；upsert 幂等），返回记录 id。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _PID,
+                      "properties": {"project_id": _pid_schema(),
                                      "record": {"type": "object",
                                                 "description": "田野点记录（name/confirmed/profile 等；带 id 则更新）"}},
                       "required": ["project_id", "record"]},
@@ -230,7 +238,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="save_informant",
          description="保存报道人（访谈对象）记录（record 带 id 则更新，否则新建；upsert 幂等），返回记录 id。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _PID,
+                      "properties": {"project_id": _pid_schema(),
                                      "record": {"type": "object",
                                                 "description": "报道人记录（code/type/relation/contact/notes；带 id 则更新）"}},
                       "required": ["project_id", "record"]},
@@ -238,7 +246,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="add_knowledge_entry",
          description="向项目知识库新增一条知识条目，返回条目 id；随后可用 search_knowledge 检索。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _PID,
+                      "properties": {"project_id": _pid_schema(),
                                      "title": {"type": "string", "description": "条目标题"},
                                      "content": {"type": "string", "description": "条目正文"},
                                      "source": {"type": "string", "description": "来源标注，缺省 user"},
@@ -250,7 +258,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="search_knowledge",
          description="关键词过滤检索项目知识库（标题+正文+标签，大小写不敏感，空白分词 AND 匹配）。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _PID,
+                      "properties": {"project_id": _pid_schema(),
                                      "text": {"type": "string",
                                               "description": "检索文本（空白分词，要求全部命中）"}},
                       "required": ["project_id", "text"]},
@@ -258,7 +266,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="check_phase_advance",
          description="确定性判定项目当前阶段能否推进（纯规则，不经 LLM），返回 can_advance/to_phase/"
                      "missing_fields；实际阶段切换由宿主落地，本工具只读不改状态。",
-         inputSchema={"type": "object", "properties": {"project_id": _PID},
+         inputSchema={"type": "object", "properties": {"project_id": _pid_schema()},
                       "required": ["project_id"]},
          annotations=_annotations()),
 ]

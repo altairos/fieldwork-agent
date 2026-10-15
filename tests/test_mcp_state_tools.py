@@ -8,6 +8,8 @@ handler 调用风格按控制者裁决 1 统一为 kwargs 具名参数（server 
 8 个收 project_id 的 handler 必须先过净化守卫，穿越输入折 ``invalid_args``
 包络，且 projects 根之外不得出现任何新目录。
 """
+import inspect
+
 import pytest
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.mcp_server.state_tools import STATE_TOOLS, build_handlers
@@ -84,6 +86,56 @@ def test_unknown_project_wrapped_everywhere(tmp_path, name, kwargs):
     h = build_handlers(make_repo(tmp_path))
     out = h[name](**kwargs)
     assert out["ok"] is False and out["error"]["code"] == "project_not_found"
+
+
+# ---------------------------------------------------------------- 终审⑦⑧⑨：定义 ↔ handler 防漂移
+
+
+def test_tool_names_match_handler_keys(tmp_path):
+    """终审⑦①：STATE_TOOLS 与 build_handlers 的键集全等（少一个即 tools/call 黑洞）。"""
+    handlers = build_handlers(make_repo(tmp_path))
+    assert {t.name for t in STATE_TOOLS} == set(handlers)
+
+
+def test_input_schema_matches_handler_signature(tmp_path):
+    """终审⑦②：required = 签名中无默认值的参数集；properties = 全部参数名（逐一对照）。
+
+    ``create_project`` 的 ``project_id`` 有默认值 → 只进 properties、不进 required；
+    任一侧加/删参数而另一侧忘了跟，本断言当场报出工具名。
+    """
+    handlers = build_handlers(make_repo(tmp_path))
+    for tool in STATE_TOOLS:
+        params = inspect.signature(handlers[tool.name]).parameters
+        schema = tool.input_schema
+        required = {n for n, p in params.items() if p.default is inspect.Parameter.empty}
+        assert set(schema.get("required", [])) == required, tool.name
+        assert set(schema["properties"]) == set(params), tool.name
+
+
+def test_create_project_without_id_generates_and_reads_back(tmp_path):
+    """终审⑧：缺省 project_id 分支——自动生成 ``field_<时间戳>`` 且能用该 id 读回状态。"""
+    h = build_handlers(make_repo(tmp_path))
+    out = h["create_project"]()          # 不传 project_id
+    assert out["ok"] is True
+    pid = out["data"]["project_id"]
+    assert pid.startswith("field_")
+    got = h["get_project"](project_id=pid)
+    assert got["ok"] is True and got["data"]["phase"] == "research_positioning"
+
+
+def test_project_id_subschema_not_aliased_across_tools():
+    """终审⑨：project_id 子 schema 不得是同一 dict 对象。
+
+    pydantic 不拷贝 inputSchema 里的嵌套 dict（实测 ``Tool`` 持有原对象），共享常量时
+    给某一个工具定制描述会静默串改其余工具；工厂化后各持一份、内容不变。
+    """
+    subs = [t.input_schema["properties"]["project_id"]
+            for t in STATE_TOOLS if "project_id" in t.input_schema["properties"]]
+    assert len(subs) == 8                            # 除 list_projects 外 8 个工具都收 project_id
+    assert len({id(s) for s in subs}) == len(subs)   # 8 份互不相同的对象
+    assert all(s["type"] == "string" for s in subs)
+    # 内容仍与重构前一致：7 个共用默认描述，create_project 自带"缺省自动生成"说明
+    assert sum(s["description"].endswith("project_not_found") for s in subs) == 7
 
 
 # ---------------------------------------------------------------- 终审 C1：project_id 穿越净化
