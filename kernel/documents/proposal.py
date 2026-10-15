@@ -13,6 +13,7 @@
 import re
 from typing import Any
 
+from fieldwork_agent.kernel import assets
 from fieldwork_agent.kernel.guidance import informants, phases
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -129,7 +130,7 @@ def _bullets_informants(items: list[dict]) -> list[str]:
         lines.append(head)
         entry = informants.get_informant(itype) if itype else None
         if entry:
-            lines.append(f"  - 展示名：{entry['name']}")
+            lines.append(f"  - 展示名：{entry.get('name', itype)}")
             lines.append(f"  - 接近策略：{entry['approach']}")
             lines.append("  - 提问域：" + "、".join(entry["question_domains"]))
             lines.append(f"  - 注意事项：{entry['cautions']}")
@@ -319,11 +320,11 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
     )
 
 
-def _entry_block(entry: dict | None) -> str:
+def _entry_block(entry: dict | None, itype: str = "") -> str:
     if not entry:
         return "（该类型未收录于访谈对象库；请按通用半结构式框架起草）"
     parts = [
-        f"展示名：{entry['name']}",
+        f"展示名：{entry.get('name', itype)}",
         f"接近策略：{entry['approach']}",
         "建议提问域：" + "、".join(entry["question_domains"]),
         f"注意事项：{entry['cautions']}",
@@ -339,7 +340,7 @@ def _guide_degrade(topic: str, itype: str) -> str:
     if not entry:
         return f"{head}\n\n{informants.INTERVIEW_GUIDE_METHODOLOGY}"
     body = "\n".join([
-        f"展示名：{entry['name']}",
+        f"展示名：{entry.get('name', itype)}",
         "",
         "## 接近策略",
         entry["approach"],
@@ -364,10 +365,9 @@ def _guide_prompt(topic: str, itype: str) -> str:
     return (
         f"研究主题：{topic}\n\n"
         f"目标报道人类型：{itype}\n\n"
-        f"该类型条目：\n{_entry_block(entry)}\n\n"
+        f"该类型条目：\n{_entry_block(entry, itype)}\n\n"
         f"{informants.INTERVIEW_GUIDE_METHODOLOGY}\n\n"
-        "请按上述方法论要点，为该类型报道人起草半结构式访谈提纲："
-        "开场—主问—追问—敏感问题处理—知情同意话术（可照读版本）—访后动作。"
+        + assets.generation_prompt("guide_instruction")
     )
 
 
@@ -379,8 +379,7 @@ def compose_interview_guide(topic: str, informant_types: list[str], *,
         content = ""
         if llm is not None:
             messages = [
-                {"role": "system",
-                 "content": "你是田野访谈提纲撰写助手，按半结构式方法论为每类报道人起草针对性提纲。"},
+                {"role": "system", "content": assets.generation_prompt("guide_system")},
                 {"role": "user", "content": _guide_prompt(topic, itype)},
             ]
             resp = llm.chat(messages, slot="interview", max_tokens=4096, temperature=0.5)

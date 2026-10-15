@@ -1,8 +1,9 @@
 """documents/informants — 访谈对象候选的动态生成（suggest_informants）。
 
 修订计划 Task 7+ 的内核化能力：候选生成**不限于示范库类型**——
-- 有 llm：以 ``guidance.informants.INFORMANT_EXAMPLES``（精选 5-6 条含 examples 的示范
-  词条）的 JSON 体作 few-shot 质量锚，user prompt 要求"输出 JSON 数组"，返回逐条
+- 有 llm：以 ``guidance.informants.INFORMANT_EXAMPLES``（精选示范词条，公开版 3 条、
+  secrets 覆盖版更多，均含 examples）的 JSON 体作 few-shot 质量锚，user prompt 要求
+  "输出 JSON 数组"，返回逐条
   ``InformantCandidate.model_validate`` 校验；非法条目丢弃、全部非法 →
   ``Envelope(ok=False, error.code="generation_invalid")``；
 - 无 llm：``match_examples`` 关键词粗匹配降级，degraded 标注"参考起点，非完整覆盖"。
@@ -13,6 +14,7 @@
 import json
 from typing import Any
 
+from fieldwork_agent.kernel import assets
 from fieldwork_agent.kernel.guidance import informants as informant_lib
 from fieldwork_agent.kernel.models import Envelope, InformantCandidate, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
@@ -87,9 +89,7 @@ def suggest_informants(research_topic: str, discipline: str = "",
                 for d in informant_lib.match_examples(research_topic)[:MAX_CANDIDATES]]
         return Envelope(ok=True, data=data, degraded="参考起点，非完整覆盖")
     messages = [
-        {"role": "system",
-         "content": "你是田野调查的信息提供者（报道人）设计助手：为研究主题铺设覆盖不同立场、"
-                    "年龄与权力位置的访谈对象谱系，兼顾可触达性与伦理风险。"},
+        {"role": "system", "content": assets.generation_prompt("suggest_system")},
         {"role": "user", "content": _user_prompt(research_topic, discipline, site_profile)},
     ]
     resp = llm.chat(messages, slot="proposal", max_tokens=4096, temperature=0.5)

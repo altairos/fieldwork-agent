@@ -5,11 +5,12 @@
 
 约定：
 - ``INFORMANT_LIBRARY`` 的键即 ``InformantRecord.type`` 可登记的类型名；
-- 每条固定八个内容字段：``name``（展示名）、``approach``（接近策略）、
+- 公开版（Tier P）每条固定七个内容字段：``approach``（接近策略）、
   ``cautions``（注意事项）、``question_domains``（建议提问域）、``ethics``（伦理提示）、
   ``access_channel``（进入田野途径）、``preparation``（行前保障）、
-  ``examples``（2-3 条提问示例，末条为“追问：”句式）；
-- ``INFORMANT_EXAMPLES`` 是从库中精选的 5-6 条**示范词条**（各含 type + 六个内容字段
+  ``examples``（2-3 条提问示例，末条为“追问：”句式）；secrets 覆盖版（Tier S）
+  词条另含 ``name``（展示名）等扩充字段，消费方取展示名须以 ``get("name", <type>)`` 兜底；
+- ``INFORMANT_EXAMPLES`` 是从库中精选的**示范词条**（公开版 3 条，secrets 覆盖版更多；各含 type + 六个内容字段
   approach/cautions/question_domains/ethics/access_channel/preparation，并附 examples），
   定位是 ``InformantCandidate`` 的写法示范（few-shot 质量锚）与无 key 降级兜底，
   **非枚举白名单**——候选的动态生成见 ``kernel/documents/informants.suggest_informants``；

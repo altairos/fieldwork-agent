@@ -167,15 +167,15 @@ def test_interview_guide_unmatched_type_still_includes_methodology():
     assert set(guides) == {"不存在的类型"}
     assert "知情同意" in llm.messages[-1]["content"]
     # 未收录类型也应把方法论纳入 prompt，方便模型按通用框架起草
-    assert "半结构式访谈方法论要点" in llm.messages[-1]["content"]
+    assert "访谈方法要点（开源简版）" in llm.messages[-1]["content"]
 
 
 def test_interview_guide_degrade_without_llm():
-    guides = compose_interview_guide("宗族变迁", ["长老"], llm=None)
-    assert set(guides) == {"长老"}
+    guides = compose_interview_guide("宗族变迁", ["村干部"], llm=None)
+    assert set(guides) == {"村干部"}
     # 无 llm 时走模板降级：仍产出含方法论与知情同意话术的可用文本
-    assert "知情同意" in guides["长老"]
-    assert "提问域" in guides["长老"]
+    assert "知情同意" in guides["村干部"]
+    assert "提问域" in guides["村干部"]
 
 
 def test_section_rewrite_replaces_only_target_block():
