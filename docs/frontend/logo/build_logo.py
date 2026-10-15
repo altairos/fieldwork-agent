@@ -55,7 +55,7 @@ def write_svgs() -> None:
 
 
 def render_png(size: int, v: dict, fname: str, bg: str | None = None, pad: float = 0.0) -> None:
-    SS, S = 8, size * 8
+    S = size * 8
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     if bg:
