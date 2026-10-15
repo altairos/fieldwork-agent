@@ -90,6 +90,24 @@ fieldwork [my_research] (📍 研究定位) >
   • 您对田野地点的确定程度如何？（已明确地点 / 有区域范围 / 希望我推荐）
 ```
 
+## Web 宿主（FastAPI）
+
+```bash
+pip install -e ".[dev]"
+fieldwork-web                    # 启动在 http://127.0.0.1:8300
+```
+
+开发期前端（Plan 4）通过 Vite proxy 转发 `/projects` 到 `:8300`。
+
+端点概览：
+- `POST /projects` — 创建项目
+- `GET /projects/{id}` — 项目快照
+- `POST /projects/{id}/messages` — 创建回合（返回 turn_id）
+- `GET /projects/{id}/turns/{tid}/events` — SSE 事件流
+- `POST /projects/{id}/turns/{tid}/cancel` — 取消回合
+- `GET /projects/{id}/proposal` — 最新提案
+- `GET /projects/{id}/proposal/download` — 下载 .md
+
 ## 🎯 飞猪 FlyAI 全部 8 个工具深度集成
 
 | 工具 | 田野调查场景 | 调用策略 |

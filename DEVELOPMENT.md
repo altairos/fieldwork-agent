@@ -162,6 +162,14 @@ function calling**：模型读 registry schema 自行决定调用哪个能力，
 ### 5.4 新增命令
 在 `core/cli.py` 主循环的 `if cmd == ...` 分发中追加分支，并在 `print_help()` 登记。
 
+### 5.5 Web 宿主扩展点（web_host/）
+
+- **新增 SSE 事件类型**：修改 `web_host/events.py`（追加 pydantic 模型）+ `sse.py` 编码
+- **新增 REST 端点**：在 `web_host/api/` 对应 router 文件追加
+- **Agent loop 扩展**：`web_host/agent/loop.py` 的 `run_turn`
+- **回合协议（R4）**：`web_host/turn_manager.py`
+- **新增工具卡片**（前端）：只需在 `web/registry/toolCards.ts` 加一行映射
+
 ---
 
 ## 6. CI
@@ -203,7 +211,7 @@ Windows job 专门回归 emoji/UTF-8 输出路径（见第 7 节）。
 - [x] 能力内核化：kernel 纯能力层 + 宿主 function calling（本计划，旧核心已删除）
 - [x] 聚合策略分支测试（`kernel/aggregation`：`profile_field_site` / `compose_itinerary`）
 - [x] `proposal_generation` 结构化输出模板（八章 compose_proposal + mode 回退声明）
+- [x] MCP Server / Web 宿主（FastAPI + SSE 实时事件流 + 回合管理）
 - [ ] `orchestrator` 与 `kernel/llm` 的流式输出测试（需 mock `Generation`）
 - [ ] 集成测试：以 fake flyai stub 跑通五阶段端到端
 - [ ] 钉钉同步（`sync dingtalk`）的测试覆盖
-- [ ] MCP Server / Web 宿主（后续计划：复用 registry schema 与 kernel 能力面）
