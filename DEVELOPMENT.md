@@ -168,7 +168,24 @@ function calling**：模型读 registry schema 自行决定调用哪个能力，
 - **新增 REST 端点**：在 `web_host/api/` 对应 router 文件追加
 - **Agent loop 扩展**：`web_host/agent/loop.py` 的 `run_turn`
 - **回合协议（R4）**：`web_host/turn_manager.py`
-- **新增工具卡片**（前端）：只需在 `web/registry/toolCards.ts` 加一行映射
+- **新增工具卡片**（前端）：见 §5.6（registry 加一行映射 + 写卡片组件）
+
+### 5.6 前端扩展点（web/）
+
+- **新增工具卡片**：内核新增能力后，前端只需 ① 在 `web/src/components/cards/registry.tsx` 的
+  `toolCardRegistry` 加一行 `工具名: 卡片组件` 映射 ② 写一个卡片组件（props: `{data, degraded}`，
+  消费 `tool_completed.data`，价格走 `Price` 组件）。未注册工具自动落 `ToolCardFallback`
+  （JSON 折叠），不报错。
+- **视觉事实源**：`docs/frontend/design-board.html`（学术档案·纸感温润）。改视觉先改设计板，
+  token 值与 `web/tailwind.config.ts` 严格同源。界面禁 emoji，图标用线形 SVG
+  （`web/src/components/ui/icons.tsx`）。
+- **SSE 事件**：六事件协议见 `web/src/types/events.ts`（对齐 `web_host/events.py`）。
+  新增事件类型需同步 events.ts + 四 store 的 applyEvent。
+- **状态层**：四 zustand store（project/conversation/tools/ui），每个 `applyEvent(SseEvent)`
+  只处理相关事件。右栏不自动切 Tab（phase_transition 只置 pendingSuggestion）。
+- **构建挂载**：`npm run build` 产物 `web/dist` 由 `web_host/app.py` 的 `_mount_frontend`
+  自动挂载（API 路由优先 + SPA 深链 fallback + dist 缺失时静默跳过）；`web/dist` 已被
+  `.gitignore` 排除，不入库。
 
 ---
 
