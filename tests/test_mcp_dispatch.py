@@ -83,8 +83,10 @@ def test_live_registry_fallback_resolves_late_registration(monkeypatch):
 
 def test_snapshot_table_wins_over_live_registry(monkeypatch):
     """表命中优先：回落只在快照未命中时发生，既有 monkeypatch 替身语义不变。"""
-    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_keyword",
-                        lambda **kw: {"from": "snapshot"})
+    # 两表同换：create_server 会往 _CLIENTLESS_SINGLETONS 填真实 partial 且模块级残留，
+    # _resolve 又优先查这张表——只换 _CAPABILITY_FNS 会顺序依赖（先跑 server_contract 即红）。
+    _patch_both_tables(monkeypatch, "search_keyword",
+                       lambda **kw: {"from": "snapshot"})
     monkeypatch.setattr(dispatch, "capabilities", lambda: {
         "search_keyword": _meta("search_keyword", lambda **kw: {"from": "live"})})
 
@@ -135,7 +137,7 @@ def test_reserved_keys_never_leak_into_var_keyword_fn(monkeypatch):
     def fake_search(**kw):
         calls.update(kw)
         return Envelope(ok=True, data={"count": len(kw)})
-    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_hotels", fake_search)
+    _patch_both_tables(monkeypatch, "search_hotels", fake_search)
     out = dispatch.call_capability("search_hotels", {"dest_name": "大理"},
                                    ctx={"llm": object(), "client": object()})
     assert out["ok"] is True
@@ -160,7 +162,7 @@ def test_client_supplied_reserved_keys_are_stripped(monkeypatch):
         calls["client"] = client
         calls["extra"] = kw
         return Envelope(ok=True, data={"ok": 1})
-    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_hotels", fake_search)
+    _patch_both_tables(monkeypatch, "search_hotels", fake_search)
 
     arguments = {"dest_name": "大理", "llm": "客户端伪装", "client": "客户端伪装"}
     snapshot = dict(arguments)   # 断言不污染调用方 dict：dispatch 必须工作在副本上
@@ -184,7 +186,7 @@ def test_client_injected_only_when_ctx_provides_it(monkeypatch):
         seen["client"] = client
         seen.update(kw)
         return Envelope(ok=True, data={"profile": 1})
-    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "profile_field_site", fake_profile)
+    _patch_both_tables(monkeypatch, "profile_field_site", fake_profile)
     sentinel = object()
     dispatch.call_capability("profile_field_site", {"location": "大理"},
                              ctx={"client": sentinel})
@@ -198,7 +200,7 @@ def test_internal_error_keeps_exception_message(monkeypatch):
 
     def boom(**kw):
         raise RuntimeError("flyai CLI 崩了")
-    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_ai", boom)
+    _patch_both_tables(monkeypatch, "search_ai", boom)
     out = dispatch.call_capability("search_ai", {"query": "大理 民宿"}, ctx={})
     assert out["ok"] is False and out["error"]["code"] == dispatch.INTERNAL
     assert "flyai CLI 崩了" in out["error"]["message"]
@@ -278,7 +280,7 @@ def test_business_failure_envelope_passes_through_untouched(monkeypatch):
 
 
 def test_non_envelope_result_is_wrapped(monkeypatch):
-    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_keyword", lambda **kw: {"raw": 1})
+    _patch_both_tables(monkeypatch, "search_keyword", lambda **kw: {"raw": 1})
     out = dispatch.call_capability("search_keyword", {"query": "田野"}, ctx={})
     assert out == {"ok": True, "data": {"raw": 1}}
 

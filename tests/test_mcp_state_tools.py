@@ -224,3 +224,33 @@ def test_traversal_variants_still_rejected_by_segment_rule(tmp_path, pid):
     assert not list(tmp_path.rglob("*evil*"))
     assert not (tmp_path.parent / "evil").exists()
     assert not (tmp_path / "etc").exists()
+
+
+# ---------------------------------------------------------------- 收尾：段级规则拒 "." 与空段
+
+
+@pytest.mark.parametrize("pid", [".", "./x", "a//b", "a\\b", ".\\x", ".."])
+def test_dot_and_empty_segment_pid_rejected(tmp_path, pid):
+    """``"."`` 曾通过校验（root/"." 解析回根本身，containment 也放行），把 state.json 与
+    knowledge/search_cache/output 直接写进 projects 根，污染根并干扰 list_projects；
+    空段（``"a//b"``）为退化形。段级规则须一律拒绝，且 projects 根内外无任何新目录/文件。
+    """
+    h = build_handlers(make_repo(tmp_path))
+    projects_root = tmp_path / "projects"
+    out = h["create_project"](project_id=pid)
+    assert out["ok"] is False and out["error"]["code"] == "invalid_args", pid
+    assert out["error"]["hint"], pid
+    # 守卫在任何写入之前拦截：projects 根要么不存在，要么空；根内外均无 state.json
+    assert not projects_root.exists() or not any(projects_root.iterdir()), pid
+    assert not list(tmp_path.rglob("state.json")), pid
+
+
+@pytest.mark.parametrize("pid", ["study..2024", "p-1_2", "field_20261015_120000"])
+def test_new_segment_rule_keeps_legal_shapes_accepted(tmp_path, pid):
+    """新段级规则不误伤：``study..2024``（整体一段而非空段）、``p-1_2``、
+    ``field_<时间戳>`` 形状均可正常 create + get。"""
+    h = build_handlers(make_repo(tmp_path))
+    out = h["create_project"](project_id=pid)
+    assert out["ok"] is True and out["data"]["project_id"] == pid, pid
+    got = h["get_project"](project_id=pid)
+    assert got["ok"] is True and got["data"]["phase"] == "research_positioning", pid

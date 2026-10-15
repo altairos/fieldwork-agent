@@ -63,8 +63,14 @@ def _pid_violation(project_id: Any, repo: Any = None) -> str:
         return "project_id 不得含路径分隔符（/ 或 \\）"
     # 终审 L：按路径段判定而非子串——``".." in pid`` 会误拒 study..2024 这类合法 id。
     # 上一行已拒全部分隔符，此处仍逐段切分：规则不依赖前后顺序，单看也自洽。
-    if any(seg == ".." for seg in _PATH_SEP_RE.split(project_id)):
-        return "project_id 不得含 .. 路径段"
+    # 前提钉住：本守卫的入参必须是**已解码**的值。字面量 ``..%2f`` 今天能通过字符校验
+    # （无害：全链路无 URL 解码，containment 双保险兜底）；若将来 Web 宿主从 URL path 取
+    # project_id，解码必须发生在守卫之前，否则该字面量解码后即成真实穿越段。
+    # 段级三拒：".."（穿越）、"."（root/"." 解析回 projects 根本身，会把 state.json 与
+    # knowledge/search_cache/output 直接写进根目录，污染根并干扰 list_projects）、
+    # 空段（"a//b" 类退化形；上方分隔符规则已先拦，此处纵深防御不依赖规则顺序）。
+    if any(seg in ("", ".", "..") for seg in _PATH_SEP_RE.split(project_id)):
+        return "project_id 不得含空段、. 或 .. 路径段"
     if "\x00" in project_id:
         return "project_id 不得含 null 字节"
     if _DRIVE_LETTER_RE.match(project_id):
