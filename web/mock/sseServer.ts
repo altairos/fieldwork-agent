@@ -9,8 +9,11 @@
  * - POST /projects/:id/turns/:tid/cancel   → {turn_id, status:"cancelled"}
  * - GET /projects、POST /projects、GET /projects/:id、GET /projects/:id/proposal
  *   → 固定假数据（够前端联调即可）
+ * - GET /projects/:id/proposals            → 版本列表（Task 8 rest.listProposals 消费）
+ * - GET /projects/:id/proposal/download    → text/markdown 附件（L4 下载断言）
  *
- * 运行：npm run mock（tsx mock/sseServer.ts），默认端口 8301。
+ * 运行：npm run mock（tsx mock/sseServer.ts），端口取 env MOCK_PORT，默认 8301；
+ * e2e 用 MOCK_PORT=8300 匹配 vite proxy（playwright.config.ts webServer）。
  * 也可被 vitest 导入：startMockServer(0, 5) 在临时端口起服务做冒烟。
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -19,7 +22,7 @@ import { pathToFileURL } from "node:url";
 
 import type { EventType } from "../src/types/events";
 
-export const PORT = 8301;
+export const PORT = Number(process.env.MOCK_PORT ?? 8301);
 export const FRAME_DELAY_MS = 100;
 
 // ---------------------------------------------------------------- 回合脚本
@@ -161,16 +164,22 @@ function fakeSnapshot(projectId: string) {
   };
 }
 
+/**
+ * 八章提案（Task 9）：markdown 含八章 `## ` 标题，供 ChapterNav 滚动高亮 +
+ * ProposalViewer 渲染 + L4 端到端断言；id/version 与 /proposals 版本列表的
+ * final 条目（doc_2）联动，保证 VersionSwitch 当前项高亮一致。
+ */
 function fakeProposal() {
-  return {
-    markdown: "# 研究提案（mock）\n\n## 研究定位\n\n大理乡村旅居研究。\n",
-    kind: "proposal",
-    version: "draft",
-    sections: ["研究定位", "田野点"],
-    requested_mode: "global",
-    mode: "global",
-    inputs_hash: "0000000000000000000000000000000000000000",
-  };
+  const chapters = [
+    "一 · 选题依据", "二 · 田野点选择与可行性", "三 · 研究设计与方法论",
+    "四 · 详细行程安排", "五 · 实时报价与预算", "六 · 风险评估与伦理预案",
+    "七 · 预期成果", "八 · 参考文献与附录",
+  ];
+  const markdown = "# 白族村落宗族组织变迁研究（mock）\n\n" +
+    chapters.map((c, i) => `## ${c}\n\n这是第 ${i + 1} 章正文（mock 数据，用于 L4 端到端冒烟）。\n`).join("\n");
+  return { id: "doc_2", markdown, kind: "proposal", version: "final", sections: chapters,
+           requested_mode: "global", mode: "global",
+           inputs_hash: "0000000000000000000000000000000000000000" };
 }
 
 // ---------------------------------------------------------------- SSE 回放
@@ -210,6 +219,8 @@ function streamTurn(res: ServerResponse, req: IncomingMessage, turnId: string, f
 const RE_MESSAGES = /^\/projects\/([^/]+)\/messages$/;
 const RE_EVENTS = /^\/projects\/([^/]+)\/turns\/([^/]+)\/events$/;
 const RE_CANCEL = /^\/projects\/([^/]+)\/turns\/([^/]+)\/cancel$/;
+const RE_PROPOSALS = /^\/projects\/([^/]+)\/proposals$/;
+const RE_DOWNLOAD = /^\/projects\/([^/]+)\/proposal\/download$/;
 const RE_PROPOSAL = /^\/projects\/([^/]+)\/proposal$/;
 const RE_PROJECT = /^\/projects\/([^/]+)$/;
 
@@ -251,6 +262,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     }
     record.status = "cancelled";
     sendJson(res, 200, { turn_id: turnId, status: "cancelled" });
+    return;
+  }
+
+  // GET /projects/:id/proposals → 版本列表（Task 8 rest.listProposals 消费）
+  if (method === "GET" && (m = RE_PROPOSALS.exec(path))) {
+    sendJson(res, 200, [
+      { id: "doc_1", kind: "proposal", version: "draft", created_at: "2026-10-15T09:00:00Z" },
+      { id: "doc_2", kind: "proposal", version: "final", created_at: "2026-10-15T10:00:00Z" },
+    ]);
+    return;
+  }
+
+  // GET /projects/:id/proposal/download → text/markdown 附件。
+  // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
+  if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
+    const doc = fakeProposal();
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="proposal.md"`,
+      ...CORS_HEADERS,
+    });
+    res.end(doc.markdown);
     return;
   }
 
