@@ -232,3 +232,30 @@ Windows job 专门回归 emoji/UTF-8 输出路径（见第 7 节）。
 - [ ] `orchestrator` 与 `kernel/llm` 的流式输出测试（需 mock `Generation`）
 - [ ] 集成测试：以 fake flyai stub 跑通五阶段端到端
 - [ ] 钉钉同步（`sync dingtalk`）的测试覆盖
+
+## 10. 资产分级与 secrets 维护
+
+本项目的 prompt 体系与访谈示范档案库分三级管理，开源主仓只含公开层：
+
+| 级别 | 内容 | 存放位置 | 加载方式 |
+|---|---|---|---|
+| **Tier S（私有）** | 完整版示范库（11 类词条）、完整访谈方法论、五阶段完整 system prompt、生成类完整提示词 | `secrets/`（独立私有 git 仓库，被主仓 `.gitignore` 忽略） | 运行时覆盖 Tier P |
+| **Tier P（公开）** | 精简版：3 词条示范库、简版方法论、五阶段简版 prompt、简版 generation 措辞 | `kernel/assets.py` 内置常量 | 默认 |
+| **Tier O（常开）** | 算法与契约常量（`GUIDING_QUESTIONS`、`REQUIRED_FIELDS`、`check_advance`、`match_examples`、`PROPOSAL_SECTIONS`、各 user prompt 的输出契约段） | 各模块代码内 | 直接 import，不经 assets |
+
+**探测链**（`kernel/assets.py`，先命中先用）：
+
+1. 环境变量 `FIELDWORK_ASSETS_DIR` 指向的目录
+2. `<repo>/secrets/`
+3. `~/.fieldwork_agent/assets/`
+4. 内置公开版
+
+覆盖规则：按资产文件**整体替换**（不做深层合并），覆盖包未提供的资产回落公开版。坏 JSON、结构校验失败、env 指向不存在的目录，一律抛 `AssetsError`（消息含出错文件路径）。测试由 `tests/conftest.py` 的 autouse fixture 钉在公开版——本地放置 `secrets/` 不影响测试结果。
+
+**维护约定：**
+
+- 改完整版资产：直接编辑 `secrets/` 下对应文件（`informant_library.json`、`example_types.json`、`interview_methodology.txt`、`system_prompts.json`、`generation_prompts.json`），无需动主仓代码；改完在 secrets 仓库提交（`git -C secrets add -A` + `git -C secrets commit`），并跑行为评估集冒烟防止调优引入回退——评估集尚未建立前以手动冒烟代之（用完整版生成一份访谈提纲，人工对比改前输出）。`secrets/export_from_legacy.py` 是一次性迁移脚本（依赖迁移时刻的旧常量），迁移完成后仅作历史留存，勿再运行。
+- 公开版**只降不升**：`kernel/assets.py` 内的公开版只随开源需要精简，不从 secrets 回抄内容；两版标题与标志性措辞必须保持可区分（历史重写时靠特征串识别，见 `secrets/feature-strings.txt`）。
+- 新增词条或提示词后：直接编辑 `secrets/` 对应文件，并把新内容中的标志性私有短语逐条追加到 `secrets/feature-strings.txt`（该清单供 M3/M4 历史重写的 blob 识别用）；随后确认 `python tools/check_secrets_leak.py` 仍输出 clean。
+- secrets 私有仓库的远程必须托管在**私有**仓库（自建 Gitea 或私有 GitHub repo），推送前确认可见性为 private；主仓永远不提交 `secrets/` 下任何文件。
+- 新增能力若引入新 prompt 资产：在 `kernel/assets.py` 同时定义公开版默认值与对应资产文件键（Tier S 覆盖路径自动生效），并把私有版独有短语追加进 `secrets/feature-strings.txt`。
