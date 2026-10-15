@@ -2,7 +2,6 @@
 import json
 
 import pytest
-
 from fieldwork_agent.kernel import assets
 
 PHASE_KEYS = [
