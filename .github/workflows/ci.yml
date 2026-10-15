@@ -36,6 +36,9 @@ jobs:
       - name: Test (pytest)
         run: pytest -ra
 
+      - name: Secrets-leak guard
+        run: python tools/check_secrets_leak.py
+
   # 前端独立 job（Task 9）：vitest 单测 + Playwright L4 端到端冒烟。
   # 不混入 Python 矩阵；e2e 跑在扩展后的 mock server（纯 Node、确定性），
   # 无需 Python 后端 / DASHSCOPE_API_KEY / flyai。L4 不允许静默 skip（spec §6.CI）。
