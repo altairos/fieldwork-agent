@@ -8,18 +8,12 @@ import { Header } from "./components/layout/Header";
 import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
 import { useTurn } from "./hooks/useTurn";
+import { useConversationStore } from "./stores/conversation";
 import { useProjectStore } from "./stores/project";
+import { useToolsStore } from "./stores/tools";
 import { useUiStore } from "./stores/ui";
-
-// ProjectHub / ProposalView 仍为占位：分别由后续 Task 替换为真实页面（不在本 Task 范围）
-function ProjectHub() {
-  return (
-    <div className="font-serif text-ink">
-      <h1 className="text-2xl font-semibold">田野罗盘 · 项目中枢</h1>
-      <p className="text-inksoft">ProjectHub 占位（Task 3 实现）</p>
-    </div>
-  );
-}
+import { ProjectHub } from "./routes/ProjectHub";
+import { ProposalView } from "./routes/ProposalView";
 
 /**
  * Workspace 三栏骨架（设计板 lines 388-674）：
@@ -31,6 +25,9 @@ function ProjectHub() {
  *   （Composer 自身不再建第二个回合，避免并发 SSE 流）。
  * 初始快照：`GET /projects/{id}` → `project.loadSnapshot`（右栏五面板的 REST 侧数据源）；
  *   失败经 ui store 的 error 事件如实上屏（PhaseBanner 的降级横幅），不静默吞错、不伪造空快照。
+ * 跨项目 reset（Task 7 遗留，Task 8 补齐）：projectId 变化时先清空 conversation/tools/ui/project
+ *   四个 store，避免上一个项目的对话/工具卡/横幅状态串台；该 effect 声明在快照加载之前，
+ *   React 按声明顺序执行，保证「先清后载」。
  */
 function Workspace() {
   const { id } = useParams();
@@ -40,6 +37,14 @@ function Workspace() {
   const topic = useProjectStore((s) => s.snapshot?.research_context?.topic);
   const loadSnapshot = useProjectStore((s) => s.loadSnapshot);
   const turn = useTurn(projectId);
+
+  // 跨项目 reset：按 projectId 变化清空四 store（幂等，StrictMode 双执行安全）
+  useEffect(() => {
+    useConversationStore.getState().reset();
+    useToolsStore.getState().reset();
+    useUiStore.getState().reset();
+    useProjectStore.getState().reset();
+  }, [projectId]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -82,15 +87,6 @@ function Workspace() {
         </main>
         <RightDock />
       </div>
-    </div>
-  );
-}
-
-function ProposalView() {
-  return (
-    <div className="font-serif text-ink">
-      <h1 className="text-2xl font-semibold">田野罗盘 · 开题报告</h1>
-      <p className="text-inksoft">ProposalView 占位（后续 Task 实现）</p>
     </div>
   );
 }
