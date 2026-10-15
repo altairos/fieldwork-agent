@@ -23,7 +23,7 @@
 |---|---|---|
 | `SYSTEM_PROMPTS` 五阶段完整提示词 | `kernel/guidance/phases.py` L41-111 | 对话引导 prompt |
 | `GUIDING_QUESTIONS` 引导问题 | `kernel/guidance/phases.py` L114-146 | 功能骨架（定级见 §3） |
-| `INFORMANT_LIBRARY` 10 类完整词条 | `kernel/guidance/informants.py` L22-409 | 领域知识资产（最高价值） |
+| `INFORMANT_LIBRARY` 11 类完整词条 | `kernel/guidance/informants.py` L22-409 | 领域知识资产（最高价值） |
 | `INTERVIEW_GUIDE_METHODOLOGY` 完整方法论 | `kernel/guidance/informants.py` L412-461 | 领域知识资产（最高价值） |
 | `INFORMANT_EXAMPLES` few-shot 锚（派生） | `kernel/guidance/informants.py` L492-494 | 生成质量核心 |
 | `_EXAMPLE_TYPES` 精选键 | `kernel/guidance/informants.py` L467 | 派生配置 |
@@ -46,9 +46,9 @@
 
 | 资产 | 私有包去向 |
 |---|---|
-| `INFORMANT_LIBRARY` 完整 10 类词条 | `secrets/informant_library.json` |
+| `INFORMANT_LIBRARY` 完整 11 类词条 | `secrets/informant_library.json` |
 | `_EXAMPLE_TYPES` 精选 6 类键 | `secrets/example_types.json` |
-| `INTERVIEW_GUIDE_METHODOLOGY` 完整版 | `secrets/methodology.md` |
+| `INTERVIEW_GUIDE_METHODOLOGY` 完整版 | `secrets/interview_methodology.txt` |
 | `SYSTEM_PROMPTS` 五阶段完整版 | `secrets/system_prompts.json` |
 | suggest/guide 的 system prompt 完整措辞 | `secrets/generation_prompts.json` |
 
@@ -100,7 +100,7 @@ def reload(assets_dir: Path | None = None) -> None
 
 | 文件 | 改动 |
 |---|---|
-| `kernel/guidance/informants.py` | 重构：删除 10 类词条与完整方法论常量 → 内置 3 类公开版数据；`get_informant`/`match_examples`/`_to_archive`/`_bigrams` 逻辑不动，数据源改为经 assets 取 |
+| `kernel/guidance/informants.py` | 重构：删除 11 类词条与完整方法论常量 → 内置 3 类公开版数据；`get_informant`/`match_examples`/`_to_archive`/`_bigrams` 逻辑不动，数据源改为经 assets 取 |
 | `kernel/guidance/phases.py` | `SYSTEM_PROMPTS` → 公开精简版；`phase_prompt()` 经 assets 取（含覆盖） |
 | `kernel/documents/informants.py` | `_user_prompt` 的 few-shot 注入与 system 措辞经 assets 取 |
 | `kernel/documents/proposal.py` | `_guide_prompt`/`_guide_degrade`/`_entry_block` 的方法论与条目、guide system 措辞经 assets 取 |
@@ -115,7 +115,7 @@ def reload(assets_dir: Path | None = None) -> None
 secrets/
   informant_library.json
   example_types.json
-  methodology.md
+  interview_methodology.txt
   system_prompts.json
   generation_prompts.json
   feature-strings.txt     # 私有版独有特征串清单（历史重写验证用，见 §9）
@@ -155,7 +155,7 @@ secrets/
 前提：M2 软著申请已提交（登记完整版材料）。
 
 1. **备份**：`git clone --mirror` 离线存档（私有介质）；确认 secrets 私有仓库为最新。
-2. **特征串清单**：`secrets/feature-strings.txt` 列出私有版独有字符串（10 个词条键、方法论完整版标题与独有段落、SYSTEM_PROMPTS 完整版特征句等）。公开版措辞已差异化（§3），识别无歧义。
+2. **特征串清单**：`secrets/feature-strings.txt` 列出私有版独有字符串（8 个私有词条键、方法论完整版标题与独有段落、SYSTEM_PROMPTS 完整版特征句等）。公开版措辞已差异化（§3），识别无歧义。
 3. **副本演练**：
    - `pip install git-filter-repo`；
    - 在 mirror 副本上执行 `git filter-repo --blob-callback`：blob 数据命中特征串集合 → 整体替换为对应公开版文件内容（替换映射由预案脚本维护）；
@@ -193,7 +193,7 @@ secrets/
 ## 12. 验收标准（M0）
 
 1. 全量测试绿（公开版模式，无 env 无 secrets 目录）；
-2. `FIELDWORK_ASSETS_DIR` 指向真 secrets 包时，`INFORMANT_LIBRARY` 10 类、完整方法论、完整提示词生效（手动检查 + 行为评估集冒烟）；
+2. `FIELDWORK_ASSETS_DIR` 指向真 secrets 包时，`INFORMANT_LIBRARY` 11 类、完整方法论、完整提示词生效（手动检查 + 行为评估集冒烟）；
 3. `git status` 干净，`secrets/` 未被跟踪，CI 全绿（含 secrets-leak guard）；
 4. secrets 私有仓库已建立并推送首个 commit；
 5. `DEVELOPMENT.md` 含资产分级维护章节。
