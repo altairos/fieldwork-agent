@@ -20,7 +20,7 @@ def test_static_resource_catalog():
     assert "fieldwork://guidance/interview-guide/methodology" in uris
     assert "fieldwork://templates/proposal-outline" in uris
     # 示范词条按库展开
-    assert "fieldwork://guidance/informants/长老" in uris
+    assert "fieldwork://guidance/informants/村干部" in uris
 
 
 def test_read_phases_resource_mentions_advance(tmp_path):

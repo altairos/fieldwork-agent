@@ -10,12 +10,8 @@ import inspect
 from typing import Any
 
 from fieldwork_agent.kernel.documents.proposal import PROPOSAL_SECTIONS
+from fieldwork_agent.kernel.guidance import informants as informant_lib
 from fieldwork_agent.kernel.guidance import phases
-from fieldwork_agent.kernel.guidance.informants import (
-    INFORMANT_EXAMPLES,
-    INTERVIEW_GUIDE_METHODOLOGY,
-    get_informant,
-)
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 from fieldwork_agent.mcp_server.state_tools import guard_project_id
 from mcp.types import Resource
@@ -70,7 +66,7 @@ def _render_informants_library() -> str:
         "> 以下为参考起点，非枚举白名单。实际访谈对象应根据研究主题动态生成。",
         "",
     ]
-    for key, archive in INFORMANT_EXAMPLES.items():
+    for key, archive in informant_lib.INFORMANT_EXAMPLES.items():
         lines.append(f"## {key}")
         lines.append("")
         lines.append(f"**接近策略：** {archive['approach']}")
@@ -89,11 +85,11 @@ def _render_informants_library() -> str:
 
 def _render_informant_entry(informant_type: str) -> str:
     """渲染 guidance/informants/{type}：单词条完整档案。"""
-    entry = get_informant(informant_type)
+    entry = informant_lib.get_informant(informant_type)
     if entry is None:
         return f"# {informant_type}\n\n（未收录）"
     lines = [
-        f"# {entry['name']}",
+        f"# {entry.get('name', informant_type)}",
         "",
         f"**接近策略：** {entry['approach']}",
         f"**注意事项：** {entry['cautions']}",
@@ -111,7 +107,7 @@ def _render_informant_entry(informant_type: str) -> str:
 
 def _render_methodology() -> str:
     """渲染 guidance/interview-guide/methodology：原文直出。"""
-    return INTERVIEW_GUIDE_METHODOLOGY
+    return informant_lib.INTERVIEW_GUIDE_METHODOLOGY
 
 
 def _render_proposal_outline() -> str:
@@ -196,7 +192,7 @@ def _build_static_resources() -> list[Resource]:
         mimeType="text/markdown",
     ))
     # 5. guidance/informants/{type} ×N
-    for key in INFORMANT_EXAMPLES:
+    for key in informant_lib.INFORMANT_EXAMPLES:
         items.append(Resource(
             uri=f"fieldwork://guidance/informants/{key}",
             name=f"访谈对象：{key}",
