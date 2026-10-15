@@ -1,12 +1,25 @@
 """Task 2：dispatch 能力分派 + 统一包络（保留键 llm/client 按 fn 签名声明注入）。"""
 import inspect
 import json
+import logging
+import time
 
+import pytest
 from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem, ToolError
+from fieldwork_agent.kernel.registry import CapabilityMeta
 from fieldwork_agent.mcp_server import dispatch
 
 # 文档组：消费注入的 llm；其余（8 搜索 + 2 聚合）消费注入的 client
 DOCUMENT_TOOLS = {"compose_proposal", "compose_interview_guide", "suggest_informants"}
+
+# 终审③ 的替身：C 内建 ``time.time`` 无 __text_signature__，``inspect.signature`` 抛
+# ValueError（CPython 3.12 实测；``print`` 有 Argument Clinic 签名，取不到签名不成立）。
+UNINSPECTABLE_FN = time.time
+
+
+def _meta(name: str, fn) -> CapabilityMeta:
+    """构造活注册表条目（args_model 只为满足 dataclass 形状，dispatch 不消费它）。"""
+    return CapabilityMeta(name=name, description="测试条目", fn=fn, args_model=ToolError)
 
 
 class Echo:
@@ -31,6 +44,41 @@ def test_call_capability_validates_and_trims_kwargs(monkeypatch):
 def test_unknown_tool_envelope():
     out = dispatch.call_capability("nope", {}, ctx={})
     assert out["ok"] is False and out["error"]["code"] == dispatch.UNKNOWN_TOOL
+
+
+def test_live_registry_fallback_resolves_late_registration(monkeypatch):
+    """终审⑤/M1：两张导入期快照都未命中时回落活注册表——延迟注册的能力仍可 tools/call。
+
+    不改这条回落，``mapping.capability_tools()``（每次活取注册表）广告出的新名字
+    会被 ``call_capability`` 答 unknown_tool，tools/list 与 tools/call 不对称。
+    """
+    seen = {}
+
+    def late_fn(query: str = "") -> Envelope:
+        seen["query"] = query
+        return Envelope(ok=True, data={"echo": query})
+
+    monkeypatch.setattr(dispatch, "capabilities",
+                        lambda: {"late_registered": _meta("late_registered", late_fn)})
+    assert "late_registered" not in dispatch._CAPABILITY_FNS   # 前提：快照里确实没有
+
+    out = dispatch.call_capability("late_registered", {"query": "田野"}, ctx={})
+    assert out == {"ok": True, "data": {"echo": "田野"}}
+    assert seen["query"] == "田野"
+    # 回落也查不到才算未知工具（不得把回落写成"总是可调用"）
+    miss = dispatch.call_capability("late_registered_typo", {}, ctx={})
+    assert miss["ok"] is False and miss["error"]["code"] == dispatch.UNKNOWN_TOOL
+
+
+def test_snapshot_table_wins_over_live_registry(monkeypatch):
+    """表命中优先：回落只在快照未命中时发生，既有 monkeypatch 替身语义不变。"""
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "search_keyword",
+                        lambda **kw: {"from": "snapshot"})
+    monkeypatch.setattr(dispatch, "capabilities", lambda: {
+        "search_keyword": _meta("search_keyword", lambda **kw: {"from": "live"})})
+
+    out = dispatch.call_capability("search_keyword", {"query": "田野"}, ctx={})
+    assert out["ok"] is True and out["data"] == {"from": "snapshot"}
 
 
 def test_invalid_args_envelope():
@@ -130,6 +178,41 @@ def test_internal_error_keeps_exception_message(monkeypatch):
     out = dispatch.call_capability("search_ai", {"query": "大理 民宿"}, ctx={})
     assert out["ok"] is False and out["error"]["code"] == dispatch.INTERNAL
     assert "flyai CLI 崩了" in out["error"]["message"]
+
+
+def test_uninspectable_signature_is_internal_not_invalid_args(monkeypatch):
+    """终审③：签名探测必须与参数绑定分段——取不到签名是服务端缺陷，不是客户端传错参数。
+
+    若探测仍留在 INVALID_ARGS 的 try 内，签名不可得的 callable 会被误报成
+    "参数校验失败"，把宿主接线缺陷甩锅给客户端。
+    """
+    with pytest.raises(ValueError):
+        inspect.signature(UNINSPECTABLE_FN)   # 前提自证：替身确实取不到签名
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "opaque_builtin", UNINSPECTABLE_FN)
+
+    out = dispatch.call_capability("opaque_builtin", {"dest_name": "大理"}, ctx={})
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == dispatch.INTERNAL
+    assert out["error"]["code"] != dispatch.INVALID_ARGS
+
+
+def test_internal_error_is_logged_with_traceback(monkeypatch, caplog):
+    """终审⑥：INTERNAL 分支必须留痕（带 traceback），且库代码不自配 handler。"""
+
+    def boom(**kw):
+        raise RuntimeError("内核炸了")
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "log_probe", boom)
+
+    with caplog.at_level(logging.ERROR, logger=dispatch.__name__):
+        out = dispatch.call_capability("log_probe", {}, ctx={})
+
+    assert out["ok"] is False and out["error"]["code"] == dispatch.INTERNAL
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors and all(r.exc_info for r in errors)   # exc_info=True：留 traceback
+    assert any("log_probe" in r.getMessage() for r in errors)   # 带上工具名才可定位
+    # 库代码不得配 handler/basicConfig（落地方式由宿主决定），否则重复输出/污染 stdio
+    assert dispatch.logger.handlers == []
 
 
 def test_envelope_dict_drops_none_fields():

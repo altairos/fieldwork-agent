@@ -148,3 +148,27 @@ def test_legal_pid_still_accepted(tmp_path):
     assert h["create_project"](project_id="p-1_2")["ok"]
     auto = h["create_project"]()
     assert auto["ok"] and auto["data"]["project_id"].startswith("field_")
+
+
+# ---------------------------------------------------------------- 终审 L：.. 改路径段级判定
+
+
+def test_dotted_but_legal_pid_accepted(tmp_path):
+    """终审 L：``".." in pid`` 子串匹配过宽——``study..2024`` 是合法 id，须可 create + get。"""
+    h = build_handlers(make_repo(tmp_path))
+    out = h["create_project"](project_id="study..2024")
+    assert out["ok"] is True and out["data"]["project_id"] == "study..2024"
+    got = h["get_project"](project_id="study..2024")
+    assert got["ok"] is True and got["data"]["phase"] == "research_positioning"
+
+
+@pytest.mark.parametrize("pid", ["../evil", "..\\..\\evil", "..", "C:\\evil", "/etc/passwd"])
+def test_traversal_variants_still_rejected_by_segment_rule(tmp_path, pid):
+    """终审 L 不得削弱守卫：穿越/裸 ``..``/盘符/绝对路径仍 invalid_args，根外无新目录。"""
+    h = build_handlers(make_repo(tmp_path))
+    out = h["create_project"](project_id=pid)
+    assert out["ok"] is False and out["error"]["code"] == "invalid_args", pid
+    assert out["error"]["hint"], pid
+    assert not list(tmp_path.rglob("*evil*"))
+    assert not (tmp_path.parent / "evil").exists()
+    assert not (tmp_path / "etc").exists()
