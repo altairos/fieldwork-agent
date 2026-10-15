@@ -92,7 +92,7 @@ def informant_library() -> dict[str, dict]      # 键为类型名，值为八字
 def example_types() -> list[str]                 # 精选键（公开版为 3 键）
 def interview_methodology() -> str
 def system_prompts() -> dict[str, str]           # phase → 提示词
-def generation_prompt(key: str) -> str           # suggest_system / guide_system
+def generation_prompt(key: str) -> str           # suggest_system / guide_system / guide_instruction
 def reload(assets_dir: Path | None = None) -> None
 ```
 
@@ -156,7 +156,7 @@ secrets/
 
 1. **备份**：`git clone --mirror` 离线存档（私有介质）；确认 secrets 私有仓库为最新。
 2. **特征串清单**：`secrets/feature-strings.txt` 列出私有版独有字符串（8 个私有词条键、方法论完整版标题与独有段落、SYSTEM_PROMPTS 完整版特征句等）。公开版措辞已差异化（§3），识别无歧义。
-3. **副本演练**：
+3. **副本演练**（前置检查：重写后、force push 前必须验证——重写后 HEAD 及全历史对 `secrets/feature-strings.txt` 清单逐条零命中，`tools/check_secrets_leak.py` 自身的哨兵字面量除外；不满足则中止演练、不得进入后续步骤）：
    - `pip install git-filter-repo`；
    - 在 mirror 副本上执行 `git filter-repo --blob-callback`：blob 数据命中特征串集合 → 整体替换为对应公开版文件内容（替换映射由预案脚本维护）；
    - 验证一：`git rev-list --all` 全历史 `git grep` 特征串清单 → 零命中；
