@@ -1,0 +1,87 @@
+/**
+ * SSE 事件类型契约 — 对齐 Plan 3 `web_host/events.py`（六事件 + EventEnvelope）。
+ *
+ * 线上格式（web_host/sse.py encode_event）：
+ *   SSE `data:` 行 = {"turn_id", "seq", ...事件字段平铺}
+ *   `event:` 行 = 事件名；`id:` 行 = seq
+ */
+
+// ---------------------------------------------------------------- 六事件 payload
+// （data 内除 turn_id/seq 外的字段）
+
+/** 流式回复文本增量。 */
+export interface MessageDelta {
+  text: string;
+}
+
+/** 工具调用开始事件。 */
+export interface ToolStarted {
+  call_id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  purpose: string;
+}
+
+/** 工具调用完成事件（degraded 为降级标记，如 "flyai_unavailable"）。 */
+export interface ToolCompleted {
+  call_id: string;
+  ok: boolean;
+  data: unknown;
+  degraded?: string | null;
+}
+
+/** 阶段迁移事件（Python 侧 from_phase/to_phase 以 alias "from"/"to" 上线）。 */
+export interface PhaseTransition {
+  from: string;
+  to: string;
+}
+
+/** 单轮回复完成事件。 */
+export interface TurnDone {
+  reply_id: string;
+  usage: Record<string, unknown>;
+}
+
+/** 错误事件（带下一步建议 hint）。 */
+export interface ErrorEvent {
+  code: string;
+  message: string;
+  hint: string;
+}
+
+// ---------------------------------------------------------------- 信封与判别联合
+
+export type EventType =
+  | "message_delta"
+  | "tool_started"
+  | "tool_completed"
+  | "phase_transition"
+  | "turn_done"
+  | "error";
+
+/**
+ * 统一信封（Plan 3 EventEnvelope：turn_id + seq + 事件名 + payload）。
+ * 注意：Plan 3 编码时把 turn_id/seq 与 payload 字段平铺在同一 JSON 对象里，
+ * 故 data 为解析后的整包（含 turn_id/seq + payload 字段）。
+ */
+export interface EventEnvelope {
+  turn_id: string;
+  seq: number;
+  event: EventType;
+  data: Record<string, unknown>;
+}
+
+/** 判别联合：解析后按 event 分派时的强类型视图。 */
+export type SseEvent =
+  | ({ event: "message_delta" } & MessageDelta)
+  | ({ event: "tool_started" } & ToolStarted)
+  | ({ event: "tool_completed" } & ToolCompleted)
+  | ({ event: "phase_transition" } & PhaseTransition)
+  | ({ event: "turn_done" } & TurnDone)
+  | ({ event: "error" } & ErrorEvent);
+
+/** 回合创建响应（POST /projects/{id}/messages，见 web_host/api/turns.py）。 */
+export interface CreateTurnResponse {
+  turn_id: string;
+  status: string;
+}
