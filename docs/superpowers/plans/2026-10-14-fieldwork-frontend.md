@@ -4,7 +4,7 @@
 
 **Goal:** 为田野罗盘交付一套 React 前端（3 路由 / 三栏工作台 / 工具→卡片渲染器注册表），消费 Web 宿主（Plan 3）的 REST 快照 + SSE 事件流，把「四阶段访谈 + 实时飞猪数据 + 八章提案」可视化为学术档案气质的产品界面。
 
-**Architecture:** 前后端分离；前端 = 无业务判定的**投影层**。所有状态来自两条通道：① REST（`GET /projects/{id}` 初始快照）② SSE（`POST /projects/{id}/messages` 回合内事件流）。中栏时间线与右栏状态面板**同源于 `tool_completed` payload**，数字不经 LLM 转述（spec §3.4/§4.3）。阶段推进是确定性事件（`phase_transition`），前端不做任何"是否可推进"的判断。
+**Architecture:** 前后端分离；前端 = 无业务判定的**投影层**。所有状态来自两条通道：① REST（`GET /projects/{id}` 初始快照）② SSE（R4 两步：`POST /projects/{id}/messages` 建回合拿 turn_id → `GET /projects/{id}/turns/{tid}/events` 订阅回合内事件流）。中栏时间线与右栏状态面板**同源于 `tool_completed` payload**，数字不经 LLM 转述（spec §3.4/§4.3）。阶段推进是确定性事件（`phase_transition`），前端不做任何"是否可推进"的判断。
 
 **Tech Stack:** Vite 5 + React 18 + TypeScript + Tailwind CSS（自定义 design tokens）+ zustand（stores）+ react-markdown/remark-gfm（提案与助手正文）+ 原生 `EventSource`/`fetch` 流式读取（SSE）。不引重型组件库（spec §4.1）。测试：Vitest（单元/组件）+ Playwright（L4 端到端，接 spec §6.L4 剧本）。
 
@@ -12,7 +12,7 @@
 
 **视觉设计板（唯一视觉事实源）:** `docs/frontend/design-board.html` —「学术档案·纸感温润」风格，含设计系统页 + 三屏高保真原型。本计划的 token 值与设计板严格同源，改视觉先改设计板。
 
-**依赖前置:** Plan 3（Web 宿主 FastAPI + SSE）需先提供 `POST /projects`、`GET /projects/{id}`、`GET /projects`、`POST /projects/{id}/messages`(SSE)、`GET /projects/{id}/proposal`、`POST /messages/{id}/cancel` 端点与 §3.4 事件协议。开发期前端可先对 mock SSE 服务器联调（Task 2）。
+**依赖前置（Plan 3 已落地，2026-10-15 实测契约）:** Web 宿主提供 `POST /projects`(201 `{project_id,phase}`)、`GET /projects`、`GET /projects/{id}`(快照)、`POST /projects/{id}/messages`(**返回 `{turn_id,status}` JSON，非 SSE**)、`GET /projects/{id}/turns/{tid}/events`(**SSE 流，支持 Last-Event-ID 回放**)、`POST /projects/{id}/turns/{tid}/cancel`、`GET /projects/{id}/proposal`、`GET /projects/{id}/proposal/download`。R4 回合协议：创建与订阅**分离**（POST 建回合拿 turn_id → GET 订阅事件流），单项目单写回合（占用中 POST 返回 409）。开发期前端可先对 mock 服务器联调（Task 2）。
 
 ## Global Constraints
 
@@ -114,16 +114,18 @@ web/
 │   │   └── ProposalView.tsx    /p/:id/proposal
 │   └── lib/                formatYuan、priceSourceLabel、markdown 组件映射、cn()
 ├── mock/
-│   └── sseServer.ts        开发期 mock：脚本化回放六事件（含降级/超支/推进），无后端可跑
+│   └── sseServer.ts        开发期 mock：POST /messages 返回 {turn_id}，GET /turns/:tid/events 脚本化回放六事件（含降级/超支/推进），无后端可跑
 └── tests/
     ├── stores.spec.ts      三 store reducer：SSE 事件序列 → 期望状态
     ├── toolCards.spec.tsx  每卡片对代表性 payload 渲染快照（价格不失真断言）
     └── e2e/fieldwork.spec.ts  Playwright L4 剧本（对齐 spec §6.L4）
 ```
 
-## SSE 事件 → 前端消费映射（spec §3.4）
+## SSE 事件 → 前端消费映射（spec §3.4 + Plan 3 EventEnvelope 实测）
 
-| event | payload | 前端处理 |
+**信封形状（Plan 3 实测）**：每条 SSE 帧 `id:` = 单调 seq，`event:` = 事件名，`data:` = `{turn_id, seq, ...payload}`（payload 字段见下表）。前端解析后按 `event:` 分派，`data.seq` 用于去重与 Last-Event-ID 重连锚点。
+
+| event | payload（data 内除 turn_id/seq 外的字段） | 前端处理 |
 |-------|---------|---------|
 | `message_delta` | `{text}` | `conversation` 追加到当前助手消息缓冲，打字机渲染 |
 | `tool_started` | `{call_id,tool,args,purpose}` | `tools[call_id]={status:'running',args,purpose}`；中栏 `ToolActivityStrip` 加脉冲点；右栏对应面板可亮"更新中"角标（不切 Tab） |
@@ -132,7 +134,7 @@ web/
 | `turn_done` | `{reply_id,usage}` | `conversation` 收尾定格；Composer 解锁；记录 token 用量 |
 | `error` | `{code,message,hint}` | `ui.degradedBanner` 顶部降级横幅；不中断已渲染内容 |
 
-**断线重连**：`sse.ts` 维护 `lastEventId`，断开后带 `Last-Event-ID` 头重连，宿主补发（spec §4.5）。前端事件处理需**幂等**（同 `call_id` 重复 `tool_completed` 覆盖而非追加）。
+**断线重连**：`sse.ts` 维护 `lastEventId`（= 已收最大 `seq`），断开后对 `GET /projects/{id}/turns/{tid}/events` 带 `Last-Event-ID` 头重连，宿主从该 seq 之后补发（Plan 3 `TurnManager.replay` 已实现，回合已结束则回放全部后立即关闭）。前端事件处理需**幂等**（同 `call_id` 重复 `tool_completed` 覆盖而非追加；按 `seq` 去重）。
 
 ## 工具→卡片渲染器注册表（spec §4.4）
 
@@ -194,9 +196,9 @@ save_field_site/informant, add/search_knowledge, check_phase_advance
 
 ### Task 2: 类型 + mock SSE 服务器（无后端可联调）
 **Files:** Create `src/types/events.ts`、`src/types/models.ts`、`mock/sseServer.ts`。
-**Interfaces:** events.ts 导出六事件 discriminated union（`type SseEvent = MessageDelta|ToolStarted|ToolCompleted|PhaseTransition|TurnDone|ErrorEvent`，字段对齐 spec §3.4）；models.ts 镜像内核 `FieldSiteProfile/ItemPage/SearchItem/ItineraryPlan/BudgetBreakdown/ResearchContext/InformantRecord/ProposalDoc/Envelope`（从 Plan 1 `kernel/models.py` 逐字段翻译，价格 `number|null`）。
-- [ ] **Step 1:** 写类型；`sseServer.ts` 用 Node http 起 `:8301`，`POST /projects/:id/messages` 返回 `text/event-stream`，脚本化回放一段完整回合（含 message_delta 分片、两个 tool_started/completed、一个 `degraded:flyai_unavailable`、phase_transition、turn_done），并写 `id:` 支持 Last-Event-ID 补发。
-- [ ] **Step 2:** `curl -N` 手测事件流逐条打印、断连重连带 Last-Event-ID 能从断点续。
+**Interfaces:** events.ts 导出六事件 discriminated union（`type SseEvent = MessageDelta|ToolStarted|ToolCompleted|PhaseTransition|TurnDone|ErrorEvent`，各事件 payload 字段对齐 spec §3.4）**+ 统一信封 `type EventEnvelope = {turn_id:string; seq:number; event:string; data:Record<string,unknown>}`**（对齐 Plan 3 `web_host/events.py`）；models.ts 镜像内核 `FieldSiteProfile/ItemPage/SearchItem/ItineraryPlan/BudgetBreakdown/ResearchContext/InformantRecord/ProposalDoc/Envelope`（从 Plan 1 `kernel/models.py` 逐字段翻译，价格 `number|null`）。
+- [ ] **Step 1:** 写类型；`sseServer.ts` 用 Node http 起 `:8301`，**两步式对齐 Plan 3**：`POST /projects/:id/messages` 返回 `{turn_id,status}` JSON 并把脚本存内存；`GET /projects/:id/turns/:tid/events` 返回 `text/event-stream`，脚本化回放一段完整回合（含 message_delta 分片、两个 tool_started/completed、一个 `degraded:flyai_unavailable`、phase_transition、turn_done），每帧写 `id:`(seq)+`event:`+`data:{turn_id,seq,...}`，支持 Last-Event-ID 从断点补发；`POST /projects/:id/turns/:tid/cancel` 返回终态。
+- [ ] **Step 2:** `curl -N` 手测：先 POST 拿 turn_id，再 GET 事件流逐条打印、断连重连带 Last-Event-ID 能从断点续。
 - [ ] **Step 3:** Commit `feat(web): SSE事件类型与mock回放服务器`。
 
 ### Task 3: stores（三 store reducer，纯函数可测）
@@ -207,8 +209,8 @@ save_field_site/informant, add/search_knowledge, check_phase_advance
 
 ### Task 4: SSE 客户端 + useTurn 接线
 **Files:** Create `src/api/{rest.ts,sse.ts}`、`src/hooks/{useSSE.ts,useTurn.ts}`。
-- [ ] **Step 1:** `sse.ts` 用 `fetch` + `ReadableStream` 解析 `event:/data:/id:`（原生 EventSource 不支持 POST，故手写解析），维护 lastEventId、指数退避重连、心跳超时。
-- [ ] **Step 2:** `useTurn(projectId, text)`：POST messages → 逐事件 dispatch 到三 store applyEvent；暴露 `cancel()` 调 `POST /messages/{id}/cancel`。
+- [ ] **Step 1:** `sse.ts` 用 `fetch` + `ReadableStream` **GET** `/projects/{id}/turns/{tid}/events` 解析 `event:/data:/id:`（R4：GET 订阅，原生 EventSource 亦可，但手写解析便于带自定义头与统一去重），维护 lastEventId(=max seq)、指数退避重连、心跳超时（宿主每 15s 发 `: heartbeat` 注释帧，需忽略）。
+- [ ] **Step 2:** `useTurn(projectId, text)`：**两步式**——① `POST /projects/{id}/messages` 拿 `{turn_id}`（409 表示已有回合在跑，提示用户）；② 用 turn_id 起 `sse.ts` GET 订阅 → 逐事件按 `seq` 去重后 dispatch 到三 store applyEvent；暴露 `cancel()` 调 `POST /projects/{id}/turns/{turn_id}/cancel`。
 - [ ] **Step 3:** 对 mock 服务器联调：控制台见事件流正确落入 store；断网重连补发不产生重复卡。
 - [ ] **Step 4:** Commit `feat(web): SSE客户端与回合hook(断线补发+取消)`。
 
