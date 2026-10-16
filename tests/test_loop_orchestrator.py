@@ -284,7 +284,7 @@ def test_acceptance_smoke_no_key(fake_config):
     assert ctx["scale"] == "单人调研"
     filled = {k for k, v in ctx.items() if k != "extras" and str(v).strip()}
     assert filled <= set(ResearchContext.model_fields), "采集项必须是研究上下文槽位"
-    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == {"discipline", "scale"}
+    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == {"discipline", "scale", "budget"}
     assert state["phase"] in PHASES
     assert out["phase"] == state["phase"] == PHASE_RESEARCH_POSITIONING
     assert out["phase_transition"] is None

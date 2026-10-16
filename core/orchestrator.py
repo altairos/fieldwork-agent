@@ -31,7 +31,7 @@ from fieldwork_agent.kernel.documents.proposal import (
     proposal_handler,
 )
 from fieldwork_agent.kernel.guidance import phases
-from fieldwork_agent.kernel.guidance.extract import extract_locations, extract_researcher_info
+from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
@@ -259,21 +259,16 @@ class FieldAgent:
     # ─── 采集：extract 落研究上下文 ──────────────────────────────
 
     def _apply_extract(self, pid: str, message: str) -> None:
-        """纯函数提取 discipline/scale/budget/purpose/extras.region + 地点，落盘。
-
-        topic/time_window/purpose(对话型) 依赖后续访谈轮迭代采集（Task 4/11 裁决），
-        本层只做可确定性抽取的软线索合并，且**不覆盖**已填非空字段（保护用户修正）。
-        """
         ctx = self.repo.get_research_context(pid)
-        found = {**extract_locations(message, ctx), **extract_researcher_info(message)}
+        found = apply_message_extractions(message, ctx)
+        if not found:
+            return
         merged = dict(ctx)
         extras = dict(merged.get("extras") or {})
         for key, value in found.items():
-            if not value:
-                continue
             if key.startswith("extras."):
                 extras[key.split(".", 1)[1]] = value
-            elif not str(merged.get(key, "")).strip():
+            else:
                 merged[key] = value
         if extras:
             merged["extras"] = extras
