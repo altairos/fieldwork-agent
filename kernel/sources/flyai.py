@@ -65,18 +65,25 @@ def _first(entry: dict[str, Any], keys: tuple[str, ...]) -> Any:
 
 
 def normalize_items(raw_list: list[dict]) -> list[SearchItem]:
-    """把 flyai 野生字段映射为 SearchItem；未识别的键整体收进 ``extra``。"""
+    """把 flyai 野生字段映射为 SearchItem；未识别的键整体收进 ``extra``。
+
+    keyword-search 条目为 ``{"info": {…}}`` 单键嵌套（spec 附录 A）：四组归一键在
+    顶层未命中（None/空串）时回退到 ``info`` 内查找；``info`` 本身仍整体收进 ``extra``，
+    extra 收集语义不变，flight/hotel 平铺条目零行为变化。
+    """
     items: list[SearchItem] = []
     for entry in raw_list:
         if not isinstance(entry, dict):
             continue
-        raw_price = _first(entry, _PRICE_KEYS)
+        info = entry.get("info")
+        info = info if isinstance(info, dict) else {}
+        raw_price = _first(entry, _PRICE_KEYS) or _first(info, _PRICE_KEYS)
         items.append(SearchItem(
-            name=str(_first(entry, _NAME_KEYS) or ""),
+            name=str(_first(entry, _NAME_KEYS) or _first(info, _NAME_KEYS) or ""),
             price=parse_price(raw_price),
             price_raw=raw_price if isinstance(raw_price, str) else None,
-            pic_url=_first(entry, _PIC_KEYS),
-            jump_url=_first(entry, _JUMP_KEYS),
+            pic_url=_first(entry, _PIC_KEYS) or _first(info, _PIC_KEYS),
+            jump_url=_first(entry, _JUMP_KEYS) or _first(info, _JUMP_KEYS),
             extra={k: v for k, v in entry.items() if k not in _MAPPED_KEYS},
         ))
     return items

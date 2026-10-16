@@ -8,7 +8,18 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-from fieldwork_agent.kernel.models import FestivalInfo, PriceCurve, RecommendedWindow
+from fieldwork_agent.kernel.llm import LLMClient
+from fieldwork_agent.kernel.models import (
+    Envelope,
+    FestivalInfo,
+    PriceCurve,
+    RecommendedWindow,
+    ToolError,
+    WindowAnalysis,
+)
+from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from pydantic import BaseModel, Field
 
 DATE_FMT = "%Y-%m-%d"
 MAX_SAMPLES = 16
@@ -216,3 +227,84 @@ def _extract_festivals(llm, destination: str, range_start: str, range_end: str,
     if env.get("error") or not content.strip():
         return [], "节庆抽取失败，节庆维度降级为空"
     return _parse_festival_json(content), None
+
+
+# ── Task 8 主函数 + 注册（M2 收口，能力面 13→14）──────────
+
+
+def _error_env(code: str, message: str, hint: str = "请检查参数后重试") -> Envelope:
+    return Envelope(ok=False, error=ToolError(code=code, message=message, hint=hint))
+
+
+class AnalyzeFieldworkWindowArgs(BaseModel):
+    """analyze_fieldwork_window 的 args_model（schema 单一来源，spec §3.1）。"""
+    departure: str = Field(description="出发城市，如 昆明")
+    destination: str = Field(description="调研目的地城市，如 西昌")
+    range_start: str = Field(description="可选调研区间开始日期 YYYY-MM-DD")
+    range_end: str = Field(description="可选调研区间结束日期 YYYY-MM-DD")
+    duration_days: int = Field(ge=1, le=90, description="单次驻村时长（天）")
+    budget_total: float = Field(gt=0, description="总预算（元）")
+    sample_step: int = Field(default=7, ge=1, description="采样步进（天），默认 7")
+
+
+def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
+                             range_end: str, duration_days: int, budget_total: float,
+                             sample_step: int = 7, *, client=None, llm=None) -> Envelope:
+    """多日期价格采样 × 节庆覆盖 × 预算可行性的时窗推荐（spec §4.1）。"""
+    try:
+        start = datetime.strptime(range_start, DATE_FMT).date()
+        end = datetime.strptime(range_end, DATE_FMT).date()
+    except (ValueError, TypeError):
+        return _error_env("bad_date", "range_start/range_end 需为 YYYY-MM-DD")
+    if end < start:
+        return _error_env("bad_range", "range_end 早于 range_start")
+    if duration_days < 1 or duration_days > (end - start).days + 1:
+        return _error_env("bad_duration", "duration_days 需在 1..区间天数+1 之间")
+    if budget_total <= 0:
+        return _error_env("bad_budget", "budget_total 需为正数")
+    if sample_step < 1:
+        return _error_env("bad_step", "sample_step 需为正整数")
+
+    c = client or FlyAIClient()
+    if llm is None:
+        try:
+            llm = LLMClient()
+        except Exception:  # 构造失败按未注入降级（公理：不抛异常）
+            llm = None
+
+    dates, _, widened = _sample_dates(range_start, range_end, sample_step)
+    curve, notes = _sample_curve(c, departure, destination, dates)
+    if all(v is None for v in curve.flight_min) and all(v is None for v in curve.hotel_min):
+        return _error_env("all_sources_failed", "航班与住宿采样整类失败，无法生成时窗分析",
+                          "可稍后重试或缩小日期范围")
+    kw_env = c.search_keyword(query=f"{destination} 节庆 民俗 活动日历")
+    items = kw_env.data.items if getattr(kw_env, "ok", False) and kw_env.data else []
+    hints = [i.name for i in items if i.name][:8]
+    festivals, fest_note = _extract_festivals(llm, destination, range_start, range_end, hints)
+    windows = _score_windows(curve, festivals, range_start, range_end,
+                             duration_days, budget_total, sample_step)
+    degraded = list(notes)
+    if fest_note:
+        degraded.append(fest_note)
+    if widened:
+        degraded.append(f"区间采样点超 {MAX_SAMPLES}，步进自动放大")
+    top = windows[:3]
+    best_est = top[0].evidence.get("estimate") if top else None
+    analysis = WindowAnalysis(
+        windows=top,
+        price_curve=curve,
+        festivals=festivals,
+        budget_feasible=bool(best_est is not None and best_est <= budget_total),
+        degraded="；".join(degraded) or None,
+    )
+    return Envelope(ok=True, data=analysis)
+
+
+register(CapabilityMeta(
+    name="analyze_fieldwork_window",
+    description="调研时窗分析：多日期价格采样×节庆覆盖×预算可行性，推荐调研出发窗口",
+    fn=analyze_fieldwork_window,
+    args_model=AnalyzeFieldworkWindowArgs,
+    read_only=True,
+    open_world=True,
+))

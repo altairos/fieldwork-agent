@@ -35,6 +35,11 @@ def test_normalize_items_falls_back_to_alt_keys():
     assert items[0].pic_url == "x.jpg" and items[0].jump_url == "d"
     assert items[0].extra == {}
 
+
+def test_normalize_items_unwraps_info_nesting():
+    items = normalize_items([{"info": {"title": "彝文化实景剧", "price": None}}])
+    assert items[0].name == "彝文化实景剧" and items[0].price is None
+
 # ---------------------------------------------------------------- argv 拼装
 
 

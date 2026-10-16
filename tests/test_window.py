@@ -7,6 +7,7 @@ from fieldwork_agent.kernel.aggregation.window import (
     _sample_curve,
     _sample_dates,
     _score_windows,
+    analyze_fieldwork_window,
 )
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -14,6 +15,8 @@ from fieldwork_agent.kernel.models import (
     ItemPage,
     PriceCurve,
     SearchItem,
+    ToolError,
+    WindowAnalysis,
 )
 
 
@@ -43,9 +46,10 @@ def test_sample_dates_widen_exact_multiple():
 
 
 def _ok(pairs):
+    prices = [p for _, p in pairs if p is not None]
     return Envelope(ok=True, data=ItemPage(
         items=[SearchItem(name=n, price=p) for n, p in pairs], total=len(pairs),
-        cheapest=min(p for _, p in pairs)))
+        cheapest=min(prices) if prices else None))
 
 
 class CurveStub:
@@ -204,3 +208,83 @@ def test_extract_festivals_degrades():
     llm_err = FakeLLM("", error="quota exceeded")
     b, note_b = _extract_festivals(llm_err, "西昌", "2026-07-01", "2026-07-29", [])
     assert b == [] and note_b
+
+
+# ── Task 8 主函数 ──────────────────────────────────────
+
+
+class AnalyzeStub:
+    """采样+关键词搜索替身：手算金标准同款曲线。"""
+    DATES = ["2026-07-01", "2026-07-08", "2026-07-15", "2026-07-22", "2026-07-29"]
+
+    def __init__(self):
+        self._f = [700.0, 680.0, 650.0, 560.0, 600.0]
+        self._h = [180.0, 170.0, 160.0, 130.0, 150.0]
+        self.kw_queries: list[str] = []
+
+    def search_flights(self, origin, destination, dep_date="", **kw):
+        return _ok([("MU", self._f[self.DATES.index(dep_date)])])
+
+    def search_hotels(self, dest_name, check_in="", **kw):
+        return _ok([("民宿", self._h[self.DATES.index(check_in)])])
+
+    def search_keyword(self, query="", **kw):
+        self.kw_queries.append(query)
+        return _ok([("西昌火把节 7 月下旬", None), ("彝族风情周", None)])
+
+
+def test_analyze_fieldwork_window_happy():
+    stub = AnalyzeStub()
+    llm = FakeLLM('```json\n[{"name": "彝族火把节", "approx_start": "2026-07-20",'
+                  ' "approx_end": "2026-07-22", "relevance": "r"}]\n```')
+    env = analyze_fieldwork_window("昆明", "西昌", "2026-07-01", "2026-07-29",
+                                   duration_days=10, budget_total=5000.0,
+                                   sample_step=7, client=stub, llm=llm)
+    assert env.ok and isinstance(env.data, WindowAnalysis)
+    assert env.data.windows[0].start == "2026-07-15"
+    assert env.data.windows[0].score == pytest.approx(29.97, abs=0.01)
+    assert len(env.data.windows) == 3
+    assert env.data.festivals[0].name == "彝族火把节"
+    assert env.data.budget_feasible is True
+    assert env.data.degraded is None
+    assert any("节庆" in q for q in stub.kw_queries)
+    assert env.data.price_curve.flight_min[0] == 700.0
+
+
+def test_analyze_fieldwork_window_bad_args():
+    kw = dict(departure="昆明", destination="西昌", duration_days=10, budget_total=5000.0)
+    env = analyze_fieldwork_window(range_start="2026-07-29", range_end="2026-07-01", **kw)
+    assert env.ok is False and env.error.code == "bad_range"
+    env = analyze_fieldwork_window(range_start="2026/07/01", range_end="2026-07-29", **kw)
+    assert env.ok is False and env.error.code == "bad_date"
+    env = analyze_fieldwork_window(range_start="2026-07-01", range_end="2026-07-29",
+                                   duration_days=40, budget_total=5000.0,
+                                   departure="昆明", destination="西昌")
+    assert env.ok is False and env.error.code == "bad_duration"  # 区间 29 天装不下 40 天
+    env = analyze_fieldwork_window(range_start="2026-07-01", range_end="2026-07-29",
+                                   **kw, sample_step=0)
+    assert env.ok is False and env.error.code == "bad_step"
+
+
+def test_analyze_fieldwork_window_all_sources_failed():
+    class Dead(AnalyzeStub):
+        def search_flights(self, origin, destination, dep_date="", **kw):
+            return Envelope(ok=False,
+                            error=ToolError(code="flyai_error", message="x", hint=""))
+
+        def search_hotels(self, dest_name, check_in="", **kw):
+            return Envelope(ok=False,
+                            error=ToolError(code="flyai_error", message="x", hint=""))
+
+    env = analyze_fieldwork_window("昆明", "西昌", "2026-07-01", "2026-07-29",
+                                   duration_days=10, budget_total=5000.0,
+                                   client=Dead(), llm=None)
+    assert env.ok is False and env.error.code == "all_sources_failed"
+
+
+def test_analyze_fieldwork_window_registered():
+    from fieldwork_agent.kernel.registry import capabilities
+
+    meta = capabilities()["analyze_fieldwork_window"]
+    assert meta.fn is analyze_fieldwork_window
+    assert meta.read_only is True and meta.open_world is True
