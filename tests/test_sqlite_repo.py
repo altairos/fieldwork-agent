@@ -180,3 +180,38 @@ def test_save_order_preserved(tmp_path):
     for n in ("a", "b", "c"):
         repo.save_field_site("p1", {"name": n})
     assert [s["name"] for s in repo.list_field_sites("p1")] == ["a", "b", "c"]
+
+
+def test_cache_roundtrip(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    cid = repo.cache_search("p1", "大理住宿", "search_hotel", {"items": [1, 2]})
+    full = repo.get_cached_search(cid)
+    assert full["query"] == "大理住宿" and full["tool"] == "search_hotel"
+    assert full["result"] == {"items": [1, 2]}
+    assert [c["id"] for c in repo.list_cached_searches("p1")] == [cid]
+    assert "result" not in repo.list_cached_searches("p1")[0]   # 索引不含 result
+
+
+def test_unknown_cache_id_returns_none(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    assert repo.get_cached_search("no_such_id") is None
+
+
+def test_cache_truncated_64kb(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    cid = repo.cache_search("p1", "q", "search_ai", {"blob": "x" * 100_000})
+    stored = repo.get_cached_search(cid)["result"]
+    assert stored["truncated"] is True
+    assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
+
+
+def test_get_cached_search_cross_project(tmp_path):
+    """cid 全局唯一：不带 pid 也能跨项目定位。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.create("p2")
+    cid = repo.cache_search("p2", "q", "search_ai", {"x": 1})
+    assert repo.get_cached_search(cid)["result"] == {"x": 1}

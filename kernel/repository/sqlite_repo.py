@@ -392,3 +392,59 @@ class SqliteRepository:
                 "SELECT data FROM informants WHERE project_id=? ORDER BY seq",
                 (pid,)).fetchall()
         return [json.loads(r["data"]) for r in rows]
+
+    # ------------------------------------------------------------------ 搜索缓存
+
+    def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
+        """一次性 INSERT（cid 全局唯一、无更新语义，故不走 _upsert_json_record）。
+
+        result 超 64KB 整体替换为截断标记；对齐 json_repo：缓存不经 _save 落盘，
+        不推进 projects.updated_at。
+        """
+        self._require(pid)
+        cid = _new_id("srch")
+        cached_at = _now()
+        serialized = _dumps(result)
+        if len(serialized.encode("utf-8")) > CACHE_LIMIT_BYTES:
+            # 超限：整体替换为截断标记，preview 按 UTF-8 字节截断（不产生半个字符）
+            preview = serialized.encode("utf-8")[:CACHE_LIMIT_BYTES].decode(
+                "utf-8", errors="ignore")
+            stored = {"truncated": True, "preview": preview}
+        else:
+            stored = result
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO search_cache(id, project_id, query, tool, result, cached_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (cid, pid, query, tool, _dumps(stored), cached_at))
+        return cid
+
+    def list_cached_searches(self, pid: str) -> list[dict]:
+        """缓存索引（不含 result；调用方按 cid 再取全文）。"""
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, query, tool, cached_at FROM search_cache WHERE project_id=?"
+                " ORDER BY cached_at",
+                (pid,)).fetchall()
+        return [
+            {"id": r["id"], "query": r["query"], "tool": r["tool"],
+             "cached_at": r["cached_at"]}
+            for r in rows
+        ]
+
+    def get_cached_search(self, cid: str) -> dict | None:
+        """按全局唯一 id 跨项目定位（签名不含 pid，id 为全局 PK，天然跨项目）。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, query, tool, result, cached_at FROM search_cache WHERE id=?",
+                (cid,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "query": row["query"],
+            "tool": row["tool"],
+            "result": json.loads(row["result"]),
+            "cached_at": row["cached_at"],
+        }
