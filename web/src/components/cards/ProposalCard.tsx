@@ -1,6 +1,8 @@
+import type { MouseEvent } from "react";
 import { Chip } from "../ui/Chip";
 import { IconBook, IconCaret, IconDownload } from "../ui/icons";
-import { rest } from "../../api/rest";
+import { ApiError, rest } from "../../api/rest";
+import { authHeaders } from "../../lib/keys";
 import { CardShell, NoData, Notice } from "./CardShell";
 import { asArray, asRecord, strOf } from "./data";
 import type { ToolCardProps } from "./types";
@@ -16,7 +18,7 @@ import type { ToolCardProps } from "./types";
  *     「查看」= `rounded-md text-indigo hover:bg-indigowash`（此处按卡内尺度收到 h-8/text-[12.5px]）
  *   - 提纲正文用 `font-serif` 纸面语气（line 454），保留换行不重排
  *
- * 红线②：卡片不订阅 store、不发请求——`projectId` 由调用方（Task 7/8 时间线）注入，
+ * 红线②：卡片不订阅 store、不在挂载期发请求——`projectId` 由调用方（Task 7/8 时间线）注入，
  * 缺省时只说明"无法生成链接"，绝不猜项目 id；`requested_mode ≠ mode` 时如实声明体例限制
  * （不粉饰为已按用户体例生成）。markdown 是唯一真源，卡内只给元信息与入口，不改写正文。
  */
@@ -75,6 +77,24 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
     ? [`${sections.length} 章`, inputsHash ? `inputs ${inputsHash}` : ""].filter((s) => s !== "").join(" · ")
     : undefined;
 
+  // 下载入口（终审#1）：/projects 前缀受 F02 令牌保护，静态锚点导航带不了 X-App-Token
+  // （启用令牌必 401）→ preventDefault 后 fetch + authHeaders()（点击时读取，新存令牌即时
+  // 生效）取 blob 走临时链下载。卡片无错误态 UI，失败仅 console.error 不打断时间线渲染。
+  async function downloadProposal(e: MouseEvent<HTMLAnchorElement>) {
+    e.preventDefault();
+    try {
+      const resp = await fetch(rest.proposalDownloadUrl(pid), { headers: authHeaders() });
+      if (!resp.ok) throw new ApiError(resp.status, "下载失败");
+      const url = URL.createObjectURL(await resp.blob());
+      const a = Object.assign(document.createElement("a"), { href: url, download: "" });
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      console.error("提案下载失败：", err);
+    }
+  }
+
   const empty = !isDoc && guides.length === 0;
 
   return (
@@ -128,6 +148,7 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
               </a>
               <a
                 href={rest.proposalDownloadUrl(pid)}
+                onClick={(e) => void downloadProposal(e)}
                 className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md hairline bg-card text-ink text-[12.5px] hover:bg-cardsunk transition"
               >
                 <IconDownload className="w-3.5 h-3.5" />

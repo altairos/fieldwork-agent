@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { rest, type ProposalMeta } from "../api/rest";
+import { ApiError, rest, type ProposalMeta } from "../api/rest";
 import { ChapterNav } from "../components/proposal/ChapterNav";
 import { ProposalViewer } from "../components/proposal/ProposalViewer";
 import { VersionSwitch } from "../components/proposal/VersionSwitch";
 import { Header } from "../components/layout/Header";
 import { Button } from "../components/ui/Button";
 import { IconBook, IconDownload } from "../components/ui/icons";
+import { authHeaders } from "../lib/keys";
 import type { ProposalDoc } from "../types/models";
 
 /**
@@ -41,6 +42,7 @@ export function ProposalView() {
   const [projectName, setProjectName] = useState("");
   const [phase, setPhase] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  const [dlError, setDlError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedKind, setSelectedKind] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -114,14 +116,22 @@ export function ProposalView() {
     setActiveIndex(i);
   }
 
-  // 下载 .md：走 /projects/{id}/proposal/download（Content-Disposition attachment，锚点触发）
-  function download() {
-    const a = document.createElement("a");
-    a.href = rest.proposalDownloadUrl(projectId);
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  // 下载 .md：/projects/{id}/proposal/download 在 F02 受保护前缀 /projects 下，顶层锚点导航
+  // 带不了自定义头（启用 App Token 必 401）→ fetch + authHeaders()（下载时读取，新存令牌即时
+  // 生效）取 blob 走临时链下载。失败落 dlError（正文区仍展示文档，不抢正文版面）。
+  async function download() {
+    setDlError(null);
+    try {
+      const resp = await fetch(rest.proposalDownloadUrl(projectId), { headers: authHeaders() });
+      if (!resp.ok) throw new ApiError(resp.status, "下载失败");
+      const url = URL.createObjectURL(await resp.blob());
+      const a = Object.assign(document.createElement("a"), { href: url, download: "" });
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      setDlError(err instanceof ApiError ? `下载失败（HTTP ${err.status}）` : `下载失败：${String(err)}`);
+    }
   }
 
   const otherKind = doc?.kind === "interview_guide" ? "proposal" : "interview_guide";
@@ -185,6 +195,7 @@ export function ProposalView() {
               <IconDownload className="w-4 h-4" />
               下载 .md
             </Button>
+            {dlError && <div className="text-[11px] text-cinnabar leading-snug">{dlError}</div>}
             <button
               type="button"
               disabled={!doc}
