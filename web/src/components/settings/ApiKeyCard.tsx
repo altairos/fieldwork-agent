@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { rest, type HealthStatus, type SettingsStatus } from "../../api/rest";
 import { clearKeys, getKeys, saveKeys } from "../../lib/keys";
 import { Button } from "../ui/Button";
-import { IconCheck, IconLock } from "../ui/icons";
+import { IconCheck } from "../ui/icons";
 
 /**
- * ApiKeyCard — 首页侧栏「API 密钥」卡。
+ * ApiKeySection —「我的」卡（MyCard）的 API 密钥节（原独立卡改造，卡壳移入 MyCard）。
  * 百炼 Key 必填（无 key 不进入对话，见 Workspace 拦截）；飞猪 Key 可选（行程规划）。
  * key 只存浏览器 localStorage（lib/keys.ts），发送时经 rest.ts 注入请求头，
  * 不落服务端。徽标显示 key 来源：浏览器已存 > 服务端已配（环境变量）> 未配置。
@@ -25,7 +25,7 @@ function tokenBadge(local: boolean, required?: boolean): { text: string; cls: st
   return { text: "需要令牌", cls: "text-cinnabar" };
 }
 
-export function ApiKeyCard() {
+export function ApiKeySection() {
   const [dashscope, setDashscope] = useState("");
   const [flyai, setFlyai] = useState("");
   const [appToken, setAppToken] = useState("");
@@ -60,11 +60,8 @@ export function ApiKeyCard() {
   const tk = tokenBadge(appToken.trim() !== "", health?.auth_required);
 
   return (
-    <div className="hairline rounded-lg bg-card p-5">
-      <div className="font-serif text-[15px] font-semibold mb-1 flex items-center gap-2">
-        <IconLock className="w-4 h-4 text-cinnabar" />
-        API 密钥
-      </div>
+    <div>
+      <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">API 密钥</div>
       <p className="text-[11.5px] text-inkfaint mb-3.5 leading-relaxed">
         百炼 Key 必填，未配置时仅可浏览项目、不可发起对话；飞猪 Key 可选，用于行程规划。Key 只保存在本浏览器。公网部署时服务端可设 FIELDWORK_APP_TOKEN，此处填写同一令牌。
       </p>

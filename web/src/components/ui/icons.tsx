@@ -200,3 +200,15 @@ export function IconPalette(props: IconProps) {
 export function IconMenu(props: IconProps) {
   return <Line {...props}><path d="M4 6h16M4 12h16M4 18h16" /></Line>;
 }
+
+// ── 「我的」卡（导出格式偏好）追加 ──
+
+/** 单人（「我的」卡） · 无设计板 symbol，按同一线形语言补画 */
+export function IconUser(props: IconProps) {
+  return (
+    <Line {...props}>
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
+    </Line>
+  );
+}

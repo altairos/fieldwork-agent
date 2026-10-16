@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { rest } from "../api/rest";
-import { ApiKeyCard } from "../components/settings/ApiKeyCard";
+import { MyCard } from "../components/settings/MyCard";
 import { DEFAULT_PHASES } from "../components/layout/LeftRail";
+import { DEPTH_TEXT } from "../components/right/KnowledgePanel";
 import { Button } from "../components/ui/Button";
 import { Chip, type ChipTone } from "../components/ui/Chip";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ProgressBar } from "../components/ui/ProgressBar";
-import { ThemeSwitcher } from "../components/ui/ThemeSwitcher";
 import {
   IconBook,
   IconClock,
@@ -38,7 +38,7 @@ const DISCIPLINES = ["人类学", "社会学", "民族学", "公共卫生", "教
 /** 快速模板（设计板 303-306） */
 const TEMPLATES = ["村落宗族组织研究", "非遗传承调查", "乡村教育民族志", "基层医疗访谈"];
 
-/** 阶段 → chip tone（设计板：C 行程规划 cinnabar(322)、B 田野点画像 indigo(336)、D 完成态 bamboo(350)、A 无样例取 neutral） */
+/** 阶段 → chip tone（设计板：C 行程规划 cinnabar(322)、B 田野点画像 indigo(336)、D 方案生成 bamboo(350)、A 无样例取 neutral） */
 const PHASE_TONE: Record<string, ChipTone> = {
   research_positioning: "neutral",
   field_site_profiles: "indigo",
@@ -181,7 +181,7 @@ export function ProjectHub() {
         <div className="grid lg:grid-cols-[1fr_320px] gap-6">
           {/* 主区 */}
           <div>
-            {/* 标题区（设计板 280-286）+ 配色切换（首页无 Header，入口随标题区） */}
+            {/* 标题区（设计板 280-286）——配色入口移入侧栏「我的」卡 */}
             <div className="flex items-end justify-between mb-5">
               <div>
                 <div className="text-[11px] tracking-[.2em] text-cinnabar mb-1.5 num">
@@ -190,7 +190,6 @@ export function ProjectHub() {
                 <h1 className="font-serif text-[26px] font-semibold">你的田野调研项目</h1>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <ThemeSwitcher />
                 <Button
                   variant="primary"
                   className="h-10 shadow-card"
@@ -230,7 +229,7 @@ export function ProjectHub() {
                   <>
                     <div className="font-serif text-[16px] font-semibold mb-1">从一个想法开始</div>
                     <p className="text-[12.5px] text-inkfaint mb-4">
-                      选择学科倾向与快速模板，或直接一句话描述你的田野计划——罗盘会通过四阶段访谈把它补全为完整研究方案。
+                      选择学科倾向与快速模板，或直接一句话描述你的田野计划——罗盘会通过四阶段访谈把它补全为可核验的田野筹备方案，并辅助生成研究方案草稿。
                     </p>
                   </>
                 )}
@@ -303,7 +302,7 @@ export function ProjectHub() {
             {projects !== null && projects.length > 0 && (
               <>
                 <div className="text-[12px] text-inkfaint tracking-wide mb-3">
-                  进行中 / 已完成 · <span className="num">{projects.length}</span> 个项目
+                  全部项目 · <span className="num">{projects.length}</span> 个项目
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4">
                   {projects.map((p) => (
@@ -327,9 +326,9 @@ export function ProjectHub() {
             )}
           </div>
 
-          {/* 侧栏：密钥配置 + 说明（密钥卡置顶：无 key 不可对话，入口需最先看到） */}
+          {/* 侧栏：「我的」卡（导出格式/配色/密钥——密钥仍置顶于卡内首屏）+ 说明 */}
           <aside className="space-y-4">
-            <ApiKeyCard />
+            <MyCard />
             <div className="hairline rounded-lg bg-paperdeep p-5">
               <div className="font-serif text-[15px] font-semibold mb-3 flex items-center gap-2">
                 <IconCompass className="w-4 h-4 text-cinnabar" />
@@ -349,9 +348,7 @@ export function ProjectHub() {
             </div>
             <div className="hairline rounded-lg bg-card p-5">
               <div className="font-serif text-[15px] font-semibold mb-2">学术纵深</div>
-              <p className="text-[12px] text-inksoft leading-relaxed">
-                内置 10+ 类访谈对象类型库（村落长老/宗族头人/宗教人士/基层干部/返乡务工者/非遗传承人…），每类含接近策略、注意事项、建议提问域与伦理提示，可自动生成半结构式访谈提纲并嵌入提案第三章。
-              </p>
+              <p className="text-[12px] text-inksoft leading-relaxed">{DEPTH_TEXT}</p>
             </div>
           </aside>
         </div>
