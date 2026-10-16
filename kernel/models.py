@@ -158,6 +158,49 @@ class ItineraryPlan(BaseModel):
     inputs_hash: str = ""
 
 
+# ---------------------------------------------------------------- 时窗分析
+
+# ── 时窗分析（analyze_fieldwork_window；spec §4.1）─────────────────
+
+
+class FestivalInfo(BaseModel):
+    """LLM 抽取的节庆信息（农历→公历换算由 LLM 完成，内核只做区间求交）。"""
+
+    name: str = ""                 # "彝族火把节"
+    approx_dates: str = ""         # "农历六月廿四，约7月下旬"（人类可读原文）
+    approx_start: str = ""         # ISO 日期 "2027-07-26"
+    approx_end: str = ""           # ISO 日期 "2027-07-28"
+    relevance: str = ""            # 对研究主题的观察价值
+
+
+class PriceCurve(BaseModel):
+    """多日期采样价格曲线（None = 该采样点失败，曲线缺值）。"""
+
+    dates: list[str] = Field(default_factory=list)
+    flight_min: list[float | None] = Field(default_factory=list)   # 该日出发最低价
+    hotel_min: list[float | None] = Field(default_factory=list)    # 当晚入住最低价
+
+
+class RecommendedWindow(BaseModel):
+    """推荐时窗（end = start + duration_days - 1）。"""
+
+    start: str = ""
+    end: str = ""
+    score: float = 0.0             # 0-100，确定性评分
+    reasons: list[str] = Field(default_factory=list)   # 模板拼装理由链（含统计数字）
+    evidence: list[str] = Field(default_factory=list)  # "采样点 2027-07-20：航班¥620/晚住宿¥150"
+
+
+class WindowAnalysis(BaseModel):
+    """analyze_fieldwork_window 的 data 载荷。"""
+
+    windows: list[RecommendedWindow] = Field(default_factory=list)  # 按 score 降序，≤3
+    price_curve: PriceCurve = PriceCurve()
+    festivals: list[FestivalInfo] = Field(default_factory=list)     # 可为空（抽取降级）
+    budget_feasible: bool = False       # 最优窗口预算是否可行
+    degraded: str | None = None         # 体验模式/节庆降级/部分采样失败说明
+
+
 # ---------------------------------------------------------------- 研究上下文
 
 
