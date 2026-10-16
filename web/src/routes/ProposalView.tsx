@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApiError, rest, type ProposalMeta } from "../api/rest";
+import { ApiError, apiDetail, rest, type ProposalMeta } from "../api/rest";
 import { ChapterNav } from "../components/proposal/ChapterNav";
 import { ProposalViewer } from "../components/proposal/ProposalViewer";
 import { VersionSwitch } from "../components/proposal/VersionSwitch";
@@ -185,12 +185,12 @@ export function ProposalView() {
   // 确认方案（F04）：POST confirm → 回读快照刷新题头/阶段/确认与 stale 状态。
   // 阶段推进提示来自后端确定性推进结果（phase_transition.to）。
   async function doConfirm() {
-    if (!projectId) return;
+    if (!projectId || !doc) return;
     setConfirming(true);
     setConfirmError(null);
     setConfirmHint(null);
     try {
-      const res = await rest.confirmProposal(projectId);
+      const res = await rest.confirmProposal(projectId, doc.id);
       const snap = await rest.getProject(projectId);
       setProjectName(snap.research_context?.topic || "");
       setPhase(snap.phase);
@@ -199,9 +199,15 @@ export function ProposalView() {
       const to = res.phase_transition?.to;
       setConfirmHint(to ? `方案已确认，阶段推进至 ${to}` : "方案已确认");
     } catch (err: unknown) {
-      setConfirmError(
-        err instanceof ApiError ? `确认失败（HTTP ${err.status}）` : `确认失败：${String(err)}`,
-      );
+      // R09：后端业务拒绝（400/404/409）的 {detail} 中文文案直显给用户
+      if (err instanceof ApiError) {
+        const detail = apiDetail(err);
+        setConfirmError(
+          err.status < 500 && detail ? detail : `确认失败（HTTP ${err.status}）`,
+        );
+      } else {
+        setConfirmError(`确认失败：${String(err)}`);
+      }
     } finally {
       setConfirming(false);
     }
@@ -277,7 +283,7 @@ export function ProposalView() {
             <Button
               variant="outline"
               className="w-full"
-              disabled={!doc || confirming}
+              disabled={!doc || confirming || doc.kind !== "proposal"}
               onClick={doConfirm}
             >
               {confirming ? "确认中…" : confirmed || stale ? "重新确认方案" : "确认方案"}

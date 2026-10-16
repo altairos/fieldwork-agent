@@ -10,6 +10,16 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** 从 ApiError.message（后端响应文本）解析 FastAPI `{"detail": "…"}` 文案；非该形状返回 null。 */
+export function apiDetail(err: ApiError): string | null {
+  try {
+    const parsed = JSON.parse(err.message) as { detail?: unknown };
+    return typeof parsed?.detail === "string" ? parsed.detail : null;
+  } catch {
+    return null;
+  }
+}
+
 /** GET /settings/status 的返回（web_host/api/settings.py，只回布尔不回明文）。 */
 export interface SettingsStatus {
   dashscope_configured: boolean;
@@ -84,10 +94,12 @@ export const rest = {
   adoptInformant: (id: string, candidate: Record<string, unknown>) =>
     req<{ informant: InformantRecord & { id: string }; phase_transition: PhaseTransition | null }>(
       `/projects/${id}/informants`, { method: "POST", body: JSON.stringify({ candidate }) }),
-  confirmProposal: (id: string) =>
+  // 审计二 R09：确认必须指定文档（后端四重校验，404/400/409 拒绝）
+  confirmProposal: (id: string, docId: string) =>
     req<{ confirmation: Record<string, unknown>; proposal_confirmed: boolean;
           phase_transition: PhaseTransition | null }>(
-      `/projects/${id}/proposal/confirm`, { method: "POST" }),
+      `/projects/${id}/proposal/confirm`,
+      { method: "POST", body: JSON.stringify({ doc_id: docId }) }),
   // ---- 按版本读取/下载（web_host/api/exports.py by-id 端点，审计 F13）----
   getProposalById: (id: string, docId: string) =>
     req<ProposalDoc & { id: string }>(`/projects/${id}/proposals/${docId}`),
