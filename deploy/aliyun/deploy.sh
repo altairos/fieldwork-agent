@@ -34,8 +34,7 @@ PY
 
 # 2) 系统依赖（编译个别 sdist 时需要 gcc/python3-devel；已装则秒过）
 echo "==> 安装系统依赖 (dnf)"
-dnf install -y python3-pip python3-devel gcc || {
-  echo "!! dnf 安装失败，若已具备 gcc/python3-devel 可忽略"; }
+dnf install -y python3-pip python3-devel gcc curl || { echo "!! dnf 安装失败，若已具备 gcc/python3-devel/curl 可忽略"; }
 
 # 3) 虚拟环境
 cd "$APP_DIR"
@@ -56,6 +55,19 @@ else
   echo "==> 前端产物 web/dist 就绪"
 fi
 
+# 4.5) flyai CLI 检测（审计 F15：旅行搜索工具的运行时依赖，缺失只警告不阻塞——
+#      末尾 /ready 会再次报告）
+if command -v flyai >/dev/null 2>&1; then
+  echo "==> flyai CLI 已安装: $(command -v flyai)"
+elif command -v npm >/dev/null 2>&1; then
+  echo "==> 检测到 npm，安装 @fly-ai/flyai-cli …"
+  npm install -g @fly-ai/flyai-cli || echo "!! npm 安装失败，请手动执行: npm install -g @fly-ai/flyai-cli"
+else
+  echo "!! 未检测到 Node/npm。旅行搜索需要 flyai CLI，请手动安装:"
+  echo "    dnf install -y nodejs npm && npm install -g @fly-ai/flyai-cli"
+  echo "   （不阻塞本次部署；装好后 curl http://127.0.0.1:$PORT/ready 确认 flyai_cli=true）"
+fi
+
 # 5) 环境变量文件（不存在才从模板创建，避免覆盖已填密钥）
 if [ ! -f "$ENV_EXAMPLE" ]; then
   cp "$ENV_EXAMPLE_SRC" "$ENV_EXAMPLE"
@@ -70,15 +82,29 @@ systemctl daemon-reload
 systemctl enable "$SVC" >/dev/null 2>&1 || true
 systemctl restart "$SVC"
 
-# 7) 本地冒烟
+# 7) 本地冒烟（审计 F15：健康检查失败必须退出非零，不再吞错）
 sleep 2
 echo "==> 服务状态："
 systemctl --no-pager --full status "$SVC" | head -n 12 || true
 echo "==> 本地健康检查 http://127.0.0.1:$PORT/health ："
-if command -v curl >/dev/null 2>&1; then
-  curl -s -m 5 "http://127.0.0.1:$PORT/health" && echo || echo "(暂无响应，看 journalctl -u $SVC -n 50)"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "!! 未装 curl（步骤 2 已尝试安装），无法自动健康检查" >&2
+  exit 1
+fi
+if ! curl -sf -m 5 "http://127.0.0.1:$PORT/health" >/dev/null; then
+  echo "!! /health 探测失败——服务未起来。排查: journalctl -u $SVC -n 50 --no-pager" >&2
+  exit 1
+fi
+echo "    /health ok（后端进程在线）"
+echo "==> 就绪检查 http://127.0.0.1:$PORT/ready ："
+if READY=$(curl -s -m 5 "http://127.0.0.1:$PORT/ready") && \
+   [ "$(printf '%s' "$READY" | grep -c '"status":"ready"')" -ge 1 ]; then
+  echo "    /ready ok（flyai CLI 与项目目录均就绪）"
 else
-  echo "(未装 curl，可 dnf install -y curl 后再测)"
+  echo "!! /ready 未就绪——页面在线但旅行搜索不可用。返回: $READY" >&2
+  echo "   flyai_cli=false             → dnf install -y nodejs npm && npm install -g @fly-ai/flyai-cli" >&2
+  echo "   projects_dir_writable=false → 检查数据目录属主（chown -R 服务用户 $APP_DIR）" >&2
+  exit 1
 fi
 
 cat <<EOF
