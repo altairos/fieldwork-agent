@@ -1,19 +1,18 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
 import asyncio
+import json
 import time
+from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.registry import build_tool_schemas
+from fieldwork_agent.kernel.sources.flyai import RecordingClient
 from fieldwork_agent.runtime.loop import _assistant_message, _coerce_args, _tool_content
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
 from fieldwork_agent.web_host.agent.state_tools import build_state_tools
 from fieldwork_agent.web_host.turn_manager import TurnManager
-
-_SEARCH = frozenset({"search_flights", "search_trains", "search_hotels",
-                     "search_marriott_hotels", "search_marriott_packages",
-                     "search_pois", "search_keyword", "search_ai"})
 
 # 无 LLM 降级提示：web 宿主无启动横幅渠道，提示附在回复末尾（CLI 宿主用启动横幅呈现）
 _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
@@ -25,7 +24,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
-    dispatch = build_dispatch_fn(flyai_client, llm)
+    recorder = RecordingClient(flyai_client) if flyai_client is not None else None
+    dest_refs: dict[str, str] = {}
+    snapshot_ids: list[str] = []
+    drained = 0
+    call_args_map: dict[str, dict] = {}
+    dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
+                                 llm, live_snapshot_refs=dest_refs)
     tools = build_tool_schemas()
     state_schemas, state_handlers = build_state_tools(repo, pid)
     tools = tools + state_schemas
@@ -97,6 +102,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
                 call_name_map[call_id] = name
+                call_args_map[call_id] = args
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})
@@ -114,6 +120,15 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                  "data": data, "degraded": env.degraded})
                 messages.append({"role": "tool", "tool_call_id": call_id,
                                  "content": _tool_content(name, env)})
+                if name == "analyze_fieldwork_window" and env.ok:
+                    dest = str(call_args_map.get(call_id, {}).get("destination", ""))
+                    cid = repo.cache_search(pid, f"time_window::{dest}",
+                                            "analyze_fieldwork_window", data)
+                    snapshot_ids.append(cid)
+            # 快照链（spec §5.1）：搜索即时落盘，下一轮工具调用（如 compose_itinerary）
+            # 经 dispatch 注入的 dest_refs 即可引用刚落盘的快照
+            drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
+                                       dest_refs, drained)
 
     except Exception as exc:
         tm.append_event(pid, turn_id, "error",
@@ -137,7 +152,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         tm.finish(pid, turn_id, "cancelled")
     else:
         tm.append_event(pid, turn_id, "turn_done",
-                        {"reply_id": turn_id, "usage": usage_total})
+                        {"reply_id": turn_id, "usage": usage_total,
+                         "snapshot_ids": snapshot_ids})
         tm.finish(pid, turn_id, "completed")
 
 
@@ -183,9 +199,7 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map):
             continue
         data_dict = data if isinstance(data, dict) else (
             data.model_dump(mode="json") if hasattr(data, "model_dump") else {"value": data})
-        if name in _SEARCH:
-            repo.cache_search(pid, f"{name}: {call_id}", name, data_dict)
-        elif name == "profile_field_site":
+        if name == "profile_field_site":
             repo.save_field_site(pid, {"name": data_dict.get("location", ""),
                                        "confirmed": False, "profile": data_dict})
         elif name == "compose_itinerary":
@@ -252,3 +266,32 @@ def _apply_extractions(repo, pid, user_text):
     if extras:
         merged["extras"] = extras
     repo.update_research_context(pid, merged)
+
+
+def _drain_snapshots(repo, pid, recorder, snapshot_ids, dest_refs, start: int) -> int:
+    """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（spec §5.1）。
+
+    返回新游标（幂等，同一调用不会重复落盘）。仅记录带目的地语义的调用
+    （destination/dest_name/city_name 任一命中）；query 为可读的
+    ``方法名 {参数 JSON}``；analyze_fieldwork_window 内部的多日期采样同样
+    经 recorder 被捕获——它们正是价格曲线的原始依据。同一目的地多次
+    命中取最新引用。recorder 为 None（宿主未注入 flyai）时原样返回游标。
+    """
+    if recorder is None:
+        return start
+    for method, sig, env in recorder.calls[start:]:
+        if not getattr(env, "ok", False):
+            continue
+        kwargs = sig.get("kwargs") or {}
+        dest = (kwargs.get("destination") or kwargs.get("dest_name")
+                or kwargs.get("city_name") or "")
+        if not dest:
+            continue
+        query = f"{method} {json.dumps(kwargs, ensure_ascii=False)}"
+        data = env.data
+        if hasattr(data, "model_dump"):
+            data = data.model_dump(mode="json")
+        cid = repo.cache_search(pid, query, method, data)
+        snapshot_ids.append(cid)
+        dest_refs[dest] = f"flyai 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+    return len(recorder.calls)

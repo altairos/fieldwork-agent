@@ -60,3 +60,20 @@ async def get_project(project_id: str, repo=Depends(get_repo)):
             "updated_at": state.get("updated_at"),
             "proposal_confirmed": bool(state.get("proposal_confirmed")),
             "proposal_confirmation_stale": repo.is_proposal_confirmation_stale(project_id)}
+
+
+@router.get("/projects/{project_id}/cached-searches")
+async def list_cached_searches(project_id: str, repo=Depends(get_repo)):
+    """快照索引（spec §5.2）：[{id, query, tool, cached_at}]，不含 result 体。"""
+    checked_project_id(project_id, repo)
+    return repo.list_cached_searches(project_id)
+
+
+@router.get("/projects/{project_id}/cached-searches/{cid}")
+async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo)):
+    """单条快照全量（含 result），供前端懒加载披露（Task 13 SnapshotDisclosure）。"""
+    checked_project_id(project_id, repo)
+    record = repo.get_cached_search(cid)
+    if record is None:
+        raise HTTPException(404, f"快照不存在: {cid}")
+    return record

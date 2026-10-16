@@ -64,3 +64,20 @@ async def test_get_project_snapshot(client):
 async def test_get_project_404(client):
     r = await client.get("/projects/ghost")
     assert r.status_code == 404
+
+
+async def test_cached_searches_endpoints(client, app):
+    """快照 REST（spec §5.2）：索引列表（不含 result）+ 单条全量 + 404。"""
+    await client.post("/projects", json={"project_id": "p1"})
+    repo = app.state.repo
+    cid = repo.cache_search("p1", 'search_hotels {"dest_name": "大理"}',
+                            "search_hotels", {"items": [{"name": "H", "price": 100}]})
+    r = await client.get("/projects/p1/cached-searches")
+    assert r.status_code == 200
+    index = r.json()
+    assert [c["id"] for c in index] == [cid]
+    assert "result" not in index[0]
+    r2 = await client.get(f"/projects/p1/cached-searches/{cid}")
+    assert r2.status_code == 200 and r2.json()["result"]["items"][0]["name"] == "H"
+    r3 = await client.get("/projects/p1/cached-searches/srch_ghost")
+    assert r3.status_code == 404

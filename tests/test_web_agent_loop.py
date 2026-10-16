@@ -243,3 +243,54 @@ def test_compose_interview_guide_persisted(env):
     assert docs[0]["kind"] == "interview_guide"
     doc = repo.get_proposal_by_id("p1", docs[0]["id"])
     assert "## 宗族长老" in doc["content"]
+
+
+# ---------------------------------------------------------------- 快照链（spec §5.1）
+
+
+def test_search_snapshot_persisted_and_turn_done_carries_ids(env):
+    """回合内搜索即时落盘为快照；turn_done 事件携带 snapshot_ids。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    cached = repo.list_cached_searches("p1")
+    assert len(cached) == 1 and cached[0]["tool"] == "search_hotels"
+    assert "search_hotels" in cached[0]["query"] and "大理" in cached[0]["query"]
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["snapshot_ids"] == [cached[0]["id"]]
+
+
+def test_dispatch_injects_live_snapshot_refs():
+    """dispatch 对声明 snapshot_refs 形参的 fn 注入活字典当前内容（Task 11 消费）。"""
+    from fieldwork_agent.kernel.models import Envelope
+    from fieldwork_agent.kernel.registry import _REGISTRY, CapabilityMeta, register
+    from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
+    from pydantic import BaseModel
+
+    class ProbeArgs(BaseModel):
+        pass
+
+    def probe(*, snapshot_refs=None):
+        return Envelope(ok=True, data={"refs": snapshot_refs})
+
+    register(CapabilityMeta(name="probe_tool", description="p", fn=probe,
+                            args_model=ProbeArgs))
+    try:
+        live = {"大理": "flyai 快照 srch_1（2026-10-16 查询）"}
+        dispatch = build_dispatch_fn(None, None, live_snapshot_refs=live)
+        env = dispatch("probe_tool", {})
+        assert env.ok and env.data["refs"] == live
+        live["喜洲"] = "flyai 快照 srch_2（2026-10-16 查询）"  # 活字典：后续调用可见
+        assert dispatch("probe_tool", {}).data["refs"]["喜洲"]
+    finally:
+        _REGISTRY.pop("probe_tool", None)
