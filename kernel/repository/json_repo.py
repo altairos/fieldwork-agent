@@ -27,16 +27,17 @@ from datetime import datetime
 from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
-from fieldwork_agent.kernel.models import ConfirmationRecord, compute_inputs_hash, inputs_stale
+from fieldwork_agent.kernel.models import ConfirmationRecord
+from fieldwork_agent.kernel.repository.confirm_hash import (
+    ProposalConfirmError,
+    compute_confirm_hash,
+)
 from fieldwork_agent.kernel.repository.guard import cache_id_violation
 
 # 消息滚动窗口上限（state 内只留最近 N 条，全量在 jsonl）
 MESSAGE_WINDOW = 50
 # 搜索缓存 result 落盘上限（UTF-8 字节）
 CACHE_LIMIT_BYTES = 64 * 1024
-# 方案确认的关键输入字段（审计 F04：这些字段变更后旧确认失效）
-CONFIRM_INPUT_FIELDS = ("travel_date", "budget", "time_window",
-                        "departure_city", "target_location", "scale")
 
 
 def _now() -> str:
@@ -419,6 +420,8 @@ class JsonRepository:
             "version": version,
             "filename": f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md",
             "saved_at": _now(),
+            # 审计二 R09：保存时落五路依赖指纹，确认时校验
+            "dep_hash": self._current_confirm_hash(pid, state),
         }
         path = self._output_dir(pid) / record["filename"]
         if path.exists():
@@ -476,20 +479,57 @@ class JsonRepository:
                 return True
         return False
 
-    def confirm_proposal(self, pid: str, subject: str = "") -> dict:
-        """记录一次方案确认：落 ConfirmationRecord（含关键输入哈希）并置 proposal_confirmed。"""
+    def _current_confirm_hash(self, pid: str, state: dict) -> str:
+        """当前五路依赖指纹（审计二 R09）：ctx/田野点/报道人/知识库/最新行程快照。"""
+        return compute_confirm_hash(
+            state.get("research_context") or {},
+            self.list_field_sites(pid),
+            self.list_informants(pid),
+            self.list_knowledge(pid),
+            self._latest_itinerary_cid(pid))
+
+    def _latest_itinerary_cid(self, pid: str) -> str:
+        """最新一次 compose_itinerary 快照 id（无则空串）——五路指纹之⑤。
+
+        list_cached_searches 按文件名（时间戳前缀）升序，最新在末尾。
+        """
+        for cached in reversed(self.list_cached_searches(pid)):
+            if cached.get("tool") == "compose_itinerary":
+                return cached["id"]
+        return ""
+
+    def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
+        """审计二 R09：确认**指定**文档（doc_id 空则取最新一份，兼容旧调用面）。
+
+        四重校验均 raise ``ProposalConfirmError``：文档不存在 ``not_found``、
+        类型非 proposal ``wrong_kind``、缺依赖指纹 ``dep_hash_missing``（legacy
+        文档）、指纹不一致 ``dep_hash_mismatch``（五路依赖已变化）。
+        """
         state = self._load(pid)
-        ctx = state.get("research_context") or {}
-        payload = {f: str(ctx.get(f, "") or "") for f in CONFIRM_INPUT_FIELDS}
-        latest_id = state["proposals"][-1]["id"] if state.get("proposals") else ""
-        record = ConfirmationRecord(
-            kind="proposal", subject=subject or latest_id,
-            confirmed_at=_now(), inputs_hash=compute_inputs_hash(payload))
-        state.setdefault("confirmations", []).append(record.model_dump(mode="json"))
+        if not doc_id:
+            doc_id = state["proposals"][-1]["id"] if state.get("proposals") else ""
+        record = next(
+            (r for r in state.get("proposals") or [] if r.get("id") == doc_id), None)
+        if record is None:
+            raise ProposalConfirmError(
+                f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
+        if record.get("kind", "proposal") != "proposal":
+            raise ProposalConfirmError(
+                f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
+        current = self._current_confirm_hash(pid, state)
+        if not record.get("dep_hash"):
+            raise ProposalConfirmError(
+                "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
+        if record["dep_hash"] != current:
+            raise ProposalConfirmError(
+                "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
+        rec = ConfirmationRecord(
+            kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+        state.setdefault("confirmations", []).append(rec.model_dump(mode="json"))
         state["proposal_confirmed"] = True
-        state["updated_at"] = record.confirmed_at
+        state["updated_at"] = rec.confirmed_at
         self._save(pid, state)
-        return record.model_dump(mode="json")
+        return rec.model_dump(mode="json")
 
     def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
         """按记录 id 取文档（含 content 正文，兼容 legacy_ 前缀）；不存在返回 None。"""
@@ -499,7 +539,11 @@ class JsonRepository:
         return None
 
     def is_proposal_confirmation_stale(self, pid: str) -> bool:
-        """输入哈希与当前不一致，或确认后产生了新文档 → True；无确认记录返回 False。"""
+        """五路依赖指纹与确认时不一致，或确认后产生了新文档 → True。
+
+        无确认记录 → False（从未确认，无所谓失效）；legacy 记录无
+        ``dep_hash`` → True（无法判定依赖是否变化，保守要求重新确认）。
+        """
         state = self._load(pid)
         records = state.get("confirmations") or []
         if not records:
@@ -507,7 +551,8 @@ class JsonRepository:
         latest = state["proposals"][-1]["id"] if state.get("proposals") else ""
         subject = records[-1].get("subject", "")
         if subject and latest and subject != latest:
-            return True  # 确认后产生了新文档（产物侧失效，终审 M1）
-        ctx = state.get("research_context") or {}
-        payload = {f: str(ctx.get(f, "") or "") for f in CONFIRM_INPUT_FIELDS}
-        return inputs_stale(records[-1].get("inputs_hash", ""), compute_inputs_hash(payload))
+            return True  # 确认后产生了新文档（产物侧失效，终审 M1 语义保留）
+        dep_hash = records[-1].get("dep_hash", "")
+        if not dep_hash:
+            return True  # legacy 确认记录无指纹，保守视失效
+        return dep_hash != self._current_confirm_hash(pid, state)

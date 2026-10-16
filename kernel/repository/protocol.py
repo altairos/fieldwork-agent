@@ -150,9 +150,12 @@ class ProjectRepository(Protocol):
         """按记录 id 把田野点置为已确认；未知 id 返回 ``False``，已确认幂等返回 ``True``。"""
         ...
 
-    def confirm_proposal(self, pid: str, subject: str = "") -> dict:
-        """落一条 ``ConfirmationRecord``（关键输入字段当前值哈希）并置
-        ``proposal_confirmed=True``；返回 ``model_dump(mode="json")`` 的记录副本。"""
+    def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
+        """审计二 R09：确认**指定**文档（``doc_id`` 空则取最新一份）。四重校验
+        （不存在 ``not_found`` / 非 proposal ``wrong_kind`` / 缺指纹
+        ``dep_hash_missing`` / 指纹不一致 ``dep_hash_mismatch``）raise
+        ``ProposalConfirmError``；通过则落 ``ConfirmationRecord``（含 ``dep_hash``）
+        并置 ``proposal_confirmed=True``。"""
         ...
 
     def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:

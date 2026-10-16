@@ -202,16 +202,16 @@ class TestContract:
         assert repo.confirm_field_site("p1", sid) is True
         repo.update_research_context("p1", {"budget": "2万"})
         repo.save_proposal("p1", "# 方案", version="final")
-        repo.confirm_proposal("p1")
-        assert repo.is_proposal_confirmation_stale("p1") is False
         doc_id = repo.get_latest_proposal("p1")["id"]
+        repo.confirm_proposal("p1", doc_id)
+        assert repo.is_proposal_confirmation_stale("p1") is False
         assert repo.get_proposal_by_id("p1", doc_id)["content"] == "# 方案"
         repo.update_research_context("p1", {"budget": "5万"})
         assert repo.is_proposal_confirmation_stale("p1") is True
 
     def test_confirmation_stale_after_new_proposal(self, repo):
         repo.save_proposal("p1", "# 方案", version="final")
-        repo.confirm_proposal("p1")
+        repo.confirm_proposal("p1", repo.get_latest_proposal("p1")["id"])
         assert repo.is_proposal_confirmation_stale("p1") is False
         repo.save_proposal("p1", "# 方案 v2", version="final")
         assert repo.is_proposal_confirmation_stale("p1") is True
