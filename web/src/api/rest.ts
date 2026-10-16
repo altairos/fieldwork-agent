@@ -12,6 +12,12 @@ export interface SettingsStatus {
   flyai_configured: boolean;
 }
 
+/** GET /health 的返回（web_host/app.py：auth_required 表示服务端启用了 App Token）。 */
+export interface HealthStatus {
+  status: string;
+  auth_required: boolean;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
     ...init,
@@ -31,6 +37,7 @@ export interface ProposalMeta {
 
 export const rest = {
   settingsStatus: () => req<SettingsStatus>("/settings/status"),
+  health: () => req<HealthStatus>("/health"),
   createProject: (body: { project_id?: string; discipline?: string; topic?: string; purpose?: string }) =>
     req<{ project_id: string; phase: string }>("/projects", { method: "POST", body: JSON.stringify(body) }),
   listProjects: () => req<ProjectSummary[]>("/projects"),
