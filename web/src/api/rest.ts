@@ -3,6 +3,7 @@ import type {
   FieldSiteRecord, InformantRecord, ProjectSnapshot, ProjectSummary,
   ProposalDoc, ResearchContext,
 } from "../types/models";
+import type { ExportFormat } from "../lib/exportFormat";
 import { authHeaders } from "../lib/keys";
 
 export class ApiError extends Error {
@@ -58,7 +59,10 @@ export const rest = {
     req<{ turn_id: string; status: string }>(`/projects/${id}/turns/${turnId}/cancel`, { method: "POST" }),
   getProposal: (id: string) => req<ProposalDoc & { id: string }>(`/projects/${id}/proposal`),
   listProposals: (id: string) => req<ProposalMeta[]>(`/projects/${id}/proposals`),
-  proposalDownloadUrl: (id: string) => `/projects/${id}/proposal/download`,
+  proposalDownloadUrl: (id: string, format?: ExportFormat) =>
+    format && format !== "md"
+      ? `/projects/${id}/proposal/download?format=${format}`
+      : `/projects/${id}/proposal/download`,
   // ---- 状态修正与确认（web_host/api/state.py，审计 F03/F04 修正入口）----
   updateResearchContext: (id: string, patch: Record<string, string | boolean>) =>
     req<{ research_context: Partial<ResearchContext>; phase_transition: PhaseTransition | null }>(
