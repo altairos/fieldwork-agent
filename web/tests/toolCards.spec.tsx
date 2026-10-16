@@ -60,12 +60,13 @@ describe("BudgetCard coverage", () => {
 // ──────────────────────────────────────────────────────────────────────────
 // 补充断言：注册表 key 必须与内核 registry 注册名全等（不臆造、不漏映射）。
 // 名单取自实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py +
-// kernel/sources/flyai.py + kernel/aggregation/* + kernel/documents/*，13 项），
+// kernel/sources/flyai.py + kernel/aggregation/* + kernel/documents/*，14 项），
 // 与 mcp_server/mapping.py TOOL_GROUPS 的键集一致。
 // ──────────────────────────────────────────────────────────────────────────
 const KERNEL_TOOLS = [
   "profile_field_site",
   "compose_itinerary",
+  "analyze_fieldwork_window",
   "compose_proposal",
   "compose_interview_guide",
   "suggest_informants",
@@ -80,7 +81,7 @@ const KERNEL_TOOLS = [
 ];
 
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 内核 13 能力名（无臆造 key）", () => {
+  test("注册表键集 = 内核 14 能力名（无臆造 key）", () => {
     expect(Object.keys(toolCardRegistry).sort()).toEqual([...KERNEL_TOOLS].sort());
   });
   test("每个内核工具都命中专属卡片（不落 Fallback）", () => {

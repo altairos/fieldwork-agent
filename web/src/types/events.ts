@@ -40,6 +40,8 @@ export interface PhaseTransition {
 export interface TurnDone {
   reply_id: string;
   usage: Record<string, unknown>;
+  /** 本轮产生的搜索快照 cid（M3 证据链，后端 Task 10 注入；旧回合无此字段）。 */
+  snapshot_ids?: string[];
 }
 
 /** 错误事件（带下一步建议 hint）。 */

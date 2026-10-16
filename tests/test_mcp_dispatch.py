@@ -156,7 +156,7 @@ def test_non_envelope_result_is_wrapped(monkeypatch):
 def test_registry_fns_expose_injection_seams():
     """裸导入即注册：13 能力全进分派表；文档能力声明 llm、搜索/聚合声明 client（注入接缝，0c5b7bb 已落地）。"""
     fns = dispatch._CAPABILITY_FNS
-    assert len(fns) == 13 and DOCUMENT_TOOLS <= set(fns)
+    assert len(fns) == 14 and DOCUMENT_TOOLS <= set(fns)
     for name in DOCUMENT_TOOLS:
         assert "llm" in inspect.signature(fns[name]).parameters
     for name in set(fns) - DOCUMENT_TOOLS:
