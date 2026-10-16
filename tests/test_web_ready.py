@@ -2,9 +2,8 @@
 """审计 F15：/ready 就绪端点（blocking = flyai CLI + 项目目录可写）。"""
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
 from fieldwork_agent.web_host.app import create_app
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
