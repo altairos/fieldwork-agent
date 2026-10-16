@@ -201,6 +201,13 @@ class TestContract:
         repo.update_research_context("p1", {"budget": "5万"})
         assert repo.is_proposal_confirmation_stale("p1") is True
 
+    def test_confirmation_stale_after_new_proposal(self, repo):
+        repo.save_proposal("p1", "# 方案", version="final")
+        repo.confirm_proposal("p1")
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        repo.save_proposal("p1", "# 方案 v2", version="final")
+        assert repo.is_proposal_confirmation_stale("p1") is True
+
     # ---------------------------------------------------------------- 项目与状态面
 
     def test_create_is_idempotent(self, repo):

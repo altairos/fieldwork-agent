@@ -494,10 +494,15 @@ class JsonRepository:
         return None
 
     def is_proposal_confirmation_stale(self, pid: str) -> bool:
-        """最近一次方案确认的输入哈希与当前不一致 → True；无确认记录返回 False。"""
-        records = self._load(pid).get("confirmations") or []
+        """输入哈希与当前不一致，或确认后产生了新文档 → True；无确认记录返回 False。"""
+        state = self._load(pid)
+        records = state.get("confirmations") or []
         if not records:
             return False
-        ctx = self._load(pid).get("research_context") or {}
+        latest = state["proposals"][-1]["id"] if state.get("proposals") else ""
+        subject = records[-1].get("subject", "")
+        if subject and latest and subject != latest:
+            return True  # 确认后产生了新文档（产物侧失效，终审 M1）
+        ctx = state.get("research_context") or {}
         payload = {f: str(ctx.get(f, "") or "") for f in CONFIRM_INPUT_FIELDS}
         return inputs_stale(records[-1].get("inputs_hash", ""), compute_inputs_hash(payload))

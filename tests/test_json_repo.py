@@ -262,6 +262,14 @@ def test_confirmation_stale_after_budget_change(json_repo):
     assert json_repo.is_proposal_confirmation_stale("p1") is True
 
 
+def test_confirmation_stale_after_new_proposal(json_repo):
+    json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1")
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.save_proposal("p1", "# 方案 v2", version="final")
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
 def test_stale_false_without_confirmation(json_repo):
     assert json_repo.is_proposal_confirmation_stale("p1") is False
 
