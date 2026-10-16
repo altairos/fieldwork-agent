@@ -148,3 +148,11 @@ def test_legal_pid_still_accepted(tmp_path):
     assert h["create_project"](project_id="p-1_2")["ok"]
     auto = h["create_project"]()
     assert auto["ok"] and auto["data"]["project_id"].startswith("field_")
+
+
+def test_double_dot_inside_pid_now_accepted(tmp_path):
+    """审计 F01 语义修正：整值匹配 . / ..，合法名含子串 .. 不再误拒。"""
+    h = build_handlers(make_repo(tmp_path))
+    out = h["create_project"](project_id="study..2024")
+    assert out["ok"] is True
+    assert out["data"]["project_id"] == "study..2024"
