@@ -134,3 +134,49 @@ def test_dialogue_context_window_capped_50(tmp_path):
         repo.append_message("p1", "user", f"m{i}")
     assert len(repo.get_state("p1")["dialogue_context"]) == 50   # 窗口副本 ≤50
     assert len(repo.get_messages("p1", limit=0)) == 60           # 全量真源不丢
+
+
+def test_site_informant_roundtrip(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_field_site("p1", {"name": "喜洲", "confirmed": True})
+    repo.save_informant("p1", {"code": "P1", "type": "长老"})
+    assert repo.list_field_sites("p1")[0]["confirmed"] is True
+    assert repo.list_informants("p1")[0]["type"] == "长老"
+
+
+def test_record_without_id_gets_one(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    sid = repo.save_field_site("p1", {"name": "大理"})
+    iid = repo.save_informant("p1", {"code": "P2"})
+    assert sid and iid
+    assert repo.list_field_sites("p1")[0]["id"] == sid
+    assert repo.list_informants("p1")[0]["id"] == iid
+
+
+def test_same_id_updates_in_place(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    sid = repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+    repo.save_field_site("p1", {"id": sid, "name": "喜洲", "confirmed": True})
+    sites = repo.list_field_sites("p1")
+    assert len(sites) == 1 and sites[0]["confirmed"] is True
+
+
+def test_arbitrary_fields_roundtrip(tmp_path):
+    """schemaless：任意额外字段必须原样 round-trip（迁移全等的前提）。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_field_site("p1", {"name": "X", "custom": {"nested": [1, 2]}, "confirmed": False})
+    got = repo.list_field_sites("p1")[0]
+    assert got["custom"] == {"nested": [1, 2]}
+    assert "profile" not in got   # 不得凭空填充未提供的键（与 Json 平价）
+
+
+def test_save_order_preserved(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    for n in ("a", "b", "c"):
+        repo.save_field_site("p1", {"name": n})
+    assert [s["name"] for s in repo.list_field_sites("p1")] == ["a", "b", "c"]

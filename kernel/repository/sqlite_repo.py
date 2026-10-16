@@ -333,3 +333,62 @@ class SqliteRepository:
         if limit <= 0:
             return messages
         return messages[-limit:]
+
+    # ------------------------------------------------------------------ 田野点与报道人
+
+    def _upsert_json_record(self, conn, pid: str, record: dict,
+                            table: str, prefix: str) -> dict:
+        """JSON 整记录 upsert（裁决2）：同 id 更新保 seq，否则 INSERT seq=next。"""
+        entry = dict(record)
+        entry["id"] = record.get("id") or _new_id(prefix)
+        entry["saved_at"] = _now()
+        exists = conn.execute(
+            f"SELECT 1 FROM {table} WHERE project_id=? AND id=?",
+            (pid, entry["id"])).fetchone()
+        if exists is not None:
+            conn.execute(
+                f"UPDATE {table} SET data=?, saved_at=? WHERE project_id=? AND id=?",
+                (_dumps(entry), entry["saved_at"], pid, entry["id"]))
+        else:
+            # 带 id 但行不存在 = 新增（保留调用者的 id），与 json_repo upsert 语义平价
+            conn.execute(
+                f"INSERT INTO {table}(id, project_id, saved_at, seq, data)"
+                " VALUES(?,?,?,?,?)",
+                (entry["id"], pid, entry["saved_at"],
+                 self._next_seq(conn, table, pid), _dumps(entry)))
+        return entry
+
+    def save_field_site(self, pid: str, record: dict) -> str:
+        self._require(pid)
+        with self._connect() as conn:
+            entry = self._upsert_json_record(conn, pid, record, "field_sites", "site")
+            # 对齐 json_repo：记录变更同事务推进 updated_at（json 侧经 _save 刷新）
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?",
+                (entry["saved_at"], pid))
+        return entry["id"]
+
+    def list_field_sites(self, pid: str) -> list[dict]:
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT data FROM field_sites WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def save_informant(self, pid: str, record: dict) -> str:
+        self._require(pid)
+        with self._connect() as conn:
+            entry = self._upsert_json_record(conn, pid, record, "informants", "inf")
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?",
+                (entry["saved_at"], pid))
+        return entry["id"]
+
+    def list_informants(self, pid: str) -> list[dict]:
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT data FROM informants WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+        return [json.loads(r["data"]) for r in rows]
