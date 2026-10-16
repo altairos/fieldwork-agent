@@ -1,6 +1,5 @@
 # tests/test_window.py — analyze_fieldwork_window 聚合契约（L2，全 mock）
-from fieldwork_agent.kernel.aggregation.window import MAX_SAMPLES, _sample_dates
-from fieldwork_agent.kernel.aggregation.window import _sample_curve
+from fieldwork_agent.kernel.aggregation.window import MAX_SAMPLES, _sample_curve, _sample_dates
 from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
 
 

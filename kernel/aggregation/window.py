@@ -6,7 +6,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-from fieldwork_agent.kernel.models import Envelope, PriceCurve
+from fieldwork_agent.kernel.models import PriceCurve
 
 DATE_FMT = "%Y-%m-%d"
 MAX_SAMPLES = 16
