@@ -165,6 +165,108 @@ def test_run_command_no_key_passes_env_none(monkeypatch):
     client._run_command(["ping"])
     assert captured["env"] is None
 
+# ---------------------------------------------------------------- Windows 兼容（本机联调修复）
+
+
+class _OkResult:
+    returncode = 0
+    stdout = '{"status": 0, "data": {"itemList": [{"title": "邛海民宿"}]}}'
+    stderr = ""
+
+
+def test_run_command_resolves_executable_via_which(monkeypatch):
+    """Windows：shutil.which 按 PATHEXT 解析 flyai.cmd 全路径作 argv[0]。
+
+    CreateProcess 不解析 PATHEXT（只认 .exe），裸名 "flyai" 直接
+    FileNotFoundError——npm 全局装的 .cmd/.ps1 入口必须先解析成全路径。
+    """
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _OkResult()
+
+    monkeypatch.setattr(flyai_module.shutil, "which", lambda name: r"C:\npm\flyai.cmd")
+    monkeypatch.setattr(flyai_module.subprocess, "run", fake_run)
+    out = FlyAIClient()._run_command(["ping"])
+    assert out["status"] == 0
+    assert captured["cmd"][0] == r"C:\npm\flyai.cmd"
+
+
+def test_run_command_which_miss_falls_back_to_bare_name(monkeypatch):
+    """which 未命中（未安装/不在 PATH）回落裸名——保留原 FileNotFoundError 降级链。"""
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _OkResult()
+
+    monkeypatch.setattr(flyai_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flyai_module.subprocess, "run", fake_run)
+    out = FlyAIClient()._run_command(["ping"])
+    assert out["status"] == 0
+    assert captured["cmd"][0] == "flyai"
+
+
+def test_run_command_recovers_complete_stdout_on_crash_exit(monkeypatch):
+    """flyai CLI 1.0.16 Windows 退出阶段 libuv 断言崩溃（exit 0xC0000409）：
+    stdout JSON 已完整写出——按内容判定而非退出码，否则成功调用被误判失败。"""
+
+    class _Crashed:
+        returncode = 3221226505  # 0xC0000409
+        stdout = '{"status": 0, "data": {"itemList": [{"title": "邛海民宿"}]}}'
+        stderr = ("Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), "
+                  "file src\\win\\async.c, line 76")
+
+    monkeypatch.setattr(flyai_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flyai_module.subprocess, "run", lambda cmd, **kw: _Crashed())
+    out = FlyAIClient()._run_command(["ping"])
+    assert out["status"] == 0
+    assert out["data"]["itemList"][0]["title"] == "邛海民宿"
+
+
+def test_run_command_nonzero_exit_invalid_stdout_still_errors(monkeypatch):
+    """真失败（stdout 空/非 JSON）不宽容——仍走 stderr 降级。"""
+
+    class _Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(flyai_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flyai_module.subprocess, "run", lambda cmd, **kw: _Failed())
+    out = FlyAIClient()._run_command(["ping"])
+    assert out == {"status": -1, "error": "boom"}
+
+
+def test_run_command_nonzero_exit_error_payload_degrades(monkeypatch):
+    """stdout 是 JSON 但 status!=0（CLI 自报失败）：不因宽容被吞，原样透传。"""
+
+    class _SelfReported:
+        returncode = 2
+        stdout = '{"status": -1, "error": "rate limited"}'
+        stderr = ""
+
+    monkeypatch.setattr(flyai_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flyai_module.subprocess, "run", lambda cmd, **kw: _SelfReported())
+    out = FlyAIClient()._run_command(["ping"])
+    assert out == {"status": -1, "error": "rate limited"}
+
+
+def test_run_command_decodes_utf8(monkeypatch):
+    """显式 UTF-8 解码：text=True 默认随 locale（Windows cp936），中文结果必乱码。"""
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return _OkResult()
+
+    monkeypatch.setattr(flyai_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flyai_module.subprocess, "run", fake_run)
+    FlyAIClient()._run_command(["ping"])
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
 # ── journeys 深层解析（spec §3.2）──────────────────────────────
 _FIXTURE = Path(__file__).parent / "fixtures" / "flyai_responses" / "flight_journeys.json"
 
