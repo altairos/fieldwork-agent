@@ -15,6 +15,7 @@
   对照 spec §2.4 annotations 约定）。
 """
 import json
+import os
 import subprocess
 from typing import Any
 
@@ -111,8 +112,11 @@ class FlyAIClient:
     def _run_command(self, args: list) -> dict[str, Any]:
         """执行 flyai 子命令，返回解析后的 JSON；任何异常都折成 ``{status:-1,error}``。"""
         cmd = ["flyai"] + args
+        # 审计 F05：页面级 key（回合级实例化）注入子进程 env——
+        # flyai CLI 解析链 env.FLYAI_API_KEY 优先级最高，注入即覆盖服务端单例配置。
+        env = {**os.environ, "FLYAI_API_KEY": self.api_key} if self.api_key else None
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
             if result.returncode != 0:
                 return {"status": -1, "error": result.stderr or "command failed"}
             data = json.loads(result.stdout)

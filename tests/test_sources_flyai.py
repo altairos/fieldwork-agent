@@ -105,3 +105,52 @@ def test_error_envelope_carries_hint(monkeypatch):
                         lambda a: {"status": -1, "error": "flyai CLI not found"})
     env = client.search_marriott_packages("三亚")
     assert env.error.hint  # 降级提示不可为空，便于宿主给出下一步建议
+
+
+# ---------------------------------------------------------------- 子进程 env 注入（审计 F05）
+
+
+def test_run_command_injects_page_level_key(monkeypatch):
+    """审计 F05：回合级实例（带页面 key）把 FLYAI_API_KEY 注入子进程 env。"""
+    import os as _os
+
+    from fieldwork_agent.kernel.sources import flyai as flyai_mod
+
+    captured: dict = {}
+
+    class _Result:
+        returncode = 0
+        stdout = '{"status": 0, "data": {"itemList": []}}'
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(flyai_mod.subprocess, "run", fake_run)
+    client = flyai_mod.FlyAIClient(api_key="page-key")
+    out = client._run_command(["searchHotels", "--dest", "大理"])
+    assert out["status"] == 0
+    assert captured["env"]["FLYAI_API_KEY"] == "page-key"
+    assert captured["env"]["PATH"] == _os.environ["PATH"]  # 继承而非替换整个环境
+
+
+def test_run_command_no_key_passes_env_none(monkeypatch):
+    """服务端单例（无 key）不动子进程 env——CLI 回落自身配置文件。"""
+    from fieldwork_agent.kernel.sources import flyai as flyai_mod
+
+    captured: dict = {}
+
+    class _Result:
+        returncode = 0
+        stdout = '{"status": 0, "data": {"itemList": []}}'
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(flyai_mod.subprocess, "run", fake_run)
+    client = flyai_mod.FlyAIClient(api_key="")
+    client._run_command(["ping"])
+    assert captured["env"] is None
