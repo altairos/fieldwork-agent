@@ -112,3 +112,23 @@ register(CapabilityMeta(
     fn=suggest_informants,
     args_model=SuggestInformantsArgs,
 ))
+
+
+def candidate_to_record(candidate: InformantCandidate, seq: int) -> dict:
+    """候选档案 → 报道人记录（审计 F04）：七字段映射到 InformantRecord 五字段。
+
+    code 按登记序号编号（INF-01 起）；approach→relation、access_channel→contact；
+    cautions/ethics/preparation/question_domains 并入 notes（「准备/注意/伦理/提问域」前缀）。
+    """
+    notes_parts = []
+    if candidate.preparation:
+        notes_parts.append(f"准备：{candidate.preparation}")
+    if candidate.cautions:
+        notes_parts.append(f"注意：{candidate.cautions}")
+    if candidate.ethics:
+        notes_parts.append(f"伦理：{candidate.ethics}")
+    if candidate.question_domains:
+        notes_parts.append("提问域：" + "、".join(candidate.question_domains))
+    return {"code": f"INF-{seq:02d}", "type": candidate.type,
+            "relation": candidate.approach, "contact": candidate.access_channel,
+            "notes": "；".join(notes_parts)}

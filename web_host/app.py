@@ -103,12 +103,13 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
             status_code=200 if ok else 503,
         )
 
-    from fieldwork_agent.web_host.api import exports, projects, settings, turns
+    from fieldwork_agent.web_host.api import exports, projects, settings, state, turns
 
     app.include_router(projects.router)
     app.include_router(turns.router)
     app.include_router(exports.router)
     app.include_router(settings.router)
+    app.include_router(state.router)
 
     # ---- 静态前端挂载（Task 10）：API 路由已注册，优先级高于 catch-all ----
     _mount_frontend(app, web_dist)

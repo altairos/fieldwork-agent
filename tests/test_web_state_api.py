@@ -1,0 +1,94 @@
+# tests/test_web_state_api.py
+"""状态修正与确认 API（审计第二批 F03/F04）：修正/确认/采纳/方案确认+stale。"""
+import pytest
+from fieldwork_agent.web_host.app import create_app
+from httpx import ASGITransport, AsyncClient
+
+
+@pytest.fixture
+def app(tmp_path):
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.web_host.deps import init_deps
+
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    repo.create("p1")
+    _app = create_app(config=None, repo=repo)
+    # ASGITransport 不触发 lifespan，手动初始化依赖
+    init_deps(_app, config=None, repo=repo)
+    return _app
+
+
+@pytest.fixture
+async def client(app):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def test_update_research_context(client):
+    r = await client.put("/projects/p1/research-context",
+                         json={"budget": "5万", "scale": "两人同行"})
+    assert r.status_code == 200
+    ctx = r.json()["research_context"]
+    assert ctx["budget"] == "5万" and ctx["scale"] == "两人同行"
+
+
+async def test_update_research_context_empty_400(client):
+    r = await client.put("/projects/p1/research-context", json={})
+    assert r.status_code == 400
+
+
+async def test_update_research_context_unknown_404(client):
+    r = await client.put("/projects/ghost/research-context", json={"budget": "5万"})
+    assert r.status_code == 404
+
+
+async def test_confirm_field_site(client, app):
+    repo = app.state.repo
+    sid = repo.save_field_site("p1", {"name": "大理", "confirmed": False,
+                                      "profile": {"location": "大理"}})
+    r = await client.post(f"/projects/p1/field-sites/{sid}/confirm")
+    assert r.status_code == 200
+    assert r.json()["field_site"]["confirmed"] is True
+    r2 = await client.post("/projects/p1/field-sites/nope/confirm")
+    assert r2.status_code == 404
+
+
+async def test_adopt_informant_seq_codes(client):
+    cand = {"type": "宗族长老", "approach": "同乡会引荐", "cautions": "避免直接问族产",
+            "question_domains": ["族谱", "祭祀"], "ethics": "匿名处理",
+            "access_channel": "村委会介绍", "preparation": "先读村志"}
+    r = await client.post("/projects/p1/informants", json={"candidate": cand})
+    assert r.status_code == 201
+    inf = r.json()["informant"]
+    assert inf["code"] == "INF-01" and inf["id"]
+    assert "匿名处理" in inf["notes"]
+    r2 = await client.post("/projects/p1/informants", json={"candidate": cand})
+    assert r2.status_code == 201
+    assert r2.json()["informant"]["code"] == "INF-02"
+
+
+async def test_adopt_informant_type_error_400(client):
+    r = await client.post("/projects/p1/informants",
+                          json={"candidate": {"question_domains": "不是列表"}})
+    assert r.status_code == 400
+
+
+async def test_confirm_proposal_requires_document(client):
+    r = await client.post("/projects/p1/proposal/confirm")
+    assert r.status_code == 400
+
+
+async def test_confirm_proposal_flow_and_stale(client, app):
+    repo = app.state.repo
+    repo.save_proposal("p1", "# 研究方案\n\n## 一、背景\n\n内容")
+    r = await client.post("/projects/p1/proposal/confirm")
+    assert r.status_code == 200
+    assert r.json()["proposal_confirmed"] is True
+    snap = (await client.get("/projects/p1")).json()
+    assert snap["proposal_confirmed"] is True
+    assert snap["proposal_confirmation_stale"] is False
+    # 修改预算 → 确认失效（确认级失效：inputs_hash 不一致）
+    await client.put("/projects/p1/research-context", json={"budget": "9万"})
+    snap2 = (await client.get("/projects/p1")).json()
+    assert snap2["proposal_confirmation_stale"] is True

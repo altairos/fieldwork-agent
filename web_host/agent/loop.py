@@ -219,10 +219,11 @@ def check_and_advance(repo, pid) -> dict | None:
     informants = [InformantRecord.model_validate(i) for i in state.get("informants") or []]
     has_itinerary = any(c.get("tool") == "compose_itinerary"
                         for c in repo.list_cached_searches(pid))
+    confirmed = (bool(state.get("proposal_confirmed"))
+                 and not repo.is_proposal_confirmation_stale(pid))
     result = phases.check_advance(
         state["phase"], ctx, sites, informants,
-        has_itinerary, bool(state.get("proposals")),
-        bool(state.get("proposal_confirmed")))
+        has_itinerary, bool(state.get("proposals")), confirmed)
     if result.can_advance and result.to_phase:
         old = state["phase"]
         repo.set_phase(pid, result.to_phase)

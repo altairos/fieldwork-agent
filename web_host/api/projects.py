@@ -57,4 +57,6 @@ async def get_project(project_id: str, repo=Depends(get_repo)):
                            "version": p.get("version"), "created_at": p.get("created_at")}
                           for p in repo.list_proposals(project_id)],
             "phase_history": state.get("phase_history", []),
-            "updated_at": state.get("updated_at")}
+            "updated_at": state.get("updated_at"),
+            "proposal_confirmed": bool(state.get("proposal_confirmed")),
+            "proposal_confirmation_stale": repo.is_proposal_confirmation_stale(project_id)}
