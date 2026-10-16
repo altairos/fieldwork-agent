@@ -47,21 +47,23 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id, id);
 
 CREATE TABLE IF NOT EXISTS field_sites (
-    id         TEXT PRIMARY KEY,
+    id         TEXT NOT NULL,                   -- id 项目内作用域（对齐 json；跨项目同 id 共存）
     project_id TEXT NOT NULL,
     saved_at   TEXT NOT NULL,
     seq        INTEGER NOT NULL,                -- 保存序（list 稳定排序）
     data       TEXT NOT NULL,                   -- JSON 整条记录（裁决2）
+    PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sites_project ON field_sites(project_id, seq);
 
 CREATE TABLE IF NOT EXISTS informants (
-    id         TEXT PRIMARY KEY,
+    id         TEXT NOT NULL,                   -- id 项目内作用域（对齐 json；跨项目同 id 共存）
     project_id TEXT NOT NULL,
     saved_at   TEXT NOT NULL,
     seq        INTEGER NOT NULL,
     data       TEXT NOT NULL,                   -- JSON 整条记录
+    PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_informants_project ON informants(project_id, seq);
@@ -78,7 +80,7 @@ CREATE TABLE IF NOT EXISTS search_cache (
 CREATE INDEX IF NOT EXISTS idx_cache_project ON search_cache(project_id, cached_at);
 
 CREATE TABLE IF NOT EXISTS knowledge (
-    id         TEXT PRIMARY KEY,
+    id         TEXT NOT NULL,                   -- id 项目内作用域（对齐 json；跨项目同 id 共存）
     project_id TEXT NOT NULL,
     title      TEXT NOT NULL,
     content    TEXT NOT NULL,
@@ -87,12 +89,13 @@ CREATE TABLE IF NOT EXISTS knowledge (
     tags       TEXT NOT NULL DEFAULT '[]',      -- JSON array
     created_at TEXT NOT NULL,
     seq        INTEGER NOT NULL,
+    PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id, seq);
 
 CREATE TABLE IF NOT EXISTS proposals (
-    id         TEXT PRIMARY KEY,
+    id         TEXT NOT NULL,                   -- id 项目内作用域（对齐 json；跨项目同 id 共存）
     project_id TEXT NOT NULL,
     kind       TEXT NOT NULL,
     version    TEXT NOT NULL,
@@ -100,6 +103,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     content    TEXT NOT NULL,                   -- 事实源（spec §5.3）
     saved_at   TEXT NOT NULL,
     seq        INTEGER NOT NULL,
+    PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_project ON proposals(project_id, seq);
@@ -592,6 +596,13 @@ class SqliteRepository:
             conn.execute(
                 "UPDATE projects SET phase_history=? WHERE project_id=?",
                 (_dumps(list(history or [])), pid))
+
+    def _import_project_meta(self, pid: str, created_at: str, updated_at: str) -> None:
+        """raw 回写项目时间戳（迁移保形；公开 create/set_phase 会以 _now() 重盖）。"""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET created_at=?, updated_at=? WHERE project_id=?",
+                (created_at, updated_at, pid))
 
     def _clear_messages(self, pid: str) -> None:
         """清空该项目消息史（迁移中断重跑时先清空再重导，保证不产生重复行）。"""

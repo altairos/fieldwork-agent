@@ -70,25 +70,33 @@ def migrate_to_sqlite(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
 
     - 幂等主语义：每项目迁移完成写 schema_meta 项目级标记（``migrated:<pid>``），
       再迁命中即整项目跳过；记录表的 ``INSERT OR REPLACE`` 仅作中断重跑的兜底；
+      标记在校验通过后写入，失败重迁自愈（未被标记的项目下轮重新导入）；
+    - 迁移先经 ``json_repo.create`` 幂等打开：触发 json 侧存量消息史规范化
+      （窗口独有消息补写进 jsonl），否则旧版项目最近对话静默丢失；
     - messages 自增主键无稳定 id：导入前先清空该项目存量再整段重导；
-    - 记录类一律走 raw-import（``_import_*``）保留原 id/时间戳，公开写方法会以
-      ``_now()`` 重盖时间戳或生成新 id，破坏与 JSON 侧的全等；
+    - 记录类一律走 raw-import（``_import_*``）保留原 id/时间戳/项目时间戳，
+      公开写方法会以 ``_now()`` 重盖时间戳或生成新 id，破坏与 JSON 侧的全等；
     - JSON 目录原地保留（天然回滚：不设 ``FA_STORAGE`` 即回 JSON 只读使用）。
     """
     pids = [project_id] if project_id else [p["project_id"] for p in json_repo.list_projects()]
     report = {"projects": 0, "messages": 0, "field_sites": 0, "informants": 0,
               "search_cache": 0, "knowledge": 0, "proposals": 0, "skipped": 0}
+    migrated: list[str] = []   # 本轮实际导入的 pid；_verify 通过后才落标记
     for pid in pids:
         if _already_migrated(sqlite_repo, pid):
             report["skipped"] += 1
             continue
         jstate = json_repo.get_state(pid)
+        json_repo.create(pid)   # 幂等打开 = 触发 json 侧存量消息史规范化（backfill）
         sqlite_repo.create(pid)                              # 幂等建项目
         sqlite_repo.set_phase(pid, jstate["phase"])          # 阶段（同阶段不写史）
         # phase_history 原样搬迁（set_phase 只记本次转移，存量历史需 raw 写入）
         sqlite_repo._import_phase_history(pid, jstate["phase_history"])
         if jstate["research_context"]:
             sqlite_repo.update_research_context(pid, jstate["research_context"])
+        # 项目时间戳保形：raw 回写原 created_at/updated_at（公开 create/set_phase/
+        # update_research_context 均会以 _now() 重盖，故置于这些调用之后）
+        sqlite_repo._import_project_meta(pid, jstate["created_at"], jstate["updated_at"])
         sqlite_repo._clear_messages(pid)                     # 无稳定主键：清空重导
         for m in json_repo.get_messages(pid, limit=0):       # 全量消息，保留原 ts
             sqlite_repo._import_message(pid, m["role"], m["content"],
@@ -111,8 +119,10 @@ def migrate_to_sqlite(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
         for p in json_repo.list_proposals(pid):              # 含旧单值键兼容读出
             sqlite_repo._import_proposal(pid, p)
             report["proposals"] += 1
-        _mark_project(sqlite_repo, pid)
+        migrated.append(pid)
         report["projects"] += 1
-    _mark_migrated(sqlite_repo)
     _verify(json_repo, sqlite_repo, pids)   # 行数 + 抽样哈希；不一致抛 RuntimeError
+    for pid in migrated:                    # 校验通过才标记（失败重迁自愈）
+        _mark_project(sqlite_repo, pid)
+    _mark_migrated(sqlite_repo)
     return report

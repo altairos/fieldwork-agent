@@ -147,6 +147,8 @@ npm run test:e2e     # Playwright L4 端到端（首次需 npx playwright instal
 $env:FA_STORAGE = "sqlite"   # 切换后端（默认 json；未知值安全回落 json）
 ```
 
+> 注意：CLI REPL（`fieldwork` 命令行交互）当前仍直接使用 JSON 存储，`FA_STORAGE=sqlite` 暂只对 Web 宿主与 MCP Server 生效——CLI 侧接入属后续任务。
+
 已有 JSON 存量项目可一次性搬入 SQLite（幂等，可重复执行）：
 
 ```powershell

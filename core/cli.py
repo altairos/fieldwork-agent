@@ -89,7 +89,7 @@ def _run_migrate(args: list[str]) -> None:
     print(f"📥 JSON → SQLite 存量搬迁: {config.projects_dir} → {config.sqlite_path}")
     try:
         report = migrate_to_sqlite(json_repo, sqlite_repo, project_id=project_id)
-    except (KeyError, RuntimeError) as e:
+    except (KeyError, RuntimeError, ValueError) as e:
         print(f"❌ 迁移失败: {e}")
         sys.exit(1)
     print(f"✅ 迁移完成（行数+抽样校验通过）: 项目 {report['projects']}"
