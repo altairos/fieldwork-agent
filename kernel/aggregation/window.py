@@ -3,6 +3,8 @@
 多日期价格采样 × 节庆覆盖 × 预算可行性的联合推理；评分全确定性（LLM 不参与评分，
 仅节庆抽取且可降级）。client/llm keyword-only 注入，不碰 repository（公理 1）。
 """
+import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
@@ -160,3 +162,57 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
         cur += timedelta(days=sample_step)
     windows.sort(key=lambda w: (-w.score, w.start))
     return windows
+
+
+def _parse_festival_json(text: str) -> list[FestivalInfo]:
+    """从 LLM 输出解析节庆数组；容忍围栏/前后噪声，非法条目丢弃。"""
+    body = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.+?)\s*```", body, re.DOTALL)
+    if fence:
+        body = fence.group(1)
+    start, end = body.find("["), body.rfind("]")
+    if start == -1 or end <= start:
+        return []
+    try:
+        raw = json.loads(body[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+    out: list[FestivalInfo] = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        s, e = str(entry.get("approx_start") or ""), str(entry.get("approx_end") or "")
+        try:
+            sd = datetime.strptime(s, DATE_FMT).date()
+            ed = datetime.strptime(e, DATE_FMT).date()
+        except ValueError:
+            continue
+        if not name or sd > ed:
+            continue
+        out.append(FestivalInfo(name=name, approx_start=s, approx_end=e,
+                                relevance=str(entry.get("relevance") or "")))
+    return out
+
+
+def _extract_festivals(llm, destination: str, range_start: str, range_end: str,
+                       hints: list[str]) -> tuple[list[FestivalInfo], str | None]:
+    """LLM 从关键词搜索条目抽取节庆（spec §4.3：失败整体降级，不影响评分）。"""
+    if llm is None:
+        return [], "LLM 未注入，节庆维度降级为空"
+    lines = "\n".join(f"- {h}" for h in hints) or "-（无搜索结果）"
+    prompt = (
+        f"你在为田野调研挑选时间窗口。目的地：{destination}；"
+        f"调研区间：{range_start} 至 {range_end}。\n"
+        f"以下是旅游平台关键词搜索的原始条目：\n{lines}\n\n"
+        "请从中抽取调研区间内（含跨界）将举办的当地节庆/民俗/大型活动，"
+        '仅输出 JSON 数组，每项形如 {"name":"节庆名","approx_start":"YYYY-MM-DD",'
+        '"approx_end":"YYYY-MM-DD","relevance":"一句话调研价值"}；'
+        "日期不确定就给最可能的估计区间。没有可抽取项时输出 []。不要输出其他文字。"
+    )
+    env = llm.chat(messages=[{"role": "user", "content": prompt}],
+                   slot="interview", temperature=0.3)
+    content = str(env.get("content") or "")
+    if env.get("error") or not content.strip():
+        return [], "节庆抽取失败，节庆维度降级为空"
+    return _parse_festival_json(content), None

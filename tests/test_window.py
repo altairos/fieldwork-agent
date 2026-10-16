@@ -2,6 +2,8 @@
 import pytest
 from fieldwork_agent.kernel.aggregation.window import (
     MAX_SAMPLES,
+    _extract_festivals,
+    _parse_festival_json,
     _sample_curve,
     _sample_dates,
     _score_windows,
@@ -144,3 +146,61 @@ def test_score_windows_flight_dimension_dropped():
     top = windows[0]  # [07-08,07-09]
     assert top.evidence["flight_min"] is None
     assert top.evidence["estimate"] == pytest.approx(400.0)  # 100×1 夜 + 150×2 天
+
+
+# ── Task 7 节庆抽取 ──────────────────────────────────────
+
+
+class FakeLLM:
+    """llm.chat 四键契约替身（错误场景附 error 键）。"""
+
+    def __init__(self, content: str, error: str | None = None):
+        self._content, self._error = content, error
+        self.calls: list[dict] = []
+
+    def chat(self, messages, *, slot="proposal", tools=None,
+             temperature=0.7, max_tokens=4096) -> dict:
+        self.calls.append({"messages": messages, "slot": slot,
+                           "temperature": temperature})
+        return {"content": self._content, "tool_calls": None,
+                "finish_reason": "stop", "usage": {}, "error": self._error}
+
+
+def test_parse_festival_json_fenced_and_noisy():
+    """容忍围栏/前后噪声；非 ISO 日期与起止倒挂的条目丢弃。"""
+    text = ('好的，以下是抽取结果：\n```json\n'
+            '[{"name": "火把节", "approx_start": "2026-07-20", '
+            ' "approx_end": "2026-07-22", "relevance": "彝族核心节庆"},'
+            ' {"name": "坏日期", "approx_start": "7月20日", "approx_end": "2026-07-22"},'
+            ' {"name": "倒挂", "approx_start": "2026-07-25", "approx_end": "2026-07-20"}]\n'
+            '```\n希望能帮到你。')
+    got = _parse_festival_json(text)
+    assert len(got) == 1 and got[0].name == "火把节"
+    assert got[0].approx_start == "2026-07-20"
+
+
+def test_parse_festival_json_empty_and_garbage():
+    assert _parse_festival_json("[]") == []
+    assert _parse_festival_json("模型拒绝回答") == []
+
+
+def test_extract_festivals_happy_path():
+    llm = FakeLLM('```json\n[{"name": "火把节", "approx_start": "2026-07-20",'
+                  ' "approx_end": "2026-07-22", "relevance": "r"}]\n```')
+    festivals, degraded = _extract_festivals(
+        llm, "西昌", "2026-07-01", "2026-07-29",
+        ["西昌火把节 7 月下旬开幕", "彝族风情周活动日历"])
+    assert degraded is None and len(festivals) == 1
+    assert llm.calls[0]["slot"] == "interview"
+    assert llm.calls[0]["temperature"] == 0.3
+    assert "西昌" in llm.calls[0]["messages"][0]["content"]
+    assert "彝族风情周" in llm.calls[0]["messages"][0]["content"]  # hints 入 prompt
+
+
+def test_extract_festivals_degrades():
+    """llm 未注入 / chat 报错：整体降级为空，返回说明。"""
+    a, note_a = _extract_festivals(None, "西昌", "2026-07-01", "2026-07-29", [])
+    assert a == [] and note_a
+    llm_err = FakeLLM("", error="quota exceeded")
+    b, note_b = _extract_festivals(llm_err, "西昌", "2026-07-01", "2026-07-29", [])
+    assert b == [] and note_b
