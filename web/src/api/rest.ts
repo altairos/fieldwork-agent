@@ -39,6 +39,15 @@ export interface ProposalMeta {
   created_at?: string;
 }
 
+/** 快照记录体（GET /projects/{id}/cached-searches/{cid}，web_host/api/projects.py，Task 10 落盘）。 */
+export interface CachedSearchRecord {
+  id: string;
+  query: string;
+  tool: string;
+  cached_at?: string;
+  result: { items?: { name?: string; price?: number | null }[] } | null;
+}
+
 /** 状态修正/确认端点共同返回的阶段推进结果；null = 本次未发生推进。 */
 export interface PhaseTransition {
   from?: string;
@@ -63,6 +72,8 @@ export const rest = {
     format && format !== "md"
       ? `/projects/${id}/proposal/download?format=${format}`
       : `/projects/${id}/proposal/download`,
+  getCachedSearch: (id: string, cid: string) =>
+    req<CachedSearchRecord>(`/projects/${id}/cached-searches/${cid}`),
   // ---- 状态修正与确认（web_host/api/state.py，审计 F03/F04 修正入口）----
   updateResearchContext: (id: string, patch: Record<string, string | boolean>) =>
     req<{ research_context: Partial<ResearchContext>; phase_transition: PhaseTransition | null }>(
