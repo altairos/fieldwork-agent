@@ -229,7 +229,7 @@ class SqliteRepository:
             "phase": row["phase"],
             "phase_history": json.loads(row["phase_history"]),
             "research_context": json.loads(ctx_row["data"]) if ctx_row else {},
-            # 窗口装配：最近 ≤MESSAGE_WINDOW 条，正序返回（append_message 属后续任务）
+            # 窗口装配：最近 ≤MESSAGE_WINDOW 条，正序返回（单轨真源在 messages 表）
             "dialogue_context": [
                 {"role": r["role"], "content": r["content"], "ts": r["ts"],
                  "metadata": json.loads(r["meta"])}
@@ -301,3 +301,35 @@ class SqliteRepository:
             row = conn.execute(
                 "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
         return json.loads(row["data"]) if row else {}
+
+    # ------------------------------------------------------------------ 消息史
+
+    def append_message(self, pid: str, role: str, content: str, meta: dict | None = None) -> None:
+        """追加一条到全量史（messages 表，单轨真源）；窗口由 get_state 现算，无需回写。"""
+        self._require(pid)
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO messages(project_id, role, content, meta, ts)"
+                " VALUES(?,?,?,?,?)",
+                (pid, role, content, _dumps(dict(meta or {})), now))
+            # 对齐 json_repo：消息变更也推进 updated_at（经 _save 落盘时刷新）
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?", (now, pid))
+
+    def get_messages(self, pid: str, limit: int = 30) -> list[dict]:
+        """正序读全量史，返回最近 ``limit`` 条（``limit <= 0`` 取全部）。"""
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT role, content, meta, ts FROM messages WHERE project_id=?"
+                " ORDER BY id",
+                (pid,)).fetchall()
+        messages = [
+            {"role": r["role"], "content": r["content"], "ts": r["ts"],
+             "metadata": json.loads(r["meta"])}
+            for r in rows
+        ]
+        if limit <= 0:
+            return messages
+        return messages[-limit:]

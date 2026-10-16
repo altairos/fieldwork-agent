@@ -96,3 +96,41 @@ def test_instance_recreatable_same_db(tmp_path):
     a.create("p1")
     b = make_sqlite_repo(tmp_path)   # 新实例指同一 db 文件
     assert b.get_phase("p1") == "research_positioning"
+
+
+def test_messages_full_history_no_loss(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    for i in range(60):
+        repo.append_message("p1", "user", f"m{i}")
+    assert len(repo.get_messages("p1", limit=100)) == 60
+
+
+def test_messages_fields_and_order(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.append_message("p1", "user", "提问", meta={"tool": "search_ai"})
+    repo.append_message("p1", "assistant", "回答")
+    msgs = repo.get_messages("p1", limit=2)
+    assert [m["content"] for m in msgs] == ["提问", "回答"]
+    assert msgs[0]["role"] == "user"
+    assert msgs[0]["metadata"] == {"tool": "search_ai"}
+    assert msgs[1]["metadata"] == {}
+    assert all(m["ts"] for m in msgs)
+
+
+def test_messages_limit_returns_tail(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    for i in range(10):
+        repo.append_message("p1", "user", f"m{i}")
+    assert [m["content"] for m in repo.get_messages("p1", limit=3)] == ["m7", "m8", "m9"]
+
+
+def test_dialogue_context_window_capped_50(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    for i in range(60):
+        repo.append_message("p1", "user", f"m{i}")
+    assert len(repo.get_state("p1")["dialogue_context"]) == 50   # 窗口副本 ≤50
+    assert len(repo.get_messages("p1", limit=0)) == 60           # 全量真源不丢
