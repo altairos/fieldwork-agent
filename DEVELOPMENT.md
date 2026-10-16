@@ -53,6 +53,7 @@ tests/
 ├── repository_contract.py    # L2 repository 契约套件（REPO_FACTORIES 参数化，Plan 5 双跑）
 ├── test_config.py            # 三级加载优先级：env → config.json → ~/.flyai
 ├── test_json_repo.py         # JsonRepository：契约实现 + 落盘布局 + 存量兼容 + 原子写
+├── test_migrate.py           # JSON→SQLite 存量搬迁：7 类全等 + 幂等 + schema_meta 标记
 ├── test_guidance.py          # 五阶段常量/提示词、check_advance 推进判定、extract 纯函数
 ├── test_models_registry.py   # 包络/模型与 registry 能力元数据契约
 ├── test_registry_surface.py  # 生产态能力面：裸导入即注册 13 项 + registry handler 统一包络
@@ -186,6 +187,13 @@ function calling**：模型读 registry schema 自行决定调用哪个能力，
 - **构建挂载**：`npm run build` 产物 `web/dist` 由 `web_host/app.py` 的 `_mount_frontend`
   自动挂载（API 路由优先 + SPA 深链 fallback + dist 缺失时静默跳过）；`web/dist` 已被
   `.gitignore` 排除，不入库。
+
+### 5.7 新增 Repository 实现
+
+`kernel/repository/protocol.py` 是唯一契约；新实现（如 PostgreSQL、Serverless DB）只须过
+`tests/repository_contract.py` 的**双跑门禁**——在 `REPO_FACTORIES` 追加一个工厂，
+全部契约用例即在新后端自动重跑（Json/Sqlite 已是既有双跑基线）。存量数据搬迁参照
+`core/migrate.py` 的 raw-import 模式（保留原 id/时间戳 + 行数/抽样哈希校验 + 项目级幂等标记）。
 
 ---
 

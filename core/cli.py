@@ -4,6 +4,9 @@
 Task 9 适配：宿主改为能力内核 ``FieldAgent``（repo 中心的持久化）。
 phase 标识从 ``kernel.guidance.phases`` 导入；``generate`` 走 compose_proposal +
 repo.save_proposal；new/list/help/chat/open/status/knowledge/sync 接线保持可用。
+
+Task 10 适配：启动参数 ``fieldwork migrate --to-sqlite [--project-id X]`` 走 JSON →
+SQLite 存量搬迁后直接退出（不进 REPL）；其余 argv 行为零变化。
 """
 import sys
 
@@ -65,8 +68,45 @@ def _print_reply(reply_data: dict):
         print(f"\n🔄 阶段转换: {old_cn} → {new_cn}")
 
 
+def _run_migrate(args: list[str]) -> None:
+    """``fieldwork migrate --to-sqlite [--project-id X]``：JSON → SQLite 搬迁后退出。
+
+    迁移期单写者约定与 JSON 只读回退见 README「存储后端与迁移」。
+    """
+    from fieldwork_agent.core.migrate import migrate_to_sqlite
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
+
+    project_id = None
+    if args and args[0] == "--project-id" and len(args) == 2:
+        project_id = args[1]
+    elif args:
+        print("用法: fieldwork migrate --to-sqlite [--project-id <项目ID>]")
+        sys.exit(2)
+    config = Config()
+    json_repo = JsonRepository(projects_dir=config.projects_dir)
+    sqlite_repo = SqliteRepository(db_path=config.sqlite_path)
+    print(f"📥 JSON → SQLite 存量搬迁: {config.projects_dir} → {config.sqlite_path}")
+    try:
+        report = migrate_to_sqlite(json_repo, sqlite_repo, project_id=project_id)
+    except (KeyError, RuntimeError) as e:
+        print(f"❌ 迁移失败: {e}")
+        sys.exit(1)
+    print(f"✅ 迁移完成（行数+抽样校验通过）: 项目 {report['projects']}"
+          f"（跳过已迁移 {report['skipped']}）、消息 {report['messages']}、"
+          f"田野点 {report['field_sites']}、报道人 {report['informants']}、"
+          f"搜索缓存 {report['search_cache']}、知识条目 {report['knowledge']}、"
+          f"提案文档 {report['proposals']}")
+    print("   JSON 目录已原地保留：设 FA_STORAGE=sqlite 切换后端，不设即回 JSON（只读回退）。")
+
+
 def main():
     _ensure_utf8_stdio()
+    argv = sys.argv[1:]
+    if len(argv) >= 2 and argv[0] == "migrate" and argv[1] == "--to-sqlite":
+        _run_migrate(argv[2:])   # 启动期子命令：搬迁后直接退出，不进 REPL
+        return
+
     config = Config()
     check_dependencies(config)
 
@@ -312,6 +352,11 @@ def print_help():
   • search_marriott_packages 万豪套餐 — 体验产品推荐
   以及内核聚合/文档能力：profile_field_site / compose_itinerary /
   compose_proposal / compose_interview_guide / suggest_informants
+
+【存储迁移】（启动参数，非会话内命令）
+  fieldwork migrate --to-sqlite [--project-id <id>]
+                    把 JSON 存量项目一次性迁入 SQLite（幂等，可重复执行；
+                    JSON 目录原地保留作回滚，详见 README「存储后端与迁移」）
 
 【其他】
   help              显示此帮助

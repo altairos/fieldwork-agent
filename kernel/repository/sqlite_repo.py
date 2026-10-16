@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -116,6 +117,12 @@ def _now() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{datetime.now():%Y%m%d%H%M%S}_{uuid.uuid4().hex[:8]}"
+
+
+def _legacy_id(entry: dict) -> str:
+    """legacy 无 id 记录的确定性占位 id：内容规范哈希（重跑 REPLACE 天然去重）。"""
+    canonical = json.dumps(entry, ensure_ascii=False, sort_keys=True)
+    return "legacy_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _dumps(payload) -> str:
@@ -567,3 +574,99 @@ class SqliteRepository:
     def get_latest_proposal(self, pid: str) -> dict | None:
         docs = self.list_proposals(pid)   # _require 经此传导（json 同为间接触发）
         return docs[-1] if docs else None
+
+    # -------------------------------------------------- 迁移 raw-import（仅供 core.migrate 调用，不属 Protocol）
+    #
+    # 与公开写方法的区别：原样插入完整记录、保留 id/saved_at/ts/created_at/
+    # cached_at/filename 等原值——公开方法会以 _now() 重盖时间戳或生成新 id，
+    # 破坏迁移后与 JSON 侧的逐字段全等。幂等兜底用 INSERT OR REPLACE（messages
+    # 例外：自增主键无稳定 id，先 _clear_messages 清空再整段重导）。
+
+    def _import_phase_history(self, pid: str, history: list[dict]) -> None:
+        """整列替换 phase_history 为 JSON 侧存量（原样，含原 at 值）。
+
+        替换式是关键：迁移序里 create→set_phase 已写一条 at=now 的转移史，
+        只有替换才能保证终态 == JSON 侧原样。
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET phase_history=? WHERE project_id=?",
+                (_dumps(list(history or [])), pid))
+
+    def _clear_messages(self, pid: str) -> None:
+        """清空该项目消息史（迁移中断重跑时先清空再重导，保证不产生重复行）。"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM messages WHERE project_id=?", (pid,))
+
+    def _import_message(self, pid: str, role: str, content: str,
+                        meta: dict, ts: str) -> None:
+        """INSERT 一条消息，保留原 ts（不用 _now()）。"""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO messages(project_id, role, content, meta, ts)"
+                " VALUES(?,?,?,?,?)",
+                (pid, role, content, _dumps(dict(meta or {})), ts))
+
+    def _import_record(self, table: str, pid: str, entry: dict) -> None:
+        """field_sites/informants 整记录原样入库。
+
+        - data 列存原 dict（list_field_sites/get_state 即 json.loads(data)，
+          与 JSON 侧逐字段全等，不并入 id 列）；
+        - 有原 id 用原 id；legacy 无 id 条目生成确定性占位 id（内容规范哈希），
+          重跑 REPLACE 不重复；
+        - saved_at 保留原值（legacy 缺失以空串占位满足 NOT NULL）。
+        """
+        entry = dict(entry)
+        rid = entry.get("id") or _legacy_id(entry)
+        saved_at = entry.get("saved_at") or ""
+        with self._connect() as conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {table}(id, project_id, saved_at, seq, data)"
+                " VALUES(?,?,?,?,?)",
+                (rid, pid, saved_at,
+                 self._next_seq(conn, table, pid), _dumps(entry)))
+
+    def _import_knowledge(self, pid: str, entry: dict) -> None:
+        """知识条目原样入库（保留原 id+created_at+tags 等）。"""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO knowledge(id, project_id, title, content,"
+                " source, category, tags, created_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
+                (entry.get("id") or _legacy_id(entry), pid,
+                 entry.get("title", ""), entry.get("content", ""),
+                 entry.get("source", "user"), entry.get("category", "general"),
+                 _dumps(list(entry.get("tags") or [])),
+                 entry.get("created_at") or "",
+                 self._next_seq(conn, "knowledge", pid)))
+
+    def _import_proposal(self, pid: str, entry: dict) -> None:
+        """提案整记录原样入库（保留原 id+filename+saved_at+content）。
+
+        legacy 单值键读出的记录无 content 时填空串（content 列 NOT NULL；
+        json 侧 _proposal_doc 对缺失文件同样以空串兜底）。
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO proposals(id, project_id, kind, version,"
+                " filename, content, saved_at, seq) VALUES(?,?,?,?,?,?,?,?)",
+                (entry.get("id") or _legacy_id(entry), pid,
+                 entry.get("kind", "proposal"), entry.get("version", "draft"),
+                 entry.get("filename", ""), entry.get("content") or "",
+                 entry.get("saved_at") or "",
+                 self._next_seq(conn, "proposals", pid)))
+
+    def _import_cache(self, pid: str, entry: dict) -> None:
+        """搜索缓存原样入库（保留原 id+query+result+cached_at）。
+
+        旧缓存文件的 source_tool 读作 tool（对齐 json_repo list_cached_searches
+        的读时归一）。
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO search_cache(id, project_id, query, tool,"
+                " result, cached_at) VALUES(?,?,?,?,?,?)",
+                (entry.get("id") or _legacy_id(entry), pid,
+                 entry.get("query", ""),
+                 entry.get("tool") or entry.get("source_tool", ""),
+                 _dumps(entry.get("result") or {}),
+                 entry.get("cached_at") or ""))
