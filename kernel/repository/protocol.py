@@ -91,11 +91,11 @@ class ProjectRepository(Protocol):
         """缓存索引（不含 ``result``）：``{"id", "query", "tool", "cached_at"}``。"""
         ...
 
-    def get_cached_search(self, cid: str) -> dict | None:
-        """按 id 取完整缓存（含 ``result``）；不存在返回 ``None``。
+    def get_cached_search(self, pid: str, cid: str) -> dict | None:
+        """按项目域取完整缓存（含 ``result``）；不存在或跨项目返回 ``None``。
 
-        签名不带 ``pid``（与旧 ``get_search_result_by_id`` 一致），故 id 必须
-        全局唯一，实现据此跨项目定位。
+        审计二 R01：cid 过白名单（guard.CACHE_ID_RE）后只在 ``pid`` 的
+        search_cache 内定位，绝不做跨项目 glob。
         """
         ...
 

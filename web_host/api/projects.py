@@ -73,7 +73,7 @@ async def list_cached_searches(project_id: str, repo=Depends(get_repo)):
 async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo)):
     """单条快照全量（含 result），供前端懒加载披露（Task 13 SnapshotDisclosure）。"""
     checked_project_id(project_id, repo)
-    record = repo.get_cached_search(cid)
+    record = repo.get_cached_search(project_id, cid)
     if record is None:
         raise HTTPException(404, f"快照不存在: {cid}")
     return record

@@ -129,7 +129,7 @@ class TestContract:
 
     def test_cache_roundtrip(self, repo):
         cid = repo.cache_search("p1", "大理住宿", "search_hotel", {"items": [1, 2]})
-        full = repo.get_cached_search(cid)
+        full = repo.get_cached_search("p1", cid)
         assert full["query"] == "大理住宿"
         assert full["tool"] == "search_hotel"
         assert full["result"] == {"items": [1, 2]}
@@ -137,7 +137,15 @@ class TestContract:
         assert repo.list_cached_searches("p1")[0]["query"] == "大理住宿"
 
     def test_unknown_cache_id_returns_none(self, repo):
-        assert repo.get_cached_search("no_such_id") is None
+        assert repo.get_cached_search("p1", "no_such_id") is None
+
+    def test_r01_cache_scoped_to_own_project(self, repo, repo_factory, tmp_path):
+        """审计二 R01：快照读取收窄到项目域，跨项目 id 不可见。"""
+        other = repo_factory(tmp_path)
+        other.create("p2")
+        cid = other.cache_search("p2", "秘密查询", "search_hotel", {"items": [1]})
+        assert other.get_cached_search("p2", cid)["query"] == "秘密查询"
+        assert repo.get_cached_search("p1", cid) is None
 
     def test_cache_truncated_64kb(self, repo):
         big = {"blob": "x" * 100_000}

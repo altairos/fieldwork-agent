@@ -354,7 +354,7 @@ class FieldAgent:
         for c in self.repo.list_cached_searches(pid):
             if c.get("tool") != "compose_itinerary":
                 continue
-            full = self.repo.get_cached_search(c["id"])
+            full = self.repo.get_cached_search(pid, c["id"])
             if full and isinstance(full.get("result"), dict):
                 plan = full["result"]
         return plan

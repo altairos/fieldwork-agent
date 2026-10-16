@@ -28,6 +28,7 @@ from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
 from fieldwork_agent.kernel.models import ConfirmationRecord, compute_inputs_hash, inputs_stale
+from fieldwork_agent.kernel.repository.guard import cache_id_violation
 
 # 消息滚动窗口上限（state 内只留最近 N 条，全量在 jsonl）
 MESSAGE_WINDOW = 50
@@ -43,7 +44,7 @@ def _now() -> str:
 
 
 def _new_id(prefix: str) -> str:
-    """时间戳前缀保证可排序，随机后缀保证全局唯一（``get_cached_search`` 不带 pid）。"""
+    """时间戳前缀保证可排序，随机后缀防同秒碰撞（读取已按项目域收窄，审计二 R01）。"""
     return f"{prefix}_{datetime.now():%Y%m%d%H%M%S}_{uuid.uuid4().hex[:8]}"
 
 
@@ -333,18 +334,22 @@ class JsonRepository:
             )
         return index
 
-    def get_cached_search(self, cid: str) -> dict | None:
-        """按全局唯一 id 跨项目定位（签名不含 pid，见 Protocol 注释）。"""
-        if not self._projects_dir.exists():
+    def get_cached_search(self, pid: str, cid: str) -> dict | None:
+        """按项目域读取快照（审计二 R01）：cid 过白名单后只在 pid 的 search_cache 内定位。"""
+        if cache_id_violation(cid):
             return None
-        for path in self._projects_dir.glob(f"*/search_cache/{cid}.json"):
-            try:
-                data = self._read_json(path)
-            except ValueError:
-                continue
-            if data is not None:
-                return data
-        return None
+        try:
+            self._require(pid)
+        except KeyError:
+            return None
+        trusted = (self._cache_dir(pid)).resolve()
+        candidate = (trusted / f"{cid}.json").resolve()
+        if candidate.parent != trusted:
+            return None
+        try:
+            return self._read_json(candidate)
+        except ValueError:
+            return None
 
     # ------------------------------------------------------------------ 知识库
 

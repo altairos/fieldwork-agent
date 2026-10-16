@@ -90,11 +90,38 @@ def test_cache_index_derived_from_files(json_repo):
     assert json_repo.list_cached_searches("p1") == []
 
 
-def test_get_cached_search_spans_projects(json_repo):
-    """get_cached_search 签名不含 pid，故按全局唯一 id 跨项目定位。"""
+def test_r01_get_cached_search_scoped_to_project(json_repo):
+    """审计二 R01：get_cached_search 收窄项目域——p1 读不到 p2 的快照。"""
     json_repo.create("p2")
     cid = json_repo.cache_search("p2", "q2", "search_ai", {"a": 1})
-    assert json_repo.get_cached_search(cid)["query"] == "q2"
+    assert json_repo.get_cached_search("p2", cid)["query"] == "q2"
+    assert json_repo.get_cached_search("p1", cid) is None
+    assert json_repo.get_cached_search("no_such_project", cid) is None
+
+
+@pytest.mark.parametrize("bad_cid", [
+    "../p1/state", "..\\..\\secret", "a/b", "a\\b", "*", "?.json",
+    "", "x" * 65, ".json", "spacer.cid",
+])
+def test_r01_bad_cid_returns_none(json_repo, bad_cid):
+    """审计二 R01：cid 白名单外的任何形态一律 None（先于文件系统拼接）。"""
+    json_repo.cache_search("p1", "q", "search_ai", {"a": 1})
+    assert json_repo.get_cached_search("p1", bad_cid) is None
+
+
+def test_r01_symlinked_cache_entry_rejected(json_repo, tmp_path):
+    """search_cache 内符号链接条目（指向外部敏感文件）不得被读出（防御纵深）。"""
+    outside = tmp_path / "secret.json"
+    outside.write_text(json.dumps({"query": "leak", "tool": "t", "result": "leak"}),
+                       encoding="utf-8")
+    cid = json_repo.cache_search("p1", "q", "search_ai", {"a": 1})
+    entry = json_repo.root / "p1" / "search_cache" / f"{cid}.json"
+    entry.unlink()
+    try:
+        entry.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前平台/权限不支持符号链接")
+    assert json_repo.get_cached_search("p1", cid) is None
 
 
 def test_delete_unknown_knowledge_is_noop(json_repo):
@@ -145,7 +172,7 @@ def test_legacy_knowledge_and_cache_readable(legacy_repo):
     cached = legacy_repo.list_cached_searches("legacy_project")
     assert cached[0]["id"] == "20260105100000_0"
     assert cached[0]["tool"] == "search_hotel"  # 旧键 source_tool → 读时归一
-    full = legacy_repo.get_cached_search("20260105100000_0")
+    full = legacy_repo.get_cached_search("legacy_project", "20260105100000_0")
     assert full["result"]["hotel"] == ["大理古城客栈"]
 
 
