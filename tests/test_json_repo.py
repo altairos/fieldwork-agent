@@ -125,6 +125,24 @@ def test_r01_symlinked_cache_entry_rejected(json_repo, tmp_path):
     assert json_repo.get_cached_search("p1", cid) is None
 
 
+def test_r01_symlinked_cache_dir_rejected(json_repo, tmp_path):
+    """审计二 R01（final review F2）：search_cache 目录**自身**外指
+    （symlink 到外部目录）时不得越根读取（spec §1.3 受信根包含校验）。"""
+    cid = json_repo.cache_search("p1", "q", "search_ai", {"a": 1})
+    outside_dir = tmp_path / "outside_cache"
+    outside_dir.mkdir()
+    (outside_dir / f"{cid}.json").write_text(
+        json.dumps({"query": "leak", "tool": "t", "result": "leak"}),
+        encoding="utf-8")
+    cache_dir = json_repo.root / "p1" / "search_cache"
+    shutil.rmtree(cache_dir)
+    try:
+        cache_dir.symlink_to(outside_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前平台/权限不支持目录符号链接")
+    assert json_repo.get_cached_search("p1", cid) is None
+
+
 def test_delete_unknown_knowledge_is_noop(json_repo):
     json_repo.delete_knowledge("p1", "no_such_entry")
     assert json_repo.list_knowledge("p1") == []
@@ -374,4 +392,23 @@ def test_r09_legacy_confirmation_without_dep_hash_is_stale(json_repo):
     state["confirmations"][-1].pop("dep_hash", None)
     (json_repo.root / "p1" / "state.json").write_text(
         json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_r09_guide_after_confirm_not_stale(json_repo):
+    """审计二 R09（final review F1）：确认 proposal 后保存 interview_guide
+    → stale 保持 False（spec §3 按类型判定：提纲与方案确认作用域分开）。"""
+    did = json_repo.save_proposal("p1", "# 方案", version="final")
+    json_repo.confirm_proposal("p1", did)
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.save_proposal("p1", "# 提纲", kind="interview_guide")
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_r09_new_proposal_after_confirm_stale(json_repo):
+    """审计二 R09（final review F1）：确认后保存新 proposal → stale True
+    （现行为保留；本用例是行为回归锚，RED 阶段即 PASS 属预期）。"""
+    did = json_repo.save_proposal("p1", "# 方案 v1", version="draft")
+    json_repo.confirm_proposal("p1", did)
+    json_repo.save_proposal("p1", "# 方案 v2", version="final")
     assert json_repo.is_proposal_confirmation_stale("p1") is True

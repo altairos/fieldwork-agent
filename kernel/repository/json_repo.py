@@ -343,7 +343,11 @@ class JsonRepository:
             self._require(pid)
         except KeyError:
             return None
-        trusted = (self._cache_dir(pid)).resolve()
+        trusted = self._cache_dir(pid).resolve()
+        # 受信根包含校验（spec §1.3）：缓存目录自身 symlink/junction 外指时，
+        # 仅比较条目父目录相等不够——先确认 trusted 仍在 projects_root 之下
+        if not trusted.is_relative_to(self._projects_dir.resolve()):
+            return None
         candidate = (trusted / f"{cid}.json").resolve()
         if candidate.parent != trusted:
             return None
@@ -539,19 +543,22 @@ class JsonRepository:
         return None
 
     def is_proposal_confirmation_stale(self, pid: str) -> bool:
-        """五路依赖指纹与确认时不一致，或确认后产生了新文档 → True。
+        """五路依赖指纹与确认时不一致，或确认后产生了新 proposal 文档 → True。
 
         无确认记录 → False（从未确认，无所谓失效）；legacy 记录无
-        ``dep_hash`` → True（无法判定依赖是否变化，保守要求重新确认）。
+        ``dep_hash`` → True（无法判定依赖是否变化，保守要求重新确认）；
+        新增 ``interview_guide`` 不使 proposal 确认失效（spec §3 按类型判定）。
         """
         state = self._load(pid)
         records = state.get("confirmations") or []
         if not records:
             return False
-        latest = state["proposals"][-1]["id"] if state.get("proposals") else ""
+        latest = next(
+            (r["id"] for r in reversed(state.get("proposals") or [])
+             if r.get("kind", "proposal") == "proposal"), "")
         subject = records[-1].get("subject", "")
         if subject and latest and subject != latest:
-            return True  # 确认后产生了新文档（产物侧失效，终审 M1 语义保留）
+            return True  # 确认后产生了新 proposal（产物侧失效，spec §3 按类型判定）
         dep_hash = records[-1].get("dep_hash", "")
         if not dep_hash:
             return True  # legacy 确认记录无指纹，保守视失效
