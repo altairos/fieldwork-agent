@@ -878,10 +878,10 @@ git commit -m "feat(web): 下载 URL 支持格式参数 + mock 三格式分支�
 ## Task 5: 「我的」卡（MyCard）与首页接线
 
 **Files:**
-- Modify: `web/src/components/ui/icons.tsx`（文件末尾追加 IconUser）
+- Modify: `web/src/components/ui/icons.tsx`（文件末尾追加 IconUser；文件现 203 行，末尾区块为「移动端适配（批次 A）」IconMenu）
 - Create: `web/src/components/settings/MyCard.tsx`
-- Modify: `web/src/components/settings/ApiKeyCard.tsx`（卡壳改造为节）
-- Modify: `web/src/routes/ProjectHub.tsx`（imports L4/L10、L183 注释、L192、L329-331）
+- Modify: `web/src/components/settings/ApiKeyCard.tsx`（卡壳改造为节；文件现 139 行，锚点 L5/L8/L28/L63-67 已复核一致）
+- Modify: `web/src/routes/ProjectHub.tsx`（imports L4/L11、L185 注释、L194、L331-333——行号已按现状修正）
 - Test: `web/tests/myCard.spec.tsx`（新建）
 
 **Interfaces:**
@@ -911,12 +911,12 @@ describe("MyCard（「我的」卡）", () => {
     useExportFormatStore.setState({ format: "md" });
     useThemeStore.setState({ theme: "cinnabar" });
     vi.mocked(rest.rest.settingsStatus).mockResolvedValue({
-      configured: true,
-      models: {},
+      dashscope_configured: true,
+      flyai_configured: true,
     });
     vi.mocked(rest.rest.health).mockResolvedValue({
       status: "ok",
-      version: "test",
+      auth_required: false,
     });
   });
 
@@ -927,7 +927,7 @@ describe("MyCard（「我的」卡）", () => {
 
   test("三节俱在：导出格式 chips + 配色入口 + 密钥节", async () => {
     render(<MyCard />);
-    expect(screen.getByRole("heading", { level: 6, name: "导出格式" })).toBeDefined();
+    expect(screen.getByText("导出格式")).toBeDefined();
     expect(
       screen.getByRole("button", { name: "切换界面配色" })
     ).toBeDefined();
@@ -960,7 +960,7 @@ describe("MyCard（「我的」卡）", () => {
 });
 ```
 
-注意：若 `useThemeStore` 的实际导出名/路径不同（查 `web/src/stores/theme.ts`），以实际为准；settingsStatus/health 的 mock 返回形状若与 ApiKeyCard 实际消费不符（查其 useEffect），按实际字段补齐。若「导出格式」节标题未用 heading 元素，用 `screen.getByText("导出格式")` 替代 heading 查询。
+已核正（现状与计划的差异已并入上方代码块）：`useThemeStore` 导出名/路径无误（`web/src/stores/theme.ts`，`theme: ThemeId` 含 "cinnabar"）；settingsStatus/health mock 形状与 rest.ts 实际接口及 routes.spec.tsx 既有打法一致（`dashscope_configured`/`flyai_configured`、`status`/`auth_required`）；节标题按项目惯例用 div 非heading（MyCard/ApiKeySection 实现均为 div），测试用 `getByText`；`import * as rest` namespace 形式与 routes.spec.tsx 既有风格一致。ThemeSwitcher 触发按钮 aria-label 确为「切换界面配色」（ThemeSwitcher.tsx L45）。routes.spec.tsx 的 ProjectHub 用例只断言项目列表/空状态，不受本任务改动影响（其 settingsStatus/health mock 仅为防崩）。
 
 - [ ] **Step 2: 跑测试验证失败**
 
@@ -1068,15 +1068,15 @@ export function MyCard() {
       <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">API 密钥</div>
 ```
 
-其余内容（说明段、输入框、保存/清除按钮）不动；对应结尾的 `</div>` 层数减一（原本卡壳 div 现在直接用 `<div>` 包裹，确认闭合正确）。
+其余内容（说明段、输入框、保存/清除按钮）不动；结尾 L136 `</div>` 闭合不变——外层 div 仅由卡壳样式类换成裸 `<div>`，总层数不变。
 
 (d) `web/src/routes/ProjectHub.tsx` 接线（五处）：
 
 1. L4 `import { ApiKeyCard } from "../components/settings/ApiKeyCard";` → `import { MyCard } from "../components/settings/MyCard";`
-2. L10 删除 `import { ThemeSwitcher } from "../components/ui/ThemeSwitcher";`（移入 MyCard）
-3. L183 注释 `{/* 标题区（设计板 280-286）+ 配色切换（首页无 Header，入口随标题区） */}` → `{/* 标题区（设计板 280-286）——配色入口移入侧栏「我的」卡 */}`
-4. L191-204 的 `<div className="flex items-center gap-2 shrink-0">` 内删掉 `<ThemeSwitcher />` 一行（保留 div 与新建项目 Button）
-5. L329-331 侧栏：
+2. L11 删除 `import { ThemeSwitcher } from "../components/ui/ThemeSwitcher";`（移入 MyCard）
+3. L185 注释 `{/* 标题区（设计板 280-286）+ 配色切换（首页无 Header，入口随标题区） */}` → `{/* 标题区（设计板 280-286）——配色入口移入侧栏「我的」卡 */}`
+4. L193-206 的 `<div className="flex items-center gap-2 shrink-0">` 内删掉 L194 `<ThemeSwitcher />` 一行（保留 div 与新建项目 Button）
+5. L331-333 侧栏（替换其上的旧注释 + `<ApiKeyCard />` 一行）：
 
 ```tsx
           {/* 侧栏：「我的」卡（导出格式/配色/密钥——密钥仍置顶于卡内首屏）+ 说明 */}
@@ -1091,10 +1091,10 @@ export function MyCard() {
 Run（web/ 目录下）: `npx vitest run tests/myCard.spec.tsx`
 Expected: 3 passed。
 
-再跑全量（ProjectHub/ApiKeyCard 改动波及 workspace.spec.tsx 等既有用例）：
+再跑全量（ProjectHub/ApiKeyCard 改动波及既有用例）：
 
 Run（web/ 目录下）: `npx vitest run`
-Expected: 全绿。若 workspace.spec.tsx 断言了 ApiKeyCard 卡壳/标题，按新结构修断言（卡壳改为「我的」卡）。TypeScript 检查：`npx tsc --noEmit` 无报错。
+Expected: 全绿。已预核：routes.spec.tsx 的 ProjectHub 用例只断言项目列表/空状态（不断言密钥卡壳/配色入口），workspace.spec.tsx 无 ApiKeyCard 卡壳断言——均无需改断言；若仍有用例因「我的」卡新结构失败，按新结构修该用例断言。TypeScript 检查：`npx tsc --noEmit` 无报错。
 
 - [ ] **Step 5: Commit**
 
