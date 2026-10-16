@@ -27,6 +27,26 @@ class FakeFlyAI:
         return _stub
 
 
+class ChatFakeLLM(FakeLLM):
+    """带非流式 chat() 的 Fake：compose_proposal/compose_interview_guide
+    走 llm.chat()（kernel.llm 契约）；返回空 content → 触发模板降级路径，
+    测试不依赖真实 LLM。"""
+    def chat(self, messages, **kw):
+        return {"content": ""}
+
+
+# F04：compose_proposal 完整四硬渠道参数（独立于 Task 2 的 NA 豁免路径）
+_PROPOSAL_ARGS = {
+    "ctx": {"discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+            "budget": "2万", "time_window": "7月", "departure_city": "上海",
+            "target_location": "大理"},
+    "sites": [{"name": "大理", "confirmed": True, "profile": {"location": "大理"}}],
+    "itinerary": {"legs": []},
+    "informants": [{"code": "INF-01", "type": "宗族长老",
+                    "relation": "同乡会引荐", "contact": "", "notes": ""}],
+}
+
+
 @pytest.fixture
 def env(tmp_path):
     repo = JsonRepository(projects_dir=tmp_path / "projects")
@@ -149,3 +169,77 @@ def test_cancel_stops_loop(env):
     from fieldwork_agent.web_host.agent.loop import run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
     assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+
+
+def test_user_message_not_duplicated_to_llm(env):
+    """F09：当前用户消息只发一次给模型（不随 history 重复）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "ok"}, {"content": "ok", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "我要去大理", tm, llm, FakeFlyAI()))
+    msgs = llm.calls[0][0]
+    dup = [m for m in msgs if m["role"] == "user" and m["content"] == "我要去大理"]
+    assert len(dup) == 1
+
+
+def test_extraction_persists_research_context(env):
+    """F03：对话中的研究信息轮末写回结构化状态（确定性抽取打底）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好"}, {"content": "好", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id,
+                         "我是社会学背景，从上海去大理调研", tm, llm, FakeFlyAI()))
+    ctx = repo.get_research_context("p1")
+    assert ctx.get("discipline") == "社会学"
+    assert ctx.get("departure_city") == "上海"
+    assert ctx.get("target_location") == "大理"
+
+
+def test_compose_proposal_persisted_as_document(env):
+    """F04：compose_proposal 成功后文档落盘（kind/version 如实记录）。"""
+    repo, tm = env
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _PROPOSAL_ARGS}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert docs[0]["kind"] == "proposal"
+    doc = repo.get_proposal_by_id("p1", docs[0]["id"])
+    assert doc["content"].startswith("# ")
+    assert "## " in doc["content"]  # 八章降级结构
+
+
+def test_compose_interview_guide_persisted(env):
+    """F04：compose_interview_guide 的产物拼合落盘为 interview_guide 文档。"""
+    repo, tm = env
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_interview_guide",
+                                          "arguments": {"topic": "宗族变迁",
+                                                        "informant_types": ["宗族长老"]}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成访谈提纲", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert docs[0]["kind"] == "interview_guide"
+    doc = repo.get_proposal_by_id("p1", docs[0]["id"])
+    assert "## 宗族长老" in doc["content"]

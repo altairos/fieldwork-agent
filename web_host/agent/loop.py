@@ -28,9 +28,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     tools = build_tool_schemas()
     phase = repo.get_phase(pid)
 
-    # R4：用户消息即时持久化
-    repo.append_message(pid, "user", user_text)
+    # R4：用户消息即时持久化（F09 修正：先 build 后 append——
+    # build_messages 读 history 后自行 append 当前消息，顺序颠倒会双发）
     messages = build_messages(repo, pid, user_text, phase)
+    repo.append_message(pid, "user", user_text)
 
     iterations = 0
     total_calls = 0
@@ -117,12 +118,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         tm.finish(pid, turn_id, "failed")
         return
 
-    # 轮末：助手消息持久化 + 工具结果落盘 + 阶段推进
+    # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 阶段推进
     if accumulated_reply:
         repo.append_message(pid, "assistant", accumulated_reply,
                             {"tool_calls": total_calls})
     _persist_tool_results(repo, pid, tm, turn_id, call_name_map)
-    transition = _check_and_advance(repo, pid)
+    _apply_extractions(repo, pid, user_text)
+    transition = check_and_advance(repo, pid)
     if transition:
         tm.append_event(pid, turn_id, "phase_transition", transition)
 
@@ -183,10 +185,26 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map):
         elif name == "compose_itinerary":
             dests = ",".join(data_dict.get("destinations", []) or [])
             repo.cache_search(pid, f"itinerary::{dests}", "compose_itinerary", data_dict)
+        elif name == "compose_proposal":
+            markdown = data_dict.get("markdown", "")
+            if markdown:
+                repo.save_proposal(pid, markdown,
+                                   kind=data_dict.get("kind") or "proposal",
+                                   version=data_dict.get("version") or "draft")
+        elif name == "compose_interview_guide":
+            # guide 返回 {类型: 正文} → 拼单文档落盘
+            parts = ["# 访谈提纲", ""]
+            for itype, body in (data_dict or {}).items():
+                if not str(body).strip():
+                    continue
+                parts += [f"## {itype}", "", str(body), ""]
+            if len(parts) > 2:
+                repo.save_proposal(pid, "\n".join(parts),
+                                   kind="interview_guide", version="draft")
 
 
-def _check_and_advance(repo, pid) -> dict | None:
-    """确定性阶段推进。"""
+def check_and_advance(repo, pid) -> dict | None:
+    """确定性阶段推进。公共：供 web_host.api 复用。"""
     from fieldwork_agent.kernel.guidance import phases
     from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
     state = repo.get_state(pid)
@@ -204,3 +222,26 @@ def _check_and_advance(repo, pid) -> dict | None:
         repo.set_phase(pid, result.to_phase)
         return {"from": old, "to": result.to_phase}
     return None
+
+
+def _apply_extractions(repo, pid, user_text):
+    """轮末确定性抽取（F03）：对话中的研究信息写回结构化状态。
+
+    复用 CLI 同款 apply_message_extractions（增量语义：已填字段不覆盖、
+    extras.* 点号键并入旧 extras 合并落盘）。
+    """
+    from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
+    ctx = repo.get_research_context(pid)
+    found = apply_message_extractions(user_text, ctx)
+    if not found:
+        return
+    merged = dict(ctx)
+    extras = dict(merged.get("extras") or {})
+    for key, value in found.items():
+        if key.startswith("extras."):
+            extras[key.split(".", 1)[1]] = value
+        else:
+            merged[key] = value
+    if extras:
+        merged["extras"] = extras
+    repo.update_research_context(pid, merged)
