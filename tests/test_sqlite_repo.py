@@ -215,3 +215,33 @@ def test_get_cached_search_cross_project(tmp_path):
     repo.create("p2")
     cid = repo.cache_search("p2", "q", "search_ai", {"x": 1})
     assert repo.get_cached_search(cid)["result"] == {"x": 1}
+
+
+def test_knowledge_roundtrip_and_search(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    kid = repo.add_knowledge("p1", "白族三月街", "集市访谈材料", tags=["田野", "集市"])
+    entries = repo.list_knowledge("p1")
+    assert [e["id"] for e in entries] == [kid]
+    assert entries[0]["source"] == "user" and entries[0]["category"] == "general"
+    assert entries[0]["tags"] == ["田野", "集市"]
+    assert [e["id"] for e in repo.search_knowledge("p1", "三月街")] == [kid]   # 子串
+    assert repo.search_knowledge("p1", "集市 访谈") == entries                # 2字token AND
+    assert repo.search_knowledge("p1", "不存在") == []
+
+
+def test_knowledge_search_case_insensitive(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.add_knowledge("p1", "Field Notes", "Ethnography")
+    assert len(repo.search_knowledge("p1", "field")) == 1     # 大小写不敏感
+    assert len(repo.search_knowledge("p1", "ETHNO")) == 1
+
+
+def test_delete_knowledge_idempotent(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    kid = repo.add_knowledge("p1", "提纲", "问题1", category="methods")
+    repo.delete_knowledge("p1", kid)
+    repo.delete_knowledge("p1", kid)   # 再删不报错
+    assert repo.list_knowledge("p1") == []

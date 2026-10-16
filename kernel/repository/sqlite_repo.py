@@ -448,3 +448,72 @@ class SqliteRepository:
             "result": json.loads(row["result"]),
             "cached_at": row["cached_at"],
         }
+
+    # ------------------------------------------------------------------ 知识库
+
+    def add_knowledge(
+        self,
+        pid: str,
+        title: str,
+        content: str,
+        source: str = "user",
+        tags: list[str] | None = None,
+        category: str = "general",
+    ) -> str:
+        """整条 INSERT（带 seq）；对齐 json_repo：知识条目直接落 knowledge 表、
+        不经 _save 等价路径，不推进 projects.updated_at。
+        """
+        self._require(pid)
+        entry_id = _new_id("know")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO knowledge(id, project_id, title, content, source,"
+                " category, tags, created_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
+                (entry_id, pid, title, content, source, category,
+                 _dumps(list(tags or [])), _now(),
+                 self._next_seq(conn, "knowledge", pid)))
+        return entry_id
+
+    def list_knowledge(self, pid: str) -> list[dict]:
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, title, content, source, tags, category, created_at"
+                " FROM knowledge WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "content": r["content"],
+                "source": r["source"],
+                "tags": json.loads(r["tags"]),
+                "category": r["category"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def search_knowledge(self, pid: str, text: str) -> list[dict]:
+        """标题+正文+标签拼检索串，空白分词后要求全部子串命中（裁决1：非 FTS5，
+        FTS5 无法命中短中文 token）。取 list_knowledge 后 Python 侧过滤，过滤
+        逻辑与 json_repo 逐字一致；未知项目经 list_knowledge 的 _require 报
+        KeyError（json 侧同为间接触发，平价）。
+        """
+        tokens = [t for t in text.lower().split() if t]
+        if not tokens:
+            return self.list_knowledge(pid)
+        matched = []
+        for entry in self.list_knowledge(pid):
+            haystack = " ".join(
+                [entry.get("title", ""), entry.get("content", ""), " ".join(entry.get("tags", []))]
+            ).lower()
+            if all(token in haystack for token in tokens):
+                matched.append(entry)
+        return matched
+
+    def delete_knowledge(self, pid: str, entry_id: str) -> None:
+        """不存在不报错（幂等）；对齐 json_repo：无 _require、不推 updated_at。"""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM knowledge WHERE project_id=? AND id=?", (pid, entry_id))
