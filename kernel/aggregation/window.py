@@ -12,7 +12,7 @@ MAX_SAMPLES = 16
 def _sample_dates(range_start: str, range_end: str, sample_step: int) -> tuple[list[str], int, bool]:
     """在 [range_start, range_end] 上按步进生成采样日期序列。
 
-    点数会超 MAX_SAMPLES 时自动放大步进（ceil(span/MAX_SAMPLES)）并返回 widened=True。
+    点数会超 MAX_SAMPLES 时自动放大步进（floor(span/MAX_SAMPLES)+1）并返回 widened=True。
     """
     start = datetime.strptime(range_start, DATE_FMT).date()
     end = datetime.strptime(range_end, DATE_FMT).date()
@@ -22,7 +22,7 @@ def _sample_dates(range_start: str, range_end: str, sample_step: int) -> tuple[l
         sample_step = 1
     span = (end - start).days
     widened = span // sample_step + 1 > MAX_SAMPLES
-    step = -(-span // MAX_SAMPLES) if widened else sample_step
+    step = span // MAX_SAMPLES + 1 if widened else sample_step
     dates = [(start + timedelta(days=i * step)).isoformat()
              for i in range(span // step + 1)]
     return dates, step, widened
