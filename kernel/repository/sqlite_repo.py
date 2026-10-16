@@ -8,11 +8,14 @@
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+from fieldwork_agent.kernel.guidance.phases import PHASES
 
 SCHEMA_VERSION = 1
 MESSAGE_WINDOW = 50
@@ -115,6 +118,10 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{datetime.now():%Y%m%d%H%M%S}_{uuid.uuid4().hex[:8]}"
 
 
+def _dumps(payload) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
 class SqliteRepository:
     """以单文件 SQLite 库为后端的持久化实现（FA_STORAGE=sqlite 时启用）。"""
 
@@ -162,3 +169,135 @@ class SqliteRepository:
         row = conn.execute(
             f"SELECT COALESCE(MAX(seq),0)+1 FROM {table} WHERE project_id=?", (pid,)).fetchone()
         return int(row[0])
+
+    # ------------------------------------------------------------------ 项目与阶段
+
+    def create(self, project_id: str) -> None:
+        """幂等建项目：已存在则原样保留存量（INSERT OR IGNORE），不覆盖、不报错。"""
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+                " VALUES(?,?,?,?,?)",
+                (project_id, now, now, PHASES[0], "[]"))
+            conn.execute(
+                "INSERT OR IGNORE INTO research_context(project_id,data) VALUES(?,?)",
+                (project_id, "{}"))
+
+    def list_projects(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT project_id, phase, created_at, updated_at FROM projects"
+                " ORDER BY project_id").fetchall()
+        return [
+            {
+                "project_id": r["project_id"],
+                "phase": r["phase"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    def get_state(self, pid: str) -> dict:
+        """完整状态 dict（键序对齐 JsonRepository._default_state），每次现读、全新副本。"""
+        self._require(pid)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT project_id, created_at, updated_at, phase, phase_history"
+                " FROM projects WHERE project_id=?", (pid,)).fetchone()
+            ctx_row = conn.execute(
+                "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
+            window = conn.execute(
+                "SELECT role, content, meta, ts FROM messages WHERE project_id=?"
+                " ORDER BY id DESC LIMIT ?",
+                (pid, MESSAGE_WINDOW)).fetchall()
+            sites = conn.execute(
+                "SELECT data FROM field_sites WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+            informants = conn.execute(
+                "SELECT data FROM informants WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+            proposal_rows = conn.execute(
+                "SELECT id, kind, version, filename, saved_at FROM proposals"
+                " WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+        return {
+            "project_id": row["project_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "phase": row["phase"],
+            "phase_history": json.loads(row["phase_history"]),
+            "research_context": json.loads(ctx_row["data"]) if ctx_row else {},
+            # 窗口装配：最近 ≤MESSAGE_WINDOW 条，正序返回（append_message 属后续任务）
+            "dialogue_context": [
+                {"role": r["role"], "content": r["content"], "ts": r["ts"],
+                 "metadata": json.loads(r["meta"])}
+                for r in reversed(window)
+            ],
+            "field_sites": [json.loads(r["data"]) for r in sites],
+            "informants": [json.loads(r["data"]) for r in informants],
+            # 记录不含 content（content 事实源由 list_proposals 按需读取）
+            "proposals": [
+                {"id": r["id"], "kind": r["kind"], "version": r["version"],
+                 "filename": r["filename"], "saved_at": r["saved_at"]}
+                for r in proposal_rows
+            ],
+            # legacy 空默认（读兼容键，对齐 json_repo _default_state）
+            "travel_plan": None,
+            "researcher_info": {},
+            "proposal_draft": None,
+            "final_proposal": None,
+            "search_results": [],
+            "notes": [],
+        }
+
+    def get_phase(self, pid: str) -> str:
+        self._require(pid)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT phase FROM projects WHERE project_id=?", (pid,)).fetchone()
+        return row["phase"]
+
+    def set_phase(self, pid: str, phase: str) -> None:
+        if phase not in PHASES:
+            raise ValueError(f"未知阶段: {phase}")
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT phase, phase_history FROM projects WHERE project_id=?",
+                (pid,)).fetchone()
+            if row is None:
+                raise KeyError(f"未知项目: {pid}")
+            current = row["phase"]
+            if current == phase:   # 同阶段不写历史、不触碰 updated_at
+                return
+            history = json.loads(row["phase_history"])
+            history.append({"from": current, "to": phase, "at": now})
+            conn.execute(
+                "UPDATE projects SET phase=?, phase_history=?, updated_at=?"
+                " WHERE project_id=?",
+                (phase, _dumps(history), now, pid))
+
+    # ------------------------------------------------------------------ 研究上下文
+
+    def update_research_context(self, pid: str, patch: dict) -> None:
+        self._require(pid)
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
+            data = json.loads(row["data"]) if row else {}
+            data.update(patch)   # 浅合并（与 json_repo 的 dict.update 一致）
+            conn.execute(
+                "INSERT OR REPLACE INTO research_context(project_id,data) VALUES(?,?)",
+                (pid, _dumps(data)))
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?", (now, pid))
+
+    def get_research_context(self, pid: str) -> dict:
+        self._require(pid)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
+        return json.loads(row["data"]) if row else {}
