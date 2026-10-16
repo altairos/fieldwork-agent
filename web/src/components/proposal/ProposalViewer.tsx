@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 /**
  * ProposalViewer — 提案正文渲染（react-markdown + remark-gfm，宋体纸面阅读排版）。
  * 设计板同源：view-proposal 正文区（lines 712-767）：
- *   纸面容器 `max-w-[720px] mx-auto px-10 py-10`（line 714）
+ *   纸面容器 `max-w-[720px] mx-auto px-10 py-10`（line 714；移动端 px-5 lg:px-10，批次 A）
  *   居中题头 kicker `text-[11px] tracking-[.24em] text-cinnabar`（line 716）
  *   h1 居中大标题 `font-serif text-[30px] font-700 leading-snug`（line 717，700 → Tailwind font-bold）
  *   h2 章节标题 `font-serif text-[21px] font-600`（lines 725/743，600 → font-semibold；编号由 markdown 原文携带）
@@ -85,7 +85,7 @@ export function ProposalViewer({
   const kicker =
     kind === "interview_guide" ? "INTERVIEW GUIDE · 访谈提纲" : "RESEARCH PROPOSAL · 研究方案";
   return (
-    <article className="max-w-[720px] mx-auto px-10 py-10">
+    <article className="max-w-[720px] mx-auto px-5 lg:px-10 py-10">
       {/* 居中题头（设计板 715-720；kicker 展示 kind/version meta，大标题由 markdown h1 承担） */}
       <div className="text-center mb-2">
         <div className="text-[11px] tracking-[.24em] text-cinnabar num">

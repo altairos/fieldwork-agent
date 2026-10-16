@@ -17,6 +17,8 @@ import type { ProposalDoc } from "../types/models";
  *     版本区（688-695 → VersionSwitch）、八章导航（696-705 → ChapterNav，滚动高亮）、
  *     底部「下载 .md」主按钮 + 「访谈提纲（kind 切换）」outline 按钮（706-709）
  *   右栏正文（712-767）：`overflow-y-auto scroll bg-paper/40` → ProposalViewer（max-w-720 纸面排版）
+ * 移动端（<lg，批次 A）：网格回落单栏——左栏 auto 行限高 46vh（八章导航内部滚动，题头/版本/按钮
+ *   常驻可见），正文 1fr；左栏分隔线改 border-b（lg+ 恢复设计板 border-r）。
  * 数据：GET /projects/{id}/proposal（最新文档正文）+ GET /projects/{id}/proposals（版本列表）；
  *   另取 GET /projects/{id} 用于 Header/题头的项目名与阶段（一次快照请求，只读展示）。
  * API 限制（exports.py）：正文接口仅返回**最新保存**的文档，无法按 id/kind 拉取历史版本正文——
@@ -168,9 +170,9 @@ export function ProposalView() {
         }}
         onExport={doc ? download : undefined}
       />
-      <div className="flex-1 grid grid-cols-[240px_1fr] min-h-0 hairline rounded-xl bg-card shadow-card overflow-hidden mx-4 mb-4">
+      <div className="flex-1 grid grid-cols-1 grid-rows-[auto_1fr] lg:grid-cols-[240px_1fr] lg:grid-rows-1 min-h-0 hairline rounded-xl bg-card shadow-card overflow-hidden mx-4 mb-4">
         {/* 左栏：题头 + 版本 + 八章导航 + 下载/kind（设计板 681-710） */}
-        <div className="bg-paperdeep border-r border-hairline flex flex-col min-h-0">
+        <div className="bg-paperdeep border-b border-hairline lg:border-b-0 lg:border-r flex flex-col min-h-0 max-h-[46vh] overflow-y-auto scroll overscroll-contain lg:max-h-none lg:overflow-visible">
           <div className="px-4 py-3.5 border-b border-hairline">
             <div className="text-[10.5px] tracking-[.16em] text-inkfaint num">RESEARCH PROPOSAL</div>
             <div className="font-serif text-[14px] font-semibold leading-tight mt-0.5">
@@ -213,7 +215,7 @@ export function ProposalView() {
           {doc && !mismatch ? (
             <ProposalViewer markdown={doc.markdown} kind={doc.kind} version={doc.version} />
           ) : mismatch && doc ? (
-            <div className="max-w-[720px] mx-auto px-10 py-10">
+            <div className="max-w-[720px] mx-auto px-5 lg:px-10 py-10">
               <div className="hairline rounded-lg bg-cardsunk p-5 text-[13px] text-inksoft leading-relaxed">
                 所选条目（{kindLabel(selectedKind ?? doc.kind)}
                 {selectedId && selectedId !== doc.id ? " · 历史版本" : ""}）的正文暂不可在线读取：
@@ -227,7 +229,7 @@ export function ProposalView() {
               </div>
             </div>
           ) : error ? (
-            <div className="max-w-[720px] mx-auto px-10 py-10">
+            <div className="max-w-[720px] mx-auto px-5 lg:px-10 py-10">
               <div className="hairline rounded-lg bg-cinnabarwash/50 p-5 text-[13px] text-cinnabar leading-relaxed">
                 {error}
               </div>

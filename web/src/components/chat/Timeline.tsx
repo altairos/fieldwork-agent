@@ -2,7 +2,9 @@ import { getToolCard } from "../cards/registry";
 import { EmptyState } from "../ui/EmptyState";
 import { IconCompass } from "../ui/icons";
 import { useConversationStore } from "../../stores/conversation";
+import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
+import { useUiStore } from "../../stores/ui";
 import { AssistantStream } from "./AssistantStream";
 import { MessageBubble } from "./MessageBubble";
 import { ToolActivityStrip } from "./ToolActivityStrip";
@@ -20,14 +22,41 @@ import { ToolActivityStrip } from "./ToolActivityStrip";
  * 时间线自身 0 处 fetch、0 处数字加工；运行中的调用不提前渲染卡片（否则会误报「工具未返回数据」）。
  *
  * 已知取舍：tools store 不记录调用属于哪个回合（Task 3 契约），故本回合区块内的结果卡按
- * `tools.order` 全量渲染于时间线尾部活动区；多回合会话中历史卡片不会回到各自消息之间。
+ *   `tools.order` 全量渲染于时间线尾部活动区；多回合会话中历史卡片不会回到各自消息之间。
+ *
+ * 空态引导（可点性规范）：空对话时给出当前阶段的示例问题 chips，点击写入输入框
+ * （ui store 的 composerDraft 单次通道，由 Composer 消费），不自动发送——用户可改写后再发。
  */
+
+/** 阶段 → 示例问题（空对话引导；文案与该阶段右栏面板能力对应，不承诺内核没有的能力） */
+const PHASE_EXAMPLES: Record<string, string[]> = {
+  research_positioning: [
+    "我想研究村落宗族组织的变迁，帮我定位学科与核心研究问题",
+    "时问窗 10 天、经费 2 万，这个选题的规模可行吗",
+    "帮我梳理这个选题需要回答的三个关键问题",
+  ],
+  field_site_profiles: [
+    "帮我对比两个候选田野点的交通与住宿条件",
+    "这个田野点有哪些文化禁忌需要注意",
+    "为当前田野点补一份四维画像",
+  ],
+  itinerary_planning: [
+    "按 10 天时间窗排一版行程草案",
+    "行程太紧了，帮我加缓冲日",
+    "预算超了，帮我压缩住宿开销",
+  ],
+  proposal_generation: [
+    "基于当前行程生成八章研究方案",
+    "把访谈提纲并入方案第四章",
+  ],
+};
 export function Timeline() {
   const messages = useConversationStore((s) => s.messages);
   const streamBuffer = useConversationStore((s) => s.streamBuffer);
   const turnRunning = useConversationStore((s) => s.turnRunning);
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
+  const phase = useProjectStore((s) => s.phase);
 
   const settled = order
     .map((id) => byCallId[id])
@@ -63,7 +92,20 @@ export function Timeline() {
           icon={<IconCompass className="w-4 h-4" />}
           title="尚无对话"
           hint="在下方输入调研安排；罗盘按阶段推进，工具结果卡与右栏状态投影会随回合更新"
-        />
+        >
+          <div className="flex flex-wrap justify-center gap-1.5 max-w-md">
+            {(PHASE_EXAMPLES[phase] ?? PHASE_EXAMPLES.research_positioning).map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => useUiStore.getState().setComposerDraft(q)}
+                className="chip hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </EmptyState>
       )}
     </div>
   );

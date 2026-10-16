@@ -82,7 +82,7 @@ export function ApiKeyCard() {
           }}
           placeholder="sk-…"
           autoComplete="off"
-          className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] text-ink outline-none placeholder:text-inkfaint"
+          className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] pointer-coarse:text-[16px] text-ink outline-none placeholder:text-inkfaint"
         />
       </label>
       <label className="block mb-3.5">
@@ -99,7 +99,7 @@ export function ApiKeyCard() {
           }}
           placeholder="可留空"
           autoComplete="off"
-          className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] text-ink outline-none placeholder:text-inkfaint"
+          className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] pointer-coarse:text-[16px] text-ink outline-none placeholder:text-inkfaint"
         />
       </label>
       <label className="block mb-3.5">
@@ -116,7 +116,7 @@ export function ApiKeyCard() {
           }}
           placeholder={health?.auth_required ? "服务端已启用，必填" : "服务端未启用，可留空"}
           autoComplete="off"
-          className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] text-ink outline-none placeholder:text-inkfaint"
+          className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] pointer-coarse:text-[16px] text-ink outline-none placeholder:text-inkfaint"
         />
       </label>
       <div className="flex items-center gap-2">

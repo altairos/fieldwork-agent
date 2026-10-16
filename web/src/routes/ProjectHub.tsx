@@ -7,6 +7,7 @@ import { Button } from "../components/ui/Button";
 import { Chip, type ChipTone } from "../components/ui/Chip";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ProgressBar } from "../components/ui/ProgressBar";
+import { ThemeSwitcher } from "../components/ui/ThemeSwitcher";
 import {
   IconBook,
   IconClock,
@@ -86,7 +87,8 @@ function ProjectCard({ p, onOpen }: { p: ProjectSummary; onOpen: () => void }) {
       className="hairline rounded-lg bg-card shadow-card p-4 block w-full text-left hover:border-cinnabar/40 hover:shadow-pop transition group"
     >
       <div className="flex items-start justify-between mb-2.5">
-        <div className="font-serif text-[16px] font-semibold leading-snug group-hover:text-cinnabar transition">
+        {/* 移动端批次 C：min-w-0 + break-words——长 topic（含长英文串/URL）不撞阶段 chip、不撞卡宽 */}
+        <div className="font-serif text-[16px] font-semibold leading-snug group-hover:text-cinnabar transition min-w-0 break-words">
           {ctx.topic || p.project_id}
         </div>
         {meta && (
@@ -175,11 +177,11 @@ export function ProjectHub() {
 
   return (
     <div className="min-h-full">
-      <div className="max-w-6xl mx-auto px-6 py-8">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="grid lg:grid-cols-[1fr_320px] gap-6">
           {/* 主区 */}
           <div>
-            {/* 标题区（设计板 280-286） */}
+            {/* 标题区（设计板 280-286）+ 配色切换（首页无 Header，入口随标题区） */}
             <div className="flex items-end justify-between mb-5">
               <div>
                 <div className="text-[11px] tracking-[.2em] text-cinnabar mb-1.5 num">
@@ -187,17 +189,20 @@ export function ProjectHub() {
                 </div>
                 <h1 className="font-serif text-[26px] font-semibold">你的田野调研项目</h1>
               </div>
-              <Button
-                variant="primary"
-                className="h-10 shadow-card"
-                onClick={() => {
-                  descRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  descRef.current?.focus();
-                }}
-              >
-                <IconPlus className="w-4 h-4" />
-                新建项目
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <ThemeSwitcher />
+                <Button
+                  variant="primary"
+                  className="h-10 shadow-card"
+                  onClick={() => {
+                    descRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    descRef.current?.focus();
+                  }}
+                >
+                  <IconPlus className="w-4 h-4" />
+                  新建项目
+                </Button>
+              </div>
             </div>
 
             {error && (
@@ -270,7 +275,7 @@ export function ProjectHub() {
                   ))}
                 </div>
 
-                {/* 一句话描述（设计板 308-312；#F7EFE6/#96382a 为设计板 token 外用值，line 311 同源） */}
+                {/* 一句话描述（设计板 308-312；原 token 外用值 #F7EFE6/#96382a 已主题化为 ontint/tintpress，line 311 同源） */}
                 <div className="hairline rounded-md bg-paper/60 p-3 flex items-start gap-3">
                   <IconSpark className="w-5 h-5 text-inkfaint mt-0.5 shrink-0" />
                   <textarea
@@ -279,14 +284,14 @@ export function ProjectHub() {
                     value={purpose}
                     onChange={(e) => setPurpose(e.target.value)}
                     placeholder="研究西南少数民族村落的宗族组织变迁，单人驻村三个月，预算两万元，时间窗口明年 6–9 月……"
-                    className="text-[13px] text-ink leading-relaxed flex-1 bg-transparent outline-none resize-none placeholder:text-inkfaint"
+                    className="text-[13px] pointer-coarse:text-[16px] text-ink leading-relaxed flex-1 bg-transparent outline-none resize-none placeholder:text-inkfaint"
                   />
                   <button
                     type="button"
                     aria-label="创建项目"
                     disabled={creating || !(purpose.trim() || template)}
                     onClick={sendFromForm}
-                    className="h-8 w-8 grid place-items-center rounded-md bg-cinnabar text-[#F7EFE6] shrink-0 hover:bg-[#96382a] transition disabled:opacity-50 disabled:pointer-events-none"
+                    className="h-8 w-8 grid place-items-center rounded-md bg-cinnabar text-ontint shrink-0 hover:bg-tintpress transition disabled:opacity-50 disabled:pointer-events-none"
                   >
                     <IconSend className="w-4 h-4" />
                   </button>

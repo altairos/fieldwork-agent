@@ -32,6 +32,8 @@ Thumbs.db
 docs/promo/
 
 # 前期研究
+docs/superpowers/
+
 # 前端 web/ 工程
 web/node_modules/
 web/dist/
@@ -42,3 +44,8 @@ web/test-results/
 fieldwork-agent-deploy.tar.gz
 *.tar.gz
 .qw-pages-deploy/
+
+#审计报告
+docs/reviews
+
+tools/spike_flyai_window.py

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "../ui/Button";
 import { IconAlert, IconLock, IconSend } from "../ui/icons";
 import { useTurn } from "../../hooks/useTurn";
+import { useUiStore } from "../../stores/ui";
 
 /**
  * Composer — 中栏输入框（两步式回合的用户侧入口）。
@@ -10,7 +11,8 @@ import { useTurn } from "../../hooks/useTurn";
  *   外框 line 517 `border-t border-hairline bg-card px-6 py-3.5`
  *   输入壳 line 518 `hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition`
  *   textarea line 519 `flex-1 bg-transparent resize-none outline-none text-[13.5px] leading-relaxed placeholder:text-inkfaint`
- *     （rows=1 + 随内容自增高，上限 160px，避免长文把时间线挤没）
+ *     （rows=1 + 随内容自增高，上限 160px，避免长文把时间线挤没；
+ *     移动端批次 C：粗指针设备提到 16px，防 iOS Safari 聚焦自动缩放）
  *   发送键 line 520 `h-9 w-9 grid place-items-center rounded-md bg-cinnabar` → 复用 Task 5 `Button`
  *     primary（其配色即 line 520 的 bg-cinnabar / #F7EFE6 / hover #96382a，token 外值已在 Button 内注行号）
  *   底注 line 522-524：`flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint`
@@ -61,6 +63,16 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT_PX)}px`;
   }, [text]);
 
+  // 示例 chip 草稿消费（ui store 单次通道）：写入输入框并聚焦，不自动发送；
+  // locked 时 textarea disabled——受控 setText 无害、focus 无效不报错，解锁后文本保留
+  const draft = useUiStore((s) => s.composerDraft);
+  useEffect(() => {
+    if (!draft) return;
+    setText(draft);
+    areaRef.current?.focus();
+    useUiStore.getState().setComposerDraft(null);
+  }, [draft]);
+
   const canSend = text.trim() !== "" && !api.busy && !locked;
 
   const submit = () => {
@@ -71,7 +83,7 @@ export function Composer({
   };
 
   return (
-    <div className="border-t border-hairline bg-card px-6 py-3.5">
+    <div className="border-t border-hairline bg-card px-4 sm:px-6 py-3.5">
       <div className="hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
         <textarea
           ref={areaRef}
@@ -86,7 +98,7 @@ export function Composer({
             e.preventDefault();
             submit();
           }}
-          className="flex-1 bg-transparent resize-none outline-none text-[13.5px] leading-relaxed placeholder:text-inkfaint max-h-[160px] disabled:text-inkfaint"
+          className="flex-1 bg-transparent resize-none outline-none text-[13.5px] pointer-coarse:text-[16px] leading-relaxed placeholder:text-inkfaint max-h-[160px] disabled:text-inkfaint"
           placeholder={locked ? "配置百炼 API Key 后可开始对话…" : "继续描述你的调研安排，或让罗盘细化某一段行程…"}
         />
         {api.busy && (
@@ -121,9 +133,10 @@ export function Composer({
         </div>
       )}
 
-      <div className="flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint">
+      {/* 底注：窄屏 flex-wrap 防挤溢，模型名 sm 以下隐藏（辅助信息，375px 临界溢出） */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10.5px] text-inkfaint">
         <span>阶段推进由可验证条件判定，非模型自由发挥</span>
-        <span className="ml-auto num">qwen3.8-flash · function calling</span>
+        <span className="ml-auto num hidden sm:inline">qwen3.8-flash · function calling</span>
       </div>
     </div>
   );

@@ -1,0 +1,105 @@
+/* themes.css — 用户可选的四套界面配色（2026-10-16 评审后落地）。
+ *
+ * 来源：docs/frontend/design-board.html（A0 朱砂 · 默认）与 make_variants.py
+ * 确定性生成的三个变体 — A1 靛青（design-board-indigo.html）、A2 青衿
+ * （design-board-bamboo.html）、A3 Word蓝白（design-board-wordblue.html）。
+ * 评审记录：docs/reviews/2026-10-16-前端设计评审.md。
+ *
+ * 机制：html[data-theme] 切换 CSS 变量；tailwind.config.ts 以
+ * rgb(var(--fw-*) / <alpha-value>) 引用（支持 /25 /40 等透明度修饰符），
+ * 故颜色变量值为空格分隔 RGB 三元组；纸纹 / 阴影 / 滚动条为非颜色变量。
+ * A1/A2 与默认共享纸墨系与数据色，块内只列差异，其余回落 :root；
+ * A3 全套替换（白底冷灰 + Fluent 蓝）。
+ * 红线：lg-mio #A8412F 为静态 SVG 品牌资产不受影响；danger 始终为语义红。
+ */
+
+:root,
+html[data-theme="cinnabar"] {
+  /* 纸墨系 */
+  --fw-paper: 249 246 240;      /* #F9F6F0 */
+  --fw-paperdeep: 241 236 226;  /* #F1ECE2 */
+  --fw-card: 253 252 249;       /* #FDFCF9 */
+  --fw-cardsunk: 244 240 231;   /* #F4F0E7 */
+  --fw-ink: 42 39 36;           /* #2A2724 */
+  --fw-inksoft: 95 88 76;       /* #5F584C */
+  --fw-inkfaint: 148 139 122;   /* #948B7A */
+  --fw-hairline: 226 217 200;   /* #E2D9C8 */
+  --fw-hairsoft: 235 229 217;   /* #EBE5D9 */
+  /* 主色家族（cinnabar 语义位 = 品牌主色/进行中） */
+  --fw-cinnabar: 168 65 46;     /* #A8412E */
+  --fw-cinnabarsoft: 201 112 92;/* #C9705C */
+  --fw-cinnabarwash: 246 235 230; /* #F6EBE6 */
+  /* 数据/语义色 */
+  --fw-indigo: 58 92 116;       /* #3A5C74 */
+  --fw-indigowash: 233 238 241; /* #E9EEF1 */
+  --fw-bamboo: 94 122 78;       /* #5E7A4E */
+  --fw-bamboowash: 235 240 229; /* #EBF0E5 */
+  --fw-ochre: 168 128 44;       /* #A8802C */
+  --fw-ochrewash: 245 239 223;  /* #F5EFDF */
+  --fw-danger: 158 47 38;       /* #9E2F26 */
+  /* 主色衍生（原设计板 token 外用值语义化） */
+  --fw-ontint: 247 239 230;     /* #F7EFE6 主色实底上的文字 */
+  --fw-tintpress: 150 56 42;    /* #96382a 主色 hover 深化 */
+  --fw-onindigo: 237 241 244;   /* #EDF1F4 indigo 气泡上的文字 */
+  --fw-tintline: 235 213 205;   /* #EBD5CD Tab 选中描边 */
+  /* 非颜色：纸纹两层暗纹 / 阴影基色 / 滚动条 */
+  --fw-grain1: rgba(168, 65, 46, 0.014);
+  --fw-grain2: rgba(58, 92, 116, 0.014);
+  --fw-shadow: 60 48 30;
+  --fw-thumb: #D8CDB8;
+}
+
+/* A1 靛青 — 主色与数据色统一为靛青，朱砂家族整体退场 */
+html[data-theme="indigo"] {
+  --fw-cinnabar: 58 92 116;     /* #3A5C74（与 indigo 同值） */
+  --fw-cinnabarsoft: 123 149 169; /* #7B95A9 */
+  --fw-cinnabarwash: 233 238 241; /* #E9EEF1 */
+  --fw-ontint: 237 241 244;     /* #EDF1F4 */
+  --fw-tintpress: 46 74 95;     /* #2E4A5F */
+  --fw-tintline: 210 221 228;   /* #D2DDE4 */
+  --fw-grain1: rgba(58, 92, 116, 0.012);
+}
+
+/* A2 青衿 — 深青绿主色，bamboo 提亮拉开明度差 */
+html[data-theme="bamboo"] {
+  --fw-cinnabar: 70 104 58;     /* #46683A */
+  --fw-cinnabarsoft: 122 148 104; /* #7A9468 */
+  --fw-cinnabarwash: 232 239 227; /* #E8EFE3 */
+  --fw-bamboo: 107 138 87;      /* #6B8A57（提亮） */
+  --fw-bamboowash: 238 243 232; /* #EEF3E8 */
+  --fw-ontint: 241 245 236;     /* #F1F5EC */
+  --fw-tintpress: 56 82 46;     /* #38522E */
+  --fw-tintline: 212 224 204;   /* #D4E0CC */
+  --fw-grain1: rgba(94, 122, 78, 0.012);
+}
+
+/* A3 Word蓝白 — 纯白底 + Fluent 蓝 + Office 习惯辅助色（全量替换） */
+html[data-theme="wordblue"] {
+  --fw-paper: 255 255 255;      /* #FFFFFF */
+  --fw-paperdeep: 244 245 249;  /* #F4F5F9 */
+  --fw-card: 255 255 255;       /* #FFFFFF */
+  --fw-cardsunk: 242 243 247;   /* #F2F3F7 */
+  --fw-ink: 50 49 48;           /* #323130 */
+  --fw-inksoft: 96 94 92;       /* #605E5C */
+  --fw-inkfaint: 161 159 157;   /* #A19F9D */
+  --fw-hairline: 225 223 221;   /* #E1DFDD */
+  --fw-hairsoft: 237 235 233;   /* #EDEBE9 */
+  --fw-cinnabar: 43 87 154;     /* #2B579A Word 蓝（主色语义位） */
+  --fw-cinnabarsoft: 109 143 196; /* #6D8FC4 */
+  --fw-cinnabarwash: 234 240 249; /* #EAF0F9 */
+  --fw-indigo: 5 99 193;        /* #0563C1 链接蓝 */
+  --fw-indigowash: 232 240 251; /* #E8F0FB */
+  --fw-bamboo: 16 124 16;       /* #107C10 成功绿 */
+  --fw-bamboowash: 234 243 234; /* #EAF3EA */
+  --fw-ochre: 152 111 11;       /* #986F0B 警示黄 */
+  --fw-ochrewash: 251 244 223;  /* #FBF4DF */
+  --fw-danger: 164 38 44;       /* #A4262C Word 语义红 */
+  --fw-ontint: 255 255 255;     /* #FFFFFF */
+  --fw-tintpress: 32 67 122;    /* #20437A */
+  --fw-onindigo: 255 255 255;   /* #FFFFFF */
+  --fw-tintline: 199 214 236;   /* #C7D6EC */
+  --fw-grain1: rgba(43, 87, 154, 0.018);
+  --fw-grain2: rgba(43, 87, 154, 0.014);
+  --fw-shadow: 0 0 0;
+  --fw-thumb: #C8C6C4;
+}
