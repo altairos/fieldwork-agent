@@ -1101,21 +1101,123 @@ git add web/src/components/ui/icons.tsx web/src/components/settings/MyCard.tsx w
 git commit -m "feat(web): 「我的」卡——导出格式/配色/密钥三节首页侧栏（导出格式偏好 Task 5）" -- web/src/components/ui/icons.tsx web/src/components/settings/MyCard.tsx web/src/components/settings/ApiKeyCard.tsx web/src/routes/ProjectHub.tsx web/tests/myCard.spec.tsx
 ```
 
-## Task 6: 下载入口接线（ProposalView + ProposalCard）与全量回归
+## Task 6: 下载入口接线（by-id 链路扩围 + ProposalView + ProposalCard）与全量回归
+
+> **漂移修正（2026-10-16）**：初稿后主线 6dd56e8（web 提案阅读页）落地——ProposalView 主下载入口已改走 by-id 端点 `GET /projects/{id}/proposals/{docId}/download`（F13 版本审计修复），该端点当前 md-only 无 format 参数；Header 新增 onExport 入口但复用组件 download 函数（按钮文案「导出」无格式后缀，**Header 零改动**；其头注释「下载 .md」系设计板 line 243 溯源引用，非行为描述，不动）。偏好若不覆盖 by-id 链路，阅读页（主入口）偏好失效——本任务据此扩围至后端 by-id 端点、rest.ts、mock 与前端双入口。ProposalCard 仍走 latest 端点（Task 4 双参直接适用）。
 
 **Files:**
-- Modify: `web/src/routes/ProposalView.tsx`（imports + 组件体 + download 函数 + 按钮文案）
-- Modify: `web/src/components/cards/ProposalCard.tsx`（红线注释 + imports + 组件体 + downloadProposal + 链接 href/文案）
-- Modify: `web/tests/routes.spec.tsx`（mock 实现 + store 重置 + 新用例）
+- Modify: `web_host/api/exports.py`（提取三分支共用 helper；by-id 端点加 format 参数）
+- Modify: `tests/test_web_exports_api.py`（by-id txt/docx 两用例）
+- Modify: `web/src/api/rest.ts`（proposalByIdDownloadUrl 加第三可选参 format）
+- Modify: `web/tests/rest.spec.ts`（by-id URL 构造断言扩为独立 describe + mock by-id download 两用例）
+- Modify: `web/mock/sseServer.ts`（by-id download mock 分支）
+- Modify: `web/src/routes/ProposalView.tsx`（imports + store 订阅 + by-id 三参 + 注释 + 按钮文案）
+- Modify: `web/src/components/cards/ProposalCard.tsx`（红线例外段 + imports + 订阅 + downloadProposal/href 双参 + 文案与入口注释）
+- Modify: `web/tests/routes.spec.tsx`（store 重置 + by-id mock 三参 + 新用例）
 - Modify: `web/tests/toolCards.spec.tsx`（store 重置 + 新用例）
 
 **Interfaces:**
-- Consumes: Task 3 的 `useExportFormatStore`（format 只读订阅）；Task 4 的 `rest.proposalDownloadUrl(id, format?)`
-- Produces: 无下游（终端任务）。验收：按钮/链接文案 `下载 .{format}`，fetch/href 按偏好追加 `?format=`；默认 md 行为与现状完全一致（含 e2e——见 Step 5 说明，e2e 无需改动）
+- Consumes: Task 3 的 `useExportFormatStore`（format 只读订阅）；Task 4 的 `rest.proposalDownloadUrl(id, format?)`；Task 1 的 `web_host/export_formats`（to_docx_bytes/to_text/filename_for——by-id 端点经共用 helper 复用）
+- Produces: 无下游（终端任务）。验收：ProposalView 按钮 / ProposalCard 链接文案 `下载 .{format}`，fetch / href 按偏好追加 `?format=`（by-id 与 latest 两链路）；后端两下载端点均支持 `?format=md|docx|txt`（docx 失败降级 txt）；默认 md 行为与现状完全一致（含 e2e——见 Step 5 说明，e2e 无需改动）
 
 - [ ] **Step 1: 写失败测试**
 
-(a) `web/tests/routes.spec.tsx`：
+(a) `tests/test_web_exports_api.py`——在既有 `test_download_by_id`（现 L124-130）之后、`test_list_created_at_uses_saved_at` 之前追加（fixture 内容 `# 标题\n\n## 一、背景\n\n内容`，与 latest 端点既有用例同源）：
+
+```python
+async def test_download_by_id_txt(client, app):
+    repo = app.state.repo
+    docs = repo.list_proposals("p1")
+    r = await client.get(f"/projects/p1/proposals/{docs[0]['id']}/download",
+                         params={"format": "txt"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    cd = r.headers["content-disposition"]
+    assert "attachment" in cd
+    assert '.txt"' in cd
+    assert "# 标题" not in r.text
+    assert "一、背景" in r.text
+
+
+async def test_download_by_id_docx(client, app):
+    import io
+
+    from docx import Document
+
+    repo = app.state.repo
+    docs = repo.list_proposals("p1")
+    r = await client.get(f"/projects/p1/proposals/{docs[0]['id']}/download",
+                         params={"format": "docx"})
+    assert r.status_code == 200
+    assert (
+        r.headers["content-type"].startswith(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    )
+    cd = r.headers["content-disposition"]
+    assert ".docx" in cd
+    doc = Document(io.BytesIO(r.content))
+    h1 = [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert h1 == ["标题"]
+```
+
+(b) `web/tests/rest.spec.ts`：
+
+既有用例「getProposalById 与下载 URL 指向 by-id 端点」（现 L53-60）内的双参断言保持不变；在其 describe 收尾 `});` 之后、`rest.proposalDownloadUrl` describe 之前追加：
+
+```ts
+describe("rest.proposalByIdDownloadUrl", () => {
+  it("双参：不追加 ?format=（零破坏）", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1")).toBe(
+      "/projects/p1/proposals/prop_1/download"
+    );
+  });
+
+  it("显式 md：与双参相同", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1", "md")).toBe(
+      "/projects/p1/proposals/prop_1/download"
+    );
+  });
+
+  it("docx：追加 ?format=docx", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1", "docx")).toBe(
+      "/projects/p1/proposals/prop_1/download?format=docx"
+    );
+  });
+
+  it("txt：追加 ?format=txt", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1", "txt")).toBe(
+      "/projects/p1/proposals/prop_1/download?format=txt"
+    );
+  });
+});
+```
+
+「mock 服务器 download 三格式」describe 内既有三用例（现 L122-150）之后、describe 收尾前追加：
+
+```ts
+  it("by-id 默认 md：text/markdown + attachment", async () => {
+    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/markdown");
+    expect(res.headers.get("content-disposition")).toContain("attachment");
+    const text = await res.text();
+    expect(text).toContain("# ");
+  });
+
+  it("by-id docx：wordprocessingml + PK 魔数", async () => {
+    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download?format=docx`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    expect(res.headers.get("content-disposition")).toContain(".docx");
+    const buf = Buffer.from(await res.arrayBuffer());
+    expect(buf.subarray(0, 4).toString("latin1")).toBe("PK\u0003\u0004");
+  });
+```
+
+(c) `web/tests/routes.spec.tsx`（终审#1 describe）：
 
 顶部 imports 加：
 
@@ -1123,41 +1225,42 @@ git commit -m "feat(web): 「我的」卡——导出格式/配色/密钥三节�
 import { useExportFormatStore } from "../src/stores/exportFormat";
 ```
 
-终审#1 describe 的 beforeEach 里 `localStorage.clear()` 之后加：
+终审#1 describe 的 beforeEach 里 `localStorage.clear()`（现 L65）之后加：
 
 ```tsx
     useExportFormatStore.setState({ format: "md" });
 ```
 
-L78 的 proposalDownloadUrl mock 实现改为（签名扩展后原单参实现仍兼容，但显式支持 format 以覆盖新用例）：
+L78 的 proposalDownloadUrl mock 为历史遗留（组件已改走 by-id），**保留不动**；L79-81 的 by-id mock 实现扩为三参（与 rest.ts 签名同构）：
 
 ```tsx
-  vi.mocked(rest.rest.proposalDownloadUrl).mockImplementation(
-    (id: string, format?: string) =>
-      format && format !== "md"
-        ? `/projects/${id}/proposal/download?format=${format}`
-        : `/projects/${id}/proposal/download`
-  );
+    vi.mocked(rest.rest.proposalByIdDownloadUrl).mockImplementation(
+      (id: string, docId: string, format?: string) =>
+        format && format !== "md"
+          ? `/projects/${id}/proposals/${docId}/download?format=${format}`
+          : `/projects/${id}/proposals/${docId}/download`,
+    );
 ```
 
-在既有两用例之后追加：
+既有两用例断言保持不变（默认 md → `/projects/p9/proposals/doc1/download`）。在既有两用例之后追加：
 
 ```tsx
-  test("偏好 docx 时：按钮文案 .docx，fetch 追加 ?format=docx", async () => {
+  test("偏好 docx 时：按钮文案 .docx，by-id fetch 追加 ?format=docx", async () => {
     useExportFormatStore.setState({ format: "docx" });
     renderView();
     const btn = await screen.findByRole("button", { name: /下载 \.docx/ });
     await waitFor(() => expect(btn).toBeEnabled());
     fireEvent.click(btn);
     await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
-    expect(calls[0][0]).toBe("/projects/p9/proposal/download?format=docx");
+    expect(calls[0][0]).toBe("/projects/p9/proposals/doc1/download?format=docx");
     expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-9" });
+    useExportFormatStore.setState({ format: "md" });
   });
 ```
 
-（变量名 calls/createObjectURL/renderView/fireEvent/waitFor/screen 均为该文件既有绑定，直接复用；若既有用例名不同，以实际为准。）
+（变量名 calls/createObjectURL/renderView/fireEvent/waitFor/screen 均为该文件既有绑定，直接复用；末行恢复默认偏好，避免污染同文件后续用例。）
 
-(b) `web/tests/toolCards.spec.tsx`：
+(d) `web/tests/toolCards.spec.tsx`（终审#1 describe）：
 
 顶部 imports 加：
 
@@ -1171,54 +1274,161 @@ import { useExportFormatStore } from "../src/stores/exportFormat";
     useExportFormatStore.setState({ format: "md" });
 ```
 
-在既有下载用例之后追加：
+在该用例之后（describe 收尾前）追加（复刻既有用例的替身注入与内联 data 风格，fireEvent 非 userEvent）：
 
 ```tsx
-test("偏好 docx 时：链接文案与 href 追加 ?format=docx", async () => {
-  localStorage.clear();
-  saveKeys("", "", "tok-7");
-  useExportFormatStore.setState({ format: "docx" });
-  const calls: Array<[string, RequestInit | undefined]> = [];
-  const createObjectURL = vi.fn(() => "blob:card-docx");
-  URL.createObjectURL = createObjectURL;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push([String(input), init]);
-      return new Response(new Blob(["PK"], { type: "application/octet-stream" }));
-    })
-  );
-  render(
-    <ProposalCard
-      data={cardData}
-      degraded={false}
-      projectId="pc1"
-    />
-  );
-  const link = await findByRole("link", { name: /下载 \.docx/ });
-  expect(link).toHaveAttribute(
-    "href",
-    "/projects/pc1/proposal/download?format=docx"
-  );
-  fireEvent.click(link);
-  await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
-  expect(calls[0][0]).toBe("/projects/pc1/proposal/download?format=docx");
-  expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-7" });
-  useExportFormatStore.setState({ format: "md" });
-  vi.unstubAllGlobals();
-});
-```
+  test("偏好 docx 时：链接文案与 href 追加 ?format=docx", async () => {
+    localStorage.clear();
+    saveKeys("", "", "tok-7");
+    useExportFormatStore.setState({ format: "docx" });
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return { ok: true, blob: async () => new Blob(["# 研究方案"]) } as unknown as Response;
+    }));
+    // jsdom 未实现 createObjectURL/revokeObjectURL，注入可断言替身
+    const createObjectURL = vi.fn(() => "blob:card-docx");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, configurable: true, writable: true });
 
-（render/findByRole/fireEvent/waitFor 的来源与 ProposalCard 的 props 形状（cardData 构造）均照该文件既有下载用例复用；若既有用例用 getByRole 非 findBy，保持一致。）
+    render(<ProposalCard data={{ markdown: "# 研究方案\n", kind: "proposal", version: "draft", sections: ["研究定位"] }} projectId="pc1" />);
+    const link = screen.getByRole("link", { name: /下载 \.docx/ });
+    expect(link).toHaveAttribute("href", "/projects/pc1/proposal/download?format=docx");
+    fireEvent.click(link);
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(calls[0][0]).toBe("/projects/pc1/proposal/download?format=docx");
+    expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-7" });
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:card-docx");
+    useExportFormatStore.setState({ format: "md" });
+    vi.unstubAllGlobals();
+  });
+```
 
 - [ ] **Step 2: 跑测试验证失败**
 
-Run（web/ 目录下）: `npx vitest run tests/routes.spec.tsx tests/toolCards.spec.tsx`
-Expected: 两个新用例 FAIL——默认渲染文案仍是「下载 .md」，`findByRole("button", { name: /下载 \.docx/ })` 查不到元素超时；既有用例全部 PASS。
+Run（仓库根）: `python -m pytest tests/test_web_exports_api.py -q`
+Expected: 新增两用例 FAIL（by-id 端点现返回 text/markdown，txt 用例的 content-type/正文断言、docx 用例的 content-type 断言不成立）；既有用例全部 PASS。
+
+Run（web/ 目录下）: `npx vitest run tests/rest.spec.ts tests/routes.spec.tsx tests/toolCards.spec.tsx`
+Expected: 新用例 FAIL——`proposalByIdDownloadUrl("p1","prop_1","docx")` 仍返回无参 URL；routes/toolCards 的 docx 用例因文案仍是「下载 .md」查不到元素超时（或 href 断言不成立）；既有用例全部 PASS。
 
 - [ ] **Step 3: 写实现**
 
-(a) `web/src/routes/ProposalView.tsx`（五处）：
+(a) `web_host/api/exports.py`：
+
+将 download_proposal 尾部三分支（现 L56-70 的 md/docx/txt 响应构造）提取为模块级 helper（放在 download_proposal 装饰器之前）：
+
+```python
+def _format_proposal_response(content: str, format: str, filename: str) -> Response:
+    """md/docx/txt 三分支持（spec §3.2；docx 失败整体降级 txt，绝不让 500 冒泡）。"""
+    if format == "md":
+        return PlainTextResponse(
+            content, media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    if format == "docx":
+        docx_bytes = to_docx_bytes(content)
+        if docx_bytes is not None:
+            return Response(
+                docx_bytes, media_type=DOCX_MEDIA_TYPE,
+                headers={"Content-Disposition":
+                         f'attachment; filename="{filename_for(filename, "docx")}"'})
+        # docx 转换失败：整体降级 txt（绝不让 500 冒泡）
+    return PlainTextResponse(
+        to_text(content), media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename_for(filename, "txt")}"'})
+```
+
+download_proposal 尾部（原 L55-70）改为：
+
+```python
+    filename = doc.get("filename", f"{project_id}_proposal.md")
+    return _format_proposal_response(content, format, filename)
+```
+
+by-id 端点（现 L86-99）签名加 format 参数、尾部改调 helper：
+
+```python
+@router.get("/projects/{project_id}/proposals/{doc_id}/download")
+async def download_proposal_by_id(
+    project_id: str,
+    doc_id: str,
+    # 参数名沿用 spec：format（ruff 未启用 A 系列，遮蔽内置不触发，不加 noqa）
+    format: Literal["md", "docx", "txt"] = "md",
+    repo=Depends(get_repo),
+):
+    checked_project_id(project_id, repo)
+    try:
+        repo.get_state(project_id)
+    except KeyError:
+        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    doc = repo.get_proposal_by_id(project_id, doc_id)
+    if doc is None:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+    filename = doc.get("filename", f"{project_id}_{doc_id}.md")
+    return _format_proposal_response(doc.get("content", ""), format, filename)
+```
+
+（注意：degrades 用例 monkeypatch 的是 `exports_mod.to_docx_bytes`——提取 helper 后该调用仍在模块顶层命名空间内（helper 内直接引用），monkeypatch 依旧生效，无需改既有用例。）
+
+(b) `web/src/api/rest.ts`：`proposalByIdDownloadUrl`（现 L83-84）扩为三参（与上方 proposalDownloadUrl 同构）：
+
+```ts
+  proposalByIdDownloadUrl: (id: string, docId: string, format?: ExportFormat) =>
+    format && format !== "md"
+      ? `/projects/${id}/proposals/${docId}/download?format=${format}`
+      : `/projects/${id}/proposals/${docId}/download`,
+```
+
+(c) `web/mock/sseServer.ts`：
+
+路由正则区 RE_DOWNLOAD 行（现 L236）后加：
+
+```ts
+const RE_BY_ID_DOWNLOAD = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/download$/;
+```
+
+（路由顺序：`/proposals/:docId/download` 与 RE_PROPOSALS（`/proposals$`）、RE_PROPOSAL（`/proposal$`）、RE_PROJECT（`/projects/:id$`）均不重叠，无截胡风险。）
+
+处理段在 RE_DOWNLOAD 分支（现 L324-353）之后、RE_PROPOSAL 分支之前插入（复刻三格式，职责边界同前：只复刻状态码/响应头/文件名形状；文件名用 proposal.* 即可，不逐字复刻后端 `${project_id}_${doc_id}` 默认名）：
+
+```ts
+  // GET /projects/:id/proposals/:docId/download → 三格式附件（by-id 端点，ProposalView 主入口）。
+  if (method === "GET" && (m = RE_BY_ID_DOWNLOAD.exec(path))) {
+    const doc = fakeProposal();
+    const format = url.searchParams.get("format") ?? "md";
+    if (format === "docx") {
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
+      res.end(Buffer.from("PK\u0003\u0004mock docx"));
+      return;
+    }
+    if (format === "txt") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
+      res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="proposal.md"`,
+      ...CORS_HEADERS,
+    });
+    res.end(doc.markdown);
+    return;
+  }
+```
+
+(d) `web/src/routes/ProposalView.tsx`（五处）：
 
 1. imports（keys 之后、types 之前）加：
 
@@ -1226,16 +1436,16 @@ Expected: 两个新用例 FAIL——默认渲染文案仍是「下载 .md」，`
 import { useExportFormatStore } from "../stores/exportFormat";
 ```
 
-2. 组件体状态声明之后加：
+2. 组件体状态声明（现 L44-56 十二个 useState/useEffect 声明）之后加：
 
 ```tsx
   // 导出格式偏好（「我的」卡设置）：只读订阅，影响下载 URL 与按钮文案
   const format = useExportFormatStore((s) => s.format);
 ```
 
-3. download 函数内 `fetch(rest.proposalDownloadUrl(projectId), ...)` 改为 `fetch(rest.proposalDownloadUrl(projectId, format), ...)`
-4. 下载注释（现 L121）与文件头注释中的「下载 .md」改为「下载报告（md/docx/txt，格式随「我的」偏好）」
-5. 按钮（现 L198）：
+3. download 函数内（现 L138）`fetch(rest.proposalByIdDownloadUrl(projectId, doc.id), ...)` 改为 `fetch(rest.proposalByIdDownloadUrl(projectId, doc.id, format), ...)`
+4. 下载注释（现 L131-133）与文件头注释（现 L14）中的「下载 .md」改为「下载报告（md/docx/txt，格式随「我的」偏好）」
+5. 按钮（现 L252-255）文案改 `下载 .{format}`：
 
 ```tsx
               <Button variant="primary" className="w-full" disabled={!doc} onClick={download}>
@@ -1244,9 +1454,11 @@ import { useExportFormatStore } from "../stores/exportFormat";
               </Button>
 ```
 
-(b) `web/src/components/cards/ProposalCard.tsx`（六处）：
+（Header 的 onExport 复用 download 函数，零改动。）
 
-1. 组件头红线注释（现 L23 行后）追加例外段：
+(e) `web/src/components/cards/ProposalCard.tsx`（六处；注意：工作树含用户未提交的 MODE_LABEL 体例标签改动（现 L35-41/L122-128 区域），与本任务锚点零重叠，将随本任务一并裹挟入库，同 Task 5 ProjectHub 先例）：
+
+1. 组件头 JSDoc（现 L10-24）红线②行（现 L21「红线②：卡片不订阅 store、不在挂载期发请求——」）之后、JSDoc 收尾 `*/`（现 L24）之前插入例外段：
 
 ```tsx
  * 例外（2026-10-16 导出格式偏好）：本卡订阅 useExportFormatStore 读纯本地
@@ -1261,15 +1473,15 @@ import { useExportFormatStore } from "../stores/exportFormat";
 import { useExportFormatStore } from "../../stores/exportFormat";
 ```
 
-3. 组件体（degraded 判定前后均可，与其它局部声明并列）加：
+3. 组件体（pid 声明（现 L74）附近，与其它局部声明并列）加：
 
 ```tsx
   // 导出格式偏好（「我的」卡设置）：只读订阅（例外说明见组件头注释）
   const format = useExportFormatStore((s) => s.format);
 ```
 
-4. downloadProposal 内 `fetch(rest.proposalDownloadUrl(pid), ...)` 改为 `fetch(rest.proposalDownloadUrl(pid, format), ...)`
-5. 下载链接：`href={rest.proposalDownloadUrl(pid)}` 改为 `href={rest.proposalDownloadUrl(pid, format)}`；文案 `下载 .md` 改为 `下载 .{format}`；入口注释（现 L140）改为：
+4. downloadProposal 内（现 L93）`fetch(rest.proposalDownloadUrl(pid), ...)` 改为 `fetch(rest.proposalDownloadUrl(pid, format), ...)`
+5. 下载链接：`href={rest.proposalDownloadUrl(pid)}`（现 L157）改为 `href={rest.proposalDownloadUrl(pid, format)}`；文案 `下载 .md`（现 L162）改为 `下载 .{format}`；入口注释（现 L147）改为：
 
 ```tsx
                     {/* 入口：查看（路由 /p/:id/proposal）+ 下载（格式随「我的」偏好，exports.py ?format=） */}
@@ -1277,7 +1489,8 @@ import { useExportFormatStore } from "../../stores/exportFormat";
 
 - [ ] **Step 4: 跑测试验证通过**
 
-Run（web/ 目录下）: `npx vitest run tests/routes.spec.tsx tests/toolCards.spec.tsx`
+Run（仓库根）: `python -m pytest tests/test_web_exports_api.py -q`
+Run（web/ 目录下）: `npx vitest run tests/rest.spec.ts tests/routes.spec.tsx tests/toolCards.spec.tsx`
 Expected: 全部 PASS（既有 + 新增）。
 
 - [ ] **Step 5: 全量回归 + 类型检查**
@@ -1287,14 +1500,16 @@ Expected: 全绿。`npx tsc --noEmit` 无报错。
 
 后端全量（确认 Task 2 之后无累积破坏）：仓库根 `python -m pytest tests/ -q`——全绿。
 
-e2e 无需改动：`web/tests/e2e/fieldwork.spec.ts` 用 `/下载/i` 宽松匹配且默认偏好 md（未设置 localStorage 时 store 初始即 md），`suggestedFilename()).toMatch(/\.md$/)` 依旧成立。
+e2e 无需改动：`web/tests/e2e/fieldwork.spec.ts` 用 `/下载/i` 宽松匹配且默认偏好 md（未设置 localStorage 时 store 初始即 md），`suggestedFilename()).toMatch(/\.md$/)` 依旧成立；by-id 链路默认 md 同理。
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add web/src/routes/ProposalView.tsx web/src/components/cards/ProposalCard.tsx web/tests/routes.spec.tsx web/tests/toolCards.spec.tsx
-git commit -m "feat(web): 下载入口按导出格式偏好请求 md/docx/txt（导出格式偏好 Task 6）" -- web/src/routes/ProposalView.tsx web/src/components/cards/ProposalCard.tsx web/tests/routes.spec.tsx web/tests/toolCards.spec.tsx
+git add web_host/api/exports.py tests/test_web_exports_api.py web/src/api/rest.ts web/tests/rest.spec.ts web/mock/sseServer.ts web/src/routes/ProposalView.tsx web/src/components/cards/ProposalCard.tsx web/tests/routes.spec.tsx web/tests/toolCards.spec.tsx
+git commit -m "feat: 下载入口按导出格式偏好请求 md/docx/txt——by-id 端点扩 format（导出格式偏好 Task 6）" -- web_host/api/exports.py tests/test_web_exports_api.py web/src/api/rest.ts web/tests/rest.spec.ts web/mock/sseServer.ts web/src/routes/ProposalView.tsx web/src/components/cards/ProposalCard.tsx web/tests/routes.spec.tsx web/tests/toolCards.spec.tsx
 ```
+
+（ProposalCard.tsx 入库时含用户工作树未提交的 MODE_LABEL 体例标签改动——与本任务锚点零重叠，属预期裹挟，同 Task 5 ProjectHub 先例；若届时工作树另有新增改动，implementer 须停下报告而非自行裁决。）
 
 ---
 
