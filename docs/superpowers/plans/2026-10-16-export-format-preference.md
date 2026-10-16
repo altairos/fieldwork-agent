@@ -367,8 +367,8 @@ git commit -m "feat(web-host): markdown→txt/docx 转换器与文件名工具�
 ## Task 2: 端点 format 参数与三分支响应
 
 **Files:**
-- Modify: `web_host/api/exports.py`（imports + `download_proposal` 全函数，现 L1-55 文件）
-- Test: `tests/test_web_exports_api.py`（追加用例，文件现为 54 行）
+- Modify: `web_host/api/exports.py`（imports + `download_proposal` 单函数；文件现 89 行含 5 个端点，**只动这两处，其余端点零改动**）
+- Test: `tests/test_web_exports_api.py`（追加用例，文件现 86 行）
 
 **Interfaces:**
 - Consumes: Task 1 的 `to_text(markdown: str) -> str`、`to_docx_bytes(markdown: str) -> bytes | None`、`filename_for(base: str, fmt: str) -> str`（**必须用 `from fieldwork_agent.web_host.export_formats import ...` 形式导入**——降级测试用 `monkeypatch.setattr(exports_mod, "to_docx_bytes", ...)` 打模块属性补丁，`from ... import` 恰好支持此打法）
@@ -438,27 +438,21 @@ async def test_download_proposal_explicit_md_matches_default(client):
 Run: `python -m pytest tests/test_web_exports_api.py -v`
 Expected: 4 个新用例 FAIL——txt/docx 用例因无 format 参数处理而返回 markdown 响应（content-type 断言失败）；降级用例因 `exports_mod.to_docx_bytes` 属性不存在 AttributeError；显式 md 用例可能 PASS（它是回归断言，保留即可）。既有 `test_download_proposal` 必须 PASS。
 
-- [ ] **Step 3: 写实现**
+- [ ] **Step 3: 写实现（增量修改，严禁全量替换——审计 F13 已给本文件加了 4 个端点）**
 
-`web_host/api/exports.py` 全量替换为：
+`web_host/api/exports.py` 只改四处，其余（含 `_proposal_payload`、`get_proposal`、`download_proposal_by_id`、`list_proposals`）零改动：
+
+(a) 文件头部 imports：`from fastapi import ...` 之前加一行 `from typing import Literal`；`from fastapi.responses import PlainTextResponse` 改为 `from fastapi.responses import PlainTextResponse, Response`；import 块末尾加 `from fieldwork_agent.web_host.export_formats import filename_for, to_docx_bytes, to_text`
+
+(b) `router = APIRouter(tags=["exports"])` 之后加模块级常量：
 
 ```python
-"""导出端点：提案下载（md/txt/docx，spec 2026-10-16-export-format-preference）。"""
-
-from typing import Literal
-
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse, Response
-
-from fieldwork_agent.web_host.api.guard import checked_project_id
-from fieldwork_agent.web_host.deps import get_repo
-from fieldwork_agent.web_host.export_formats import filename_for, to_docx_bytes, to_text
-
-router = APIRouter()
-
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+```
 
+(c) `download_proposal` 函数（现 L34-48）整体替换为：
 
+```python
 @router.get("/projects/{project_id}/proposal/download")
 async def download_proposal(
     project_id: str,
@@ -478,33 +472,22 @@ async def download_proposal(
     filename = doc.get("filename", f"{project_id}_proposal.md")
     if format == "md":
         return PlainTextResponse(
-            content,
-            media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
+            content, media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     if format == "docx":
         docx_bytes = to_docx_bytes(content)
         if docx_bytes is not None:
             return Response(
-                docx_bytes,
-                media_type=DOCX_MEDIA_TYPE,
-                headers={
-                    "Content-Disposition": (
-                        f'attachment; filename="{filename_for(filename, "docx")}"'
-                    )
-                },
-            )
+                docx_bytes, media_type=DOCX_MEDIA_TYPE,
+                headers={"Content-Disposition":
+                         f'attachment; filename="{filename_for(filename, "docx")}"'})
         # docx 转换失败：整体降级 txt（绝不让 500 冒泡）
     return PlainTextResponse(
-        to_text(content),
-        media_type="text/plain; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename_for(filename, "txt")}"'
-        },
-    )
+        to_text(content), media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename_for(filename, "txt")}"'})
 ```
 
-注意：文件顶部若有既有模块 docstring，保留原文风格；上面首行 docstring 若与现状不同，以「保留现状 docstring、只改 import 块与函数体」为准。其余路由（若文件还有别的端点）不动。
+(d) 本文件其余四个端点与 `_proposal_payload` 零改动。
 
 - [ ] **Step 4: 跑测试验证通过**
 
