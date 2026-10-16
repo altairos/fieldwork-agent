@@ -188,6 +188,19 @@ def test_parse_festival_json_empty_and_garbage():
     assert _parse_festival_json("模型拒绝回答") == []
 
 
+def test_parse_festival_json_approx_dates_passthrough():
+    """Fix-5：approx_dates（LLM 原文人类可读日期，spec §4.1）只透传不过滤；缺失默认空串。"""
+    text = ('[{"name": "火把节", "approx_start": "2026-07-20", '
+            '"approx_end": "2026-07-22", "approx_dates": "农历六月廿四，约 7 月下旬",'
+            ' "relevance": "r"},'
+            ' {"name": "赶秋节", "approx_start": "2026-08-01",'
+            ' "approx_end": "2026-08-02"}]')
+    got = _parse_festival_json(text)
+    assert len(got) == 2
+    assert got[0].approx_dates == "农历六月廿四，约 7 月下旬"
+    assert got[1].approx_dates == ""
+
+
 def test_extract_festivals_happy_path():
     llm = FakeLLM('```json\n[{"name": "火把节", "approx_start": "2026-07-20",'
                   ' "approx_end": "2026-07-22", "relevance": "r"}]\n```')

@@ -294,3 +294,80 @@ def test_dispatch_injects_live_snapshot_refs():
         assert dispatch("probe_tool", {}).data["refs"]["喜洲"]
     finally:
         _REGISTRY.pop("probe_tool", None)
+
+
+# ------------------------------------------- 时窗回写（spec §5.3，final-review Fix-2）
+
+
+class WindowLLM(FakeLLM):
+    """流式脚本驱动对话；非流式 chat 返回节庆 JSON（analyze 节庆抽取契约）。"""
+
+    def __init__(self, script, chat_content):
+        super().__init__(script)
+        self._chat_content = chat_content
+
+    def chat(self, messages, **kw):
+        return {"content": self._chat_content}
+
+
+_ANALYZE_ARGS = {
+    "departure": "昆明", "destination": "西昌",
+    "range_start": "2026-07-01", "range_end": "2026-07-15",
+    "duration_days": 3, "budget_total": 5000.0, "sample_step": 7,
+}
+
+
+def test_analyze_window_writes_time_window_to_research_context(env):
+    """spec §5.3：analyze 成功后宿主把推荐时窗确定性回写 research_context.time_window。
+
+    FakeFlyAI 采样恒 cheapest=100 → 手算首窗 [07-01, 07-03]：
+    est = 100×2 航 + 100×2 晚 + 150×3 餐 = 850 → reasons[0] 含「估算 ¥850」。
+    """
+    repo, tm = env
+    llm = WindowLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "analyze_fieldwork_window",
+                                         "arguments": dict(_ANALYZE_ARGS)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ], chat_content='[{"name": "火把节", "approx_start": "2026-07-05",'
+                    ' "approx_end": "2026-07-06", "approx_dates": "农历六月廿四",'
+                    ' "relevance": "r"}]')
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    tw = repo.get_research_context("p1")["time_window"]
+    assert tw.startswith("2026-07-01 ~ 2026-07-03（推荐时窗：")
+    assert "估算 ¥850" in tw
+    # 时窗快照本身仍落盘（既有行为不变）
+    cached = repo.list_cached_searches("p1")
+    assert any(c["tool"] == "analyze_fieldwork_window" for c in cached)
+
+
+def test_analyze_window_empty_windows_leaves_time_window_untouched(env, monkeypatch):
+    """windows 为空/首窗缺日期时不回写：不抛错、time_window 保持原值。"""
+    repo, tm = env
+    repo.update_research_context("p1", {"time_window": "原有：7 月中旬"})
+    from fieldwork_agent.web_host.agent import loop as agent_loop
+
+    def _fake_build_dispatch_fn(flyai_client, llm, live_snapshot_refs=None):
+        def dispatch(name, args):
+            return Envelope(ok=True, data={"windows": []})
+        return dispatch
+
+    monkeypatch.setattr(agent_loop, "build_dispatch_fn", _fake_build_dispatch_fn)
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "analyze_fieldwork_window",
+                                         "arguments": dict(_ANALYZE_ARGS)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "ok"},
+         {"content": "ok", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
+    assert "error" not in types
+    assert repo.get_research_context("p1")["time_window"] == "原有：7 月中旬"

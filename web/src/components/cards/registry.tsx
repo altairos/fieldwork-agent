@@ -17,9 +17,10 @@ import type { ToolCardProps } from "./types";
  * 是中栏时间线与右栏面板的唯一同源数据）。
  *
  * **键集 = 内核真实能力名（14 项），逐字对齐，不臆造**：
- * 实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py 单一注册表），与
- * `mcp_server/mapping.py` TOOL_GROUPS 键集、`core/orchestrator.py` _CAPABILITY_DISPATCH
- * 键集三者一致（8 搜索原语 + 3 聚合 + 3 文档）。
+ * 实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py 单一注册表），
+ * kernel registry 面 / `mcp_server/mapping.py` TOOL_GROUPS / `core/orchestrator.py`
+ * _CAPABILITY_DISPATCH / 本表 四处一致（8 搜索原语 + 3 聚合 + 3 文档 = 14，
+ * 其中 3 聚合含 analyze_fieldwork_window）。
  *
  * 与 brief 示例表的差异（brief line 43 明示"若与上表不符，以内核为准"）：
  * - brief 的 `search_poi/search_domestic_flights/plan_itinerary/compile_budget/get_city_trips/

@@ -125,6 +125,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     cid = repo.cache_search(pid, f"time_window::{dest}",
                                             "analyze_fieldwork_window", data)
                     snapshot_ids.append(cid)
+                    # spec §5.3：推荐时窗确定性回写 ResearchContext.time_window
+                    w = (data.get("windows") or [{}])[0]
+                    if w.get("start") and w.get("end"):
+                        reason = (w.get("reasons") or [""])[0]
+                        merged = repo.get_research_context(pid)
+                        merged["time_window"] = (
+                            f'{w["start"]} ~ {w["end"]}'
+                            f'（推荐时窗{("：" + reason) if reason else ""}）'
+                        )
+                        repo.update_research_context(pid, merged)
             # 快照链（spec §5.1）：搜索即时落盘，下一轮工具调用（如 compose_itinerary）
             # 经 dispatch 注入的 dest_refs 即可引用刚落盘的快照
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,

@@ -24,6 +24,7 @@ from typing import Any
 
 from fieldwork_agent.kernel.aggregation.itinerary import compose_itinerary
 from fieldwork_agent.kernel.aggregation.site_profile import profile_field_site
+from fieldwork_agent.kernel.aggregation.window import analyze_fieldwork_window
 from fieldwork_agent.kernel.documents.informants import suggest_informants
 from fieldwork_agent.kernel.documents.proposal import (
     compose_proposal,
@@ -60,13 +61,15 @@ from pydantic import ValidationError
 from .config import Config
 
 # registry 全局表只供 schema 与 args_model，不经由它裸调：宿主用下表把能力名绑到
-# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm。
+# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm；
+# 亦可为 tuple 组合（如 ("client", "llm") 双注入，analyze_fieldwork_window 用）。
 # 8 搜索原语的 fn 即 flyai 模块级注入式包装（与 profile/compose 同一 client 注入模式）。
 # 文档能力的入参含 JSON 形状的 ``ctx``，故绑到 registry 侧 handler（负责 model_validate
 # 与统一包络，spec §2.4）；``generate_proposal`` 这类命令式直调才用底层 compose_proposal。
-_CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str]] = {
+_CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str | tuple[str, ...]]] = {
     "profile_field_site": (profile_field_site, "client"),
     "compose_itinerary": (compose_itinerary, "client"),
+    "analyze_fieldwork_window": (analyze_fieldwork_window, ("client", "llm")),
     "compose_proposal": (proposal_handler, "llm"),
     "compose_interview_guide": (guide_handler, "llm"),
     "suggest_informants": (suggest_informants, "llm"),
@@ -178,7 +181,9 @@ class FieldAgent:
                         hint="请按工具 schema 提供参数"))
             else:  # 理论不应发生：registry 未注册同名能力
                 validated = dict(args)
-            kw = {"client": self.flyai} if inject == "client" else {"llm": self.llm}
+            injects = inject if isinstance(inject, tuple) else (inject,)
+            kw = {**({"client": self.flyai} if "client" in injects else {}),
+                  **({"llm": self.llm} if "llm" in injects else {})}
             try:
                 result = impl(**validated, **kw)
             except Exception as exc:  # noqa: BLE001 — 统一兜底，异常不外泄给 loop

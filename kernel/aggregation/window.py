@@ -8,7 +8,6 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
     Envelope,
     FestivalInfo,
@@ -202,6 +201,7 @@ def _parse_festival_json(text: str) -> list[FestivalInfo]:
         if not name or sd > ed:
             continue
         out.append(FestivalInfo(name=name, approx_start=s, approx_end=e,
+                                approx_dates=str(entry.get("approx_dates") or ""),
                                 relevance=str(entry.get("relevance") or "")))
     return out
 
@@ -218,7 +218,8 @@ def _extract_festivals(llm, destination: str, range_start: str, range_end: str,
         f"以下是旅游平台关键词搜索的原始条目：\n{lines}\n\n"
         "请从中抽取调研区间内（含跨界）将举办的当地节庆/民俗/大型活动，"
         '仅输出 JSON 数组，每项形如 {"name":"节庆名","approx_start":"YYYY-MM-DD",'
-        '"approx_end":"YYYY-MM-DD","relevance":"一句话调研价值"}；'
+        '"approx_end":"YYYY-MM-DD","approx_dates":"日期的原文人类可读表述（如 农历六月廿四），无则空串",'
+        '"relevance":"一句话调研价值"}；'
         "日期不确定就给最可能的估计区间。没有可抽取项时输出 []。不要输出其他文字。"
     )
     env = llm.chat(messages=[{"role": "user", "content": prompt}],
@@ -266,19 +267,19 @@ def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
         return _error_env("bad_step", "sample_step 需为正整数")
 
     c = client or FlyAIClient()
-    if llm is None:
-        try:
-            llm = LLMClient()
-        except Exception:  # 构造失败按未注入降级（公理：不抛异常）
-            llm = None
+    # llm 不自建兜底：LLMClient 需要 api_key/models 配置，kernel 层无 config 来源；
+    # 未注入即保持 None，节庆维度按降级矩阵退化为空（spec §4.3）
 
     dates, _, widened = _sample_dates(range_start, range_end, sample_step)
     curve, notes = _sample_curve(c, departure, destination, dates)
     if all(v is None for v in curve.flight_min) and all(v is None for v in curve.hotel_min):
         return _error_env("all_sources_failed", "航班与住宿采样整类失败，无法生成时窗分析",
                           "可稍后重试或缩小日期范围")
-    kw_env = c.search_keyword(query=f"{destination} 节庆 民俗 活动日历")
-    items = kw_env.data.items if getattr(kw_env, "ok", False) and kw_env.data else []
+    try:
+        kw_env = c.search_keyword(query=f"{destination} 节庆 民俗 活动日历")
+        items = kw_env.data.items if getattr(kw_env, "ok", False) and kw_env.data else []
+    except Exception:  # noqa: BLE001 — 注入 client 异常与 ok=False 同后果，降级不外泄
+        items = []
     hints = [i.name for i in items if i.name][:8]
     festivals, fest_note = _extract_festivals(llm, destination, range_start, range_end, hints)
     windows = _score_windows(curve, festivals, range_start, range_end,
