@@ -680,9 +680,9 @@ git commit -m "feat(web): 导出格式偏好 lib/store（导出格式偏好 Task
 ## Task 4: rest.proposalDownloadUrl 签名扩展 + mock 三分支
 
 **Files:**
-- Modify: `web/src/api/rest.ts`（imports 区 + L52 proposalDownloadUrl）
-- Modify: `web/mock/sseServer.ts`（L13 头注释 + L242 path 解析 + download 路由 L320-331）
-- Test: `web/tests/rest.spec.ts`（新建）
+- Modify: `web/src/api/rest.ts`（imports 区 + L61 proposalDownloadUrl；f0b61ae 后文件现 82 行，紧随其后的状态修正六方法与 by-id 两方法零改动）
+- Modify: `web/mock/sseServer.ts`（L13 头注释 + L242 path 解析 + download 路由 L320-331——锚点已复核未漂移）
+- Test: `web/tests/rest.spec.ts`（**追加式修改**——f0b61ae 已创建该文件，现 76 行含 5 个既有用例，严禁覆盖既有用例与 stubFetch 辅助）
 
 **Interfaces:**
 - Consumes: Task 3 的 `type ExportFormat = "md" | "docx" | "txt"`
@@ -690,37 +690,45 @@ git commit -m "feat(web): 导出格式偏好 lib/store（导出格式偏好 Task
 
 - [ ] **Step 1: 写失败测试**
 
-创建 `web/tests/rest.spec.ts`（vite.config.ts 已确认 vitest environment jsdom、globals true，Node 全局 fetch/Buffer 在 jsdom 环境仍可用，可做真实 HTTP 冒烟）：
+在既有 `web/tests/rest.spec.ts` 末尾追加，**既有两个 describe（5 用例）与 stubFetch/afterEach 辅助零改动**（vite.config.ts 已确认 vitest environment jsdom、globals true，Node 全局 fetch/Buffer 在 jsdom 环境仍可用，可做真实 HTTP 冒烟）。
+
+先把文件头 imports 区（现 L2-L4 三行）合并为：
 
 ```ts
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { Server } from "node:http";
-import * as rest from "../src/api/rest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { rest } from "../src/api/rest";
 import { startMockServer } from "../mock/sseServer";
+import type { ProjectSnapshot } from "../src/types/models";
+```
 
+再在文件末尾追加两个 describe（沿用现有具名导入 `rest` 与 `it` 风格，不用 `import * as` / `test`）：
+
+```ts
 describe("rest.proposalDownloadUrl", () => {
-  test("无参：不追加 ?format=（零破坏）", () => {
-    expect(rest.rest.proposalDownloadUrl("p1")).toBe("/projects/p1/proposal/download");
+  it("无参：不追加 ?format=（零破坏）", () => {
+    expect(rest.proposalDownloadUrl("p1")).toBe("/projects/p1/proposal/download");
   });
 
-  test("显式 md：与无参相同", () => {
-    expect(rest.rest.proposalDownloadUrl("p1", "md")).toBe(
+  it("显式 md：与无参相同", () => {
+    expect(rest.proposalDownloadUrl("p1", "md")).toBe(
       "/projects/p1/proposal/download"
     );
   });
 
-  test("docx：追加 ?format=docx", () => {
-    expect(rest.rest.proposalDownloadUrl("p1", "docx")).toBe(
+  it("docx：追加 ?format=docx", () => {
+    expect(rest.proposalDownloadUrl("p1", "docx")).toBe(
       "/projects/p1/proposal/download?format=docx"
     );
   });
 
-  test("txt：追加 ?format=txt", () => {
-    expect(rest.rest.proposalDownloadUrl("p1", "txt")).toBe(
+  it("txt：追加 ?format=txt", () => {
+    expect(rest.proposalDownloadUrl("p1", "txt")).toBe(
       "/projects/p1/proposal/download?format=txt"
     );
   });
 });
+```
 
 describe("mock 服务器 download 三格式", () => {
   let server: Server;
@@ -741,7 +749,7 @@ describe("mock 服务器 download 三格式", () => {
     return `http://127.0.0.1:${addr.port}`;
   }
 
-  test("默认 md：text/markdown + proposal.md + 正文含 #", async () => {
+  it("默认 md：text/markdown + proposal.md + 正文含 #", async () => {
     const res = await fetch(`${base()}/projects/pc1/proposal/download`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/markdown");
@@ -750,7 +758,7 @@ describe("mock 服务器 download 三格式", () => {
     expect(text).toContain("# ");
   });
 
-  test("txt：text/plain + proposal.txt + 正文无 #", async () => {
+  it("txt：text/plain + proposal.txt + 正文无 #", async () => {
     const res = await fetch(`${base()}/projects/pc1/proposal/download?format=txt`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/plain");
@@ -760,7 +768,7 @@ describe("mock 服务器 download 三格式", () => {
     expect(text).toContain("白族村落宗族组织变迁研究");
   });
 
-  test("docx：wordprocessingml + proposal.docx + PK 魔数", async () => {
+  it("docx：wordprocessingml + proposal.docx + PK 魔数", async () => {
     const res = await fetch(`${base()}/projects/pc1/proposal/download?format=docx`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain(
@@ -776,19 +784,19 @@ describe("mock 服务器 download 三格式", () => {
 - [ ] **Step 2: 跑测试验证失败**
 
 Run（web/ 目录下）: `npx vitest run tests/rest.spec.ts`
-Expected: URL 四用例中 docx/txt 两用例 FAIL（現实现无 format 参数，TS 报错或返回无参数 URL）；mock 三用例中 txt/docx FAIL（mock 現在只有 markdown 分支，txt 拿到 markdown 响应）；md 两用例 PASS。
+Expected: 12 用例中 4 FAIL——URL 的 docx/txt 两用例（現实现无 format 参数，JS 多余实参被忽略返回无参 URL，`?format=` 断言失败；vitest 运行时不做类型检查）与 mock 的 txt/docx 两用例（mock 現在只有 markdown 分支，txt 拿到 markdown 响应）；URL 无参/md 两用例与 mock md 用例 PASS；**既有 5 用例不受影响仍 PASS**。
 
 - [ ] **Step 3: 写实现**
 
-`web/src/api/rest.ts`：
+`web/src/api/rest.ts`（f0b61ae 后现 82 行）：
 
-(a) imports 区加（放在 types import 之后）：
+(a) imports 区加一行——放在 L6 `import { authHeaders } from "../lib/keys";` 之前（相对路径 import 组内字母序 exportFormat < keys）：
 
 ```ts
 import type { ExportFormat } from "../lib/exportFormat";
 ```
 
-(b) L52 的 `proposalDownloadUrl: (id: string) => \`/projects/${id}/proposal/download\`,` 替换为：
+(b) L61 的 `proposalDownloadUrl: (id: string) => `/projects/${id}/proposal/download`,` 替换为（其余全零改动）：
 
 ```ts
   proposalDownloadUrl: (id: string, format?: ExportFormat) =>
@@ -812,58 +820,48 @@ import type { ExportFormat } from "../lib/exportFormat";
   const path = url.pathname;
 ```
 
-(c) download 路由（現 L320-331）替换为（保留「路由顺序红线」注释原文，新增 mock 职责边界注释）：
+(c) download 路由（現 L320-331，已复核锚点未漂移）替换为（功能注释行更新为三格式、保留「路由顺序红线」注释原文、新增 mock 职责边界注释；保持現有 `if (method === "GET" && (m = RE_DOWNLOAD.exec(path)))` 判定与紧凑 writeHead 风格）：
 
 ```ts
+  // GET /projects/:id/proposal/download → 三格式附件（?format=md|docx|txt，默认 md）。
   // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
   // mock 职责边界：只复刻后端的状态码/响应头/文件名形状（docx 返回 PK 魔数、txt 轻量去标记），不引入 python-docx 逻辑。
-  if (RE_DOWNLOAD.test(path)) {
+  if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
     const doc = fakeProposal();
     const format = url.searchParams.get("format") ?? "md";
     if (format === "docx") {
-      res.writeHead(
-        200,
-        {
-          "Content-Type":
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "Content-Disposition": 'attachment; filename="proposal.docx"',
-          ...CORS_HEADERS,
-        }
-      );
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
       res.end(Buffer.from("PK\u0003\u0004mock docx"));
       return;
     }
     if (format === "txt") {
-      res.writeHead(
-        200,
-        {
-          "Content-Type": "text/plain; charset=utf-8",
-          "Content-Disposition": 'attachment; filename="proposal.txt"',
-          ...CORS_HEADERS,
-        }
-      );
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
       res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
       return;
     }
-    res.writeHead(
-      200,
-      {
-        "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Disposition": 'attachment; filename="proposal.md"',
-        ...CORS_HEADERS,
-      }
-    );
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="proposal.md"`,
+      ...CORS_HEADERS,
+    });
     res.end(doc.markdown);
     return;
   }
 ```
 
-注意：以現有 download 路由的实际写法为准（如 res.writeHead 参数结构不同，保持现状风格，只改出三格式分支逻辑与响应头值）；`fakeProposal()` 调用方式与現状一致。
-
 - [ ] **Step 4: 跑测试验证通过**
 
 Run（web/ 目录下）: `npx vitest run tests/rest.spec.ts`
-Expected: 7 passed。
+Expected: 12 passed（既有 5 + 新增 7）。
 
 再跑既有回归（mock 被多个 spec 引用，确认无破坏）：
 
