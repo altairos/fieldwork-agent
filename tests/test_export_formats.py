@@ -6,7 +6,6 @@ import io
 
 from docx import Document
 from docx.oxml.ns import qn
-
 from fieldwork_agent.web_host import export_formats as ef
 
 MD = """# 研究方案标题

@@ -1,6 +1,10 @@
 """guidance 子包测试 — 阶段推进纯函数、消息提取、访谈对象库（全部纯数据，不联网不调 LLM）。"""
 
 from fieldwork_agent.kernel.guidance import extract, informants, phases
+from fieldwork_agent.kernel.guidance.extract import (
+    apply_message_extractions,
+    extract_time_window,
+)
 from fieldwork_agent.kernel.models import (
     FieldSiteRecord,
     InformantCandidate,
@@ -281,11 +285,6 @@ def test_match_examples_garbage_topic_falls_back_to_all():
 # ────────────────────────────────────────────────────────────────
 # 审计第二批 F03：time_window 采集 + 组合抽取器（CLI/Web 共用）
 # ────────────────────────────────────────────────────────────────
-
-from fieldwork_agent.kernel.guidance.extract import (
-    apply_message_extractions,
-    extract_time_window,
-)
 
 
 def test_extract_time_window_patterns():
