@@ -76,6 +76,9 @@ describe("ProposalView 下载（终审#1）", () => {
     vi.mocked(rest.rest.listProposals).mockResolvedValue([{ id: "doc1", kind: "proposal", version: "draft" }]);
     vi.mocked(rest.rest.getProject).mockResolvedValue({ research_context: { topic: "宗族变迁" }, phase: "research_positioning" } as any);
     vi.mocked(rest.rest.proposalDownloadUrl).mockImplementation((id: string) => `/projects/${id}/proposal/download`);
+    vi.mocked(rest.rest.proposalByIdDownloadUrl).mockImplementation(
+      (id: string, docId: string) => `/projects/${id}/proposals/${docId}/download`,
+    );
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -95,7 +98,7 @@ describe("ProposalView 下载（终审#1）", () => {
     await waitFor(() => expect(btn).toBeEnabled());
     fireEvent.click(btn);
     await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
-    expect(calls[0][0]).toBe("/projects/p9/proposal/download");
+    expect(calls[0][0]).toBe("/projects/p9/proposals/doc1/download");
     expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-9" });
     expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:proposal-md");
