@@ -3,17 +3,22 @@
 田野点确认、报道人采纳、方案确认。守卫先于一切副作用；每次写后跑
 确定性阶段推进，把 phase_transition 原样返回给前端。"""
 from fastapi import APIRouter, Depends, HTTPException
+from fieldwork_agent.kernel.context_patch import sanitize_context_patch
 from fieldwork_agent.kernel.documents.informants import candidate_to_record
 from fieldwork_agent.kernel.models import InformantCandidate
 from fieldwork_agent.web_host.agent.loop import check_and_advance
 from fieldwork_agent.web_host.api.guard import checked_project_id
 from fieldwork_agent.web_host.deps import get_repo
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 router = APIRouter(tags=["state"])
 
 
 class ContextPatch(BaseModel):
+    """审计二 R05：strict + extra=forbid——类型不符/白名单外键交 Pydantic 折 422。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
     discipline: str | None = None
     topic: str | None = None
     site_status: str | None = None
@@ -49,13 +54,14 @@ def _transition(repo, project_id: str):
 async def update_research_context(project_id: str, body: ContextPatch,
                                   repo=Depends(get_repo)):
     _guarded_state(repo, project_id)
-    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items()
-             if v is not None and (isinstance(v, bool) or str(v).strip())}
-    if not patch:
-        raise HTTPException(400, "至少提供一个要修正的字段（非空字符串或布尔）")
-    ctx = dict(repo.get_research_context(project_id))
-    ctx.update(patch)
-    repo.update_research_context(project_id, ctx)
+    try:
+        # 审计二 R05：与工具入口同一校验来源；repo 层浅合并，只传净化后 patch
+        clean = sanitize_context_patch(
+            body.model_dump(exclude_unset=True),
+            current=repo.get_research_context(project_id))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    repo.update_research_context(project_id, clean)
     return {"research_context": repo.get_research_context(project_id),
             "phase_transition": _transition(repo, project_id)}
 

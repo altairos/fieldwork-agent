@@ -33,9 +33,11 @@ async def test_update_research_context(client):
     assert ctx["budget"] == "5万" and ctx["scale"] == "两人同行"
 
 
-async def test_update_research_context_empty_400(client):
+async def test_r05_empty_patch_422(client):
+    """审计二 R05：空 patch → 422（统一错误语义，不再 400/422 混用）。"""
     r = await client.put("/projects/p1/research-context", json={})
-    assert r.status_code == 400
+    assert r.status_code == 422
+    assert "patch 为空" in r.text
 
 
 async def test_update_research_context_unknown_404(client):
@@ -92,3 +94,24 @@ async def test_confirm_proposal_flow_and_stale(client, app):
     await client.put("/projects/p1/research-context", json={"budget": "9万"})
     snap2 = (await client.get("/projects/p1")).json()
     assert snap2["proposal_confirmation_stale"] is True
+
+
+async def test_r05_type_violation_422(client):
+    """审计二 R05：strict 模式拒绝字符串字段收数字（此前 5 被静默写入）。"""
+    r = await client.put("/projects/p1/research-context", json={"budget": 5})
+    assert r.status_code == 422
+
+
+async def test_r05_extra_field_422(client):
+    """审计二 R05：extra=forbid 拒绝白名单外键（此前被静默忽略）。"""
+    r = await client.put("/projects/p1/research-context",
+                         json={"budget": "5万", "hacked": "x"})
+    assert r.status_code == 422
+
+
+async def test_r05_na_without_reason_422(client):
+    """审计二 R05：NA=True 无理由 → 422 且 detail 指明字段。"""
+    r = await client.put("/projects/p1/research-context",
+                         json={"interviews_not_applicable": True})
+    assert r.status_code == 422
+    assert "interviews_na_reason" in r.text
