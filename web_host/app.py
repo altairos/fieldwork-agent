@@ -1,9 +1,30 @@
 """FastAPI 入口：lifespan 管理单例、CORS(localhost)、路由挂载。"""
 
+import hmac
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+APP_TOKEN_HEADER = "X-App-Token"
+# 受保护前缀（审计 F02）：/projects、/settings 全族；/health、/ready 与静态前端
+# 豁免——页面要先能打开、健康探针不该被令牌拦住。
+_PROTECTED_PREFIXES = ("/projects", "/settings")
+
+
+def _is_protected(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in _PROTECTED_PREFIXES)
+
+
+def _app_token_ok(request: Request) -> bool:
+    """未配置令牌 → 完全开放（本地开发零影响）；配置则常量时间比对防时序探测。"""
+    cfg = getattr(request.app.state, "config", None)
+    expected = getattr(cfg, "app_token", "") or ""
+    if not expected:
+        return True
+    supplied = request.headers.get(APP_TOKEN_HEADER, "")
+    return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
 
 
 def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
@@ -15,6 +36,22 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
         yield
 
     app = FastAPI(title="Fieldwork Web Host", version="0.1.0", lifespan=lifespan)
+
+    # F02 App Token 守卫：代码顺序必须先于 add_middleware(CORSMiddleware)——
+    # Starlette 的 add_middleware 是 insert(0)，代码中后注册者位于栈外层；
+    # 令牌守卫留在 CORS 内层，401 响应才带 CORS 头、预检 OPTIONS 由 CORS 应答不被拦死。
+    @app.middleware("http")
+    async def app_token_guard(request: Request, call_next):
+        if _is_protected(request.url.path) and not _app_token_ok(request):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "code": "app_token_required",
+                    "message": "缺少或错误的 X-App-Token 请求头：请在首页「API 密钥」卡填写访问令牌",
+                },
+            )
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -24,8 +61,9 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     )
 
     @app.get("/health")
-    async def health():
-        return {"status": "ok"}
+    async def health(request: Request):
+        cfg = getattr(request.app.state, "config", None)
+        return {"status": "ok", "auth_required": bool(getattr(cfg, "app_token", "") or "")}
 
     from fieldwork_agent.web_host.api import exports, projects, settings, turns
 
