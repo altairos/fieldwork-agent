@@ -54,7 +54,7 @@ async def get_project(project_id: str, repo=Depends(get_repo)):
             "field_sites": repo.list_field_sites(project_id),
             "informants": repo.list_informants(project_id),
             "proposals": [{"id": p["id"], "kind": p.get("kind"),
-                           "version": p.get("version"), "created_at": p.get("created_at")}
+                           "version": p.get("version"), "created_at": p.get("saved_at")}
                           for p in repo.list_proposals(project_id)],
             "phase_history": state.get("phase_history", []),
             "updated_at": state.get("updated_at"),
