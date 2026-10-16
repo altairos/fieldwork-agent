@@ -19,7 +19,7 @@ import os
 import subprocess
 from typing import Any
 
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem, ToolError
+from fieldwork_agent.kernel.models import Envelope, ItemPage, Schedule, SearchItem, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,15 @@ _JUMP_KEYS = ("jumpUrl", "detailUrl")
 _MAPPED_KEYS = frozenset(
     {*_NAME_KEYS, *_PRICE_KEYS, *_PIC_KEYS, *_JUMP_KEYS}
 )
+
+# journeys 深层解析候选键（spike 附录 A 钉死后仅改元组不改结构）
+_DEP_KEYS = ("depTime", "departureTime", "depDate")
+_ARR_KEYS = ("arrTime", "arrivalTime", "arrDate")
+_DUR_KEYS = ("duration", "durationMinutes")
+_CABIN_KEYS = ("cabinClass", "seatClassName", "cabin")
+_CARRIER_KEYS = ("airlineName", "carrier", "trainName")
+_TRAIN_NO_KEYS = ("flightNo", "trainNo", "trainNumber", "busNo")
+_TICKET_PRICE_KEYS = ("ticketPrice", "price")
 
 
 def parse_price(raw: str | None) -> float | None:
@@ -73,6 +82,36 @@ def normalize_items(raw_list: list[dict]) -> list[SearchItem]:
     return items
 
 
+def _journey_item(journey: dict[str, Any]) -> SearchItem:
+    """单条 journey（segments 嵌套）归一为 SearchItem；无 segments 时 journey 本身当一段。"""
+    segs = journey.get("segments")
+    if not isinstance(segs, list) or not segs:
+        segs = [journey]
+    first, last = segs[0], segs[-1]
+    dep_time = str(_first(first, _DEP_KEYS) or "")
+    arr_time = str(_first(last, _ARR_KEYS) or "")
+    carrier = str(_first(first, _CARRIER_KEYS) or "")
+    no = str(_first(first, _TRAIN_NO_KEYS) or "")
+    duration_raw = _first(journey, _DUR_KEYS)
+    price_raw = _first(journey, _TICKET_PRICE_KEYS)
+    if price_raw is None:
+        price_raw = _first(first, _TICKET_PRICE_KEYS)
+    known = {*_DEP_KEYS, *_ARR_KEYS, *_DUR_KEYS, *_CABIN_KEYS,
+             *_CARRIER_KEYS, *_TRAIN_NO_KEYS, *_TICKET_PRICE_KEYS, "segments"}
+    return SearchItem(
+        name=f"{carrier} {no} {dep_time}-{arr_time}".strip(),
+        price=parse_price(price_raw if isinstance(price_raw, str) else None),
+        schedule=Schedule(
+            dep_time=dep_time,
+            arr_time=arr_time,
+            duration_minutes=int(duration_raw) if isinstance(duration_raw, (int, float)) else None,
+            stops=max(0, len(segs) - 1),
+            cabin=str(_first(journey, _CABIN_KEYS) or _first(first, _CABIN_KEYS) or ""),
+        ),
+        extra={k: v for k, v in journey.items() if k not in known},
+    )
+
+
 def _error_envelope(message: str) -> Envelope:
     """把 ``_run_command`` 的错误字符串映射为机器可读错误码。"""
     low = message.lower()
@@ -88,16 +127,22 @@ def _error_envelope(message: str) -> Envelope:
 
 
 def _page_envelope(payload: dict[str, Any]) -> Envelope:
-    """成功分支：``data.itemList`` 归一化为 ItemPage，并给出极值摘要。"""
+    """成功分支：优先展开 ``data.journeys``（航班/火车深层结构），否则 ``data.itemList`` 平铺。"""
     data = payload.get("data") or {}
-    raw_list = data.get("itemList") or []
-    if not isinstance(raw_list, list):
-        raw_list = []
-    items = normalize_items(raw_list)
+    journeys = data.get("journeys")
+    if isinstance(journeys, list) and journeys:
+        items = [_journey_item(j) for j in journeys if isinstance(j, dict)]
+        raw_total = len(journeys)
+    else:
+        raw_list = data.get("itemList") or []
+        if not isinstance(raw_list, list):
+            raw_list = []
+        items = normalize_items(raw_list)
+        raw_total = len(raw_list)
     prices = [i.price for i in items if i.price is not None]
     return Envelope(ok=True, data=ItemPage(
         items=items,
-        total=len(raw_list),
+        total=raw_total,
         cheapest=min(prices) if prices else None,
         dearest=max(prices) if prices else None,
     ))

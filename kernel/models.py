@@ -46,6 +46,7 @@ class SearchItem(BaseModel):
     jump_url: str | None = None
     pic_url: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+    schedule: Schedule | None = None    # 航班/火车深层结构；平铺路径恒 None
 
 
 class ItemPage(BaseModel):
@@ -110,6 +111,16 @@ class BudgetItem(BaseModel):
     people: int = 1
     priced_at: str = ""
     source_ref: str = ""
+
+
+class Schedule(BaseModel):
+    """航班/火车班次结构（深层解析产物；酒店/POI 为 None）。"""
+
+    dep_time: str = ""                  # "08:30"
+    arr_time: str = ""                  # "10:05"
+    duration_minutes: int | None = None # 全程分钟数（缺省未知）
+    stops: int = 0                      # 中转/经停次数（segments-1）
+    cabin: str = ""                     # 舱位/席别
 
 
 class BudgetBreakdown(BaseModel):

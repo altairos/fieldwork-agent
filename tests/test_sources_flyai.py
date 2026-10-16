@@ -1,5 +1,10 @@
 """kernel/sources/flyai — 8 原子搜索原语与结果归一化（全部基于 mock，不联网不起子进程）。"""
+import json
+from pathlib import Path
+
+import fieldwork_agent.kernel.sources.flyai as flyai_module
 import pytest
+from fieldwork_agent.kernel.models import Schedule
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient, normalize_items, parse_price
 
 # ---------------------------------------------------------------- 价格归一化
@@ -154,3 +159,29 @@ def test_run_command_no_key_passes_env_none(monkeypatch):
     client = flyai_mod.FlyAIClient(api_key="")
     client._run_command(["ping"])
     assert captured["env"] is None
+
+# ── journeys 深层解析（spec §3.2）──────────────────────────────
+_FIXTURE = Path(__file__).parent / "fixtures" / "flyai_responses" / "flight_journeys.json"
+
+
+def test_journeys_shape_normalized():
+    payload = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    env = flyai_module._page_envelope(payload)
+    assert env.ok and env.data.total == 2
+    first, second = env.data.items
+    # name = 承运 班次 起飞-到达；直飞一段
+    assert first.name == "东方航空 MU5703 08:30-10:05"
+    assert first.price == 620.0
+    assert first.schedule == Schedule(dep_time="08:30", arr_time="10:05",
+                                      duration_minutes=95, stops=0, cabin="经济舱")
+    # 中转：segments 拼接，stops=1，取末段到达
+    assert second.name == "祥鹏航空 8L9751 14:10-18:10"
+    assert second.schedule is not None and second.schedule.stops == 1
+
+
+def test_itemlist_path_schedule_none():
+    """平铺路径行为不变：schedule 为 None（酒店/POI 消费者不受影响）。"""
+    env = flyai_module._page_envelope(
+        {"status": 0, "data": {"itemList": [{"name": "古城民宿", "price": "¥150"}]}})
+    assert env.ok and env.data.items[0].schedule is None
+    assert env.data.items[0].name == "古城民宿"
