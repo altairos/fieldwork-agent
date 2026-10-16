@@ -893,8 +893,7 @@ git commit -m "feat(web): 下载 URL 支持格式参数 + mock 三格式分支�
 创建 `web/tests/myCard.spec.tsx`（注意：「百炼 API Key（必填）」标签含嵌套徽标 span，getByText 会多匹配——改用 getByPlaceholderText("sk-…") 断言密钥输入存在）：
 
 ```tsx
-import { cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as rest from "../src/api/rest";
 import { MyCard } from "../src/components/settings/MyCard";
@@ -944,11 +943,10 @@ describe("MyCard（「我的」卡）", () => {
     expect(txt).toHaveAttribute("aria-pressed", "false");
   });
 
-  test("点击 docx chip：store 与 localStorage 同步更新，选中态反转", async () => {
-    const user = userEvent.setup();
+  test("点击 docx chip：store 与 localStorage 同步更新，选中态反转", () => {
     render(<MyCard />);
     const docx = screen.getByRole("button", { name: "Word 文档（.docx）" });
-    await user.click(docx);
+    fireEvent.click(docx);
     expect(useExportFormatStore.getState().format).toBe("docx");
     expect(localStorage.getItem(EXPORT_FORMAT_STORAGE_KEY)).toBe("docx");
     expect(docx).toHaveAttribute("aria-pressed", "true");
@@ -960,7 +958,7 @@ describe("MyCard（「我的」卡）", () => {
 });
 ```
 
-已核正（现状与计划的差异已并入上方代码块）：`useThemeStore` 导出名/路径无误（`web/src/stores/theme.ts`，`theme: ThemeId` 含 "cinnabar"）；settingsStatus/health mock 形状与 rest.ts 实际接口及 routes.spec.tsx 既有打法一致（`dashscope_configured`/`flyai_configured`、`status`/`auth_required`）；节标题按项目惯例用 div 非heading（MyCard/ApiKeySection 实现均为 div），测试用 `getByText`；`import * as rest` namespace 形式与 routes.spec.tsx 既有风格一致。ThemeSwitcher 触发按钮 aria-label 确为「切换界面配色」（ThemeSwitcher.tsx L45）。routes.spec.tsx 的 ProjectHub 用例只断言项目列表/空状态，不受本任务改动影响（其 settingsStatus/health mock 仅为防崩）。
+已核正（现状与计划的差异已并入上方代码块）：`useThemeStore` 导出名/路径无误（`web/src/stores/theme.ts`，`theme: ThemeId` 含 "cinnabar"）；settingsStatus/health mock 形状与 rest.ts 实际接口及 routes.spec.tsx 既有打法一致（`dashscope_configured`/`flyai_configured`、`status`/`auth_required`）；节标题按项目惯例用 div 非heading（MyCard/ApiKeySection 实现均为 div），测试用 `getByText`；`import * as rest` namespace 形式与 routes.spec.tsx 既有风格一致。ThemeSwitcher 触发按钮 aria-label 确为「切换界面配色」（ThemeSwitcher.tsx L45）。routes.spec.tsx 的 ProjectHub 用例只断言项目列表/空状态，不受本任务改动影响（其 settingsStatus/health mock 仅为防崩）。第三用例用 `fireEvent`——项目既有 6 个 spec 全用 fireEvent、`@testing-library/user-event` 未安装（Task 5 实现中裁决，计划同步修正）。
 
 - [ ] **Step 2: 跑测试验证失败**
 
