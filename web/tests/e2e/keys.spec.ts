@@ -45,7 +45,7 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   // ② 首页密钥卡：保存 key → 徽标翻转「浏览器已存」
   await page.goto("/");
   await expect(page.getByText("API 密钥", { exact: true })).toBeVisible();
-  // 两个 password 输入按顺序：百炼（必填）→ 飞猪（可选）
+  // password 输入按顺序：百炼（必填）→ 访问令牌（飞猪 Key 已收进高级选项，默认隐藏）
   await page.locator('input[type="password"]').first().fill("sk-e2e-dashscope");
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByText("浏览器已存").first()).toBeVisible();
