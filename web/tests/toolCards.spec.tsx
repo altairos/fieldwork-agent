@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
-import { describe, expect, test } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, test, vi } from "vitest";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { getToolCard, toolCardRegistry, type ToolCardProps } from "../src/components/cards/registry";
 import { HotelCard } from "../src/components/cards/HotelCard";
 import { BudgetCard } from "../src/components/cards/BudgetCard";
@@ -12,6 +12,8 @@ import { TrainCard } from "../src/components/cards/TrainCard";
 import { ItineraryCard } from "../src/components/cards/ItineraryCard";
 import { InformantCard } from "../src/components/cards/InformantCard";
 import { ProposalCard } from "../src/components/cards/ProposalCard";
+import { saveKeys } from "../src/lib/keys";
+import { useExportFormatStore } from "../src/stores/exportFormat";
 
 describe("registry", () => {
   test("已知工具映射到卡片", () => {
@@ -59,12 +61,13 @@ describe("BudgetCard coverage", () => {
 // ──────────────────────────────────────────────────────────────────────────
 // 补充断言：注册表 key 必须与内核 registry 注册名全等（不臆造、不漏映射）。
 // 名单取自实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py +
-// kernel/sources/flyai.py + kernel/aggregation/* + kernel/documents/*，13 项），
+// kernel/sources/flyai.py + kernel/aggregation/* + kernel/documents/*，14 项），
 // 与 mcp_server/mapping.py TOOL_GROUPS 的键集一致。
 // ──────────────────────────────────────────────────────────────────────────
 const KERNEL_TOOLS = [
   "profile_field_site",
   "compose_itinerary",
+  "analyze_fieldwork_window",
   "compose_proposal",
   "compose_interview_guide",
   "suggest_informants",
@@ -79,7 +82,7 @@ const KERNEL_TOOLS = [
 ];
 
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 内核 13 能力名（无臆造 key）", () => {
+  test("注册表键集 = 内核 14 能力名（无臆造 key）", () => {
     expect(Object.keys(toolCardRegistry).sort()).toEqual([...KERNEL_TOOLS].sort());
   });
   test("每个内核工具都命中专属卡片（不落 Fallback）", () => {
@@ -167,7 +170,8 @@ describe("其余卡片", () => {
       requested_mode: "kaiti", mode: "global", inputs_hash: "abc",
     }} />);
     expect(screen.getByText("draft")).toBeInTheDocument();
-    expect(screen.getByText(/kaiti/)).toBeInTheDocument();
+    expect(screen.getByText(/开题报告/)).toBeInTheDocument();
+    expect(screen.getByText(/英美式八章/)).toBeInTheDocument();
     expect(screen.getByText("研究定位")).toBeInTheDocument();
   });
   test("data 为 null（工具失败）时各卡不抛错", () => {
@@ -178,5 +182,66 @@ describe("其余卡片", () => {
     for (const C of cards) {
       expect(() => render(<C data={null} degraded="flyai_unavailable" />)).not.toThrow();
     }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// 终审#1：ProposalCard 下载锚点必须 preventDefault 后走 fetch + authHeaders()
+// （/projects 前缀受 F02 令牌保护，静态锚点导航带不了 X-App-Token，必 401）。
+// ──────────────────────────────────────────────────────────────────────────
+describe("ProposalCard 下载入口（终审#1）", () => {
+  test("点击下载走 fetch 注入 X-App-Token，blob → objectURL 临时链", async () => {
+    localStorage.clear();
+    useExportFormatStore.setState({ format: "md" });
+    saveKeys("", "", "tok-7"); // authHeaders() 在点击时读取：新存令牌即时生效
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return { ok: true, blob: async () => new Blob(["# 研究方案"]) } as unknown as Response;
+    }));
+    // jsdom 未实现 createObjectURL/revokeObjectURL，注入可断言替身
+    const createObjectURL = vi.fn(() => "blob:card-md");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, configurable: true, writable: true });
+
+    render(<ProposalCard data={{ markdown: "# 研究方案\n", kind: "proposal", version: "draft", sections: ["研究定位"] }} projectId="pc1" />);
+    fireEvent.click(screen.getByRole("link", { name: /下载 \.md/ }));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(calls[0][0]).toBe("/projects/pc1/proposal/download");
+    expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-7" });
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:card-md");
+    vi.unstubAllGlobals();
+  });
+
+  test("偏好 docx 时：链接文案与 href 追加 ?format=docx", async () => {
+    localStorage.clear();
+    saveKeys("", "", "tok-7");
+    useExportFormatStore.setState({ format: "docx" });
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return { ok: true, blob: async () => new Blob(["# 研究方案"]) } as unknown as Response;
+    }));
+    // jsdom 未实现 createObjectURL/revokeObjectURL，注入可断言替身
+    const createObjectURL = vi.fn(() => "blob:card-docx");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, configurable: true, writable: true });
+
+    render(<ProposalCard data={{ markdown: "# 研究方案\n", kind: "proposal", version: "draft", sections: ["研究定位"] }} projectId="pc1" />);
+    const link = screen.getByRole("link", { name: /下载 \.docx/ });
+    expect(link).toHaveAttribute("href", "/projects/pc1/proposal/download?format=docx");
+    fireEvent.click(link);
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(calls[0][0]).toBe("/projects/pc1/proposal/download?format=docx");
+    expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-7" });
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:card-docx");
+    useExportFormatStore.setState({ format: "md" });
+    vi.unstubAllGlobals();
   });
 });

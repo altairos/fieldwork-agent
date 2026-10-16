@@ -1,0 +1,34 @@
+{
+  "status": 0,
+  "data": {
+    "journeys": [
+      {
+        "ticketPrice": "¥620",
+        "duration": 95,
+        "cabinClass": "经济舱",
+        "segments": [
+          {
+            "airlineName": "东方航空", "flightNo": "MU5703",
+            "depTime": "08:30", "arrTime": "10:05",
+            "depAirport": "昆明长水", "arrAirport": "西昌青山"
+          }
+        ]
+      },
+      {
+        "ticketPrice": "¥980",
+        "duration": 240,
+        "cabinClass": "经济舱",
+        "segments": [
+          {
+            "airlineName": "祥鹏航空", "flightNo": "8L9751",
+            "depTime": "14:10", "arrTime": "15:35"
+          },
+          {
+            "airlineName": "祥鹏航空", "flightNo": "8L9752",
+            "depTime": "16:20", "arrTime": "18:10"
+          }
+        ]
+      }
+    ]
+  }
+}

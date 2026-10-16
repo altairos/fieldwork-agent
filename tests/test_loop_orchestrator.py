@@ -174,6 +174,38 @@ def test_orchestrator_dispatch_search_stub_injects_flyai(fake_config, fake_flyai
     assert kwargs["dest_name"] == "大理"
 
 
+# ------------------------------------- dispatch 完备性（final-review Fix-1 钉子）
+
+
+def test_capability_dispatch_covers_all_registered_tools():
+    """钉子：_CAPABILITY_DISPATCH 键集与 registry 能力面全等。
+
+    ``_build_tools`` 广告 build_tool_schemas() 全部能力，dispatch 表缺键会让
+    CLI 会话中 LLM 的调用落到 unknown_tool（终审 Major-1 的缺口形态）。
+    """
+    from fieldwork_agent.core.orchestrator import _CAPABILITY_DISPATCH
+    from fieldwork_agent.kernel.registry import capabilities
+
+    assert set(_CAPABILITY_DISPATCH) == set(capabilities())
+
+
+def test_orchestrator_dispatch_analyze_window_combo_injection(fake_config, fake_flyai,
+                                                               fake_llm):
+    """analyze_fieldwork_window 需 client+llm 双注入：修复前不在 dispatch 表（unknown_tool），
+    钉住组合注入 ``("client", "llm")`` 派发成功。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    agent.flyai = fake_flyai
+    agent.llm = fake_llm([{"content": "[]", "tool_calls": None, "finish_reason": "stop"}])
+
+    env = agent.client_kernel_dispatch("analyze_fieldwork_window", {
+        "departure": "昆明", "destination": "西昌",
+        "range_start": "2026-07-01", "range_end": "2026-07-15",
+        "duration_days": 3, "budget_total": 5000.0, "sample_step": 7})
+    assert env.ok is True, getattr(env, "error", None)
+
+
 def test_orchestrator_profile_event_persists_field_site(fake_config, fake_flyai, fake_llm):
     """profile_field_site 成功后轮末落盘为 field_site（未确认），供后续 B→C 判定。"""
     from fieldwork_agent.core.orchestrator import FieldAgent
@@ -284,7 +316,7 @@ def test_acceptance_smoke_no_key(fake_config):
     assert ctx["scale"] == "单人调研"
     filled = {k for k, v in ctx.items() if k != "extras" and str(v).strip()}
     assert filled <= set(ResearchContext.model_fields), "采集项必须是研究上下文槽位"
-    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == {"discipline", "scale"}
+    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == {"discipline", "scale", "budget"}
     assert state["phase"] in PHASES
     assert out["phase"] == state["phase"] == PHASE_RESEARCH_POSITIONING
     assert out["phase_transition"] is None
@@ -297,7 +329,7 @@ def test_acceptance_smoke_no_key(fake_config):
     agent.repo.save_field_site(pid, {
         "name": "大理喜洲", "confirmed": True,
         "profile": {"location": "大理喜洲", "generated_at": "2026-10-14T00:00:00"}})
-    agent.repo.save_informant(pid, {"code": "INF-01", "type": "长老",
+    agent.repo.save_informant(pid, {"code": "INF-01", "type": "村干部",
                                     "relation": "待经村干部引荐"})
     agent.repo.cache_search(pid, "itinerary::大理", "compose_itinerary", {
         "departure": "北京", "destinations": ["大理"],

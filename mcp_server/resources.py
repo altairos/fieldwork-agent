@@ -10,12 +10,8 @@ import inspect
 from typing import Any
 
 from fieldwork_agent.kernel.documents.proposal import PROPOSAL_SECTIONS
+from fieldwork_agent.kernel.guidance import informants as informant_lib
 from fieldwork_agent.kernel.guidance import phases
-from fieldwork_agent.kernel.guidance.informants import (
-    INFORMANT_EXAMPLES,
-    INTERVIEW_GUIDE_METHODOLOGY,
-    get_informant,
-)
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 from fieldwork_agent.mcp_server.state_tools import guard_project_id
 from mcp.types import Resource
@@ -62,13 +58,39 @@ def _render_checklist(phase: str) -> str:
     return "\n".join(lines)
 
 
-def _informant_body(entry: dict) -> list[str]:
-    """访谈对象词条正文（六字段 + 示例提问）：类型库与单词条资源共用（终审⑩）。
-
-    只产正文行、不含标题——两处标题层级不同（``##`` / ``#``）由调用方自持；
-    提取前两份渲染逐行重复 ~12 行，改一处漏一处的漂移风险由本 helper 消除。
-    """
+def _render_informants_library() -> str:
+    """渲染 guidance/informants/library：全量示范词条 markdown。"""
     lines = [
+        "# 访谈对象类型库（示范词条）",
+        "",
+        "> 以下为参考起点，非枚举白名单。实际访谈对象应根据研究主题动态生成。",
+        "",
+    ]
+    for key, archive in informant_lib.INFORMANT_EXAMPLES.items():
+        lines.append(f"## {key}")
+        lines.append("")
+        lines.append(f"**接近策略：** {archive['approach']}")
+        lines.append(f"**注意事项：** {archive['cautions']}")
+        lines.append(f"**提问域：** {', '.join(archive['question_domains'])}")
+        lines.append(f"**伦理提示：** {archive['ethics']}")
+        lines.append(f"**进入途径：** {archive['access_channel']}")
+        lines.append(f"**行前保障：** {archive['preparation']}")
+        lines.append("")
+        lines.append("示例提问：")
+        for ex in archive.get("examples", []):
+            lines.append(f"  - {ex}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_informant_entry(informant_type: str) -> str:
+    """渲染 guidance/informants/{type}：单词条完整档案。"""
+    entry = informant_lib.get_informant(informant_type)
+    if entry is None:
+        return f"# {informant_type}\n\n（未收录）"
+    lines = [
+        f"# {entry.get('name', informant_type)}",
+        "",
         f"**接近策略：** {entry['approach']}",
         f"**注意事项：** {entry['cautions']}",
         f"**提问域：** {', '.join(entry['question_domains'])}",
@@ -80,38 +102,12 @@ def _informant_body(entry: dict) -> list[str]:
     ]
     for ex in entry.get("examples", []):
         lines.append(f"  - {ex}")
-    return lines
-
-
-def _render_informants_library() -> str:
-    """渲染 guidance/informants/library：全量示范词条 markdown。"""
-    lines = [
-        "# 访谈对象类型库（示范词条）",
-        "",
-        "> 以下为参考起点，非枚举白名单。实际访谈对象应根据研究主题动态生成。",
-        "",
-    ]
-    for key, archive in INFORMANT_EXAMPLES.items():
-        lines.append(f"## {key}")
-        lines.append("")
-        lines.extend(_informant_body(archive))
-        lines.append("")
-    return "\n".join(lines)
-
-
-def _render_informant_entry(informant_type: str) -> str:
-    """渲染 guidance/informants/{type}：单词条完整档案。"""
-    entry = get_informant(informant_type)
-    if entry is None:
-        return f"# {informant_type}\n\n（未收录）"
-    lines = [f"# {entry['name']}", ""]
-    lines.extend(_informant_body(entry))
     return "\n".join(lines)
 
 
 def _render_methodology() -> str:
     """渲染 guidance/interview-guide/methodology：原文直出。"""
-    return INTERVIEW_GUIDE_METHODOLOGY
+    return informant_lib.INTERVIEW_GUIDE_METHODOLOGY
 
 
 def _render_proposal_outline() -> str:
@@ -196,7 +192,7 @@ def _build_static_resources() -> list[Resource]:
         mimeType="text/markdown",
     ))
     # 5. guidance/informants/{type} ×N
-    for key in INFORMANT_EXAMPLES:
+    for key in informant_lib.INFORMANT_EXAMPLES:
         items.append(Resource(
             uri=f"fieldwork://guidance/informants/{key}",
             name=f"访谈对象：{key}",
@@ -205,7 +201,7 @@ def _build_static_resources() -> list[Resource]:
     # 6. guidance/interview-guide/methodology
     items.append(Resource(
         uri="fieldwork://guidance/interview-guide/methodology",
-        name="半结构式访谈方法论",
+        name="访谈方法论",
         mimeType="text/markdown",
     ))
     # 7. templates/proposal-outline

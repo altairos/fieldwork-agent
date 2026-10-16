@@ -281,3 +281,27 @@ def test_default_client_self_built(monkeypatch):
 def test_generated_at_present():
     env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000, client=StubClient())
     assert env.data.generated_at
+
+
+# ────────────────────────────────────────────────────────────────
+# M3 证据链（Task 11）：预算条目 source_ref 回链快照
+# ────────────────────────────────────────────────────────────────
+
+
+def test_budget_source_ref_links_snapshot():
+    """注入 snapshot_refs 后，交通/住宿预算条目 source_ref 携带快照回链（M3 §5.1）。"""
+    refs = {"大理": "flyai 快照 srch_abc123（2026-10-16 查询）"}
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
+                            client=StubClient(), snapshot_refs=refs)
+    by_name = {i.name: i for i in env.data.budget.items}
+    assert "srch_abc123" in by_name["交通（昆明→大理）"].source_ref
+    assert "srch_abc123" in by_name["住宿（大理）"].source_ref
+
+
+def test_budget_source_ref_falls_back_without_snapshot():
+    """未注入 snapshot_refs（MCP/CLI 宿主）：source_ref 退回实时报价口径，行为不变。"""
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, client=StubClient())
+    by_name = {i.name: i for i in env.data.budget.items}
+    # StubClient 交通最低价为 G29（350 元），住宿为民宿（150 元）
+    assert by_name["交通（昆明→大理）"].source_ref == "G29（flyai 实时报价）"
+    assert by_name["住宿（大理）"].source_ref == "民宿（flyai 实时报价）"

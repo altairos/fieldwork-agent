@@ -31,7 +31,8 @@ def app(fake_dist, fake_config, tmp_path):
 def test_api_routes_take_priority(app):
     """挂载静态后 /health 与 /projects 仍走 API（不被 catch-all 遮蔽）。"""
     with TestClient(app) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        # F02 后 /health 另含 auth_required 键，此处只关心走 API 而非静态
+        assert client.get("/health").json()["status"] == "ok"
         # /projects 是 API（返回列表），不是 index.html
         resp = client.get("/projects")
         assert resp.headers["content-type"].startswith("application/json")
@@ -116,6 +117,6 @@ def test_no_dist_skips_mount(fake_config, tmp_path):
     repo = JsonRepository(projects_dir=tmp_path / "projects")
     _app = create_app(config=fake_config, repo=repo, web_dist=tmp_path / "nonexistent")
     with TestClient(_app) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/health").json()["status"] == "ok"
         # 无静态挂载时根路径无 catch-all → 404（不是 500 崩溃）
         assert client.get("/").status_code == 404

@@ -1,9 +1,13 @@
+import { useEffect, useState } from "react";
 import { Badge } from "../ui/Badge";
 import { ProgressBar } from "../ui/ProgressBar";
 import { IconSpark } from "../ui/icons";
 import { DEFAULT_PHASES } from "../layout/LeftRail";
 import { useProjectStore } from "../../stores/project";
 import { useUiStore } from "../../stores/ui";
+import { rest } from "../../api/rest";
+import { strOf } from "../cards/data";
+import type { ProjectSnapshot } from "../../types/models";
 
 /**
  * ProgressPanel — 右栏「进度」面板（阶段状态投影）。
@@ -97,6 +101,133 @@ export function ProgressPanel() {
           ))}
         </ul>
       )}
+      <div className="rule my-4" />
+      <ResearchContextEditor snapshot={snapshot} />
+    </div>
+  );
+}
+
+/** 可编辑研究信息槽位（= ALLOWED_CONTEXT_FIELDS 的 10 个文本键；NA 布尔单独处理）。 */
+const EDIT_FIELDS: { key: string; label: string }[] = [
+  { key: "discipline", label: "学科背景" },
+  { key: "topic", label: "研究主题" },
+  { key: "site_status", label: "身份/在场方式" },
+  { key: "scale", label: "规模" },
+  { key: "budget", label: "预算" },
+  { key: "time_window", label: "时间窗" },
+  { key: "departure_city", label: "出发城市" },
+  { key: "target_location", label: "目标地点" },
+  { key: "travel_date", label: "出行日期" },
+  { key: "purpose", label: "输出用途" },
+];
+
+/** 研究信息编辑区：用户显式修正入口（审计 F03 修正入口右栏编辑；与回合内规则抽取互补）。 */
+function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null }) {
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [na, setNa] = useState(false);
+  const [naReason, setNaReason] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedHint, setSavedHint] = useState<string | null>(null);
+
+  // 快照异步到达/外部刷新时同步草稿；用户编辑中（dirty）不覆盖，保存成功后复位
+  useEffect(() => {
+    if (dirty) return;
+    const ctx = (snapshot?.research_context ?? {}) as Record<string, unknown>;
+    const next: Record<string, string> = {};
+    for (const f of EDIT_FIELDS) next[f.key] = strOf(ctx[f.key]);
+    setDraft(next);
+    setNa(ctx.interviews_not_applicable === true);
+    setNaReason(strOf(ctx.interviews_na_reason));
+  }, [snapshot, dirty]);
+
+  const save = async () => {
+    const pid = snapshot?.project_id;
+    if (!pid || saving) return;
+    const patch: Record<string, string | boolean> = {};
+    for (const f of EDIT_FIELDS) {
+      const v = (draft[f.key] ?? "").trim();
+      if (v !== "") patch[f.key] = v; // 空字段不上行（PUT 空白字段无意义且会被后端清空语义误读）
+    }
+    if (na) {
+      patch.interviews_not_applicable = true;
+      if (naReason.trim() !== "") patch.interviews_na_reason = naReason.trim();
+    }
+    if (Object.keys(patch).length === 0) {
+      setError("未填写任何要修正的字段（空字段不覆盖已有值）");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await rest.updateResearchContext(pid, patch);
+      const snap2 = await rest.getProject(pid);
+      useProjectStore.getState().loadSnapshot(snap2);
+      setDirty(false);
+      setSavedHint(snap2.proposal_confirmation_stale
+        ? "已保存；此前的方案确认已因研究信息变更失效"
+        : "已保存");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="hairline rounded-lg bg-card p-3">
+      <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">研究信息（可修正）</div>
+      {snapshot?.proposal_confirmation_stale === true && (
+        <div className="text-[11px] text-ochre mb-2">
+          方案确认已因研究信息变更失效，请在「方案」页重新确认。
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        {EDIT_FIELDS.map((f) => (
+          <label key={f.key} className="block min-w-0">
+            <span className="text-[10px] text-inkfaint">{f.label}</span>
+            <input
+              aria-label={f.label}
+              value={draft[f.key] ?? ""}
+              onChange={(e) => {
+                setDraft({ ...draft, [f.key]: e.target.value });
+                setDirty(true);
+              }}
+              className="w-full mt-0.5 text-[12px] bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar"
+            />
+          </label>
+        ))}
+      </div>
+      <label className="flex items-center gap-2 mt-2 text-[12px] text-inksoft">
+        <input
+          type="checkbox"
+          checked={na}
+          onChange={(e) => { setNa(e.target.checked); setDirty(true); }}
+        />
+        本研究不适用访谈对象（非访谈型研究）
+      </label>
+      {na && (
+        <input
+          aria-label="不适用原因"
+          placeholder="不适用原因（可选，呈现于访谈对象面板）"
+          value={naReason}
+          onChange={(e) => { setNaReason(e.target.value); setDirty(true); }}
+          className="w-full mt-1.5 text-[12px] bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar"
+        />
+      )}
+      <div className="flex items-center gap-2 mt-2">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={save}
+          className="text-[11.5px] text-cinnabar hairline rounded-md px-2.5 py-1 hover:bg-cardsunk disabled:opacity-50"
+        >
+          {saving ? "保存中…" : "保存修正"}
+        </button>
+        {savedHint && !error && <span className="text-[11px] text-bamboo">{savedHint}</span>}
+        {error && <span className="text-[11px] text-ochre">{error}</span>}
+      </div>
     </div>
   );
 }

@@ -10,7 +10,11 @@
  * - GET /projects、POST /projects、GET /projects/:id、GET /projects/:id/proposal
  *   → 固定假数据（够前端联调即可）
  * - GET /projects/:id/proposals            → 版本列表（Task 8 rest.listProposals 消费）
- * - GET /projects/:id/proposal/download    → text/markdown 附件（L4 下载断言）
+ * - GET  /projects/:id/proposal/download    → 三格式附件（?format=md|docx|txt，默认 md）
+ * - GET  /settings/status                    → key 配置状态（web_host/api/settings.py 同构；
+ *   默认 configured:true 建模阿里云部署形态）；POST /__test/settings 供 e2e 翻转
+ * - POST /projects/:id/messages 带 403 门（服务端未配且无 X-DashScope-Key 头 → llm_key_required，
+ *   web_host/api/turns.py::_resolve_clients 同构）
  *
  * 运行：npm run mock（tsx mock/sseServer.ts），端口取 env MOCK_PORT，默认 8301；
  * e2e 用 MOCK_PORT=8300 匹配 vite proxy（playwright.config.ts webServer）。
@@ -106,7 +110,7 @@ export function parseLastEventId(raw: string | string[] | undefined): number {
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID",
+  "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID, X-DashScope-Key, X-FlyAI-Key",
 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -214,6 +218,15 @@ function streamTurn(res: ServerResponse, req: IncomingMessage, turnId: string, f
   req.on("close", () => clearInterval(timer));
 }
 
+// ---------------------------------------------------------------- key 配置状态（e2e 可翻转）
+
+/** 模拟阿里云部署形态：服务端环境变量已配 key（GET /settings/status 消费）。
+ *  e2e 用 POST /__test/settings 翻转后须恢复，不污染同进程后续用例。 */
+let settingsState: { dashscope_configured: boolean; flyai_configured: boolean } = {
+  dashscope_configured: true,
+  flyai_configured: true,
+};
+
 // ---------------------------------------------------------------- 路由
 
 const RE_MESSAGES = /^\/projects\/([^/]+)\/messages$/;
@@ -221,12 +234,14 @@ const RE_EVENTS = /^\/projects\/([^/]+)\/turns\/([^/]+)\/events$/;
 const RE_CANCEL = /^\/projects\/([^/]+)\/turns\/([^/]+)\/cancel$/;
 const RE_PROPOSALS = /^\/projects\/([^/]+)\/proposals$/;
 const RE_DOWNLOAD = /^\/projects\/([^/]+)\/proposal\/download$/;
+const RE_BY_ID_DOWNLOAD = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/download$/;
 const RE_PROPOSAL = /^\/projects\/([^/]+)\/proposal$/;
 const RE_PROJECT = /^\/projects\/([^/]+)$/;
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDelayMs: number): Promise<void> {
   const method = req.method ?? "GET";
-  const path = new URL(req.url ?? "/", `http://localhost:${PORT}`).pathname;
+  const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+  const path = url.pathname;
 
   if (method === "OPTIONS") {
     res.writeHead(204, CORS_HEADERS);
@@ -236,8 +251,38 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
 
   let m: RegExpMatchArray | null;
 
+  // GET /settings/status → key 配置状态（只回布尔不回明文）
+  if (method === "GET" && path === "/settings/status") {
+    sendJson(res, 200, settingsState);
+    return;
+  }
+
+  // POST /__test/settings → 翻转配置状态（仅 e2e 用；body 部分覆盖）
+  if (method === "POST" && path === "/__test/settings") {
+    let body: Record<string, unknown> = {};
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      body = {};
+    }
+    settingsState = { ...settingsState, ...body };
+    sendJson(res, 200, settingsState);
+    return;
+  }
+
   if (method === "POST" && (m = RE_MESSAGES.exec(path))) {
     await readBody(req); // 请求体 {text, idempotency_key?} 对 mock 无实际作用
+    // 403 门（同构 turns.py::_resolve_clients）：服务端未配且请求头未带页面 key
+    const pageKey = String(req.headers["x-dashscope-key"] ?? "").trim();
+    if (!settingsState.dashscope_configured && !pageKey) {
+      sendJson(res, 403, {
+        detail: {
+          code: "llm_key_required",
+          message: "未配置百炼 API Key：请在首页「API 密钥」卡填写并保存",
+        },
+      });
+      return;
+    }
     const projectId = decodeURIComponent(m[1]);
     const turnId = newTurnId();
     turns.set(turnId, { projectId, frames: buildScript(turnId), status: "running" });
@@ -274,10 +319,63 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     return;
   }
 
-  // GET /projects/:id/proposal/download → text/markdown 附件。
+  // GET /projects/:id/proposal/download → 三格式附件（?format=md|docx|txt，默认 md）。
   // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
+  // mock 职责边界：只复刻后端的状态码/响应头/文件名形状（docx 返回 PK 魔数、txt 轻量去标记），不引入 python-docx 逻辑。
   if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
     const doc = fakeProposal();
+    const format = url.searchParams.get("format") ?? "md";
+    if (format === "docx") {
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
+      res.end(Buffer.from("PK\u0003\u0004mock docx"));
+      return;
+    }
+    if (format === "txt") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
+      res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="proposal.md"`,
+      ...CORS_HEADERS,
+    });
+    res.end(doc.markdown);
+    return;
+  }
+
+  // GET /projects/:id/proposals/:docId/download → 三格式附件（by-id 端点，ProposalView 主入口）。
+  if (method === "GET" && (m = RE_BY_ID_DOWNLOAD.exec(path))) {
+    const doc = fakeProposal();
+    const format = url.searchParams.get("format") ?? "md";
+    if (format === "docx") {
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
+      res.end(Buffer.from("PK\u0003\u0004mock docx"));
+      return;
+    }
+    if (format === "txt") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
+      res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/markdown; charset=utf-8",
       "Content-Disposition": `attachment; filename="proposal.md"`,

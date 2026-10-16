@@ -13,6 +13,7 @@
 import re
 from typing import Any
 
+from fieldwork_agent.kernel import assets
 from fieldwork_agent.kernel.guidance import informants, phases
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -129,7 +130,7 @@ def _bullets_informants(items: list[dict]) -> list[str]:
         lines.append(head)
         entry = informants.get_informant(itype) if itype else None
         if entry:
-            lines.append(f"  - 展示名：{entry['name']}")
+            lines.append(f"  - 展示名：{entry.get('name', itype)}")
             lines.append(f"  - 接近策略：{entry['approach']}")
             lines.append("  - 提问域：" + "、".join(entry["question_domains"]))
             lines.append(f"  - 注意事项：{entry['cautions']}")
@@ -139,6 +140,16 @@ def _bullets_informants(items: list[dict]) -> list[str]:
         if it.get("notes"):
             lines.append(f"  - 备注：{it['notes']}")
     return lines or ["- （暂无访谈对象）"]
+
+
+def _informants_bullets(items: list[dict], ctx: ResearchContext) -> list[str]:
+    """访谈对象 bullets（审计 F12）：非访谈研究豁免空候选，其余沿用既有渲染。"""
+    if items:
+        return _bullets_informants(items)
+    if getattr(ctx, "interviews_not_applicable", False):
+        reason = getattr(ctx, "interviews_na_reason", "") or "研究者已声明本研究不适用访谈方法"
+        return [f"- 不适用访谈方法：{reason}"]
+    return _bullets_informants(items)  # 空且未声明 NA → 既有占位（raise 由调用方把关）
 
 
 def _bullets_knowledge(items: list[dict]) -> list[str]:
@@ -168,7 +179,7 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         raise ValueError("缺少渠道: 田野点")
     if itinerary is None or (isinstance(itinerary, dict) and len(itinerary) == 0):
         raise ValueError("缺少渠道: 行程")
-    if not informants:
+    if not informants and not getattr(ctx, "interviews_not_applicable", False):
         raise ValueError("缺少渠道: 访谈对象")
 
     def _section(title: str, bullets: list[str]) -> str:
@@ -178,7 +189,7 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         _section("研究者信息", _bullets_researcher(ctx)),
         _section("田野点", _bullets_sites(sites)),
         _section("行程", _bullets_itinerary(itinerary)),
-        _section("访谈对象", _bullets_informants(informants)),
+        _section("访谈对象", _informants_bullets(informants, ctx)),
     ]
     kb = _bullets_knowledge(knowledge)
     if kb:
@@ -204,7 +215,7 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
     bodies: list[list[str]] = [
         _bullets_researcher(ctx),
         _bullets_sites(sites),
-        _bullets_informants(informant_items),
+        _informants_bullets(informant_items, ctx),
         _bullets_itinerary(itinerary),
         [
             f"- 预算：{ctx.budget or '待补充'}",
@@ -319,11 +330,11 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
     )
 
 
-def _entry_block(entry: dict | None) -> str:
+def _entry_block(entry: dict | None, itype: str = "") -> str:
     if not entry:
         return "（该类型未收录于访谈对象库；请按通用半结构式框架起草）"
     parts = [
-        f"展示名：{entry['name']}",
+        f"展示名：{entry.get('name', itype)}",
         f"接近策略：{entry['approach']}",
         "建议提问域：" + "、".join(entry["question_domains"]),
         f"注意事项：{entry['cautions']}",
@@ -339,7 +350,7 @@ def _guide_degrade(topic: str, itype: str) -> str:
     if not entry:
         return f"{head}\n\n{informants.INTERVIEW_GUIDE_METHODOLOGY}"
     body = "\n".join([
-        f"展示名：{entry['name']}",
+        f"展示名：{entry.get('name', itype)}",
         "",
         "## 接近策略",
         entry["approach"],
@@ -364,10 +375,9 @@ def _guide_prompt(topic: str, itype: str) -> str:
     return (
         f"研究主题：{topic}\n\n"
         f"目标报道人类型：{itype}\n\n"
-        f"该类型条目：\n{_entry_block(entry)}\n\n"
+        f"该类型条目：\n{_entry_block(entry, itype)}\n\n"
         f"{informants.INTERVIEW_GUIDE_METHODOLOGY}\n\n"
-        "请按上述方法论要点，为该类型报道人起草半结构式访谈提纲："
-        "开场—主问—追问—敏感问题处理—知情同意话术（可照读版本）—访后动作。"
+        + assets.generation_prompt("guide_instruction")
     )
 
 
@@ -379,8 +389,7 @@ def compose_interview_guide(topic: str, informant_types: list[str], *,
         content = ""
         if llm is not None:
             messages = [
-                {"role": "system",
-                 "content": "你是田野访谈提纲撰写助手，按半结构式方法论为每类报道人起草针对性提纲。"},
+                {"role": "system", "content": assets.generation_prompt("guide_system")},
                 {"role": "user", "content": _guide_prompt(topic, itype)},
             ]
             resp = llm.chat(messages, slot="interview", max_tokens=4096, temperature=0.5)
@@ -471,7 +480,7 @@ register(CapabilityMeta(
 register(CapabilityMeta(
     name="compose_interview_guide",
     description="为每类报道人（INFORMANT_LIBRARY 键）生成半结构式访谈提纲；"
-                "user prompt 固定包含 INTERVIEW_GUIDE_METHODOLOGY 与知情同意话术字样，"
+                "user prompt 固定包含访谈方法要点与知情同意说明字样，"
                 "无 llm 时走模板降级、直嵌条目字段与方法论全文。",
     fn=guide_handler,
     args_model=ComposeInterviewGuideArgs,

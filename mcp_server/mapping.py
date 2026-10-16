@@ -11,6 +11,7 @@ TOOL_GROUPS: dict[str, str] = {
                              "search_marriott_hotels", "search_marriott_packages")},
     "profile_field_site": "aggregation",
     "compose_itinerary": "aggregation",
+    "analyze_fieldwork_window": "aggregation",
     "compose_proposal": "document",
     "compose_interview_guide": "document",
     "suggest_informants": "document",

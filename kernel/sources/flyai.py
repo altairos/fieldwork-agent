@@ -15,10 +15,12 @@
   对照 spec §2.4 annotations 约定）。
 """
 import json
+import os
+import shutil
 import subprocess
 from typing import Any
 
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem, ToolError
+from fieldwork_agent.kernel.models import Envelope, ItemPage, Schedule, SearchItem, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from pydantic import BaseModel, Field
 
@@ -30,6 +32,15 @@ _JUMP_KEYS = ("jumpUrl", "detailUrl")
 _MAPPED_KEYS = frozenset(
     {*_NAME_KEYS, *_PRICE_KEYS, *_PIC_KEYS, *_JUMP_KEYS}
 )
+
+# journeys 深层解析候选键（spike 附录 A 钉死后仅改元组不改结构）
+_DEP_KEYS = ("depTime", "departureTime", "depDate")
+_ARR_KEYS = ("arrTime", "arrivalTime", "arrDate")
+_DUR_KEYS = ("duration", "durationMinutes")
+_CABIN_KEYS = ("cabinClass", "seatClassName", "cabin")
+_CARRIER_KEYS = ("airlineName", "carrier", "trainName")
+_TRAIN_NO_KEYS = ("flightNo", "trainNo", "trainNumber", "busNo")
+_TICKET_PRICE_KEYS = ("ticketPrice", "price")
 
 
 def parse_price(raw: str | None) -> float | None:
@@ -55,21 +66,58 @@ def _first(entry: dict[str, Any], keys: tuple[str, ...]) -> Any:
 
 
 def normalize_items(raw_list: list[dict]) -> list[SearchItem]:
-    """把 flyai 野生字段映射为 SearchItem；未识别的键整体收进 ``extra``。"""
+    """把 flyai 野生字段映射为 SearchItem；未识别的键整体收进 ``extra``。
+
+    keyword-search 条目为 ``{"info": {…}}`` 单键嵌套（spec 附录 A）：四组归一键在
+    顶层未命中（None/空串）时回退到 ``info`` 内查找；``info`` 本身仍整体收进 ``extra``，
+    extra 收集语义不变，flight/hotel 平铺条目零行为变化。
+    """
     items: list[SearchItem] = []
     for entry in raw_list:
         if not isinstance(entry, dict):
             continue
-        raw_price = _first(entry, _PRICE_KEYS)
+        info = entry.get("info")
+        info = info if isinstance(info, dict) else {}
+        raw_price = _first(entry, _PRICE_KEYS) or _first(info, _PRICE_KEYS)
         items.append(SearchItem(
-            name=str(_first(entry, _NAME_KEYS) or ""),
+            name=str(_first(entry, _NAME_KEYS) or _first(info, _NAME_KEYS) or ""),
             price=parse_price(raw_price),
             price_raw=raw_price if isinstance(raw_price, str) else None,
-            pic_url=_first(entry, _PIC_KEYS),
-            jump_url=_first(entry, _JUMP_KEYS),
+            pic_url=_first(entry, _PIC_KEYS) or _first(info, _PIC_KEYS),
+            jump_url=_first(entry, _JUMP_KEYS) or _first(info, _JUMP_KEYS),
             extra={k: v for k, v in entry.items() if k not in _MAPPED_KEYS},
         ))
     return items
+
+
+def _journey_item(journey: dict[str, Any]) -> SearchItem:
+    """单条 journey（segments 嵌套）归一为 SearchItem；无 segments 时 journey 本身当一段。"""
+    segs = journey.get("segments")
+    if not isinstance(segs, list) or not segs:
+        segs = [journey]
+    first, last = segs[0], segs[-1]
+    dep_time = str(_first(first, _DEP_KEYS) or "")
+    arr_time = str(_first(last, _ARR_KEYS) or "")
+    carrier = str(_first(first, _CARRIER_KEYS) or "")
+    no = str(_first(first, _TRAIN_NO_KEYS) or "")
+    duration_raw = _first(journey, _DUR_KEYS)
+    price_raw = _first(journey, _TICKET_PRICE_KEYS)
+    if price_raw is None:
+        price_raw = _first(first, _TICKET_PRICE_KEYS)
+    known = {*_DEP_KEYS, *_ARR_KEYS, *_DUR_KEYS, *_CABIN_KEYS,
+             *_CARRIER_KEYS, *_TRAIN_NO_KEYS, *_TICKET_PRICE_KEYS, "segments"}
+    return SearchItem(
+        name=f"{carrier} {no} {dep_time}-{arr_time}".strip(),
+        price=parse_price(price_raw if isinstance(price_raw, str) else None),
+        schedule=Schedule(
+            dep_time=dep_time,
+            arr_time=arr_time,
+            duration_minutes=int(duration_raw) if isinstance(duration_raw, (int, float)) else None,
+            stops=max(0, len(segs) - 1),
+            cabin=str(_first(journey, _CABIN_KEYS) or _first(first, _CABIN_KEYS) or ""),
+        ),
+        extra={k: v for k, v in journey.items() if k not in known},
+    )
 
 
 def _error_envelope(message: str) -> Envelope:
@@ -87,19 +135,53 @@ def _error_envelope(message: str) -> Envelope:
 
 
 def _page_envelope(payload: dict[str, Any]) -> Envelope:
-    """成功分支：``data.itemList`` 归一化为 ItemPage，并给出极值摘要。"""
+    """成功分支：优先展开 ``data.journeys``（航班/火车深层结构），否则 ``data.itemList`` 平铺。
+
+    payload 顶层或 ``data`` 内的 ``systemMessage``（体验模式提示）透传进 ``Envelope.degraded``。
+    """
     data = payload.get("data") or {}
-    raw_list = data.get("itemList") or []
-    if not isinstance(raw_list, list):
-        raw_list = []
-    items = normalize_items(raw_list)
+    journeys = data.get("journeys")
+    if isinstance(journeys, list) and journeys:
+        items = [_journey_item(j) for j in journeys if isinstance(j, dict)]
+        raw_total = len(journeys)
+    else:
+        raw_list = data.get("itemList") or []
+        if not isinstance(raw_list, list):
+            raw_list = []
+        items = normalize_items(raw_list)
+        raw_total = len(raw_list)
+    system_message = payload.get("systemMessage") or data.get("systemMessage")
     prices = [i.price for i in items if i.price is not None]
     return Envelope(ok=True, data=ItemPage(
         items=items,
-        total=len(raw_list),
+        total=raw_total,
         cheapest=min(prices) if prices else None,
         dearest=max(prices) if prices else None,
-    ))
+    ), degraded=str(system_message) if system_message else None)
+
+
+def _resolve_flyai_executable() -> str:
+    """解析 flyai 可执行路径（Windows 联调坑：CreateProcess 不解析 PATHEXT）。
+
+    npm 全局安装的入口是 flyai.cmd/flyai.ps1，裸名 "flyai" 直接
+    FileNotFoundError；shutil.which 按 PATHEXT 命中全路径后即可执行。
+    未命中时回落裸名，保留原 ``flyai CLI not found`` 降级链。
+    """
+    return shutil.which("flyai") or "flyai"
+
+
+def _recover_stdout_payload(stdout: str) -> dict[str, Any] | None:
+    """退出码非 0 时尝试从 stdout 恢复完整负载，恢复不了返回 None。
+
+    判据：stdout 是完整的 JSON 对象（CLI 的通信协议就是 stdout JSON）。
+    命中即以负载为准——成功负载直接采信，自报失败负载原样透传
+    （保留 ``rate limited`` 等诊断细节）；混入非 JSON 输出自然解析失败。
+    """
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 class FlyAIClient:
@@ -110,11 +192,22 @@ class FlyAIClient:
 
     def _run_command(self, args: list) -> dict[str, Any]:
         """执行 flyai 子命令，返回解析后的 JSON；任何异常都折成 ``{status:-1,error}``。"""
-        cmd = ["flyai"] + args
+        cmd = [_resolve_flyai_executable()] + args
+        # 审计 F05：页面级 key（回合级实例化）注入子进程 env——
+        # flyai CLI 解析链 env.FLYAI_API_KEY 优先级最高，注入即覆盖服务端单例配置。
+        env = {**os.environ, "FLYAI_API_KEY": self.api_key} if self.api_key else None
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # text=True 默认随 locale（Windows cp936），中文结果必乱码——显式 UTF-8
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace",
+                                    timeout=30, env=env)
             if result.returncode != 0:
-                return {"status": -1, "error": result.stderr or "command failed"}
+                # flyai CLI 1.0.16 Windows 退出阶段 libuv 断言崩溃（exit 0xC0000409），
+                # 但 stdout JSON 已完整写出——退出码不可信时按内容判定
+                recovered = _recover_stdout_payload(result.stdout)
+                if recovered is None:
+                    return {"status": -1, "error": result.stderr or "command failed"}
+                return recovered
             data = json.loads(result.stdout)
             return data
         except FileNotFoundError:
@@ -397,3 +490,31 @@ register(CapabilityMeta(
                 "是处理模糊/长尾需求的核心能力。",
     fn=search_ai, args_model=SearchAiArgs,
     read_only=True, open_world=True))
+
+
+class RecordingClient:
+    """包装任意 client、逐次记录方法调用的替身（spec §5.1 快照链捕获件）。
+
+    纯内存、不碰 repository（公理 1）：web 宿主在回合级用它包住自持
+    ``FlyAIClient``，轮末由宿主侧消费 ``calls`` 落盘为快照证据；
+    kernel 自身不持久化。记录项为
+    ``(方法名, {"args": [...], "kwargs": {...}}, 返回包络)``；
+    非可调用属性（如 ``api_key``）经 ``__getattr__`` 原样透传、不留痕。
+    """
+
+    def __init__(self, inner: Any):
+        self.inner = inner
+        self.calls: list[tuple[str, dict, Any]] = []
+
+    def __getattr__(self, name: str):
+        # inner/calls 在实例字典命中，不会进入本方法；其余属性一律问 inner
+        target = getattr(self.inner, name)
+        if not callable(target):
+            return target
+
+        def _recorded(*args: Any, **kwargs: Any) -> Any:
+            result = target(*args, **kwargs)
+            self.calls.append((name, {"args": list(args), "kwargs": dict(kwargs)}, result))
+            return result
+
+        return _recorded

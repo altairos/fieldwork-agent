@@ -107,9 +107,9 @@ class TestContract:
 
     def test_informants_and_sites(self, repo):
         repo.save_field_site("p1", {"name": "喜洲", "confirmed": True})
-        repo.save_informant("p1", {"code": "P1", "type": "长老"})
+        repo.save_informant("p1", {"code": "P1", "type": "村干部"})
         assert repo.list_field_sites("p1")[0]["confirmed"] is True
-        assert repo.list_informants("p1")[0]["type"] == "长老"
+        assert repo.list_informants("p1")[0]["type"] == "村干部"
 
     def test_record_without_id_gets_one(self, repo):
         sid = repo.save_field_site("p1", {"name": "大理"})
@@ -129,7 +129,7 @@ class TestContract:
 
     def test_cache_roundtrip(self, repo):
         cid = repo.cache_search("p1", "大理住宿", "search_hotel", {"items": [1, 2]})
-        full = repo.get_cached_search(cid)
+        full = repo.get_cached_search("p1", cid)
         assert full["query"] == "大理住宿"
         assert full["tool"] == "search_hotel"
         assert full["result"] == {"items": [1, 2]}
@@ -137,7 +137,15 @@ class TestContract:
         assert repo.list_cached_searches("p1")[0]["query"] == "大理住宿"
 
     def test_unknown_cache_id_returns_none(self, repo):
-        assert repo.get_cached_search("no_such_id") is None
+        assert repo.get_cached_search("p1", "no_such_id") is None
+
+    def test_r01_cache_scoped_to_own_project(self, repo, repo_factory, tmp_path):
+        """审计二 R01：快照读取收窄到项目域，跨项目 id 不可见。"""
+        other = repo_factory(tmp_path)
+        other.create("p2")
+        cid = other.cache_search("p2", "秘密查询", "search_hotel", {"items": [1]})
+        assert other.get_cached_search("p2", cid)["query"] == "秘密查询"
+        assert repo.get_cached_search("p1", cid) is None
 
     def test_cache_truncated_64kb(self, repo):
         big = {"blob": "x" * 100_000}
@@ -186,6 +194,27 @@ class TestContract:
     def test_no_proposal_returns_none(self, repo):
         assert repo.get_latest_proposal("p1") is None
         assert repo.list_proposals("p1") == []
+
+    # ---------------------------------------------------------------- 确认与失效（第二批 F04）
+
+    def test_confirm_and_stale_contract(self, repo):
+        sid = repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+        assert repo.confirm_field_site("p1", sid) is True
+        repo.update_research_context("p1", {"budget": "2万"})
+        repo.save_proposal("p1", "# 方案", version="final")
+        doc_id = repo.get_latest_proposal("p1")["id"]
+        repo.confirm_proposal("p1", doc_id)
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        assert repo.get_proposal_by_id("p1", doc_id)["content"] == "# 方案"
+        repo.update_research_context("p1", {"budget": "5万"})
+        assert repo.is_proposal_confirmation_stale("p1") is True
+
+    def test_confirmation_stale_after_new_proposal(self, repo):
+        repo.save_proposal("p1", "# 方案", version="final")
+        repo.confirm_proposal("p1", repo.get_latest_proposal("p1")["id"])
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        repo.save_proposal("p1", "# 方案 v2", version="final")
+        assert repo.is_proposal_confirmation_stale("p1") is True
 
     # ---------------------------------------------------------------- 项目与状态面
 

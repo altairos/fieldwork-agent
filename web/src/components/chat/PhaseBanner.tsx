@@ -12,8 +12,10 @@ import { useUiStore } from "../../stores/ui";
  *   罗盘图标 line 429 `w-4 h-4 text-cinnabar`
  *   阶段主文 line 430 `text-cinnabar font-medium`（「已进入 阶段 C · 行程规划」）
  *   说明尾文 line 431 `text-inkfaint`（「— 行程确认后即可解锁方案生成」）
+ *     → 引导规范：尾文优先给解锁条件（PhaseItem.unlock，与设计板原句式同源），
+ *       末阶段无解锁目标时回落阶段维度说明 desc。
  * 降级横幅取设计板 ochre 家族（line 265 `bg-ochrewash text-ochre border-ochre/25` + line 132 alert 图标），
- * 承载 ui store 的 `degradedBanner`（error 事件）：如实转述 code/message/hint，用户可关闭。
+ *   承载 ui store 的 `degradedBanner`（error 事件）：如实转述 code/message/hint，用户可关闭。
  *
  * 红线①：横幅只**呈现**阶段与建议，不切 Tab、不改 activeTab；pendingSuggestion 原文来自
  * ui store（phase_transition 归约），此处不改写、不臆造中文映射；切换动作只在右栏 toast 的「查看」。
@@ -26,7 +28,11 @@ export function PhaseBanner() {
 
   const meta = DEFAULT_PHASES.find((p) => p.id === phase);
   const title = meta ? `阶段 ${meta.letter} · ${meta.label}` : `阶段 ${phase}`;
-  const note = suggestion ? suggestion.reason : (meta?.desc ?? "阶段推进由可验证条件判定");
+  const note = suggestion
+    ? suggestion.reason
+    : meta
+      ? (meta.unlock ? `本阶段条件达成后解锁：${meta.unlock}` : (meta.desc ?? "阶段推进由可验证条件判定"))
+      : "阶段推进由可验证条件判定";
 
   return (
     <>
@@ -47,7 +53,8 @@ function DegradedBanner({ code, text, onClose }: { code: string; text: ReactNode
       <IconAlert className="w-4 h-4 text-ochre shrink-0" />
       <span className="text-inksoft flex-1 min-w-0 truncate">{text}</span>
       <span className="num text-[10.5px] text-inkfaint shrink-0">{code}</span>
-      <button type="button" onClick={onClose} className="text-[11.5px] text-inkfaint hover:text-ink shrink-0">
+      {/* tapzone：触屏热区外扩（批次 B；纯文字钮视觉保持不变） */}
+      <button type="button" onClick={onClose} className="tapzone text-[11.5px] text-inkfaint hover:text-ink shrink-0">
         关闭
       </button>
     </div>

@@ -15,6 +15,12 @@ from fieldwork_agent.kernel.models import InformantCandidate, ProposalDoc, Resea
 CTX = ResearchContext(discipline="社会学", topic="宗族变迁", scale="单人调研",
                       budget="2万", time_window="6-9月", target_location="喜洲")
 SITES = [{"name": "喜洲", "confirmed": True, "profile": {"accommodation": "..."}}]
+# 审计第二批 F12：非访谈研究（interviews_not_applicable）豁免访谈渠道硬条件
+NA_CTX = ResearchContext(
+    discipline="社会学", topic="历史文献研究", scale="单人调研",
+    budget="2万", time_window="6-9月", target_location="喜洲",
+    interviews_not_applicable=True,
+    interviews_na_reason="采用档案与文献分析法，不需访谈对象")
 
 
 class FakeLLM:
@@ -30,9 +36,9 @@ class FakeLLM:
 
 
 def test_context_block_contains_all_channels():
-    block = build_context_block(CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}],
+    block = build_context_block(CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}],
                                 [{"title": "旧笔记"}])
-    for token in ["宗族变迁", "喜洲", "legs", "长老", "旧笔记"]:
+    for token in ["宗族变迁", "喜洲", "legs", "村干部", "旧笔记"]:
         assert token in block
 
 
@@ -51,8 +57,8 @@ def test_degrade_without_llm():
 
 def test_interview_guide_per_type():
     llm = FakeLLM("提纲正文")
-    guides = compose_interview_guide("宗族变迁", ["长老", "集市商户"], llm=llm)
-    assert set(guides) == {"长老", "集市商户"}
+    guides = compose_interview_guide("宗族变迁", ["村干部", "乡村教师"], llm=llm)
+    assert set(guides) == {"村干部", "乡村教师"}
     assert "知情同意" in llm.messages[-1]["content"]
     # 钉死 guide 路径的 LLM 参数（spec 公理 2 精确值；两类报道人共用同一参数组）
     assert llm.kwargs["slot"] == "interview"
@@ -116,7 +122,7 @@ _EIGHT = "\n".join([
 def test_llm_success_extracts_sections_and_uses_phase_prompt():
     llm = FakeLLM(_EIGHT)
     doc = compose_proposal(
-        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}], [], llm=llm
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}], [], llm=llm
     )
     assert isinstance(doc, ProposalDoc) and doc.mode == "global"
     # sections 用正则 `^## .+` 提取 → 8 章标题（`# ` 一级标题不计入）
@@ -149,7 +155,7 @@ def test_llm_error_content_falls_back_to_template():
 
     llm = ErrLLM()
     doc = compose_proposal(
-        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "长老"}], [], llm=llm
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}], [], llm=llm
     )
     # 走模板降级路径：markdown 含 "（模板降级版）" 尾注 + 八章 sections
     assert "（模板降级版）" in doc.markdown
@@ -167,15 +173,15 @@ def test_interview_guide_unmatched_type_still_includes_methodology():
     assert set(guides) == {"不存在的类型"}
     assert "知情同意" in llm.messages[-1]["content"]
     # 未收录类型也应把方法论纳入 prompt，方便模型按通用框架起草
-    assert "半结构式访谈方法论要点" in llm.messages[-1]["content"]
+    assert "访谈方法要点（开源简版）" in llm.messages[-1]["content"]
 
 
 def test_interview_guide_degrade_without_llm():
-    guides = compose_interview_guide("宗族变迁", ["长老"], llm=None)
-    assert set(guides) == {"长老"}
+    guides = compose_interview_guide("宗族变迁", ["村干部"], llm=None)
+    assert set(guides) == {"村干部"}
     # 无 llm 时走模板降级：仍产出含方法论与知情同意话术的可用文本
-    assert "知情同意" in guides["长老"]
-    assert "提问域" in guides["长老"]
+    assert "知情同意" in guides["村干部"]
+    assert "提问域" in guides["村干部"]
 
 
 def test_section_rewrite_replaces_only_target_block():
@@ -235,7 +241,7 @@ def test_suggest_informants_validates_schema():
     assert env.ok and len(env.data) == 4
     assert all(isinstance(c, InformantCandidate) for c in env.data)
     assert "社群骨干" in llm.messages[-1]["content"] or True  # prompt 含主题
-    assert "示范" in llm.messages[-1]["content"] or "长老" in llm.messages[-1]["content"]  # few-shot 锚定
+    assert "示范" in llm.messages[-1]["content"] or "村干部" in llm.messages[-1]["content"]  # few-shot 锚定
 
 
 def test_suggest_informants_illegal_json():
@@ -298,3 +304,23 @@ def test_suggest_informants_registered():
     props = tool[0]["function"]["parameters"]["properties"]
     assert {"research_topic", "discipline", "site_profile"} <= set(props)
     assert "llm" not in props
+
+
+# 审计第二批 F12：非访谈研究（interviews_not_applicable）豁免访谈渠道硬条件
+
+
+def test_context_block_na_exempts_informant_channel():
+    block = build_context_block(NA_CTX, SITES, {"legs": []}, [], [])
+    assert "不适用访谈方法" in block
+    assert "档案与文献分析法" in block
+
+
+def test_context_block_still_raises_without_na_flag():
+    with pytest.raises(ValueError, match="缺少渠道"):
+        build_context_block(CTX, SITES, {"legs": []}, [], [])  # informants 为空且未声明 NA
+
+
+def test_degrade_na_exempts_informant_section():
+    doc = compose_proposal(NA_CTX, SITES, {"legs": []}, [], [], llm=None)
+    assert len(doc.sections) == 8  # 八章降级版照常产出
+    assert "不适用访谈方法" in doc.markdown

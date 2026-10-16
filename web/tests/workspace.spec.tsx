@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import App from "../src/App";
+import { saveKeys } from "../src/lib/keys";
 import { useConversationStore } from "../src/stores/conversation";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
@@ -29,19 +30,23 @@ const SNAP: ProjectSnapshot = {
   phase_history: [],
 };
 
-/** 桩 fetch：返回 rest.req 所需的最小 Response 形状（ok/status/json/text）。 */
-function stubFetch(payload: unknown, ok = true) {
-  const fn = vi.fn(async (..._args: unknown[]) => ({
-    ok,
-    status: ok ? 200 : 500,
-    json: async () => payload,
-    text: async () => String(payload),
-  }));
+/** 桩 fetch：按 URL 分发最小 Response（/settings/status → 已配置；其余 → rest payload）。 */
+function stubFetch(opts: { rest: unknown; restOk?: boolean; settings?: unknown }) {
+  const fn = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/settings/status") {
+      const p = opts.settings ?? { dashscope_configured: true, flyai_configured: true };
+      return { ok: true, status: 200, json: async () => p, text: async () => String(p) };
+    }
+    const ok = opts.restOk ?? true;
+    return { ok, status: ok ? 200 : 500, json: async () => opts.rest, text: async () => String(opts.rest) };
+  });
   vi.stubGlobal("fetch", fn);
   return fn;
 }
 
 beforeEach(() => {
+  localStorage.clear();
   useConversationStore.getState().reset();
   useToolsStore.getState().reset();
   useProjectStore.getState().reset();
@@ -55,11 +60,11 @@ afterEach(() => {
 
 describe("Workspace 接线（App.tsx）", () => {
   test("挂载即拉取项目快照，中栏对话流与右栏面板就位", async () => {
-    const fn = stubFetch(SNAP);
+    const fn = stubFetch({ rest: SNAP });
     render(<App />);
 
     // 中栏：Composer 输入框 + 时间线空态（尚无回合）
-    expect(screen.getByRole("textbox")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toBeInTheDocument();
     expect(screen.getByText(/尚无对话/)).toBeInTheDocument();
     // 右栏：默认进度面板；红线①——快照/阶段到位也不自动切 Tab
     expect(screen.getByText(/采集进度/)).toBeInTheDocument();
@@ -67,16 +72,49 @@ describe("Workspace 接线（App.tsx）", () => {
 
     // 快照加载完成后：Header 项目名取 research_context.topic
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
-    expect(fn.mock.calls[0]?.[0]).toBe("/projects/p1");
+    expect(fn.mock.calls.map((c) => c[0])).toContain("/projects/p1");
     expect(useProjectStore.getState().snapshot?.field_sites).toHaveLength(1);
     expect(useProjectStore.getState().phase).toBe("itinerary_planning");
   });
 
   test("快照加载失败经 ui store 的 error 事件上屏（不静默吞错）", async () => {
-    stubFetch("boom", false);
+    stubFetch({ rest: "boom", restOk: false, settings: { dashscope_configured: true, flyai_configured: true } });
     render(<App />);
     expect(await screen.findByText(/项目快照加载失败/)).toBeInTheDocument();
     expect(screen.getByText(/snapshot_failed/)).toBeInTheDocument();
     expect(useProjectStore.getState().snapshot).toBeNull();
+  });
+});
+
+describe("Workspace 无 key 拦截（可浏览不可发）", () => {
+  test("本地无 key 且服务端未配：Composer 禁用 + 提示回首页配置，快照仍可浏览", async () => {
+    stubFetch({ rest: SNAP, settings: { dashscope_configured: false, flyai_configured: false } });
+    render(<App />);
+
+    // 可浏览：快照照常加载
+    expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
+    // 不可发：输入框禁用 + 锁提示
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toBeDisabled();
+    expect(screen.getByTestId("composer-lock-hint")).toHaveTextContent("未配置百炼 API Key");
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+  });
+
+  test("本地已存 key：不锁且不发 /settings/status（免查直通）", async () => {
+    saveKeys("sk-local", "");
+    const fn = stubFetch({ rest: SNAP });
+    render(<App />);
+
+    expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).not.toBeDisabled();
+    expect(fn.mock.calls.map((c) => c[0])).not.toContain("/settings/status");
+  });
+
+  test("服务端已配（环境变量部署）：本地无 key 也不锁", async () => {
+    stubFetch({ rest: SNAP }); // settings 默认 configured:true
+    render(<App />);
+
+    expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).not.toBeDisabled();
+    expect(screen.queryByTestId("composer-lock-hint")).not.toBeInTheDocument();
   });
 });

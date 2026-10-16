@@ -2,8 +2,9 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from fieldwork_agent.web_host.api.guard import checked_pid
-from fieldwork_agent.web_host.deps import get_llm, get_repo, get_turn_manager
+from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from fieldwork_agent.web_host.api.guard import checked_project_id, checked_turn_id
+from fieldwork_agent.web_host.deps import get_flyai_raw, get_llm, get_repo, get_turn_manager
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
     encode_event,
@@ -22,43 +23,84 @@ class CreateTurnRequest(BaseModel):
     idempotency_key: str | None = None
 
 
+# 页面 key 请求头（首页「API 密钥」卡存 localStorage，rest.ts 统一注入）
+DASHSCOPE_HEADER = "X-DashScope-Key"
+FLYAI_HEADER = "X-FlyAI-Key"
+
+
+def _header(request: Request, name: str) -> str:
+    return (request.headers.get(name) or "").strip()
+
+
+def _build_llm(api_key: str, request: Request):
+    """按页面 key 构建回合级 LLMClient（模块级工厂，测试可 monkeypatch）。"""
+    from fieldwork_agent.kernel.llm import LLMClient
+
+    return LLMClient(api_key, request.app.state.config.llm_models)
+
+
+def _resolve_clients(request: Request):
+    """key 解析：页面 key（请求头）优先 → 启动单例；百炼两者皆无 → 403。
+
+    - 百炼必填：无页面 key 且单例 None（服务端未配）→ 403 llm_key_required，
+      不创建回合、不进入对话（不再降级为固定文案）；
+    - 飞猪可选：仅影响工具调用可用性，缺失时回落单例（可为空 key，工具内部降级）。
+    返回 (llm, flyai)，均为回合级实例，不写回 app.state。
+    """
+    llm = get_llm(request)
+    page_key = _header(request, DASHSCOPE_HEADER)
+    if page_key:
+        try:
+            llm = _build_llm(page_key, request)
+        except RuntimeError as exc:
+            raise HTTPException(500, f"LLM 客户端初始化失败: {exc}") from None
+    if llm is None:
+        raise HTTPException(403, detail={
+            "code": "llm_key_required",
+            "message": "未配置百炼 API Key：请在首页「API 密钥」卡填写并保存，"
+                       "或以环境变量 DASHSCOPE_API_KEY 启动服务端",
+        })
+    flyai = get_flyai_raw(request.app)
+    flyai_key = _header(request, FLYAI_HEADER)
+    if flyai_key:
+        flyai = FlyAIClient(flyai_key)
+    return llm, flyai
+
+
 @router.post("/projects/{project_id}/messages", status_code=201)
 async def create_turn(project_id: str, body: CreateTurnRequest,
                       request: Request, background: BackgroundTasks):
     repo = get_repo(request)
+    checked_project_id(project_id, repo)
     tm = get_turn_manager(request)
-    llm = get_llm(request)
-    # 终审 C1（HTTP 侧）：守卫必须先于 repo/TurnManager——tm.create_turn 以
-    # root/pid/turns/tid 拼路径，穿越 id 可在 projects 根外建目录写 meta.json。
-    # turn_id 不在本次范围（客户端 turn_id 只能命中内存注册表的 uuid 键，见 guard-report）
-    project_id = checked_pid(project_id, repo)
     try:
         repo.get_state(project_id)
     except KeyError:
         raise HTTPException(404, f"项目不存在: {project_id}") from None
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
+    llm, flyai = _resolve_clients(request)
     turn = tm.create_turn(project_id, idempotency_key=body.idempotency_key)
     background.add_task(_execute_turn, request.app, project_id,
-                        turn.turn_id, body.text, llm)
+                        turn.turn_id, body.text, llm, flyai)
     return {"turn_id": turn.turn_id, "status": turn.status}
 
 
-async def _execute_turn(app, pid, tid, text, llm):
+async def _execute_turn(app, pid, tid, text, llm, flyai):
     """后台任务：获取写锁 → 执行 agent loop → 释放。"""
     from fieldwork_agent.web_host.agent.loop import run_turn
-    from fieldwork_agent.web_host.deps import get_flyai_raw, get_repo_raw, get_tm_raw
+    from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
     repo = get_repo_raw(app)
     tm = get_tm_raw(app)
-    flyai = get_flyai_raw(app)
     async with tm.acquire_write_lock(pid):
         await run_turn(repo, pid, tid, text, tm, llm, flyai)
 
 
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
 async def stream_events(project_id: str, turn_id: str, request: Request):
-    # 守卫先于 tm（tm.replay 以 root/pid/turns/tid 拼 events.jsonl 路径）
-    project_id = checked_pid(project_id, get_repo(request))
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:
@@ -93,7 +135,9 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
 async def cancel_turn(project_id: str, turn_id: str, request: Request):
-    project_id = checked_pid(project_id, get_repo(request))
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:

@@ -33,8 +33,11 @@ PROVINCES: list[str] = [
     "陕西", "宁夏", "内蒙古",
 ]
 
-# ``extract_researcher_info`` 的区域词表（沿用引擎原实现，是 PROVINCES 的前 13 项）
-_REGION_PLACES: list[str] = PROVINCES[:13]
+# ``extract_researcher_info`` 的区域词表（沿用引擎原实现，是 PROVINCES 的前 13 项；
+# 审计 F03 增补常用大区词，令“华南看看”这类跨省表述也能命中 extras.region）
+_REGION_PLACES: list[str] = PROVINCES[:13] + [
+    "华北", "华东", "华南", "华中", "西南", "西北", "东北",
+]
 
 
 def _first_match(text: str, words: list[str]) -> str | None:
@@ -76,7 +79,7 @@ def extract_locations(message: str, existing: dict) -> dict[str, str]:
         dep_found = None
 
         # 模式1: "从 + 地名 + 到/前往"
-        m = re.search(r"从\s*([^\s,，。]+?)\s*(?:到|前往|出发)", message)
+        m = re.search(r"从\s*([^\s,，。]+?)\s*(?:到|去|前往|出发)", message)
         if m:
             dep_found = _first_match(m.group(1), KNOWN_CITIES + PROVINCES)
 
@@ -123,6 +126,11 @@ def extract_researcher_info(message: str) -> dict:
         info["budget"] = "基金支持"
     elif "自费" in message or "self-funded" in lower:
         info["budget"] = "自费"
+    else:
+        m = re.search(r"(?:预算|经费|费用)[^0-9]{0,4}(\d+(?:\.\d+)?\s*[千万亿]元?)",
+                      message)
+        if m:
+            info["budget"] = re.sub(r"\s+", "", m.group(1))
 
     # 用途关键词（审阅意见 R1）：先辨文体词，避免"有基金支持"误触发 grant
     if "开题" in message:
@@ -141,3 +149,49 @@ def extract_researcher_info(message: str) -> dict:
         info["extras.region"] = region
 
     return info
+
+# ---------------------------------------------------------------- 时间窗口（F03）
+
+_TIME_WINDOW_RES: tuple = (
+    re.compile(r"\d{4}年\d{1,2}月(?:到|至|-|—|~)\d{4}年\d{1,2}月"),
+    re.compile(r"\d{4}年\d{1,2}月"),
+    re.compile(r"\d{1,2}月(?:到|至|-|—|~)\d{1,2}月"),
+    re.compile(r"\d{1,2}月"),
+    re.compile(r"寒假期间|暑假期间|寒假|暑假|春假"),
+)
+
+
+def extract_time_window(message: str) -> dict[str, str]:
+    """从消息中提取调研时间窗口（F03：time_window 是阶段 A→B 必需字段之一）。
+
+    优先级即元组顺序：跨年月区间 > 单年月 > 月份区间 > 单月 > 假期词；
+    每条消息只取第一个命中的模式（首段陈述优先，后续补充由已填过滤兜底）。
+    """
+    for pattern in _TIME_WINDOW_RES:
+        m = pattern.search(message or "")
+        if m:
+            return {"time_window": m.group(0)}
+    return {}
+
+
+def apply_message_extractions(message: str, existing: dict | None = None) -> dict:
+    """组合抽取器（CLI/Web 共用，F03 基石）：locations + researcher_info + time_window。
+
+    返回**增量** patch：``existing`` 已填的平铺键不覆盖（与 CLI ``_apply_extract``
+    原语义一致）；``extras.*`` 点号键按 ``existing["extras"][suffix]`` 判填后保留
+    点号形式返回，由宿主拆分落盘。
+    """
+    existing = existing or {}
+    extras_existing = existing.get("extras") or {}
+    found: dict[str, str] = {}
+    found.update(extract_locations(message, existing))
+    for key, value in extract_researcher_info(message).items():
+        if key.startswith("extras."):
+            if not str(extras_existing.get(key.split(".", 1)[1], "")).strip():
+                found[key] = value
+        elif not str(existing.get(key, "")).strip():
+            found[key] = value
+    for key, value in extract_time_window(message).items():
+        if not str(existing.get(key, "")).strip():
+            found[key] = value
+    return found

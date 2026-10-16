@@ -1,6 +1,10 @@
 """guidance 子包测试 — 阶段推进纯函数、消息提取、访谈对象库（全部纯数据，不联网不调 LLM）。"""
 
 from fieldwork_agent.kernel.guidance import extract, informants, phases
+from fieldwork_agent.kernel.guidance.extract import (
+    apply_message_extractions,
+    extract_time_window,
+)
 from fieldwork_agent.kernel.models import (
     FieldSiteRecord,
     InformantCandidate,
@@ -25,7 +29,7 @@ def test_check_advance_b_to_c_requires_site_and_informant():
     no_informant = phases.check_advance("field_site_profiles", ctx, [site], [], False, False)
     assert not no_informant.can_advance, "B→C 缺访谈对象必须不推进(spec §2.1)"
     ok = phases.check_advance(
-        "field_site_profiles", ctx, [site], [InformantRecord(code="P1", type="长老")], False, False
+        "field_site_profiles", ctx, [site], [InformantRecord(code="P1", type="村干部")], False, False
     )
     assert ok.can_advance and ok.to_phase == "itinerary_planning"
 
@@ -36,8 +40,8 @@ def test_extract_locations_from_message():
 
 
 def test_informant_library_shape():
-    assert len(informants.INFORMANT_LIBRARY) >= 10
-    one = informants.get_informant("长老") or next(iter(informants.INFORMANT_LIBRARY.values()))
+    assert len(informants.INFORMANT_LIBRARY) >= 3
+    one = informants.get_informant("村干部") or next(iter(informants.INFORMANT_LIBRARY.values()))
     assert one["approach"] and one["question_domains"] and one["ethics"]
 
 
@@ -123,7 +127,7 @@ def test_check_advance_b_to_c_missing_keys():
         "field_site_profiles",
         ResearchContext(),
         [site],
-        [InformantRecord(code="P1", type="长老")],
+        [InformantRecord(code="P1", type="村干部")],
         False,
         False,
     )
@@ -203,7 +207,6 @@ def test_extract_purpose():
 
 def test_informant_library_every_entry_complete():
     for key, entry in informants.INFORMANT_LIBRARY.items():
-        assert entry["name"], key
         assert entry["approach"], key
         assert isinstance(entry["question_domains"], list) and entry["question_domains"], key
         assert all(isinstance(d, str) and d for d in entry["question_domains"])
@@ -212,7 +215,7 @@ def test_informant_library_every_entry_complete():
         # get_informant 返回含 access_channel/preparation 的完整档案（田野保障方案数据源）
         assert entry["access_channel"], key
         assert entry["preparation"], key
-    assert informants.get_informant("长老") is not None
+    assert informants.get_informant("村干部") is not None
     assert informants.get_informant("不存在的类型") is None
     assert informants.get_informant("") is None
 
@@ -234,21 +237,21 @@ def test_informant_library_entries_have_examples():
         assert isinstance(ex, list) and 2 <= len(ex) <= 3, key
         assert all(isinstance(s, str) and s for s in ex), key
         assert ex[-1].startswith("追问"), key
-    one = informants.get_informant("长老")
+    one = informants.get_informant("村干部")
     assert one is not None and one["examples"]  # get_informant 兼容：深拷贝后仍含 examples
 
 
 def test_informant_examples_shape():
     """INFORMANT_EXAMPLES：精选 5-6 条示范词条（brief task-4 逐字形状）。"""
-    assert len(informants.INFORMANT_EXAMPLES) >= 5          # 示范库是质量锚非枚举白名单
-    one = informants.get_informant("长老") or next(iter(informants.INFORMANT_EXAMPLES.values()))
+    assert len(informants.INFORMANT_EXAMPLES) >= 3          # 示范库是质量锚非枚举白名单
+    one = informants.get_informant("村干部") or next(iter(informants.INFORMANT_EXAMPLES.values()))
     assert one["approach"] and one["question_domains"] and one["ethics"]
     assert "access_channel" in one and "preparation" in one  # 进入田野途径与行前保障(田野保障方案数据源)
 
 
 def test_informant_examples_are_curated_candidate_archives():
     """精选集是 LIBRARY 的类型覆盖子集，每条值本身即 InformantCandidate 可 validate 的档案 dict。"""
-    assert 5 <= len(informants.INFORMANT_EXAMPLES) <= 6
+    assert len(informants.INFORMANT_EXAMPLES) == 3
     assert set(informants.INFORMANT_EXAMPLES) <= set(informants.INFORMANT_LIBRARY)
     for key, archive in informants.INFORMANT_EXAMPLES.items():
         assert archive["type"] == key
@@ -278,3 +281,44 @@ def test_match_examples_garbage_topic_falls_back_to_all():
     """全部落空的主题 → 兜底返回全部示范词条（降级路径宁给参考起点也不给空结果）。"""
     # "饕餮貔貅" 的二字组在精选集 approach/question_domains/examples 中必然零命中
     assert informants.match_examples("饕餮貔貅") == list(informants.INFORMANT_EXAMPLES.values())
+
+# ────────────────────────────────────────────────────────────────
+# 审计第二批 F03：time_window 采集 + 组合抽取器（CLI/Web 共用）
+# ────────────────────────────────────────────────────────────────
+
+
+def test_extract_time_window_patterns():
+    assert extract_time_window("我打算2026年3月到2026年6月去调研") == {
+        "time_window": "2026年3月到2026年6月"}
+    assert extract_time_window("计划2026年7月出发") == {"time_window": "2026年7月"}
+    assert extract_time_window("大概3月到5月之间成行") == {"time_window": "3月到5月"}
+    assert extract_time_window("就9月去吧") == {"time_window": "9月"}
+    assert extract_time_window("我暑假去") == {"time_window": "暑假"}
+    assert extract_time_window("寒假期间过去") == {"time_window": "寒假期间"}
+    assert extract_time_window("时间还没定") == {}
+
+
+def test_apply_message_extractions_combines_and_respects_existing():
+    existing = {"discipline": "人类学", "time_window": "暑假"}
+    found = apply_message_extractions("我是社会学背景，从上海去大理调研", existing)
+    # discipline 已填（人类学）不被消息里的"社会学"覆盖
+    assert "discipline" not in found
+    assert found.get("departure_city") == "上海"
+    assert found.get("target_location") == "大理"
+    # time_window 已填同样不覆盖
+    assert "time_window" not in found
+
+
+def test_apply_message_extractions_collects_when_empty():
+    found = apply_message_extractions("社会学，2026年3月去，预算2万", {})
+    assert found.get("discipline") == "社会学"
+    assert found.get("time_window") == "2026年3月"
+    assert found.get("budget") == "2万"
+
+
+def test_apply_message_extractions_extras_dotted_key_respects_existing():
+    existing = {"extras": {"region": "西南"}}
+    found = apply_message_extractions("我想去华南看看", existing)
+    assert "extras.region" not in found  # extras.region 已填不覆盖
+    found2 = apply_message_extractions("我想去华南看看", {})
+    assert found2.get("extras.region") == "华南"

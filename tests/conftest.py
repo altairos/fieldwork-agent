@@ -20,6 +20,7 @@ class FakeConfig:
         self.projects_dir.mkdir(parents=True, exist_ok=True)
         self.dashscope_api_key = ""
         self.flyai_api_key = ""
+        self.app_token = ""   # 审计 F02：App Token 守卫读取（空 = 不启用）
         self.dingtalk_webhook = ""
         self.dingtalk_enabled = False
 
@@ -104,3 +105,22 @@ class FakeFlyAI:
 def fake_flyai():
     """返回 FakeFlyAI 实例（StubClient 形状），供宿主透传/聚合断言复用。"""
     return FakeFlyAI()
+
+
+@pytest.fixture(autouse=True)
+def _public_assets(tmp_path, monkeypatch):
+    """全部测试默认运行在 Tier P 公开版资产下：指向空目录，禁用本地
+    repo/secrets 与 ~/.fieldwork_agent/assets 覆盖，避免私有包泄入测试。
+
+    边界（终审 INFO-3，挂账）：本 fixture 只管测试**运行期**的资产访问；
+    ``mcp_server/resources.STATIC_RESOURCES`` 在模块导入（collection）期
+    构建、早于任何 fixture 生效——dev 机带 secrets/ 时该快照含私有词条，
+    对 catalog 写形状断言前须先将其惰性化。
+    """
+    empty = tmp_path / "_empty_assets"
+    empty.mkdir()
+    monkeypatch.delenv("FIELDWORK_ASSETS_DIR", raising=False)
+    from fieldwork_agent.kernel import assets
+    assets.reload(empty)
+    yield
+    assets.reload(empty)

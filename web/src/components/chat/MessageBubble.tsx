@@ -5,9 +5,9 @@ import { MarkdownBody } from "./AssistantStream";
  *
  * 设计板同源：
  *   user lines 436-440：`flex justify-end` 外层 + 气泡
- *     `max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-4 py-2.5
+ *     `max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-onindigo px-4 py-2.5
  *      text-[13.5px] leading-relaxed shadow-card`
- *     （`#EDF1F4` 为设计板 line 437 的 token 外用值 —— 靛蓝底上的气泡文字色，按约束保留并注行号）
+ *     （设计板 line 437 的 token 外用值 #EDF1F4 已主题化为 onindigo —— 靛蓝底上的气泡文字色）
  *   assistant lines 451-462：`flex gap-3` + 头像 `w-6 h-6 shrink-0 mt-0.5`（line 452）+
  *     `min-w-0 flex-1` 内嵌宋体 markdown（复用 MarkdownBody，与流式缓冲同一渲染口径）
  *
@@ -17,7 +17,7 @@ export function MessageBubble({ role, content }: { role: "user" | "assistant"; c
   if (role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-[#EDF1F4] px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card whitespace-pre-wrap break-words">
+        <div className="max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-onindigo px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card whitespace-pre-wrap break-words">
           {content}
         </div>
       </div>

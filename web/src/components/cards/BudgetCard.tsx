@@ -3,6 +3,7 @@ import { Price } from "../ui/Price";
 import { PulseDot, type DotTone } from "../ui/PulseDot";
 import { IconWallet } from "../ui/icons";
 import { CardShell, NoData, Notice } from "./CardShell";
+import { SnapshotDisclosure } from "./SnapshotDisclosure";
 import { asArray, asRecord, boolOf, numOf, strOf, yuan } from "./data";
 import type { ToolCardProps } from "./types";
 
@@ -238,6 +239,7 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
                     {caliber(item) && (
                       <div className="text-[10.5px] text-inkfaint truncate">{caliber(item)}</div>
                     )}
+                    <SnapshotDisclosure sourceRef={item.source_ref} />
                   </div>
                   <span className="shrink-0 inline-flex items-baseline gap-1">
                     <Price value={item.amount} source={item.source || undefined} />

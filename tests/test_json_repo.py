@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 
@@ -90,11 +91,56 @@ def test_cache_index_derived_from_files(json_repo):
     assert json_repo.list_cached_searches("p1") == []
 
 
-def test_get_cached_search_spans_projects(json_repo):
-    """get_cached_search 签名不含 pid，故按全局唯一 id 跨项目定位。"""
+def test_r01_get_cached_search_scoped_to_project(json_repo):
+    """审计二 R01：get_cached_search 收窄项目域——p1 读不到 p2 的快照。"""
     json_repo.create("p2")
     cid = json_repo.cache_search("p2", "q2", "search_ai", {"a": 1})
-    assert json_repo.get_cached_search(cid)["query"] == "q2"
+    assert json_repo.get_cached_search("p2", cid)["query"] == "q2"
+    assert json_repo.get_cached_search("p1", cid) is None
+    assert json_repo.get_cached_search("no_such_project", cid) is None
+
+
+@pytest.mark.parametrize("bad_cid", [
+    "../p1/state", "..\\..\\secret", "a/b", "a\\b", "*", "?.json",
+    "", "x" * 65, ".json", "spacer.cid",
+])
+def test_r01_bad_cid_returns_none(json_repo, bad_cid):
+    """审计二 R01：cid 白名单外的任何形态一律 None（先于文件系统拼接）。"""
+    json_repo.cache_search("p1", "q", "search_ai", {"a": 1})
+    assert json_repo.get_cached_search("p1", bad_cid) is None
+
+
+def test_r01_symlinked_cache_entry_rejected(json_repo, tmp_path):
+    """search_cache 内符号链接条目（指向外部敏感文件）不得被读出（防御纵深）。"""
+    outside = tmp_path / "secret.json"
+    outside.write_text(json.dumps({"query": "leak", "tool": "t", "result": "leak"}),
+                       encoding="utf-8")
+    cid = json_repo.cache_search("p1", "q", "search_ai", {"a": 1})
+    entry = json_repo.root / "p1" / "search_cache" / f"{cid}.json"
+    entry.unlink()
+    try:
+        entry.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前平台/权限不支持符号链接")
+    assert json_repo.get_cached_search("p1", cid) is None
+
+
+def test_r01_symlinked_cache_dir_rejected(json_repo, tmp_path):
+    """审计二 R01（final review F2）：search_cache 目录**自身**外指
+    （symlink 到外部目录）时不得越根读取（spec §1.3 受信根包含校验）。"""
+    cid = json_repo.cache_search("p1", "q", "search_ai", {"a": 1})
+    outside_dir = tmp_path / "outside_cache"
+    outside_dir.mkdir()
+    (outside_dir / f"{cid}.json").write_text(
+        json.dumps({"query": "leak", "tool": "t", "result": "leak"}),
+        encoding="utf-8")
+    cache_dir = json_repo.root / "p1" / "search_cache"
+    shutil.rmtree(cache_dir)
+    try:
+        cache_dir.symlink_to(outside_dir, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前平台/权限不支持目录符号链接")
+    assert json_repo.get_cached_search("p1", cid) is None
 
 
 def test_delete_unknown_knowledge_is_noop(json_repo):
@@ -145,7 +191,7 @@ def test_legacy_knowledge_and_cache_readable(legacy_repo):
     cached = legacy_repo.list_cached_searches("legacy_project")
     assert cached[0]["id"] == "20260105100000_0"
     assert cached[0]["tool"] == "search_hotel"  # 旧键 source_tool → 读时归一
-    full = legacy_repo.get_cached_search("20260105100000_0")
+    full = legacy_repo.get_cached_search("legacy_project", "20260105100000_0")
     assert full["result"]["hotel"] == ["大理古城客栈"]
 
 
@@ -231,3 +277,138 @@ def test_atomic_write_produces_valid_json(tmp_path):
     # 没有残留 tmp 文件（os.replace 后 tmp 不再存在）
     tmp_files = list(state_path.parent.glob("*.tmp"))
     assert tmp_files == []
+
+# ────────────────────────────────────────────────────────────────
+# 审计第二批 F04/F13：确认基础设施 + 按 ID 读文档
+# ────────────────────────────────────────────────────────────────
+
+def test_confirm_field_site_by_id(json_repo):
+    sid = json_repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+    assert json_repo.confirm_field_site("p1", sid) is True
+    assert json_repo.list_field_sites("p1")[0]["confirmed"] is True
+    assert json_repo.confirm_field_site("p1", "no_such") is False
+    assert json_repo.confirm_field_site("p1", sid) is True  # 幂等
+
+
+def test_confirm_proposal_records_hash(json_repo):
+    json_repo.update_research_context("p1", {"budget": "2万", "time_window": "暑假"})
+    did = json_repo.save_proposal("p1", "# 方案", kind="proposal", version="final")
+    record = json_repo.confirm_proposal("p1", did)
+    assert record["kind"] == "proposal" and record["dep_hash"]
+    state = _read_state(json_repo, "p1")
+    assert state["proposal_confirmed"] is True
+    assert len(state["confirmations"]) == 1
+    assert state["confirmations"][0]["dep_hash"] == record["dep_hash"]
+
+
+def test_confirmation_stale_after_budget_change(json_repo):
+    did = json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1", did)
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.update_research_context("p1", {"budget": "3万"})
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_confirmation_stale_after_new_proposal(json_repo):
+    did = json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1", did)
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.save_proposal("p1", "# 方案 v2", version="final")
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_stale_false_without_confirmation(json_repo):
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_get_proposal_by_id_roundtrip(json_repo):
+    pid = json_repo.save_proposal("p1", "正文A", version="draft")
+    json_repo.save_proposal("p1", "正文B", version="draft")
+    doc = json_repo.get_proposal_by_id("p1", pid)
+    assert doc is not None and doc["content"] == "正文A"
+    assert json_repo.get_proposal_by_id("p1", "no_such") is None
+
+
+# ------------------------------------------------------------ 审计二 R09
+
+
+def test_r09_confirm_four_way_rejections(json_repo):
+    """四重校验：不存在 / 类型错 / 缺指纹 / 指纹不一致。"""
+    did = json_repo.save_proposal("p1", "# 方案")
+    # ① not_found：确认不存在的文档 id
+    with pytest.raises(ProposalConfirmError) as ei:
+        json_repo.confirm_proposal("p1", "prop_20990101_000000_deadbeef")
+    assert ei.value.code == "not_found"
+    # ② wrong_kind：interview_guide 文档不可确认
+    gid = json_repo.save_proposal("p1", "# 提纲", kind="interview_guide")
+    with pytest.raises(ProposalConfirmError) as ei:
+        json_repo.confirm_proposal("p1", gid)
+    assert ei.value.code == "wrong_kind"
+    # ③ dep_hash_missing：手工抹掉指纹，模拟旧版生成的文档
+    state = _read_state(json_repo, "p1")
+    for r in state["proposals"]:
+        if r["id"] == did:
+            r.pop("dep_hash", None)
+    (json_repo.root / "p1" / "state.json").write_text(
+        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ProposalConfirmError) as ei:
+        json_repo.confirm_proposal("p1", did)
+    assert ei.value.code == "dep_hash_missing"
+    # ④ dep_hash_mismatch：手工写死假指纹，模拟依赖已变化
+    state = _read_state(json_repo, "p1")
+    for r in state["proposals"]:
+        if r["id"] == did:
+            r["dep_hash"] = "deadbeef"
+    (json_repo.root / "p1" / "state.json").write_text(
+        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ProposalConfirmError) as ei:
+        json_repo.confirm_proposal("p1", did)
+    assert ei.value.code == "dep_hash_mismatch"
+
+
+def test_r09_site_change_flips_stale(json_repo):
+    """五路依赖之②：确认后新增田野点 → 确认失效（旧六字段指纹不含田野点）。"""
+    did = json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1", did)
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_r09_itinerary_snapshot_change_flips_stale(json_repo):
+    """五路依赖之⑤：确认后产生新的 compose_itinerary 快照 → 确认失效。"""
+    did = json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1", did)
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.cache_search("p1", "行程编排", "compose_itinerary", {"legs": []})
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_r09_legacy_confirmation_without_dep_hash_is_stale(json_repo):
+    """legacy 确认记录无 dep_hash：无法判定依赖是否变化，保守视失效。"""
+    did = json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1", did)
+    state = _read_state(json_repo, "p1")
+    state["confirmations"][-1].pop("dep_hash", None)
+    (json_repo.root / "p1" / "state.json").write_text(
+        json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_r09_guide_after_confirm_not_stale(json_repo):
+    """审计二 R09（final review F1）：确认 proposal 后保存 interview_guide
+    → stale 保持 False（spec §3 按类型判定：提纲与方案确认作用域分开）。"""
+    did = json_repo.save_proposal("p1", "# 方案", version="final")
+    json_repo.confirm_proposal("p1", did)
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.save_proposal("p1", "# 提纲", kind="interview_guide")
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_r09_new_proposal_after_confirm_stale(json_repo):
+    """审计二 R09（final review F1）：确认后保存新 proposal → stale True
+    （现行为保留；本用例是行为回归锚，RED 阶段即 PASS 属预期）。"""
+    did = json_repo.save_proposal("p1", "# 方案 v1", version="draft")
+    json_repo.confirm_proposal("p1", did)
+    json_repo.save_proposal("p1", "# 方案 v2", version="final")
+    assert json_repo.is_proposal_confirmation_stale("p1") is True

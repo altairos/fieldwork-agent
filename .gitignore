@@ -19,6 +19,9 @@ env/
 history.txt
 .env
 
+# 技术秘密（Tier S 资产包，独立私有仓库管理，勿提交主仓）
+secrets/
+
 # 编辑器 / 系统
 .vscode/
 .idea/
@@ -29,8 +32,20 @@ Thumbs.db
 docs/promo/
 
 # 前期研究
+docs/superpowers/
+
 # 前端 web/ 工程
 web/node_modules/
 web/dist/
 web/playwright-report/
 web/test-results/
+
+# 部署打包产物（本地 tar 包 + 上云发布暂存，勿提交）
+fieldwork-agent-deploy.tar.gz
+*.tar.gz
+.qw-pages-deploy/
+
+#审计报告
+docs/reviews
+
+tools/spike_flyai_window.py

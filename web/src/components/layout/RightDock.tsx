@@ -75,10 +75,11 @@ export function RightDock({
               {suggestion.reason}，建议切换到「{suggestionLabel}」面板查看
             </div>
             <div className="flex gap-2 mt-1.5">
-              <button type="button" onClick={acceptSuggestion} className="text-[11.5px] text-cinnabar font-medium">
+              {/* tapzone：触屏热区外扩至 ≥24px（批次 B；纯文字钮视觉保持不变） */}
+              <button type="button" onClick={acceptSuggestion} className="tapzone text-[11.5px] text-cinnabar font-medium">
                 查看
               </button>
-              <button type="button" onClick={dismissSuggestion} className="text-[11.5px] text-inkfaint">
+              <button type="button" onClick={dismissSuggestion} className="tapzone text-[11.5px] text-inkfaint">
                 稍后
               </button>
             </div>
@@ -91,7 +92,8 @@ export function RightDock({
         <Tabs tabs={TABS} active={tab} onChange={handleChange} />
       </div>
 
-      <div className="flex-1 overflow-y-auto scroll p-4">{children ?? <Panel />}</div>
+      {/* overscroll-contain（批次 C）：移动端底部面板内滚动不穿透到底层对话流 */}
+      <div className="flex-1 overflow-y-auto scroll overscroll-contain p-4">{children ?? <Panel />}</div>
     </div>
   );
 }

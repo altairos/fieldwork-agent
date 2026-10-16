@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "../types/events";
+import { authHeaders } from "../lib/keys";
 
 export interface ParseResult { frames: EventEnvelope[]; rest: string; }
 
@@ -54,7 +55,7 @@ export async function streamTurnEvents(
   while (true) {
     if (opts.signal?.aborted) return;
     try {
-      const headers: Record<string, string> = { Accept: "text/event-stream" };
+      const headers: Record<string, string> = { Accept: "text/event-stream", ...authHeaders() };
       if (lastId > 0) headers["Last-Event-ID"] = String(lastId);
       const resp = await fetch(url, { headers, signal: opts.signal });
       if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`);

@@ -24,6 +24,7 @@ from typing import Any
 
 from fieldwork_agent.kernel.aggregation.itinerary import compose_itinerary
 from fieldwork_agent.kernel.aggregation.site_profile import profile_field_site
+from fieldwork_agent.kernel.aggregation.window import analyze_fieldwork_window
 from fieldwork_agent.kernel.documents.informants import suggest_informants
 from fieldwork_agent.kernel.documents.proposal import (
     compose_proposal,
@@ -31,7 +32,8 @@ from fieldwork_agent.kernel.documents.proposal import (
     proposal_handler,
 )
 from fieldwork_agent.kernel.guidance import phases
-from fieldwork_agent.kernel.guidance.extract import extract_locations, extract_researcher_info
+from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
+from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -59,13 +61,15 @@ from pydantic import ValidationError
 from .config import Config
 
 # registry 全局表只供 schema 与 args_model，不经由它裸调：宿主用下表把能力名绑到
-# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm。
+# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm；
+# 亦可为 tuple 组合（如 ("client", "llm") 双注入，analyze_fieldwork_window 用）。
 # 8 搜索原语的 fn 即 flyai 模块级注入式包装（与 profile/compose 同一 client 注入模式）。
 # 文档能力的入参含 JSON 形状的 ``ctx``，故绑到 registry 侧 handler（负责 model_validate
 # 与统一包络，spec §2.4）；``generate_proposal`` 这类命令式直调才用底层 compose_proposal。
-_CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str]] = {
+_CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str | tuple[str, ...]]] = {
     "profile_field_site": (profile_field_site, "client"),
     "compose_itinerary": (compose_itinerary, "client"),
+    "analyze_fieldwork_window": (analyze_fieldwork_window, ("client", "llm")),
     "compose_proposal": (proposal_handler, "llm"),
     "compose_interview_guide": (guide_handler, "llm"),
     "suggest_informants": (suggest_informants, "llm"),
@@ -177,7 +181,9 @@ class FieldAgent:
                         hint="请按工具 schema 提供参数"))
             else:  # 理论不应发生：registry 未注册同名能力
                 validated = dict(args)
-            kw = {"client": self.flyai} if inject == "client" else {"llm": self.llm}
+            injects = inject if isinstance(inject, tuple) else (inject,)
+            kw = {**({"client": self.flyai} if "client" in injects else {}),
+                  **({"llm": self.llm} if "llm" in injects else {})}
             try:
                 result = impl(**validated, **kw)
             except Exception as exc:  # noqa: BLE001 — 统一兜底，异常不外泄给 loop
@@ -216,7 +222,7 @@ class FieldAgent:
             reply = loop.reply
             tool_events = loop.tool_events
         else:
-            reply = self._rule_based_reply(phase)
+            reply = rule_based_reply(phase)
             tool_events = []
 
         self._persist_events(pid, tool_events)
@@ -258,21 +264,16 @@ class FieldAgent:
     # ─── 采集：extract 落研究上下文 ──────────────────────────────
 
     def _apply_extract(self, pid: str, message: str) -> None:
-        """纯函数提取 discipline/scale/budget/purpose/extras.region + 地点，落盘。
-
-        topic/time_window/purpose(对话型) 依赖后续访谈轮迭代采集（Task 4/11 裁决），
-        本层只做可确定性抽取的软线索合并，且**不覆盖**已填非空字段（保护用户修正）。
-        """
         ctx = self.repo.get_research_context(pid)
-        found = {**extract_locations(message, ctx), **extract_researcher_info(message)}
+        found = apply_message_extractions(message, ctx)
+        if not found:
+            return
         merged = dict(ctx)
         extras = dict(merged.get("extras") or {})
         for key, value in found.items():
-            if not value:
-                continue
             if key.startswith("extras."):
                 extras[key.split(".", 1)[1]] = value
-            elif not str(merged.get(key, "")).strip():
+            else:
                 merged[key] = value
         if extras:
             merged["extras"] = extras
@@ -323,30 +324,6 @@ class FieldAgent:
             return {"from": state["phase"], "to": result.to_phase}
         return None
 
-    # ─── 规则回复（无 LLM 降级）─────────────
-
-    def _rule_based_reply(self, phase: str) -> str:
-        replies = {
-            "research_positioning": (
-                "感谢您的描述。为了帮您制定更精准的田野调查旅行方案，我需要了解几个关键信息：\n\n"
-                "1. 您的学科背景和研究取向是什么？\n"
-                "2. 初步的研究问题或关注焦点是什么？\n"
-                "3. 您对田野地点的确定程度如何？\n\n"
-                "请尽量详细地告诉我，我会根据您的回答逐步完善方案。"
-            ),
-            "field_site_profiles": (
-                "好的，我来帮您收集候选田野点的详细信息。\n\n请告诉我您关注的目标区域或具体地点名称。"
-            ),
-            "itinerary_planning": (
-                "了解了。现在我来为您规划详细的行程安排。\n\n请告诉我您的出发城市和预期的调研日期。"
-            ),
-            "proposal_generation": (
-                "正在整合所有信息，生成完整的研究方案...\n\n"
-                "方案将包含研究背景、方法论、详细行程、预算明细、风险评估等完整章节。"
-            ),
-        }
-        return replies.get(phase, "收到，请继续说明您的需求。")
-
     # ─── 方案生成（generate 命令接线）─────────────
 
     def generate_proposal(self) -> dict[str, Any]:
@@ -377,7 +354,7 @@ class FieldAgent:
         for c in self.repo.list_cached_searches(pid):
             if c.get("tool") != "compose_itinerary":
                 continue
-            full = self.repo.get_cached_search(c["id"])
+            full = self.repo.get_cached_search(pid, c["id"])
             if full and isinstance(full.get("result"), dict):
                 plan = full["result"]
         return plan

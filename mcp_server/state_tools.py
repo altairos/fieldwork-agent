@@ -6,27 +6,27 @@ handler 统一收具名参数（server 以 ``handlers[name](**arguments)`` 调�
 不崩溃、不向 MCP 协议层泄业务异常。``ValueError``（如非法阶段）不属兜底范围，自然抛出。
 
 终审 C1：``project_id`` 是客户端可控输入，而 ``JsonRepository`` 以 ``root / pid``
-直拼文件系统路径——目录穿越（``../``、反斜杠、Windows 绝对路径/盘符整体替换基路径）
-的净化规则**单一来源在 ``kernel/repository/guard.py``**（持久化边界的稳定层，
-mcp_server 与 web_host 两个宿主薄壳共同依赖，宿主之间不互相依赖）。本模块薄壳只
-负责两件事：``_pid_violation`` 探测 repo 的 ``root`` 后委派 kernel 守卫；
-``guard_project_id`` 把拒绝原因折成 ``invalid_args`` 错误包络（handler 与
-``resources.py`` 项目类 URI 路由两处入口共用）。
+直拼文件系统路径——本模块提供统一净化守卫 ``guard_project_id``（handler 与
+``resources.py`` 项目类 URI 路由两处入口共用），拒绝目录穿越（``../``、反斜杠、
+Windows 绝对路径/盘符整体替换基路径）；规则实现已下沉 kernel/repository/guard.py
+（审计 F01 单一来源），本模块薄壳折 MCP 错误包络。
 """
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
-from fieldwork_agent.kernel.repository.guard import (
-    PID_MAX_LEN as PID_MAX_LEN,  # 同名别名显式 re-export：本模块不再直接消费，保持既有取用路径
-)
-from fieldwork_agent.kernel.repository.guard import PID_RULE_HINT, project_id_violation
+from fieldwork_agent.kernel.repository.guard import project_id_violation
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 from mcp.types import Tool, ToolAnnotations
 
 ITINERARY_STATE_KEYS = ("itinerary", "travel_plan")   # 兼容旧键
+
+# project_id 净化规则（终审 C1）：规则实现已下沉 kernel/repository/guard.py
+# （审计 F01 单一来源），本模块只留提示文案用于 MCP 错误包络折叠。
+PID_RULE_HINT = "project_id 仅允许字母数字下划线连字符等安全字符"
 
 
 def _ok(data: Any) -> dict:
@@ -43,26 +43,14 @@ def _not_found(project_id: str) -> dict:
                 "先 create_project 或使用 list_projects 查已有项目")
 
 
-def _pid_violation(project_id: Any, repo: Any = None) -> str:
-    """project_id 非法则返回原因，合法返回空串——薄委派到 kernel 守卫（规则单一来源）。
-
-    规则语义（字符黑名单 + containment 双保险、"入参必须已解码"前提）全部定义在
-    ``kernel/repository/guard.py``，本层不复制任何判定逻辑，只保留 repo → ``root``
-    的探测：``root`` 是 ``JsonRepository`` 的非 Protocol 成员（json_repo.py 明示
-    "仅供宿主排障与契约套件直读"，薄壳属宿主）；仅实现 ``ProjectRepository``
-    Protocol 的替身没有 ``root``，此时传 None，kernel 守卫跳过 containment 双保险，
-    只靠字符校验。
-    """
-    return project_id_violation(project_id, getattr(repo, "root", None))
-
-
 def guard_project_id(project_id: Any, repo: Any = None) -> dict | None:
     """统一净化守卫：非法 project_id → ``invalid_args`` 错误包络；合法 → None。
 
-    业务失败折包络、不抛协议异常（全局约束）。``resources.read_resource`` 的
-    项目类 URI 路由复用本函数（单向 import，state_tools 不依赖 resources）。
+    规则实现于 kernel/repository/guard.py（审计 F01 单一来源）；本函数只折
+    MCP 错误包络并回显原始输入（CLI 侧诊断用——与 Web 侧不回显策略不同）。
+    ``resources.read_resource`` 的项目类 URI 路由复用本函数。
     """
-    reason = _pid_violation(project_id, repo)
+    reason = project_id_violation(project_id, repo)
     if not reason:
         return None
     return _err("invalid_args", f"非法 project_id: {project_id!r}（{reason}）",
@@ -95,8 +83,14 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
         try:
-            repo.update_research_context(project_id, patch)
+            # 审计二 R05：与 Web 工具/REST 同一校验来源，原子拒绝非法 patch
+            clean = sanitize_context_patch(
+                patch, current=repo.get_research_context(project_id))
+            repo.update_research_context(project_id, clean)
             return _ok(repo.get_research_context(project_id))
+        except ValueError as exc:
+            return _err("invalid_args", str(exc),
+                        "可写白名单：" + context_fields_hint())
         except KeyError:
             return _not_found(project_id)
 
@@ -150,10 +144,12 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
             return _not_found(project_id)
         has_itinerary = any(state.get(k) for k in ITINERARY_STATE_KEYS)
         # 确定性判定（纯规则，绝不经 LLM）；实际切阶段由宿主 set_phase 落地
+        # 审计二 R09：失效确认（五路指纹不一致 / legacy 无指纹）不算已确认
         result = phases.check_advance(
             state["phase"], ctx, sites, informants,
             has_itinerary, bool(state.get("proposals")),
-            bool(state.get("proposal_confirmed")))
+            bool(state.get("proposal_confirmed"))
+            and not repo.is_proposal_confirmation_stale(project_id))
         return _ok(result.model_dump())
 
     return {"create_project": create_project, "list_projects": list_projects,
@@ -171,15 +167,7 @@ def _annotations() -> ToolAnnotations:
     return ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 
 
-def _pid_schema(description: str = "项目唯一标识；未知 project_id 返回 project_not_found") -> dict:
-    """``project_id`` 子 schema 工厂（终审⑨）：每次返回**新** dict。
-
-    原 ``_PID`` 常量是同一个 dict 对象被 7 个 Tool 的 inputSchema 共享（pydantic 不拷贝
-    dict 字段），日后给单个工具定制描述会静默串改其余工具。工厂化后各工具各持一份，
-    schema 内容与此前逐字一致。
-    """
-    return {"type": "string", "description": description}
-
+_PID = {"type": "string", "description": "项目唯一标识；未知 project_id 返回 project_not_found"}
 
 STATE_TOOLS: list[Tool] = [
     Tool(name="create_project",
@@ -187,8 +175,8 @@ STATE_TOOLS: list[Tool] = [
                      "project_id 缺省时自动生成 field_<时间戳>；新项目从 research_positioning 阶段开始。",
          inputSchema={"type": "object",
                       "properties": {
-                          "project_id": _pid_schema(
-                              "项目唯一标识；缺省自动生成 field_<时间戳>")}},
+                          "project_id": {"type": "string",
+                                         "description": "项目唯一标识；缺省自动生成 field_<时间戳>"}}},
          annotations=_annotations()),
     Tool(name="list_projects",
          description="列出全部项目摘要（project_id/phase/created_at/updated_at）；无需参数。",
@@ -196,21 +184,21 @@ STATE_TOOLS: list[Tool] = [
          annotations=_annotations()),
     Tool(name="get_project",
          description="读取整份项目状态（副本，含 phase/research_context/field_sites/informants/proposals 等）。",
-         inputSchema={"type": "object", "properties": {"project_id": _pid_schema()},
+         inputSchema={"type": "object", "properties": {"project_id": _PID},
                       "required": ["project_id"]},
          annotations=_annotations()),
     Tool(name="update_research_context",
          description="按 patch 浅合并更新研究上下文（只覆盖 patch 中出现的键），返回更新后的完整上下文。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _pid_schema(),
+                      "properties": {"project_id": _PID,
                                      "patch": {"type": "object",
-                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）"}},
+                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）；任一字段非法则整次拒绝"}},
                       "required": ["project_id", "patch"]},
          annotations=_annotations()),
     Tool(name="save_field_site",
          description="保存田野点记录（record 带 id 则更新，否则新建；upsert 幂等），返回记录 id。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _pid_schema(),
+                      "properties": {"project_id": _PID,
                                      "record": {"type": "object",
                                                 "description": "田野点记录（name/confirmed/profile 等；带 id 则更新）"}},
                       "required": ["project_id", "record"]},
@@ -218,7 +206,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="save_informant",
          description="保存报道人（访谈对象）记录（record 带 id 则更新，否则新建；upsert 幂等），返回记录 id。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _pid_schema(),
+                      "properties": {"project_id": _PID,
                                      "record": {"type": "object",
                                                 "description": "报道人记录（code/type/relation/contact/notes；带 id 则更新）"}},
                       "required": ["project_id", "record"]},
@@ -226,7 +214,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="add_knowledge_entry",
          description="向项目知识库新增一条知识条目，返回条目 id；随后可用 search_knowledge 检索。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _pid_schema(),
+                      "properties": {"project_id": _PID,
                                      "title": {"type": "string", "description": "条目标题"},
                                      "content": {"type": "string", "description": "条目正文"},
                                      "source": {"type": "string", "description": "来源标注，缺省 user"},
@@ -238,7 +226,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="search_knowledge",
          description="关键词过滤检索项目知识库（标题+正文+标签，大小写不敏感，空白分词 AND 匹配）。",
          inputSchema={"type": "object",
-                      "properties": {"project_id": _pid_schema(),
+                      "properties": {"project_id": _PID,
                                      "text": {"type": "string",
                                               "description": "检索文本（空白分词，要求全部命中）"}},
                       "required": ["project_id", "text"]},
@@ -246,7 +234,7 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="check_phase_advance",
          description="确定性判定项目当前阶段能否推进（纯规则，不经 LLM），返回 can_advance/to_phase/"
                      "missing_fields；实际阶段切换由宿主落地，本工具只读不改状态。",
-         inputSchema={"type": "object", "properties": {"project_id": _pid_schema()},
+         inputSchema={"type": "object", "properties": {"project_id": _PID},
                       "required": ["project_id"]},
          annotations=_annotations()),
 ]

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { Price } from "../ui/Price";
@@ -7,6 +7,7 @@ import { ItemList } from "../cards/SearchResultCard";
 import { asArray, asRecord, boolOf, numOf, strOf, toItemPage } from "../cards/data";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
+import { rest } from "../../api/rest";
 
 /**
  * FieldSitesPanel — 右栏「田野点」面板（状态投影）。
@@ -34,6 +35,8 @@ import { useToolsStore } from "../../stores/tools";
 
 /** 面板内的站点视图：快照记录 + 本回合 live 画像（同源 data）合并结果。 */
 interface SiteView {
+  /** repo 记录键（site_ 前缀）；live-only 项为 ""（快照尚未落盘，不可确认） */
+  id: string;
   name: string;
   confirmed: boolean;
   /** FieldSiteProfile 的 dict 形式；null = 尚未取得画像 */
@@ -76,7 +79,11 @@ function Block({
   );
 }
 
-function SiteBlock({ site }: { site: SiteView }) {
+function SiteBlock({ site, onConfirm, confirming }: {
+  site: SiteView;
+  onConfirm?: (site: SiteView) => void;
+  confirming?: string | null;
+}) {
   const rec = site.profile ?? {};
   const summary = asRecord(rec.summary);
   const counts = asRecord(summary.section_counts);
@@ -124,8 +131,17 @@ function SiteBlock({ site }: { site: SiteView }) {
               <IconCheck className="w-3 h-3" />
               已确认
             </Chip>
-          ) : (
+          ) : site.liveOnly || !site.id ? (
             <Chip tone="neutral">待确认</Chip>
+          ) : (
+            <button
+              type="button"
+              disabled={confirming !== null}
+              onClick={() => onConfirm?.(site)}
+              className="text-[11.5px] px-2.5 py-0.5 rounded-md hairline text-cinnabar hover:bg-cardsunk disabled:opacity-50"
+            >
+              {confirming === site.id ? "确认中…" : "确认"}
+            </button>
           )}
         </span>
       </div>
@@ -229,11 +245,30 @@ export function FieldSitesPanel() {
     live.set(key, { data, degraded: call.degraded ?? null });
   }
 
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  const confirmSite = async (site: SiteView) => {
+    const pid = snapshot?.project_id;
+    if (!pid || !site.id || confirming !== null) return;
+    setConfirming(site.id);
+    setConfirmError(null);
+    try {
+      await rest.confirmFieldSite(pid, site.id);
+      useProjectStore.getState().loadSnapshot(await rest.getProject(pid));
+    } catch (e) {
+      setConfirmError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConfirming(null);
+    }
+  };
+
   const records = snapshot?.field_sites ?? [];
   const sites: SiteView[] = records.map((r) => {
     const name = strOf(r.name);
     const hit = live.get(name);
     return {
+      id: strOf(r.id),
       name,
       confirmed: boolOf(r.confirmed),
       profile: hit ? hit.data : profileOf(r.profile),
@@ -243,7 +278,7 @@ export function FieldSitesPanel() {
   });
   for (const [name, hit] of live) {
     if (records.some((r) => strOf(r.name) === name)) continue;
-    sites.push({ name, confirmed: false, profile: hit.data, liveOnly: true, degraded: hit.degraded });
+    sites.push({ id: "", name, confirmed: false, profile: hit.data, liveOnly: true, degraded: hit.degraded });
   }
 
   if (sites.length === 0) {
@@ -259,8 +294,10 @@ export function FieldSitesPanel() {
   return (
     <div>
       <div className="font-serif text-[15px] font-semibold mb-3">{`田野点 · ${sites.length}`}</div>
+      {confirmError && <div className="text-[11px] text-ochre mb-2">{confirmError}</div>}
       {sites.map((site, i) => (
-        <SiteBlock key={`${site.name}-${i}`} site={site} />
+        <SiteBlock key={`${site.name}-${i}`} site={site}
+                   onConfirm={confirmSite} confirming={confirming} />
       ))}
     </div>
   );

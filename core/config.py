@@ -28,6 +28,10 @@ class Config:
         # FlyAI（自动从 CLI 配置文件读取）
         self.flyai_api_key: str = os.getenv("FLYAI_API_KEY", "")
 
+        # 应用访问令牌（审计 F02）：非空时 Web 宿主中间件要求 X-App-Token 匹配。
+        # 仅环境变量——不进 save()/_load_config（令牌属部署边界，非用户偏好，不落盘）。
+        self.app_token: str = os.getenv("FIELDWORK_APP_TOKEN", "")
+
         # 模型分档三槽：对话推进 / 长文方案 / 结构化抽取
         self.interview_model: str = os.getenv("FA_INTERVIEW_MODEL", "qwen3.8-flash")
         self.proposal_model: str = os.getenv("FA_PROPOSAL_MODEL", "qwen-max")
