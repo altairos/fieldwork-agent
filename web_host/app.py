@@ -1,7 +1,9 @@
 """FastAPI 入口：lifespan 管理单例、CORS(localhost)、路由挂载。"""
 
 import hmac
+import os
 import shutil
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -79,7 +81,11 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
         root = getattr(repo, "root", None)
         writable = False
         if root is not None:
-            probe = root / ".ready_probe"
+            # 探针文件名每次唯一（终审#2）：固定名在并发 /ready 下会 touch→unlink 互踩，
+            # 后到的一方 unlink 抛 FileNotFoundError（⊂ OSError）误报不可写 → 假 503。
+            # 不用 monotonic_ns：Windows 粒度约 15.6ms，同进程两次请求可能同名（实测复现），
+            # uuid4 才能保证唯一。
+            probe = root / f".ready_probe.{os.getpid()}.{uuid.uuid4().hex}"
             try:
                 probe.touch()
                 probe.unlink()

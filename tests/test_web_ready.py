@@ -58,3 +58,32 @@ async def test_ready_unwritable_projects_dir_503(client, monkeypatch):
     r = await client.get("/ready")
     assert r.status_code == 503
     assert r.json()["checks"]["projects_dir_writable"] is False
+
+
+async def test_ready_probe_filename_unique_per_call(client, tmp_path, monkeypatch):
+    """终审#2：并发 /ready 的 touch→unlink 互踩 → 假 503。
+
+    探针文件名必须每次调用唯一（pid + monotonic_ns）；确定性竞态难以复现，
+    退而钉住不变量：两次 /ready 触碰的文件名互不相同，且无探针残留。
+    """
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/flyai" if name == "flyai" else None)
+
+    import pathlib
+
+    names: list[str] = []
+    real_touch = pathlib.Path.touch
+
+    def spy(self, *a, **k):
+        names.append(self.name)
+        return real_touch(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "touch", spy)
+
+    r1 = await client.get("/ready")
+    r2 = await client.get("/ready")
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert len(names) == 2
+    assert names[0] != names[1]
+    assert all(n.startswith(".ready_probe.") for n in names)
+    # touch→unlink 后不留探针残留（目录里只剩 repo 自身文件结构）
+    assert list((tmp_path / "projects").glob(".ready_probe*")) == []
