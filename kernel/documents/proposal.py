@@ -142,6 +142,16 @@ def _bullets_informants(items: list[dict]) -> list[str]:
     return lines or ["- （暂无访谈对象）"]
 
 
+def _informants_bullets(items: list[dict], ctx: ResearchContext) -> list[str]:
+    """访谈对象 bullets（审计 F12）：非访谈研究豁免空候选，其余沿用既有渲染。"""
+    if items:
+        return _bullets_informants(items)
+    if getattr(ctx, "interviews_not_applicable", False):
+        reason = getattr(ctx, "interviews_na_reason", "") or "研究者已声明本研究不适用访谈方法"
+        return [f"- 不适用访谈方法：{reason}"]
+    return _bullets_informants(items)  # 空且未声明 NA → 既有占位（raise 由调用方把关）
+
+
 def _bullets_knowledge(items: list[dict]) -> list[str]:
     lines: list[str] = []
     for k in items:
@@ -169,7 +179,7 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         raise ValueError("缺少渠道: 田野点")
     if itinerary is None or (isinstance(itinerary, dict) and len(itinerary) == 0):
         raise ValueError("缺少渠道: 行程")
-    if not informants:
+    if not informants and not getattr(ctx, "interviews_not_applicable", False):
         raise ValueError("缺少渠道: 访谈对象")
 
     def _section(title: str, bullets: list[str]) -> str:
@@ -179,7 +189,7 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         _section("研究者信息", _bullets_researcher(ctx)),
         _section("田野点", _bullets_sites(sites)),
         _section("行程", _bullets_itinerary(itinerary)),
-        _section("访谈对象", _bullets_informants(informants)),
+        _section("访谈对象", _informants_bullets(informants, ctx)),
     ]
     kb = _bullets_knowledge(knowledge)
     if kb:
@@ -205,7 +215,7 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
     bodies: list[list[str]] = [
         _bullets_researcher(ctx),
         _bullets_sites(sites),
-        _bullets_informants(informant_items),
+        _informants_bullets(informant_items, ctx),
         _bullets_itinerary(itinerary),
         [
             f"- 预算：{ctx.budget or '待补充'}",
