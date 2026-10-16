@@ -144,10 +144,12 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
             return _not_found(project_id)
         has_itinerary = any(state.get(k) for k in ITINERARY_STATE_KEYS)
         # 确定性判定（纯规则，绝不经 LLM）；实际切阶段由宿主 set_phase 落地
+        # 审计二 R09：失效确认（五路指纹不一致 / legacy 无指纹）不算已确认
         result = phases.check_advance(
             state["phase"], ctx, sites, informants,
             has_itinerary, bool(state.get("proposals")),
-            bool(state.get("proposal_confirmed")))
+            bool(state.get("proposal_confirmed"))
+            and not repo.is_proposal_confirmation_stale(project_id))
         return _ok(result.model_dump())
 
     return {"create_project": create_project, "list_projects": list_projects,

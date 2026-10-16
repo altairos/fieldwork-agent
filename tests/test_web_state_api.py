@@ -76,21 +76,17 @@ async def test_adopt_informant_type_error_400(client):
     assert r.status_code == 400
 
 
-async def test_confirm_proposal_requires_document(client):
-    r = await client.post("/projects/p1/proposal/confirm")
-    assert r.status_code == 400
-
-
 async def test_confirm_proposal_flow_and_stale(client, app):
     repo = app.state.repo
-    repo.save_proposal("p1", "# 研究方案\n\n## 一、背景\n\n内容")
-    r = await client.post("/projects/p1/proposal/confirm")
+    did = repo.save_proposal("p1", "# 研究方案\n\n## 一、背景\n\n内容")
+    r = await client.post("/projects/p1/proposal/confirm", json={"doc_id": did})
     assert r.status_code == 200
+    assert r.json()["confirmation"]["subject"] == did
     assert r.json()["proposal_confirmed"] is True
     snap = (await client.get("/projects/p1")).json()
     assert snap["proposal_confirmed"] is True
     assert snap["proposal_confirmation_stale"] is False
-    # 修改预算 → 确认失效（确认级失效：inputs_hash 不一致）
+    # 修改预算 → 确认失效（审计二 R09：五路依赖指纹不一致）
     await client.put("/projects/p1/research-context", json={"budget": "9万"})
     snap2 = (await client.get("/projects/p1")).json()
     assert snap2["proposal_confirmation_stale"] is True
@@ -115,3 +111,36 @@ async def test_r05_na_without_reason_422(client):
                          json={"interviews_not_applicable": True})
     assert r.status_code == 422
     assert "interviews_na_reason" in r.text
+
+
+async def test_r09_confirm_requires_doc_id_422(client):
+    """审计二 R09：REST 强制 doc_id——空 body 折 422（不再隐式确认『最新一份』）。"""
+    r = await client.post("/projects/p1/proposal/confirm", json={})
+    assert r.status_code == 422
+
+
+async def test_r09_confirm_not_found_404(client, app):
+    """审计二 R09：确认不存在的文档 → 404（此前指向不明的『最新』语义）。"""
+    r = await client.post("/projects/p1/proposal/confirm",
+                          json={"doc_id": "prop_20990101_deadbeef"})
+    assert r.status_code == 404
+    assert "文档不存在" in r.text
+
+
+async def test_r09_confirm_wrong_kind_400(client, app):
+    """审计二 R09：确认访谈提纲 → 400（此前 kind 不校验，任何文档都能确认）。"""
+    repo = app.state.repo
+    gid = repo.save_proposal("p1", "# 提纲", kind="interview_guide")
+    r = await client.post("/projects/p1/proposal/confirm", json={"doc_id": gid})
+    assert r.status_code == 400
+    assert "interview_guide" in r.text
+
+
+async def test_r09_confirm_dep_hash_mismatch_409(client, app):
+    """审计二 R09：依赖变化后确认同一文档 → 409（防旧输入上的确认）。"""
+    repo = app.state.repo
+    did = repo.save_proposal("p1", "# 研究方案\n\n## 一、背景\n\n内容")
+    await client.put("/projects/p1/research-context", json={"budget": "9万"})
+    r = await client.post("/projects/p1/proposal/confirm", json={"doc_id": did})
+    assert r.status_code == 409
+    assert "重新生成" in r.text

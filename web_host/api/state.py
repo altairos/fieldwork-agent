@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fieldwork_agent.kernel.context_patch import sanitize_context_patch
 from fieldwork_agent.kernel.documents.informants import candidate_to_record
 from fieldwork_agent.kernel.models import InformantCandidate
+from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
 from fieldwork_agent.web_host.agent.loop import check_and_advance
 from fieldwork_agent.web_host.api.guard import checked_project_id
 from fieldwork_agent.web_host.deps import get_repo
@@ -35,6 +36,12 @@ class ContextPatch(BaseModel):
 
 class AdoptInformantRequest(BaseModel):
     candidate: dict
+
+
+class ConfirmProposalRequest(BaseModel):
+    """审计二 R09：确认必须指定文档（doc_id），不再隐式确认『最新一份』。"""
+
+    doc_id: str
 
 
 def _guarded_state(repo, project_id: str) -> None:
@@ -93,10 +100,15 @@ async def adopt_informant(project_id: str, body: AdoptInformantRequest,
 
 
 @router.post("/projects/{project_id}/proposal/confirm")
-async def confirm_proposal(project_id: str, repo=Depends(get_repo)):
+async def confirm_proposal(project_id: str, body: ConfirmProposalRequest,
+                           repo=Depends(get_repo)):
     _guarded_state(repo, project_id)
-    if not repo.list_proposals(project_id):
-        raise HTTPException(400, "尚无方案文档：先生成方案再确认")
-    confirmation = repo.confirm_proposal(project_id)
+    try:
+        # 审计二 R09：四重校验在 kernel（Task 8）；此处只做 code→HTTP 映射
+        confirmation = repo.confirm_proposal(project_id, body.doc_id)
+    except ProposalConfirmError as exc:
+        status = {"not_found": 404, "wrong_kind": 400,
+                  "dep_hash_missing": 409, "dep_hash_mismatch": 409}[exc.code]
+        raise HTTPException(status, str(exc)) from None
     return {"confirmation": confirmation, "proposal_confirmed": True,
             "phase_transition": _transition(repo, project_id)}

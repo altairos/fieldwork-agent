@@ -167,3 +167,23 @@ def test_r05_update_context_rejects_bad_patch(tmp_path):
     assert r["error"]["code"] == "invalid_args"
     assert "budget 须为字符串" in r["error"]["message"]
     assert "白名单" in r["error"]["hint"]
+
+
+def test_r09_stale_confirmation_blocks_advance(tmp_path):
+    """审计二 R09：确认失效（五路指纹变化）后 check_phase_advance 不再放行 D→E。"""
+    repo = make_repo(tmp_path)
+    h = build_handlers(repo)
+    h["create_project"](project_id="p1")
+    repo.set_phase("p1", "proposal_generation")
+    did = repo.save_proposal("p1", "# 方案", version="final")
+    repo.confirm_proposal("p1", did)
+    r1 = h["check_phase_advance"](project_id="p1")
+    assert r1["ok"] and r1["data"]["can_advance"] is True
+    assert r1["data"]["to_phase"] == "finished"
+    # 研究上下文变化 → 指纹不一致 → 确认失效 → 阻断推进（旧行为：仍放行）
+    repo.update_research_context(
+        "p1", {**repo.get_research_context("p1"), "budget": "9万"})
+    r2 = h["check_phase_advance"](project_id="p1")
+    assert r2["ok"]
+    assert r2["data"]["can_advance"] is False
+    assert "proposal_confirmation" in r2["data"]["missing_fields"]
