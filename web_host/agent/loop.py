@@ -8,6 +8,7 @@ from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.runtime.loop import _assistant_message, _coerce_args, _tool_content
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
+from fieldwork_agent.web_host.agent.state_tools import build_state_tools
 from fieldwork_agent.web_host.turn_manager import TurnManager
 
 _SEARCH = frozenset({"search_flights", "search_trains", "search_hotels",
@@ -26,6 +27,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
     dispatch = build_dispatch_fn(flyai_client, llm)
     tools = build_tool_schemas()
+    state_schemas, state_handlers = build_state_tools(repo, pid)
+    tools = tools + state_schemas
     phase = repo.get_phase(pid)
 
     # R4：用户消息即时持久化（F09 修正：先 build 后 append——
@@ -97,7 +100,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})
-                coros.append(_exec_tool(dispatch, name, args, call_id))
+                coros.append(_exec_tool(dispatch, name, args, call_id, state_handlers))
 
             results = await asyncio.gather(*coros)
             total_calls += len(results)
@@ -159,8 +162,11 @@ async def _async_iter(sync_gen):
         yield val
 
 
-async def _exec_tool(dispatch, name, args, call_id):
-    env = await asyncio.to_thread(dispatch, name, args)
+async def _exec_tool(dispatch, name, args, call_id, local_handlers):
+    if name in local_handlers:
+        env = local_handlers[name](**args)
+    else:
+        env = await asyncio.to_thread(dispatch, name, args)
     return (call_id, name, env)
 
 
