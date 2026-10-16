@@ -457,3 +457,31 @@ register(CapabilityMeta(
                 "是处理模糊/长尾需求的核心能力。",
     fn=search_ai, args_model=SearchAiArgs,
     read_only=True, open_world=True))
+
+
+class RecordingClient:
+    """包装任意 client、逐次记录方法调用的替身（spec §5.1 快照链捕获件）。
+
+    纯内存、不碰 repository（公理 1）：web 宿主在回合级用它包住自持
+    ``FlyAIClient``，轮末由宿主侧消费 ``calls`` 落盘为快照证据；
+    kernel 自身不持久化。记录项为
+    ``(方法名, {"args": [...], "kwargs": {...}}, 返回包络)``；
+    非可调用属性（如 ``api_key``）经 ``__getattr__`` 原样透传、不留痕。
+    """
+
+    def __init__(self, inner: Any):
+        self.inner = inner
+        self.calls: list[tuple[str, dict, Any]] = []
+
+    def __getattr__(self, name: str):
+        # inner/calls 在实例字典命中，不会进入本方法；其余属性一律问 inner
+        target = getattr(self.inner, name)
+        if not callable(target):
+            return target
+
+        def _recorded(*args: Any, **kwargs: Any) -> Any:
+            result = target(*args, **kwargs)
+            self.calls.append((name, {"args": list(args), "kwargs": dict(kwargs)}, result))
+            return result
+
+        return _recorded
