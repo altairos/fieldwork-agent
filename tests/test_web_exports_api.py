@@ -42,6 +42,60 @@ async def test_download_proposal(client):
     assert "# 标题" in r.text
 
 
+async def test_download_proposal_txt(client):
+    r = await client.get("/projects/p1/proposal/download", params={"format": "txt"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    cd = r.headers["content-disposition"]
+    assert "attachment" in cd
+    assert '.txt"' in cd
+    assert "# 标题" not in r.text
+    assert "一、背景" in r.text
+
+
+async def test_download_proposal_docx(client):
+    import io
+
+    from docx import Document
+
+    r = await client.get("/projects/p1/proposal/download", params={"format": "docx"})
+    assert r.status_code == 200
+    assert (
+        r.headers["content-type"].startswith(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    )
+    cd = r.headers["content-disposition"]
+    assert ".docx" in cd
+    doc = Document(io.BytesIO(r.content))
+    h1 = [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert h1 == ["标题"]
+
+
+async def test_download_proposal_invalid_format_422(client):
+    r = await client.get("/projects/p1/proposal/download", params={"format": "pdf"})
+    assert r.status_code == 422
+
+
+async def test_download_proposal_docx_degrades_to_txt(client, monkeypatch):
+    from fieldwork_agent.web_host.api import exports as exports_mod
+
+    monkeypatch.setattr(exports_mod, "to_docx_bytes", lambda _md: None)
+    r = await client.get("/projects/p1/proposal/download", params={"format": "docx"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert '.txt"' in r.headers["content-disposition"]
+
+
+async def test_download_proposal_explicit_md_matches_default(client):
+    r_default = await client.get("/projects/p1/proposal/download")
+    r_md = await client.get("/projects/p1/proposal/download", params={"format": "md"})
+    assert r_md.status_code == r_default.status_code == 200
+    assert r_md.headers["content-type"] == r_default.headers["content-type"]
+    assert r_md.headers["content-disposition"] == r_default.headers["content-disposition"]
+    assert r_md.content == r_default.content
+
+
 async def test_list_proposals(client):
     r = await client.get("/projects/p1/proposals")
     assert r.status_code == 200

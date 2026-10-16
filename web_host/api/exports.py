@@ -1,11 +1,16 @@
 """提案导出路由（spec §3.2 exports）。"""
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from fieldwork_agent.web_host.api.guard import checked_project_id
 from fieldwork_agent.web_host.deps import get_repo
+from fieldwork_agent.web_host.export_formats import filename_for, to_docx_bytes, to_text
 
 router = APIRouter(tags=["exports"])
+
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def _proposal_payload(doc: dict) -> dict:
@@ -32,7 +37,12 @@ async def get_proposal(project_id: str, repo=Depends(get_repo)):
 
 
 @router.get("/projects/{project_id}/proposal/download")
-async def download_proposal(project_id: str, repo=Depends(get_repo)):
+async def download_proposal(
+    project_id: str,
+    # 参数名沿用 spec：format（ruff 未启用 A 系列，遮蔽内置不触发，不加 noqa）
+    format: Literal["md", "docx", "txt"] = "md",
+    repo=Depends(get_repo),
+):
     checked_project_id(project_id, repo)
     try:
         repo.get_state(project_id)
@@ -43,9 +53,21 @@ async def download_proposal(project_id: str, repo=Depends(get_repo)):
         raise HTTPException(404, "尚无提案文档")
     content = doc.get("content", "")
     filename = doc.get("filename", f"{project_id}_proposal.md")
+    if format == "md":
+        return PlainTextResponse(
+            content, media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    if format == "docx":
+        docx_bytes = to_docx_bytes(content)
+        if docx_bytes is not None:
+            return Response(
+                docx_bytes, media_type=DOCX_MEDIA_TYPE,
+                headers={"Content-Disposition":
+                         f'attachment; filename="{filename_for(filename, "docx")}"'})
+        # docx 转换失败：整体降级 txt（绝不让 500 冒泡）
     return PlainTextResponse(
-        content, media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        to_text(content), media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename_for(filename, "txt")}"'})
 
 
 @router.get("/projects/{project_id}/proposals/{doc_id}")
