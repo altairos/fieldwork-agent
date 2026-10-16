@@ -1,6 +1,18 @@
 # tests/test_window.py — analyze_fieldwork_window 聚合契约（L2，全 mock）
-from fieldwork_agent.kernel.aggregation.window import MAX_SAMPLES, _sample_curve, _sample_dates
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
+import pytest
+from fieldwork_agent.kernel.aggregation.window import (
+    MAX_SAMPLES,
+    _sample_curve,
+    _sample_dates,
+    _score_windows,
+)
+from fieldwork_agent.kernel.models import (
+    Envelope,
+    FestivalInfo,
+    ItemPage,
+    PriceCurve,
+    SearchItem,
+)
 
 
 def test_sample_dates_basic():
@@ -76,3 +88,59 @@ def test_sample_curve_all_hotel_failed():
 
     curve, notes = _sample_curve(HotelDead(), "昆明", "西昌", ["2026-07-01"])
     assert curve.hotel_min == [None] and any("住宿" in n for n in notes)
+
+
+# ── Task 6 评分层 ────────────────────────────────────────
+
+
+def _curve(dates, flight, hotel):
+    return PriceCurve(dates=list(dates), flight_min=list(flight), hotel_min=list(hotel))
+
+
+def test_score_windows_hand_computed():
+    """手算金标准：全期 avg_all=(638+158)/2=398；窗口 W1[07-01,07-10]
+    W2[07-08,07-17] W3[07-15,07-24]。W3: price=min(40,40·(1-375/398)/0.3)=7.71
+    + 节庆 15 + budget=30·(1-3790/5000)=7.26 → 29.97；W2=4.56；W1=3.66。"""
+    dates = ["2026-07-01", "2026-07-08", "2026-07-15", "2026-07-22", "2026-07-29"]
+    curve = _curve(dates, [700.0, 680.0, 650.0, 560.0, 600.0],
+                  [180.0, 170.0, 160.0, 130.0, 150.0])
+    torch = FestivalInfo(name="彝族火把节", approx_start="2026-07-20",
+                         approx_end="2026-07-22", relevance="西南民族志核心节庆")
+    windows = _score_windows(curve, [torch], "2026-07-01", "2026-07-29",
+                             duration_days=10, budget_total=5000.0, sample_step=7)
+    assert len(windows) == 3  # 下一个 start=07-22 > last_start=07-20，恰三个
+    top, mid, low = windows
+    assert (top.start, top.end) == ("2026-07-15", "2026-07-24")
+    assert top.score == pytest.approx(29.97, abs=0.01)
+    assert mid.score == pytest.approx(4.56, abs=0.01)
+    assert low.score == pytest.approx(3.66, abs=0.01)
+    joined = "；".join(top.reasons)
+    assert "火把节" in joined and "预算" in joined
+    assert top.evidence["estimate"] == pytest.approx(3790.0)
+    assert top.evidence["flight_min"] == pytest.approx(560.0)
+    assert top.evidence["hotel_min"] == pytest.approx(130.0)
+
+
+def test_score_windows_cap_by_festival_presence():
+    """同一低价窗口：无节庆数据 cap=60 封顶；有节庆数据（即使不交集）cap=40。"""
+    curve = _curve(["2026-07-01", "2026-07-08"], [800.0, 400.0], [200.0, 100.0])
+    kw = dict(range_start="2026-07-01", range_end="2026-07-15",
+              duration_days=2, budget_total=5000.0, sample_step=7)
+    no_fest = _score_windows(curve, [], **kw)
+    far = [FestivalInfo(name="赶秋节", approx_start="2026-07-03",
+                        approx_end="2026-07-04", relevance="x")]
+    with_fest = _score_windows(curve, far, **kw)
+    # 窗口 [07-08,07-09]：avg_w=250，avg_all=375，d=1/3 → 60·(1/3)/0.3=66.7 触顶
+    assert no_fest[0].evidence["price_score"] == pytest.approx(60.0)
+    assert with_fest[0].evidence["price_score"] == pytest.approx(40.0)
+    assert with_fest[0].evidence["festival_score"] == 0.0  # 不交集不计分
+
+
+def test_score_windows_flight_dimension_dropped():
+    """航班整类 None：交通维度剔除，est 只含住宿+餐费。"""
+    curve = _curve(["2026-07-01", "2026-07-08"], [None, None], [200.0, 100.0])
+    windows = _score_windows(curve, [], "2026-07-01", "2026-07-15",
+                             duration_days=2, budget_total=5000.0, sample_step=7)
+    top = windows[0]  # [07-08,07-09]
+    assert top.evidence["flight_min"] is None
+    assert top.evidence["estimate"] == pytest.approx(400.0)  # 100×1 夜 + 150×2 天

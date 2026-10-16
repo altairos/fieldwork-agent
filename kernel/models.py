@@ -188,7 +188,7 @@ class RecommendedWindow(BaseModel):
     end: str = ""
     score: float = 0.0             # 0-100，确定性评分
     reasons: list[str] = Field(default_factory=list)   # 模板拼装理由链（含统计数字）
-    evidence: list[str] = Field(default_factory=list)  # "采样点 2027-07-20：航班¥620/晚住宿¥150"
+    evidence: dict[str, Any] = Field(default_factory=dict)   # 七键评分明细：price_score/festival_score/budget_score/flight_min/hotel_min/estimate/festivals
 
 
 class WindowAnalysis(BaseModel):
