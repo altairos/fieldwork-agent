@@ -37,3 +37,8 @@ web/node_modules/
 web/dist/
 web/playwright-report/
 web/test-results/
+
+# 部署打包产物（本地 tar 包 + 上云发布暂存，勿提交）
+fieldwork-agent-deploy.tar.gz
+*.tar.gz
+.qw-pages-deploy/

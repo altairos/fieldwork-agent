@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { rest } from "../api/rest";
+import { ApiKeyCard } from "../components/settings/ApiKeyCard";
 import { DEFAULT_PHASES } from "../components/layout/LeftRail";
 import { Button } from "../components/ui/Button";
 import { Chip, type ChipTone } from "../components/ui/Chip";
@@ -321,8 +322,9 @@ export function ProjectHub() {
             )}
           </div>
 
-          {/* 侧栏：说明（设计板 369-383） */}
+          {/* 侧栏：密钥配置 + 说明（密钥卡置顶：无 key 不可对话，入口需最先看到） */}
           <aside className="space-y-4">
+            <ApiKeyCard />
             <div className="hairline rounded-lg bg-paperdeep p-5">
               <div className="font-serif text-[15px] font-semibold mb-3 flex items-center gap-2">
                 <IconCompass className="w-4 h-4 text-cinnabar" />

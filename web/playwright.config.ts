@@ -12,6 +12,9 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
+  // 跨 spec 也必须串行：mock server 的 settingsState 是全局单例，keys.spec 会翻转它，
+  // 并行 worker 里 fieldwork.spec 的页面会被 403 门锁死（fullyParallel:false 只管单文件内）。
+  workers: 1,
   retries: 0,
   reporter: [["list"]],
   use: {

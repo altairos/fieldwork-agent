@@ -3,6 +3,7 @@ import asyncio
 import time
 from typing import Any
 
+from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.runtime.loop import _assistant_message, _coerce_args, _tool_content
 from fieldwork_agent.web_host.agent.context import build_messages
@@ -12,6 +13,10 @@ from fieldwork_agent.web_host.turn_manager import TurnManager
 _SEARCH = frozenset({"search_flights", "search_trains", "search_hotels",
                      "search_marriott_hotels", "search_marriott_packages",
                      "search_pois", "search_keyword", "search_ai"})
+
+# 无 LLM 降级提示：web 宿主无启动横幅渠道，提示附在回复末尾（CLI 宿主用启动横幅呈现）
+_DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
+                  "以上为固定引导文案；配置后可启用智能对话。）")
 
 
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
@@ -44,6 +49,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             if time.monotonic() - start > max_wall_seconds:
                 break
 
+            # 无 LLM（未配置 DashScope key）降级：规则文案回复后退出，走统一轮末
+            if llm is None:
+                reply = rule_based_reply(phase) + _DEGRADED_NOTE
+                tm.append_event(pid, turn_id, "message_delta", {"text": reply})
+                accumulated_reply = reply
+                break
+
             # 流式 LLM
             stream = llm.chat_stream(messages, tools=tools, slot="interview")
             iterations += 1
@@ -57,6 +69,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
 
             if final_resp is None:
                 break
+            # LLM 错误帧（key 无效/限流等，kernel.llm 契约：HTTP 非 200 返零值+error 键）：
+            # 如实发 error + failed 终态。回归：此前 content="" 被当正常终止帧，
+            # 错误静默吞掉、产出空 turn_done（配错 key 表现为「没反应」）。
+            llm_error = final_resp.get("error")
+            if llm_error:
+                tm.append_event(pid, turn_id, "error",
+                                {"code": "llm_error", "message": str(llm_error),
+                                 "hint": "请检查百炼 API Key 是否有效"})
+                tm.finish(pid, turn_id, "failed")
+                return
             accumulated_reply = final_resp.get("content", "") or accumulated_reply
             usage_total = final_resp.get("usage", {}) or usage_total
             tool_calls = final_resp.get("tool_calls")

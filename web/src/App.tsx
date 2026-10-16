@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { BrowserRouter, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { BrowserRouter, Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { rest } from "./api/rest";
 import { Composer } from "./components/chat/Composer";
 import { PhaseBanner } from "./components/chat/PhaseBanner";
@@ -8,6 +8,7 @@ import { Header } from "./components/layout/Header";
 import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
 import { useTurn } from "./hooks/useTurn";
+import { hasDashScopeKey } from "./lib/keys";
 import { useConversationStore } from "./stores/conversation";
 import { useProjectStore } from "./stores/project";
 import { useToolsStore } from "./stores/tools";
@@ -28,6 +29,9 @@ import { ProposalView } from "./routes/ProposalView";
  * 跨项目 reset（Task 7 遗留，Task 8 补齐）：projectId 变化时先清空 conversation/tools/ui/project
  *   四个 store，避免上一个项目的对话/工具卡/横幅状态串台；该 effect 声明在快照加载之前，
  *   React 按声明顺序执行，保证「先清后载」。
+ * 无 key 拦截（可浏览不可发）：挂载时查本地 key + GET /settings/status，
+ *   本地无百炼 key 且服务端未配 → Composer locked；状态查询失败不锁
+ *   （后端 403 llm_key_required 兜底，见 useTurn keyMissing）。
  */
 function Workspace() {
   const { id } = useParams();
@@ -37,6 +41,7 @@ function Workspace() {
   const topic = useProjectStore((s) => s.snapshot?.research_context?.topic);
   const loadSnapshot = useProjectStore((s) => s.loadSnapshot);
   const turn = useTurn(projectId);
+  const [composerLocked, setComposerLocked] = useState(false);
 
   // 跨项目 reset：按 projectId 变化清空四 store（幂等，StrictMode 双执行安全）
   useEffect(() => {
@@ -44,6 +49,25 @@ function Workspace() {
     useToolsStore.getState().reset();
     useUiStore.getState().reset();
     useProjectStore.getState().reset();
+  }, [projectId]);
+
+  // 无 key 拦截：本地 key 优先（免查）；否则等服务端结论。查询失败不锁（后端 403 兜底），
+  // 避免旧后端（无 /settings/status）把已配 key 的部署锁死。
+  useEffect(() => {
+    if (hasDashScopeKey()) {
+      setComposerLocked(false);
+      return;
+    }
+    let alive = true;
+    rest
+      .settingsStatus()
+      .then((s) => {
+        if (alive) setComposerLocked(!s.dashscope_configured);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
   }, [projectId]);
 
   useEffect(() => {
@@ -83,7 +107,19 @@ function Workspace() {
         <main className="flex flex-col bg-paper/40 min-w-0 min-h-0">
           <PhaseBanner />
           <Timeline />
-          <Composer turn={turn} />
+          <Composer
+            turn={turn}
+            locked={composerLocked}
+            lockHint={
+              <span>
+                未配置百炼 API Key：请回
+                <Link to="/" className="text-indigo underline underline-offset-2 mx-0.5">
+                  首页「API 密钥」卡
+                </Link>
+                填写并保存后返回本页。
+              </span>
+            }
+          />
         </main>
         <RightDock />
       </div>

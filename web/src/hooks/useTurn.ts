@@ -15,6 +15,7 @@ import type { EventEnvelope } from "../types/events";
 export function useTurn(projectId: string) {
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [keyMissing, setKeyMissing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const turnIdRef = useRef<string | null>(null);
   const seenRef = useRef<Set<number>>(new Set());
@@ -29,12 +30,15 @@ export function useTurn(projectId: string) {
   const send = useCallback(async (text: string) => {
     if (!text.trim() || busy) return;
     setConflict(false);
+    setKeyMissing(false);
     useConversationStore.getState().pushUser(text);
     useConversationStore.getState().beginTurn();
 
     // ── 第一步：POST 创建回合 ──
-    // 失败（含 409 已有回合在执行）→ failTurn 回滚乐观 UI：移除刚 push 的用户消息 +
-    // turnRunning=false + 清 buffer，否则打字光标永久脉冲且对话流留下后端未接受的消息。
+    // 失败 → failTurn 回滚乐观 UI：移除刚 push 的用户消息 + turnRunning=false + 清 buffer，
+    // 否则打字光标永久脉冲且对话流留下后端未接受的消息。
+    // 409（已有回合在执行）与 403（llm_key_required，服务端无 key 且请求头未带）
+    // 各自进专属提示态，不走通用 error 事件。
     let turnId: string;
     try {
       turnId = (await rest.createTurn(projectId, text)).turn_id;
@@ -42,6 +46,7 @@ export function useTurn(projectId: string) {
       setBusy(false);
       useConversationStore.getState().failTurn();
       if (err instanceof ApiError && err.status === 409) setConflict(true);
+      else if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
       else useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
       return;
     }
@@ -74,5 +79,5 @@ export function useTurn(projectId: string) {
     setBusy(false);
   }, [projectId]);
 
-  return { send, cancel, busy, conflict };
+  return { send, cancel, busy, conflict, keyMissing };
 }

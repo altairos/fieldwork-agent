@@ -8,7 +8,11 @@ import * as rest from "../src/api/rest";
 
 vi.mock("../src/api/rest");
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  // ApiKeyCard 挂载即查 key 状态：模块 mock 默认返 undefined 会崩 .then，补默认值
+  vi.mocked(rest.rest.settingsStatus).mockResolvedValue({ dashscope_configured: true, flyai_configured: true });
+});
 
 describe("ProjectHub", () => {
   test("渲染项目列表", async () => {

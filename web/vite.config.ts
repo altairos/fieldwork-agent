@@ -7,6 +7,8 @@ export default defineConfig({
     proxy: {
       "/projects": "http://localhost:8300",
       "/health": "http://localhost:8300",
+      "/settings": "http://localhost:8300", // key 配置状态（ApiKeyCard/Workspace 消费）
+      "/__test": "http://localhost:8300", // e2e 专用翻转端点（mock server）
     },
   },
   build: { outDir: "dist" },

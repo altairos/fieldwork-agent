@@ -1,12 +1,22 @@
 import type { CreateTurnResponse } from "../types/events";
 import type { ProjectSnapshot, ProjectSummary, ProposalDoc } from "../types/models";
+import { authHeaders } from "../lib/keys";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+/** GET /settings/status 的返回（web_host/api/settings.py，只回布尔不回明文）。 */
+export interface SettingsStatus {
+  dashscope_configured: boolean;
+  flyai_configured: boolean;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, { headers: { "Content-Type": "application/json" }, ...init });
+  const resp = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...init?.headers },
+  });
   if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
 }
@@ -20,6 +30,7 @@ export interface ProposalMeta {
 }
 
 export const rest = {
+  settingsStatus: () => req<SettingsStatus>("/settings/status"),
   createProject: (body: { project_id?: string; discipline?: string; topic?: string; purpose?: string }) =>
     req<{ project_id: string; phase: string }>("/projects", { method: "POST", body: JSON.stringify(body) }),
   listProjects: () => req<ProjectSummary[]>("/projects"),

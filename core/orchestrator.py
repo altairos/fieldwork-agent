@@ -32,6 +32,7 @@ from fieldwork_agent.kernel.documents.proposal import (
 )
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.guidance.extract import extract_locations, extract_researcher_info
+from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -216,7 +217,7 @@ class FieldAgent:
             reply = loop.reply
             tool_events = loop.tool_events
         else:
-            reply = self._rule_based_reply(phase)
+            reply = rule_based_reply(phase)
             tool_events = []
 
         self._persist_events(pid, tool_events)
@@ -322,30 +323,6 @@ class FieldAgent:
             self.repo.set_phase(pid, result.to_phase)
             return {"from": state["phase"], "to": result.to_phase}
         return None
-
-    # ─── 规则回复（无 LLM 降级）─────────────
-
-    def _rule_based_reply(self, phase: str) -> str:
-        replies = {
-            "research_positioning": (
-                "感谢您的描述。为了帮您制定更精准的田野调查旅行方案，我需要了解几个关键信息：\n\n"
-                "1. 您的学科背景和研究取向是什么？\n"
-                "2. 初步的研究问题或关注焦点是什么？\n"
-                "3. 您对田野地点的确定程度如何？\n\n"
-                "请尽量详细地告诉我，我会根据您的回答逐步完善方案。"
-            ),
-            "field_site_profiles": (
-                "好的，我来帮您收集候选田野点的详细信息。\n\n请告诉我您关注的目标区域或具体地点名称。"
-            ),
-            "itinerary_planning": (
-                "了解了。现在我来为您规划详细的行程安排。\n\n请告诉我您的出发城市和预期的调研日期。"
-            ),
-            "proposal_generation": (
-                "正在整合所有信息，生成完整的研究方案...\n\n"
-                "方案将包含研究背景、方法论、详细行程、预算明细、风险评估等完整章节。"
-            ),
-        }
-        return replies.get(phase, "收到，请继续说明您的需求。")
 
     # ─── 方案生成（generate 命令接线）─────────────
 

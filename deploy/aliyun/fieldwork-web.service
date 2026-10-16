@@ -1,0 +1,24 @@
+[Unit]
+Description=Fieldwork Agent Web (田野罗盘 — FastAPI + 内置前端)
+Documentation=file:///opt/fieldwork-agent/deploy/aliyun/DEPLOY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 单机自用直接以 root 跑最省事；如需降权，改成专用用户并同步改 HOME。
+User=root
+# Config/JsonRepository 用 Path.home()/.fieldwork_agent 存项目数据，显式固定 HOME 避免歧义。
+Environment=HOME=/root
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/fieldwork-agent
+# 缺失不报错（前缀 -）；真实密钥写在此文件，chmod 600，勿提交 git。
+EnvironmentFile=-/opt/fieldwork-agent/deploy/aliyun/fieldwork-web.env
+ExecStart=/opt/fieldwork-agent/.venv/bin/uvicorn fieldwork_agent.web_host.app:create_app --factory --host 0.0.0.0 --port 2143
+Restart=always
+RestartSec=3
+# 轻量服务器资源有限，给个软上限防止失控；不需要可删。
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
