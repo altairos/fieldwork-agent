@@ -161,6 +161,6 @@ class ProjectRepository(Protocol):
         ...
 
     def is_proposal_confirmation_stale(self, pid: str) -> bool:
-        """最近一次方案确认的输入哈希与当前关键输入不一致 → ``True``；
-        无确认记录返回 ``False``。"""
+        """最近一次方案确认的输入哈希与当前关键输入不一致，或确认后产生了新文档
+        （``subject`` 不再是最新提案 id）→ ``True``；无确认记录返回 ``False``。"""
         ...
