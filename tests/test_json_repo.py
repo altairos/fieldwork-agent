@@ -231,3 +231,44 @@ def test_atomic_write_produces_valid_json(tmp_path):
     # 没有残留 tmp 文件（os.replace 后 tmp 不再存在）
     tmp_files = list(state_path.parent.glob("*.tmp"))
     assert tmp_files == []
+
+# ────────────────────────────────────────────────────────────────
+# 审计第二批 F04/F13：确认基础设施 + 按 ID 读文档
+# ────────────────────────────────────────────────────────────────
+
+def test_confirm_field_site_by_id(json_repo):
+    sid = json_repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+    assert json_repo.confirm_field_site("p1", sid) is True
+    assert json_repo.list_field_sites("p1")[0]["confirmed"] is True
+    assert json_repo.confirm_field_site("p1", "no_such") is False
+    assert json_repo.confirm_field_site("p1", sid) is True  # 幂等
+
+
+def test_confirm_proposal_records_hash(json_repo):
+    json_repo.update_research_context("p1", {"budget": "2万", "time_window": "暑假"})
+    json_repo.save_proposal("p1", "# 方案", kind="proposal", version="final")
+    record = json_repo.confirm_proposal("p1")
+    assert record["kind"] == "proposal" and record["inputs_hash"]
+    state = _read_state(json_repo, "p1")
+    assert state["proposal_confirmed"] is True
+    assert len(state["confirmations"]) == 1
+
+
+def test_confirmation_stale_after_budget_change(json_repo):
+    json_repo.save_proposal("p1", "# 方案")
+    json_repo.confirm_proposal("p1")
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+    json_repo.update_research_context("p1", {"budget": "3万"})
+    assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_stale_false_without_confirmation(json_repo):
+    assert json_repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_get_proposal_by_id_roundtrip(json_repo):
+    pid = json_repo.save_proposal("p1", "正文A", version="draft")
+    json_repo.save_proposal("p1", "正文B", version="draft")
+    doc = json_repo.get_proposal_by_id("p1", pid)
+    assert doc is not None and doc["content"] == "正文A"
+    assert json_repo.get_proposal_by_id("p1", "no_such") is None

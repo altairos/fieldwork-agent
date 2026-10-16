@@ -19,7 +19,7 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class ProjectRepository(Protocol):
-    """项目状态与产物读写协议（23 个方法，全部以 dict 进出）。"""
+    """项目状态与产物读写协议（27 个方法，全部以 dict 进出）。"""
 
     # ---------------------------------------------------------------- 项目与阶段
 
@@ -142,4 +142,25 @@ class ProjectRepository(Protocol):
 
     def list_proposals(self, pid: str) -> list[dict]:
         """全部文档记录（含 ``content``），按保存时间升序；含旧版单值键兼容读出。"""
+        ...
+
+    # ---------------------------------------------------------------- 确认与失效（第二批 F04）
+
+    def confirm_field_site(self, pid: str, site_id: str) -> bool:
+        """按记录 id 把田野点置为已确认；未知 id 返回 ``False``，已确认幂等返回 ``True``。"""
+        ...
+
+    def confirm_proposal(self, pid: str, subject: str = "") -> dict:
+        """落一条 ``ConfirmationRecord``（关键输入字段当前值哈希）并置
+        ``proposal_confirmed=True``；返回 ``model_dump(mode="json")`` 的记录副本。"""
+        ...
+
+    def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
+        """按记录 id 取文档（含 ``content`` 正文，天然兼容 ``legacy_`` 前缀）；
+        不存在返回 ``None``。"""
+        ...
+
+    def is_proposal_confirmation_stale(self, pid: str) -> bool:
+        """最近一次方案确认的输入哈希与当前关键输入不一致 → ``True``；
+        无确认记录返回 ``False``。"""
         ...

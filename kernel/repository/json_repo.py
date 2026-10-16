@@ -27,11 +27,15 @@ from datetime import datetime
 from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
+from fieldwork_agent.kernel.models import ConfirmationRecord, compute_inputs_hash, inputs_stale
 
 # 消息滚动窗口上限（state 内只留最近 N 条，全量在 jsonl）
 MESSAGE_WINDOW = 50
 # 搜索缓存 result 落盘上限（UTF-8 字节）
 CACHE_LIMIT_BYTES = 64 * 1024
+# 方案确认的关键输入字段（审计 F04：这些字段变更后旧确认失效）
+CONFIRM_INPUT_FIELDS = ("travel_date", "budget", "time_window",
+                        "departure_city", "target_location", "scale")
 
 
 def _now() -> str:
@@ -57,6 +61,8 @@ def _default_state(project_id: str) -> dict:
         "field_sites": [],
         "informants": [],
         "proposals": [],
+        "confirmations": [],
+        "proposal_confirmed": False,
         "travel_plan": None,
         # 旧单值键（读兼容用，新写入一律进 proposals[]）
         "researcher_info": {},
@@ -451,3 +457,47 @@ class JsonRepository:
     def get_latest_proposal(self, pid: str) -> dict | None:
         docs = self.list_proposals(pid)
         return docs[-1] if docs else None
+
+    # ---------------------------------------------------------------- 确认与失效（第二批 F04）
+
+    def confirm_field_site(self, pid: str, site_id: str) -> bool:
+        """按记录 id 把田野点置为已确认；未知 id 返回 False（幂等）。"""
+        state = self._load(pid)
+        for site in state["field_sites"]:
+            if site.get("id") == site_id:
+                site["confirmed"] = True
+                state["updated_at"] = _now()
+                self._save(pid, state)
+                return True
+        return False
+
+    def confirm_proposal(self, pid: str, subject: str = "") -> dict:
+        """记录一次方案确认：落 ConfirmationRecord（含关键输入哈希）并置 proposal_confirmed。"""
+        state = self._load(pid)
+        ctx = state.get("research_context") or {}
+        payload = {f: str(ctx.get(f, "") or "") for f in CONFIRM_INPUT_FIELDS}
+        latest_id = state["proposals"][-1]["id"] if state.get("proposals") else ""
+        record = ConfirmationRecord(
+            kind="proposal", subject=subject or latest_id,
+            confirmed_at=_now(), inputs_hash=compute_inputs_hash(payload))
+        state.setdefault("confirmations", []).append(record.model_dump(mode="json"))
+        state["proposal_confirmed"] = True
+        state["updated_at"] = record.confirmed_at
+        self._save(pid, state)
+        return record.model_dump(mode="json")
+
+    def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
+        """按记录 id 取文档（含 content 正文，兼容 legacy_ 前缀）；不存在返回 None。"""
+        for record in self.list_proposals(pid):
+            if record.get("id") == doc_id:
+                return record
+        return None
+
+    def is_proposal_confirmation_stale(self, pid: str) -> bool:
+        """最近一次方案确认的输入哈希与当前不一致 → True；无确认记录返回 False。"""
+        records = self._load(pid).get("confirmations") or []
+        if not records:
+            return False
+        ctx = self._load(pid).get("research_context") or {}
+        payload = {f: str(ctx.get(f, "") or "") for f in CONFIRM_INPUT_FIELDS}
+        return inputs_stale(records[-1].get("inputs_hash", ""), compute_inputs_hash(payload))
