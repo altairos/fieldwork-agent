@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { IconAlert, IconUsers } from "../ui/icons";
@@ -5,6 +6,7 @@ import { InformantCard } from "../cards/InformantCard";
 import { boolOf, strOf } from "../cards/data";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
+import { rest } from "../../api/rest";
 
 /**
  * InformantsPanel — 右栏「访谈对象」面板（状态投影）。
@@ -39,6 +41,25 @@ export function InformantsPanel() {
     const call = byCallId[id];
     if (call && call.tool === "suggest_informants" && call.status !== "running") candidateCall = call;
   }
+
+  const [adopting, setAdopting] = useState<number | null>(null);
+  const [adoptError, setAdoptError] = useState<string | null>(null);
+
+  // 采纳登记：POST /informants（候选原样上行）→ 刷新快照（右栏为快照投影，不局部改）
+  const adopt = async (candidate: Record<string, unknown>, i: number) => {
+    const pid = snapshot?.project_id;
+    if (!pid || adopting !== null) return;
+    setAdopting(i);
+    setAdoptError(null);
+    try {
+      await rest.adoptInformant(pid, candidate);
+      useProjectStore.getState().loadSnapshot(await rest.getProject(pid));
+    } catch (e) {
+      setAdoptError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdopting(null);
+    }
+  };
 
   const naNotice = notApplicable && (
     <div className="hairline rounded-lg bg-ochrewash p-3 mb-3 flex items-start gap-2 text-[11.5px]">
@@ -98,11 +119,24 @@ export function InformantsPanel() {
 
       {candidateCall !== null && (
         <div>
-          <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">候选 · 未登记</div>
-          {/* 同源复用：与中栏时间线渲染的是同一组件 + 同一 tool_completed.data */}
+          <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">
+            候选 · 未登记
+            {adoptError && <span className="text-ochre ml-2 normal-case">{adoptError}</span>}
+          </div>
+          {/* 同源复用：与中栏时间线同一组件 + 同一 tool_completed.data；cardActions 注入采纳 */}
           <InformantCard
             data={candidateCall.data === undefined ? null : candidateCall.data}
             degraded={candidateCall.degraded ?? null}
+            cardActions={(candidate, i) => (
+              <button
+                type="button"
+                disabled={adopting !== null}
+                onClick={() => adopt(candidate, i)}
+                className="text-[11.5px] text-cinnabar hairline rounded-md px-2.5 py-1 hover:bg-cardsunk disabled:opacity-50"
+              >
+                {adopting === i ? "登记中…" : "采纳登记"}
+              </button>
+            )}
           />
         </div>
       )}

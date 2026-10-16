@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Chip } from "../ui/Chip";
 import { IconUsers } from "../ui/icons";
 import { CardShell, NoData } from "./CardShell";
@@ -39,7 +40,12 @@ function toCandidates(data: unknown): Record<string, unknown>[] {
   return [];
 }
 
-export function InformantCard({ data, degraded }: ToolCardProps) {
+/** cardActions：右栏面板注入的每卡操作区（中栏时间线不传，渲染逐字节不变）。 */
+interface InformantCardProps extends ToolCardProps {
+  cardActions?: (candidate: Record<string, unknown>, index: number) => ReactNode;
+}
+
+export function InformantCard({ data, degraded, cardActions }: InformantCardProps) {
   const candidates = toCandidates(data);
   const statusChip =
     candidates.length > 0 ? <Chip tone="neutral">{`${candidates.length} 类`}</Chip> : undefined;
@@ -99,6 +105,9 @@ export function InformantCard({ data, degraded }: ToolCardProps) {
                     );
                   })}
                 </dl>
+                {cardActions && (
+                  <div className="mt-2 flex items-center gap-2">{cardActions(c, i)}</div>
+                )}
               </div>
             );
           })}
