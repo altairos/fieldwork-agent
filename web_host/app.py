@@ -1,6 +1,7 @@
 """FastAPI 入口：lifespan 管理单例、CORS(localhost)、路由挂载。"""
 
 import hmac
+import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -64,6 +65,37 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     async def health(request: Request):
         cfg = getattr(request.app.state, "config", None)
         return {"status": "ok", "auth_required": bool(getattr(cfg, "app_token", "") or "")}
+
+    @app.get("/ready")
+    async def ready(request: Request):
+        """F15：区分「页面在线」（/health）与「可对外服务」（本端点）。
+
+        blocking 项失败 → 503 not_ready；信息项（密钥配置）只报告不阻断——
+        未配 key 时对话会按回合报 llm_key_required，不算服务不可用。
+        """
+        checks: dict[str, bool] = {}
+        checks["flyai_cli"] = shutil.which("flyai") is not None
+        repo = getattr(request.app.state, "repo", None)
+        root = getattr(repo, "root", None)
+        writable = False
+        if root is not None:
+            probe = root / ".ready_probe"
+            try:
+                probe.touch()
+                probe.unlink()
+                writable = True
+            except OSError:
+                writable = False
+        checks["projects_dir_writable"] = writable
+        cfg = getattr(request.app.state, "config", None)
+        checks["dashscope_configured"] = getattr(request.app.state, "llm", None) is not None
+        checks["flyai_key_configured"] = bool(getattr(cfg, "flyai_api_key", "") or "")
+        blocking = ("flyai_cli", "projects_dir_writable")
+        ok = all(checks[k] for k in blocking)
+        return JSONResponse(
+            content={"status": "ready" if ok else "not_ready", "checks": checks},
+            status_code=200 if ok else 503,
+        )
 
     from fieldwork_agent.web_host.api import exports, projects, settings, turns
 
