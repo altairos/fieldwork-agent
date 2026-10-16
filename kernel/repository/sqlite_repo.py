@@ -517,3 +517,53 @@ class SqliteRepository:
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM knowledge WHERE project_id=? AND id=?", (pid, entry_id))
+
+    # ------------------------------------------------------------------ 提案文档
+
+    def save_proposal(
+        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft"
+    ) -> str:
+        """版本累积：每次 INSERT 新记录，绝不覆盖既有（契约要求）。
+
+        对齐 json_repo：登记走 state["proposals"] + _save 落盘 → 同事务推进
+        projects.updated_at；content 事实源存 DB（裁决4），不再落 .md 文件。
+        """
+        self._require(pid)
+        record_id = _new_id("prop")
+        uid = record_id.rsplit("_", 1)[-1]   # 与 id 同源（json 侧 id/后缀共用 uid）
+        filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
+        saved_at = _now()
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM proposals WHERE project_id=? AND filename=?",
+                (pid, filename)).fetchone()
+            if exists is not None:
+                # 同秒重复保存：追加随机后缀，绝不覆盖既有文档（版本累积是契约要求）
+                filename = filename[:-3] + f"_{uid}.md"
+            conn.execute(
+                "INSERT INTO proposals(id, project_id, kind, version, filename,"
+                " content, saved_at, seq) VALUES(?,?,?,?,?,?,?,?)",
+                (record_id, pid, kind, version, filename, markdown, saved_at,
+                 self._next_seq(conn, "proposals", pid)))
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?", (saved_at, pid))
+        return record_id
+
+    def list_proposals(self, pid: str) -> list[dict]:
+        """六键全量（含 content）；ORDER BY seq 平价 json 的保存序。"""
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, kind, version, filename, saved_at, content"
+                " FROM proposals WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+        return [
+            {"id": r["id"], "kind": r["kind"], "version": r["version"],
+             "filename": r["filename"], "saved_at": r["saved_at"],
+             "content": r["content"]}
+            for r in rows
+        ]
+
+    def get_latest_proposal(self, pid: str) -> dict | None:
+        docs = self.list_proposals(pid)   # _require 经此传导（json 同为间接触发）
+        return docs[-1] if docs else None

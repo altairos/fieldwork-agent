@@ -245,3 +245,42 @@ def test_delete_knowledge_idempotent(tmp_path):
     repo.delete_knowledge("p1", kid)
     repo.delete_knowledge("p1", kid)   # 再删不报错
     assert repo.list_knowledge("p1") == []
+
+
+def test_proposal_versions_accumulate(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_proposal("p1", "v1", version="draft")
+    repo.save_proposal("p1", "v2", version="draft")
+    assert len(repo.list_proposals("p1")) == 2   # 不覆盖
+    assert repo.get_latest_proposal("p1")["content"] == "v2"
+
+
+def test_proposal_record_fields(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    pid = repo.save_proposal("p1", "# 研究方案", kind="proposal", version="final")
+    latest = repo.get_latest_proposal("p1")
+    assert latest["id"] == pid
+    assert latest["kind"] == "proposal" and latest["version"] == "final"
+    assert latest["filename"].endswith(".md")
+    assert latest["saved_at"]
+    assert latest["content"] == "# 研究方案"
+
+
+def test_no_proposal_returns_none(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    assert repo.get_latest_proposal("p1") is None
+    assert repo.list_proposals("p1") == []
+
+
+def test_get_state_proposals_exclude_content(tmp_path):
+    """get_state 的 proposals 是登记记录（不含 content），对齐 Json。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_proposal("p1", "正文", version="draft")
+    st = repo.get_state("p1")
+    assert len(st["proposals"]) == 1
+    assert "content" not in st["proposals"][0]
+    assert st["proposals"][0]["filename"].endswith(".md")
