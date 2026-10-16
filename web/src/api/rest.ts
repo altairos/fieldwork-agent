@@ -1,5 +1,8 @@
 import type { CreateTurnResponse } from "../types/events";
-import type { ProjectSnapshot, ProjectSummary, ProposalDoc } from "../types/models";
+import type {
+  FieldSiteRecord, InformantRecord, ProjectSnapshot, ProjectSummary,
+  ProposalDoc, ResearchContext,
+} from "../types/models";
 import { authHeaders } from "../lib/keys";
 
 export class ApiError extends Error {
@@ -35,6 +38,12 @@ export interface ProposalMeta {
   created_at?: string;
 }
 
+/** 状态修正/确认端点共同返回的阶段推进结果；null = 本次未发生推进。 */
+export interface PhaseTransition {
+  from?: string;
+  to?: string;
+}
+
 export const rest = {
   settingsStatus: () => req<SettingsStatus>("/settings/status"),
   health: () => req<HealthStatus>("/health"),
@@ -50,4 +59,23 @@ export const rest = {
   getProposal: (id: string) => req<ProposalDoc & { id: string }>(`/projects/${id}/proposal`),
   listProposals: (id: string) => req<ProposalMeta[]>(`/projects/${id}/proposals`),
   proposalDownloadUrl: (id: string) => `/projects/${id}/proposal/download`,
+  // ---- 状态修正与确认（web_host/api/state.py，审计 F03/F04 修正入口）----
+  updateResearchContext: (id: string, patch: Record<string, string | boolean>) =>
+    req<{ research_context: Partial<ResearchContext>; phase_transition: PhaseTransition | null }>(
+      `/projects/${id}/research-context`, { method: "PUT", body: JSON.stringify(patch) }),
+  confirmFieldSite: (id: string, siteId: string) =>
+    req<{ field_site: FieldSiteRecord; phase_transition: PhaseTransition | null }>(
+      `/projects/${id}/field-sites/${siteId}/confirm`, { method: "POST" }),
+  adoptInformant: (id: string, candidate: Record<string, unknown>) =>
+    req<{ informant: InformantRecord & { id: string }; phase_transition: PhaseTransition | null }>(
+      `/projects/${id}/informants`, { method: "POST", body: JSON.stringify({ candidate }) }),
+  confirmProposal: (id: string) =>
+    req<{ confirmation: Record<string, unknown>; proposal_confirmed: boolean;
+          phase_transition: PhaseTransition | null }>(
+      `/projects/${id}/proposal/confirm`, { method: "POST" }),
+  // ---- 按版本读取/下载（web_host/api/exports.py by-id 端点，审计 F13）----
+  getProposalById: (id: string, docId: string) =>
+    req<ProposalDoc & { id: string }>(`/projects/${id}/proposals/${docId}`),
+  proposalByIdDownloadUrl: (id: string, docId: string) =>
+    `/projects/${id}/proposals/${docId}/download`,
 };

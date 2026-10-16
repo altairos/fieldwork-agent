@@ -152,6 +152,8 @@ export interface AdvanceResult {
 
 /** 落盘的田野点记录；profile 存 FieldSiteProfile 的 dict 形式。 */
 export interface FieldSiteRecord {
+  /** repo 记录键，`site_` 前缀；旧快照无此键→undefined。 */
+  id?: string;
   name: string;
   confirmed: boolean;
   profile: Record<string, unknown> | null;
@@ -159,6 +161,8 @@ export interface FieldSiteRecord {
 
 /** 报道人（访谈对象）档案。 */
 export interface InformantRecord {
+  /** repo 记录键，`inf_` 前缀；旧快照无此键→undefined。 */
+  id?: string;
   code: string;
   type: string;
   relation: string;
@@ -205,6 +209,10 @@ export interface ProjectSnapshot {
   proposals: { id: string; kind?: string; version?: string; created_at?: string }[];
   phase_history: { from?: string; to?: string; at?: string }[];
   updated_at?: string;
+  /** 方案确认状态（web_host/api/projects.py get_project 新增两键）。 */
+  proposal_confirmed?: boolean;
+  /** true = 确认后研究信息已变更，需重新确认。 */
+  proposal_confirmation_stale?: boolean;
 }
 
 /** GET /projects 列表项。 */
