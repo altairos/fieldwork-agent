@@ -156,3 +156,14 @@ def test_double_dot_inside_pid_now_accepted(tmp_path):
     out = h["create_project"](project_id="study..2024")
     assert out["ok"] is True
     assert out["data"]["project_id"] == "study..2024"
+
+
+def test_r05_update_context_rejects_bad_patch(tmp_path):
+    """审计二 R05：MCP 入口非法 patch → invalid_args 包络（此前直通浅合并）。"""
+    h = build_handlers(make_repo(tmp_path))
+    h["create_project"](project_id="p1")
+    r = h["update_research_context"](project_id="p1", patch={"budget": 5})
+    assert r["ok"] is False
+    assert r["error"]["code"] == "invalid_args"
+    assert "budget 须为字符串" in r["error"]["message"]
+    assert "白名单" in r["error"]["hint"]

@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
 from fieldwork_agent.kernel.repository.guard import project_id_violation
@@ -82,8 +83,14 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
         try:
-            repo.update_research_context(project_id, patch)
+            # 审计二 R05：与 Web 工具/REST 同一校验来源，原子拒绝非法 patch
+            clean = sanitize_context_patch(
+                patch, current=repo.get_research_context(project_id))
+            repo.update_research_context(project_id, clean)
             return _ok(repo.get_research_context(project_id))
+        except ValueError as exc:
+            return _err("invalid_args", str(exc),
+                        "可写白名单：" + context_fields_hint())
         except KeyError:
             return _not_found(project_id)
 
@@ -183,7 +190,7 @@ STATE_TOOLS: list[Tool] = [
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "patch": {"type": "object",
-                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）"}},
+                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）；任一字段非法则整次拒绝"}},
                       "required": ["project_id", "patch"]},
          annotations=_annotations()),
     Tool(name="save_field_site",
