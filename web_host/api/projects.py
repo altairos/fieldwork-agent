@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fieldwork_agent.kernel.repository.guard import cache_id_violation
 from fieldwork_agent.web_host.api.guard import checked_project_id
 from fieldwork_agent.web_host.deps import get_repo
 from pydantic import BaseModel
@@ -71,8 +72,13 @@ async def list_cached_searches(project_id: str, repo=Depends(get_repo)):
 
 @router.get("/projects/{project_id}/cached-searches/{cid}")
 async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo)):
-    """单条快照全量（含 result），供前端懒加载披露（Task 13 SnapshotDisclosure）。"""
+    """单条快照全量（含 result）。
+
+    审计二 R01 分层：cid 白名单不过 → 400；合法但不在本项目 → 404。
+    """
     checked_project_id(project_id, repo)
+    if cache_id_violation(cid):
+        raise HTTPException(400, "cid 格式非法：1-64 位字母数字、下划线或连字符")
     record = repo.get_cached_search(project_id, cid)
     if record is None:
         raise HTTPException(404, f"快照不存在: {cid}")
