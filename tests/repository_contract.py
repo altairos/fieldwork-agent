@@ -1,27 +1,31 @@
 """L2 repository 契约套件 — 每个 ``ProjectRepository`` 实现都必须全绿（spec §5.1）。
 
 用法：具体实现的测试文件 ``from repository_contract import TestContract, repo,
-repo_factory`` 即继承全部用例；Plan 5 把 ``make_sqlite_repo`` 追加进
-``REPO_FACTORIES`` 就变成 Json/Sqlite 双跑，**本文件零改动**。
+repo_factory`` 即继承全部用例；``REPO_FACTORIES`` 已双跑 Json/Sqlite，
+新增实现只需追加一个工厂。
 
 实现中立纪律：
-- 用例只经 Protocol 方法访问被测实现；唯一例外是 64KB 截断用例需要直读落盘文件，
-  借用实现自带的 ``root`` 属性（视为实现细节，不得在其他用例出现）；
-- 落盘布局、文件名、编码方式等 Json 专属假设一律留在 ``tests/test_json_repo.py``。
+- 全部用例仅经 Protocol 方法访问被测实现（64KB 截断经 ``get_cached_search``
+  断言，不直读落盘）；
+- 落盘布局、文件名、编码方式等实现专属假设一律留在 ``tests/test_json_repo.py``
+  与 ``tests/test_sqlite_repo.py``。
 """
-
-import json
 
 import pytest
 from fieldwork_agent.kernel.guidance.phases import PHASES
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
 
 
 def make_json_repo(tmp_path):
     return JsonRepository(projects_dir=tmp_path / "projects")
 
 
-REPO_FACTORIES = [make_json_repo]
+def make_sqlite_repo(tmp_path):
+    return SqliteRepository(db_path=tmp_path / "fieldwork.db")
+
+
+REPO_FACTORIES = [make_json_repo, make_sqlite_repo]
 
 
 @pytest.fixture(params=REPO_FACTORIES)
@@ -142,12 +146,9 @@ class TestContract:
     def test_cache_truncated_64kb(self, repo):
         big = {"blob": "x" * 100_000}
         cid = repo.cache_search("p1", "q", "search_ai", big)
-        stored = json.loads(
-            (repo.root / "p1" / "search_cache" / f"{cid}.json").read_text(encoding="utf-8")
-        )
-        # 超限后 result 被整体替换为截断标记（Interfaces / Step 3 / 全局约束三处一致）
-        assert stored["result"]["truncated"] is True
-        assert len(stored["result"]["preview"]) <= 64 * 1024
+        stored = repo.get_cached_search(cid)["result"]   # 经 Protocol，不直读落盘
+        assert stored["truncated"] is True
+        assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
     # ---------------------------------------------------------------- 知识库
 
