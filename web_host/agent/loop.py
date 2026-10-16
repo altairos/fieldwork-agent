@@ -147,14 +147,22 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         return
 
     # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 阶段推进
-    if accumulated_reply:
-        repo.append_message(pid, "assistant", accumulated_reply,
-                            {"tool_calls": total_calls})
-    _persist_tool_results(repo, pid, tm, turn_id, call_name_map)
-    _apply_extractions(repo, pid, user_text)
-    transition = check_and_advance(repo, pid)
-    if transition:
-        tm.append_event(pid, turn_id, "phase_transition", transition)
+    # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
+    try:
+        if accumulated_reply:
+            repo.append_message(pid, "assistant", accumulated_reply,
+                                {"tool_calls": total_calls})
+        _persist_tool_results(repo, pid, tm, turn_id, call_name_map)
+        _apply_extractions(repo, pid, user_text)
+        transition = check_and_advance(repo, pid)
+        if transition:
+            tm.append_event(pid, turn_id, "phase_transition", transition)
+    except Exception as exc:
+        tm.append_event(pid, turn_id, "error",
+                        {"code": "internal_error",
+                         "message": f"轮末持久化失败: {exc}", "hint": ""})
+        tm.finish(pid, turn_id, "failed")
+        return
 
     # 终态
     handle = tm.get_turn(pid, turn_id)

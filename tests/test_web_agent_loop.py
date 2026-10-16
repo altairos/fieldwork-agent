@@ -371,3 +371,26 @@ def test_analyze_window_empty_windows_leaves_time_window_untouched(env, monkeypa
     types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
     assert "error" not in types
     assert repo.get_research_context("p1")["time_window"] == "原有：7 月中旬"
+
+
+def test_r05_finalize_failure_sets_failed(env, monkeypatch):
+    """审计二 R05：轮末持久化异常 → error 事件 + failed 终态，绝不悬挂 running。"""
+    repo, tm = env
+    import fieldwork_agent.web_host.agent.loop as loop_mod
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("抽取崩溃")
+
+    monkeypatch.setattr(loop_mod, "_apply_extractions", boom)
+    llm = FakeLLM([[{"delta": "好"}, {"content": "好", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {"total_tokens": 5}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "turn_done" not in types
+    errs = [e for e in events if e.event == "error"]
+    assert errs and errs[-1].data["code"] == "internal_error"
+    assert "轮末持久化失败" in errs[-1].data["message"]
+    assert tm.get_turn("p1", turn.turn_id).status == "failed"
