@@ -130,6 +130,42 @@ async def test_download_by_id(client, app):
     assert "# 标题" in r.text
 
 
+async def test_download_by_id_txt(client, app):
+    repo = app.state.repo
+    docs = repo.list_proposals("p1")
+    r = await client.get(f"/projects/p1/proposals/{docs[0]['id']}/download",
+                         params={"format": "txt"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    cd = r.headers["content-disposition"]
+    assert "attachment" in cd
+    assert '.txt"' in cd
+    assert "# 标题" not in r.text
+    assert "一、背景" in r.text
+
+
+async def test_download_by_id_docx(client, app):
+    import io
+
+    from docx import Document
+
+    repo = app.state.repo
+    docs = repo.list_proposals("p1")
+    r = await client.get(f"/projects/p1/proposals/{docs[0]['id']}/download",
+                         params={"format": "docx"})
+    assert r.status_code == 200
+    assert (
+        r.headers["content-type"].startswith(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+    )
+    cd = r.headers["content-disposition"]
+    assert ".docx" in cd
+    doc = Document(io.BytesIO(r.content))
+    h1 = [p.text for p in doc.paragraphs if p.style.name == "Heading 1"]
+    assert h1 == ["标题"]
+
+
 async def test_list_created_at_uses_saved_at(client):
     """口径修正：save_proposal 落盘的是 saved_at，列表不再恒 None。"""
     r = await client.get("/projects/p1/proposals")

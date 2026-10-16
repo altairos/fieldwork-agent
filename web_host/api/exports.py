@@ -23,6 +23,25 @@ def _proposal_payload(doc: dict) -> dict:
             "version": doc.get("version", "draft"), "sections": sections}
 
 
+def _format_proposal_response(content: str, format: str, filename: str) -> Response:
+    """md/docx/txt 三分支持（spec §3.2；docx 失败整体降级 txt，绝不让 500 冒泡）。"""
+    if format == "md":
+        return PlainTextResponse(
+            content, media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    if format == "docx":
+        docx_bytes = to_docx_bytes(content)
+        if docx_bytes is not None:
+            return Response(
+                docx_bytes, media_type=DOCX_MEDIA_TYPE,
+                headers={"Content-Disposition":
+                         f'attachment; filename="{filename_for(filename, "docx")}"'})
+        # docx 转换失败：整体降级 txt（绝不让 500 冒泡）
+    return PlainTextResponse(
+        to_text(content), media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename_for(filename, "txt")}"'})
+
+
 @router.get("/projects/{project_id}/proposal")
 async def get_proposal(project_id: str, repo=Depends(get_repo)):
     checked_project_id(project_id, repo)
@@ -53,21 +72,7 @@ async def download_proposal(
         raise HTTPException(404, "尚无提案文档")
     content = doc.get("content", "")
     filename = doc.get("filename", f"{project_id}_proposal.md")
-    if format == "md":
-        return PlainTextResponse(
-            content, media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-    if format == "docx":
-        docx_bytes = to_docx_bytes(content)
-        if docx_bytes is not None:
-            return Response(
-                docx_bytes, media_type=DOCX_MEDIA_TYPE,
-                headers={"Content-Disposition":
-                         f'attachment; filename="{filename_for(filename, "docx")}"'})
-        # docx 转换失败：整体降级 txt（绝不让 500 冒泡）
-    return PlainTextResponse(
-        to_text(content), media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename_for(filename, "txt")}"'})
+    return _format_proposal_response(content, format, filename)
 
 
 @router.get("/projects/{project_id}/proposals/{doc_id}")
@@ -84,7 +89,13 @@ async def get_proposal_by_id(project_id: str, doc_id: str, repo=Depends(get_repo
 
 
 @router.get("/projects/{project_id}/proposals/{doc_id}/download")
-async def download_proposal_by_id(project_id: str, doc_id: str, repo=Depends(get_repo)):
+async def download_proposal_by_id(
+    project_id: str,
+    doc_id: str,
+    # 参数名沿用 spec：format（ruff 未启用 A 系列，遮蔽内置不触发，不加 noqa）
+    format: Literal["md", "docx", "txt"] = "md",
+    repo=Depends(get_repo),
+):
     checked_project_id(project_id, repo)
     try:
         repo.get_state(project_id)
@@ -94,9 +105,7 @@ async def download_proposal_by_id(project_id: str, doc_id: str, repo=Depends(get
     if doc is None:
         raise HTTPException(404, f"文档不存在: {doc_id}")
     filename = doc.get("filename", f"{project_id}_{doc_id}.md")
-    return PlainTextResponse(
-        doc.get("content", ""), media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    return _format_proposal_response(doc.get("content", ""), format, filename)
 
 
 @router.get("/projects/{project_id}/proposals")

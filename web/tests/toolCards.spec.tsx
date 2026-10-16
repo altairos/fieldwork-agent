@@ -13,6 +13,7 @@ import { ItineraryCard } from "../src/components/cards/ItineraryCard";
 import { InformantCard } from "../src/components/cards/InformantCard";
 import { ProposalCard } from "../src/components/cards/ProposalCard";
 import { saveKeys } from "../src/lib/keys";
+import { useExportFormatStore } from "../src/stores/exportFormat";
 
 describe("registry", () => {
   test("已知工具映射到卡片", () => {
@@ -169,7 +170,8 @@ describe("其余卡片", () => {
       requested_mode: "kaiti", mode: "global", inputs_hash: "abc",
     }} />);
     expect(screen.getByText("draft")).toBeInTheDocument();
-    expect(screen.getByText(/kaiti/)).toBeInTheDocument();
+    expect(screen.getByText(/开题报告/)).toBeInTheDocument();
+    expect(screen.getByText(/英美式八章/)).toBeInTheDocument();
     expect(screen.getByText("研究定位")).toBeInTheDocument();
   });
   test("data 为 null（工具失败）时各卡不抛错", () => {
@@ -190,6 +192,7 @@ describe("其余卡片", () => {
 describe("ProposalCard 下载入口（终审#1）", () => {
   test("点击下载走 fetch 注入 X-App-Token，blob → objectURL 临时链", async () => {
     localStorage.clear();
+    useExportFormatStore.setState({ format: "md" });
     saveKeys("", "", "tok-7"); // authHeaders() 在点击时读取：新存令牌即时生效
     const calls: Array<[string, RequestInit | undefined]> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -210,6 +213,35 @@ describe("ProposalCard 下载入口（终审#1）", () => {
     expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-7" });
     expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:card-md");
+    vi.unstubAllGlobals();
+  });
+
+  test("偏好 docx 时：链接文案与 href 追加 ?format=docx", async () => {
+    localStorage.clear();
+    saveKeys("", "", "tok-7");
+    useExportFormatStore.setState({ format: "docx" });
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return { ok: true, blob: async () => new Blob(["# 研究方案"]) } as unknown as Response;
+    }));
+    // jsdom 未实现 createObjectURL/revokeObjectURL，注入可断言替身
+    const createObjectURL = vi.fn(() => "blob:card-docx");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, configurable: true, writable: true });
+
+    render(<ProposalCard data={{ markdown: "# 研究方案\n", kind: "proposal", version: "draft", sections: ["研究定位"] }} projectId="pc1" />);
+    const link = screen.getByRole("link", { name: /下载 \.docx/ });
+    expect(link).toHaveAttribute("href", "/projects/pc1/proposal/download?format=docx");
+    fireEvent.click(link);
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(calls[0][0]).toBe("/projects/pc1/proposal/download?format=docx");
+    expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-7" });
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:card-docx");
+    useExportFormatStore.setState({ format: "md" });
     vi.unstubAllGlobals();
   });
 });

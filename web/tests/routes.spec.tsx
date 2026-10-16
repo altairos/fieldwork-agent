@@ -7,6 +7,7 @@ import { ProposalViewer } from "../src/components/proposal/ProposalViewer";
 import { ChapterNav } from "../src/components/proposal/ChapterNav";
 import { saveKeys } from "../src/lib/keys";
 import * as rest from "../src/api/rest";
+import { useExportFormatStore } from "../src/stores/exportFormat";
 
 vi.mock("../src/api/rest");
 
@@ -63,6 +64,7 @@ describe("ProposalView 下载（终审#1）", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    useExportFormatStore.setState({ format: "md" });
     saveKeys("", "", "tok-9"); // authHeaders() 必须在点击时读取：新存令牌即时生效
     calls = [];
     // jsdom 未实现 createObjectURL/revokeObjectURL，注入可断言替身
@@ -77,7 +79,10 @@ describe("ProposalView 下载（终审#1）", () => {
     vi.mocked(rest.rest.getProject).mockResolvedValue({ research_context: { topic: "宗族变迁" }, phase: "research_positioning" } as any);
     vi.mocked(rest.rest.proposalDownloadUrl).mockImplementation((id: string) => `/projects/${id}/proposal/download`);
     vi.mocked(rest.rest.proposalByIdDownloadUrl).mockImplementation(
-      (id: string, docId: string) => `/projects/${id}/proposals/${docId}/download`,
+      (id: string, docId: string, format?: string) =>
+        format && format !== "md"
+          ? `/projects/${id}/proposals/${docId}/download?format=${format}`
+          : `/projects/${id}/proposals/${docId}/download`,
     );
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -112,5 +117,17 @@ describe("ProposalView 下载（终审#1）", () => {
     fireEvent.click(btn);
     await waitFor(() => expect(screen.getByText(/下载失败/)).toBeInTheDocument());
     expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  test("偏好 docx 时：按钮文案 .docx，by-id fetch 追加 ?format=docx", async () => {
+    useExportFormatStore.setState({ format: "docx" });
+    renderView();
+    const btn = await screen.findByRole("button", { name: /下载 \.docx/ });
+    await waitFor(() => expect(btn).toBeEnabled());
+    fireEvent.click(btn);
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+    expect(calls[0][0]).toBe("/projects/p9/proposals/doc1/download?format=docx");
+    expect(calls[0][1]?.headers).toMatchObject({ "X-App-Token": "tok-9" });
+    useExportFormatStore.setState({ format: "md" });
   });
 });

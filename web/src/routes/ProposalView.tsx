@@ -8,10 +8,11 @@ import { Header } from "../components/layout/Header";
 import { Button } from "../components/ui/Button";
 import { IconBook, IconDownload } from "../components/ui/icons";
 import { authHeaders } from "../lib/keys";
+import { useExportFormatStore } from "../stores/exportFormat";
 import type { ProposalDoc } from "../types/models";
 
 /**
- * ProposalView — 路由 `/p/:id/proposal`：八章提案阅读 + 版本/kind 切换 + 下载 .md。
+ * ProposalView — 路由 `/p/:id/proposal`：八章提案阅读 + 版本/kind 切换 + 下载报告（md/docx/txt，格式随「我的」偏好）。
  * 设计板同源：view-proposal（lines 677-767）：
  *   左栏 240px（679-710）：题头「RESEARCH PROPOSAL」+ 项目名（682-686）、
  *     版本区（688-695 → VersionSwitch）、八章导航（696-705 → ChapterNav，滚动高亮）、
@@ -54,6 +55,8 @@ export function ProposalView() {
   const [confirming, setConfirming] = useState(false);
   const [confirmHint, setConfirmHint] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  // 导出格式偏好（「我的」卡设置）：只读订阅，影响下载 URL 与按钮文案
+  const format = useExportFormatStore((s) => s.format);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // 初载正文：最新文档（loadDoc 无参 = GET /projects/{id}/proposal）
@@ -128,14 +131,14 @@ export function ProposalView() {
     setActiveIndex(i);
   }
 
-  // 下载 .md：/projects 前缀受 F02 令牌保护，顶层锚点导航带不了自定义头
+  // 下载报告（md/docx/txt，格式随「我的」偏好）：/projects 前缀受 F02 令牌保护，顶层锚点导航带不了自定义头
   // （启用 App Token 必 401）→ fetch + authHeaders() 取 blob 走临时链下载。
   // F13：按当前选中文档的 id 走 by-id 下载端点（历史版本也能下载）。
   async function download() {
     if (!doc) return;
     setDlError(null);
     try {
-      const resp = await fetch(rest.proposalByIdDownloadUrl(projectId, doc.id), {
+      const resp = await fetch(rest.proposalByIdDownloadUrl(projectId, doc.id, format), {
         headers: authHeaders(),
       });
       if (!resp.ok) throw new ApiError(resp.status, "下载失败");
@@ -251,7 +254,7 @@ export function ProposalView() {
           <div className="p-3 border-t border-hairline space-y-2">
             <Button variant="primary" className="w-full" disabled={!doc} onClick={download}>
               <IconDownload className="w-4 h-4" />
-              下载 .md
+              下载 .{format}
             </Button>
             {dlError && <div className="text-[11px] text-cinnabar leading-snug">{dlError}</div>}
             <button

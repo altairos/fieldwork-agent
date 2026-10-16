@@ -91,6 +91,8 @@ export const rest = {
   // ---- 按版本读取/下载（web_host/api/exports.py by-id 端点，审计 F13）----
   getProposalById: (id: string, docId: string) =>
     req<ProposalDoc & { id: string }>(`/projects/${id}/proposals/${docId}`),
-  proposalByIdDownloadUrl: (id: string, docId: string) =>
-    `/projects/${id}/proposals/${docId}/download`,
+  proposalByIdDownloadUrl: (id: string, docId: string, format?: ExportFormat) =>
+    format && format !== "md"
+      ? `/projects/${id}/proposals/${docId}/download?format=${format}`
+      : `/projects/${id}/proposals/${docId}/download`,
 };

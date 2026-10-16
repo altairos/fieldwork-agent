@@ -76,6 +76,32 @@ describe("types: 快照确认状态与记录 id", () => {
   });
 });
 
+describe("rest.proposalByIdDownloadUrl", () => {
+  it("双参：不追加 ?format=（零破坏）", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1")).toBe(
+      "/projects/p1/proposals/prop_1/download"
+    );
+  });
+
+  it("显式 md：与双参相同", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1", "md")).toBe(
+      "/projects/p1/proposals/prop_1/download"
+    );
+  });
+
+  it("docx：追加 ?format=docx", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1", "docx")).toBe(
+      "/projects/p1/proposals/prop_1/download?format=docx"
+    );
+  });
+
+  it("txt：追加 ?format=txt", () => {
+    expect(rest.proposalByIdDownloadUrl("p1", "prop_1", "txt")).toBe(
+      "/projects/p1/proposals/prop_1/download?format=txt"
+    );
+  });
+});
+
 describe("rest.proposalDownloadUrl", () => {
   it("无参：不追加 ?format=（零破坏）", () => {
     expect(rest.proposalDownloadUrl("p1")).toBe("/projects/p1/proposal/download");
@@ -145,6 +171,26 @@ describe("mock 服务器 download 三格式", () => {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     );
     expect(res.headers.get("content-disposition")).toContain('proposal.docx');
+    const buf = Buffer.from(await res.arrayBuffer());
+    expect(buf.subarray(0, 4).toString("latin1")).toBe("PK\u0003\u0004");
+  });
+
+  it("by-id 默认 md：text/markdown + attachment", async () => {
+    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/markdown");
+    expect(res.headers.get("content-disposition")).toContain("attachment");
+    const text = await res.text();
+    expect(text).toContain("# ");
+  });
+
+  it("by-id docx：wordprocessingml + PK 魔数", async () => {
+    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download?format=docx`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    expect(res.headers.get("content-disposition")).toContain(".docx");
     const buf = Buffer.from(await res.arrayBuffer());
     expect(buf.subarray(0, 4).toString("latin1")).toBe("PK\u0003\u0004");
   });

@@ -2,6 +2,7 @@ import type { MouseEvent } from "react";
 import { Chip } from "../ui/Chip";
 import { IconBook, IconCaret, IconDownload } from "../ui/icons";
 import { ApiError, rest } from "../../api/rest";
+import { useExportFormatStore } from "../../stores/exportFormat";
 import { authHeaders } from "../../lib/keys";
 import { CardShell, NoData, Notice } from "./CardShell";
 import { asArray, asRecord, strOf } from "./data";
@@ -21,6 +22,10 @@ import type { ToolCardProps } from "./types";
  * 红线②：卡片不订阅 store、不在挂载期发请求——`projectId` 由调用方（Task 7/8 时间线）注入，
  * 缺省时只说明"无法生成链接"，绝不猜项目 id；`requested_mode ≠ mode` 时如实声明体例限制
  * （不粉饰为已按用户体例生成）。markdown 是唯一真源，卡内只给元信息与入口，不改写正文。
+ * 例外（2026-10-16 导出格式偏好）：本卡订阅 useExportFormatStore 读纯本地
+ * 偏好（无请求、无异步），仅影响下载链接的 URL 与文案。红线动机是禁挂载期
+ * 请求与禁臆造数据，不禁同步读取本地偏好（ThemeSwitcher 直接订阅是先例；
+ * 经 props 注入会污染 Timeline 十四卡泛型分发层，故取订阅而非注入）。
  */
 
 interface ProposalCardProps extends ToolCardProps {
@@ -33,6 +38,13 @@ const KIND: Record<string, string> = {
   proposal: "研究方案",
   interview_guide: "访谈提纲",
   guide: "访谈提纲",
+};
+
+/** mode 枚举 → 中文标签（与 kernel/documents/proposal.py MODE_LABELS 同口径；未知值原样呈现）。 */
+const MODE_LABEL: Record<string, string> = {
+  global: "英美式八章",
+  kaiti: "开题报告",
+  grant: "基金申报",
 };
 
 /** 章节标题去掉 markdown 井号前缀（内核 sections 形如 `## 一、选题依据`）。 */
@@ -65,6 +77,8 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
       : [];
 
   const pid = projectId || strOf(rec.project_id) || strOf(rec.id);
+  // 导出格式偏好（「我的」卡设置）：只读订阅（例外说明见组件头注释）
+  const format = useExportFormatStore((s) => s.format);
   const title = isDoc ? KIND[kind] ?? (kind || "文档") : guides.length > 0 ? "访谈提纲" : "文档";
   const statusChip = isDoc
     ? version
@@ -83,7 +97,7 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
   async function downloadProposal(e: MouseEvent<HTMLAnchorElement>) {
     e.preventDefault();
     try {
-      const resp = await fetch(rest.proposalDownloadUrl(pid), { headers: authHeaders() });
+      const resp = await fetch(rest.proposalDownloadUrl(pid, format), { headers: authHeaders() });
       if (!resp.ok) throw new ApiError(resp.status, "下载失败");
       const url = URL.createObjectURL(await resp.blob());
       const a = Object.assign(document.createElement("a"), { href: url, download: "" });
@@ -112,12 +126,12 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
           {/* 体例：requested ≠ actual → 如实声明限制（不得粉饰为已按用户体例生成） */}
           {requestedMode && mode && requestedMode !== mode ? (
             <Notice tone="ochre">
-              {`本次请求体例为 ${requestedMode}，实际生成体例为 ${mode}：该体例未获完整支持，正文头部已前置声明限制，投稿/开题前请人工补齐体例要求。`}
+              {`本次请求体例为 ${MODE_LABEL[requestedMode] ?? requestedMode}，实际生成体例为 ${MODE_LABEL[mode] ?? mode}：该体例未获完整支持，正文头部已前置声明限制，投稿/开题前请人工补齐体例要求。`}
             </Notice>
           ) : mode ? (
             <div className="flex items-center gap-2 text-[11.5px] text-inkfaint">
               <span>生成体例</span>
-              <Chip tone="indigo">{mode}</Chip>
+              <Chip tone="indigo">{MODE_LABEL[mode] ?? mode}</Chip>
             </div>
           ) : null}
 
@@ -137,7 +151,7 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
 
           <div className="text-[11px] text-inkfaint">{`正文 ${markdown.length} 字 · markdown 为唯一真源，卡内不改写`}</div>
 
-          {/* 入口：查看（路由 /p/:id/proposal）+ 下载 .md（web_host/api/exports.py L27） */}
+          {/* 入口：查看（路由 /p/:id/proposal）+ 下载（格式随「我的」偏好，exports.py ?format=） */}
           {pid ? (
             <div className="flex flex-wrap items-center gap-2">
               <a
@@ -147,12 +161,12 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
                 查看
               </a>
               <a
-                href={rest.proposalDownloadUrl(pid)}
+                href={rest.proposalDownloadUrl(pid, format)}
                 onClick={(e) => void downloadProposal(e)}
                 className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md hairline bg-card text-ink text-[12.5px] hover:bg-cardsunk transition"
               >
                 <IconDownload className="w-3.5 h-3.5" />
-                下载 .md
+                下载 .{format}
               </a>
             </div>
           ) : (

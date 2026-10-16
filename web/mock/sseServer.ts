@@ -234,6 +234,7 @@ const RE_EVENTS = /^\/projects\/([^/]+)\/turns\/([^/]+)\/events$/;
 const RE_CANCEL = /^\/projects\/([^/]+)\/turns\/([^/]+)\/cancel$/;
 const RE_PROPOSALS = /^\/projects\/([^/]+)\/proposals$/;
 const RE_DOWNLOAD = /^\/projects\/([^/]+)\/proposal\/download$/;
+const RE_BY_ID_DOWNLOAD = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/download$/;
 const RE_PROPOSAL = /^\/projects\/([^/]+)\/proposal$/;
 const RE_PROJECT = /^\/projects\/([^/]+)$/;
 
@@ -322,6 +323,38 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
   // mock 职责边界：只复刻后端的状态码/响应头/文件名形状（docx 返回 PK 魔数、txt 轻量去标记），不引入 python-docx 逻辑。
   if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
+    const doc = fakeProposal();
+    const format = url.searchParams.get("format") ?? "md";
+    if (format === "docx") {
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
+      res.end(Buffer.from("PK\u0003\u0004mock docx"));
+      return;
+    }
+    if (format === "txt") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
+      res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="proposal.md"`,
+      ...CORS_HEADERS,
+    });
+    res.end(doc.markdown);
+    return;
+  }
+
+  // GET /projects/:id/proposals/:docId/download → 三格式附件（by-id 端点，ProposalView 主入口）。
+  if (method === "GET" && (m = RE_BY_ID_DOWNLOAD.exec(path))) {
     const doc = fakeProposal();
     const format = url.searchParams.get("format") ?? "md";
     if (format === "docx") {
