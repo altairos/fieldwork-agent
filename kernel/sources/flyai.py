@@ -127,7 +127,10 @@ def _error_envelope(message: str) -> Envelope:
 
 
 def _page_envelope(payload: dict[str, Any]) -> Envelope:
-    """成功分支：优先展开 ``data.journeys``（航班/火车深层结构），否则 ``data.itemList`` 平铺。"""
+    """成功分支：优先展开 ``data.journeys``（航班/火车深层结构），否则 ``data.itemList`` 平铺。
+
+    payload 顶层或 ``data`` 内的 ``systemMessage``（体验模式提示）透传进 ``Envelope.degraded``。
+    """
     data = payload.get("data") or {}
     journeys = data.get("journeys")
     if isinstance(journeys, list) and journeys:
@@ -139,13 +142,14 @@ def _page_envelope(payload: dict[str, Any]) -> Envelope:
             raw_list = []
         items = normalize_items(raw_list)
         raw_total = len(raw_list)
+    system_message = payload.get("systemMessage") or data.get("systemMessage")
     prices = [i.price for i in items if i.price is not None]
     return Envelope(ok=True, data=ItemPage(
         items=items,
         total=raw_total,
         cheapest=min(prices) if prices else None,
         dearest=max(prices) if prices else None,
-    ))
+    ), degraded=str(system_message) if system_message else None)
 
 
 class FlyAIClient:

@@ -185,3 +185,27 @@ def test_itemlist_path_schedule_none():
         {"status": 0, "data": {"itemList": [{"name": "古城民宿", "price": "¥150"}]}})
     assert env.ok and env.data.items[0].schedule is None
     assert env.data.items[0].name == "古城民宿"
+
+
+# ── systemMessage 体验模式透传（spec §3.2 数据地基）─────────────
+
+
+def test_system_message_passthrough():
+    env = flyai_module._page_envelope({
+        "status": 0, "systemMessage": "当前为体验模式，价格已脱敏",
+        "data": {"itemList": [{"name": "民宿", "price": "¥150"}]}})
+    assert env.ok and env.degraded == "当前为体验模式，价格已脱敏"
+    assert env.data.items[0].price == 150.0
+
+
+def test_system_message_inside_data():
+    env = flyai_module._page_envelope({
+        "status": 0, "data": {"systemMessage": "脱敏模式",
+                              "itemList": [{"name": "民宿", "price": "¥150"}]}})
+    assert env.ok and env.degraded == "脱敏模式"
+
+
+def test_no_system_message_undegraded():
+    env = flyai_module._page_envelope(
+        {"status": 0, "data": {"itemList": [{"name": "民宿", "price": "¥150"}]}})
+    assert env.degraded is None
