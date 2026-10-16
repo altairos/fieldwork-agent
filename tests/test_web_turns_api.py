@@ -154,5 +154,6 @@ async def test_unknown_project_404(client):
 
 
 async def test_unknown_turn_404(client):
-    r = await client.get("/projects/p1/turns/nonexist/events")
+    # 审计 F01 接线后 turn_id 先过格式守卫（400），未知回合须用合法格式探测 404
+    r = await client.get("/projects/p1/turns/decafbad01234567/events")
     assert r.status_code == 404

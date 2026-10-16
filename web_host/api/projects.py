@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fieldwork_agent.web_host.api.guard import checked_project_id
 from fieldwork_agent.web_host.deps import get_repo
 from pydantic import BaseModel
 
@@ -19,6 +20,7 @@ class CreateProjectRequest(BaseModel):
 @router.post("/projects", status_code=201)
 async def create_project(body: CreateProjectRequest, repo=Depends(get_repo)):
     pid = body.project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
+    checked_project_id(pid, repo)   # 审计 F01：守卫先于一切副作用
     repo.create(pid)
     patch = {k: v for k, v in {"discipline": body.discipline,
                                 "topic": body.topic, "purpose": body.purpose}.items() if v}
@@ -42,6 +44,7 @@ async def list_projects(repo=Depends(get_repo)):
 
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str, repo=Depends(get_repo)):
+    checked_project_id(project_id, repo)
     try:
         state = repo.get_state(project_id)
     except KeyError:

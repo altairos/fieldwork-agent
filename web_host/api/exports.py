@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
+from fieldwork_agent.web_host.api.guard import checked_project_id
 from fieldwork_agent.web_host.deps import get_repo
 
 router = APIRouter(tags=["exports"])
@@ -9,6 +10,7 @@ router = APIRouter(tags=["exports"])
 
 @router.get("/projects/{project_id}/proposal")
 async def get_proposal(project_id: str, repo=Depends(get_repo)):
+    checked_project_id(project_id, repo)
     try:
         repo.get_state(project_id)
     except KeyError:
@@ -26,6 +28,7 @@ async def get_proposal(project_id: str, repo=Depends(get_repo)):
 
 @router.get("/projects/{project_id}/proposal/download")
 async def download_proposal(project_id: str, repo=Depends(get_repo)):
+    checked_project_id(project_id, repo)
     try:
         repo.get_state(project_id)
     except KeyError:
@@ -42,6 +45,7 @@ async def download_proposal(project_id: str, repo=Depends(get_repo)):
 
 @router.get("/projects/{project_id}/proposals")
 async def list_proposals(project_id: str, repo=Depends(get_repo)):
+    checked_project_id(project_id, repo)
     try:
         repo.get_state(project_id)
     except KeyError:

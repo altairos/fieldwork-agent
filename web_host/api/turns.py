@@ -3,6 +3,7 @@ import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from fieldwork_agent.web_host.api.guard import checked_project_id, checked_turn_id
 from fieldwork_agent.web_host.deps import get_flyai_raw, get_llm, get_repo, get_turn_manager
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
@@ -70,6 +71,7 @@ def _resolve_clients(request: Request):
 async def create_turn(project_id: str, body: CreateTurnRequest,
                       request: Request, background: BackgroundTasks):
     repo = get_repo(request)
+    checked_project_id(project_id, repo)
     tm = get_turn_manager(request)
     try:
         repo.get_state(project_id)
@@ -96,6 +98,9 @@ async def _execute_turn(app, pid, tid, text, llm, flyai):
 
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
 async def stream_events(project_id: str, turn_id: str, request: Request):
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:
@@ -130,6 +135,9 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
 async def cancel_turn(project_id: str, turn_id: str, request: Request):
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:
