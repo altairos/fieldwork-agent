@@ -188,7 +188,7 @@ class RecommendedWindow(BaseModel):
     end: str = ""
     score: float = 0.0             # 0-100，确定性评分
     reasons: list[str] = Field(default_factory=list)   # 模板拼装理由链（含统计数字）
-    evidence: dict[str, Any] = Field(default_factory=dict)   # 七键评分明细：price_score/festival_score/budget_score/flight_min/hotel_min/estimate/festivals
+    evidence: dict[str, Any] = Field(default_factory=dict)   # 十键评分明细：price_score/festival_score/budget_score/flight_min/hotel_min/coverage/uncovered/estimate/estimate_known/festivals
 
 
 class WindowAnalysis(BaseModel):
