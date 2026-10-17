@@ -31,9 +31,10 @@ Thumbs.db
 # 宣传
 docs/promo/
 
-# 前期研究
+# 前期研究 / 开发计划（本地文档）
 docs/superpowers/
 docs/research/
+docs/plans/
 
 # 前端 web/ 工程
 web/node_modules/
