@@ -244,6 +244,8 @@ class TestContract:
             "field_sites",
             "informants",
             "proposals",
+            "confirmations",
+            "proposal_confirmed",
         ):
             assert key in state, f"缺状态键 {key}"
 
