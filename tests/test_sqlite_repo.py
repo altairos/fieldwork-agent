@@ -1,5 +1,6 @@
 """SqliteRepository 实现细节单测（契约平价由 repository_contract 双跑把关，这里测 sqlite 专属）。"""
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -509,3 +510,71 @@ def test_get_proposal_by_id(tmp_path):
                                  "version": "draft", "filename": "l.md",
                                  "content": "旧", "saved_at": "2026-01-01"})
     assert repo.get_proposal_by_id("p1", "legacy_proposal_draft")["content"] == "旧"
+
+
+# ------------------------------------------------------------------ R04：并发写不丢更新
+
+def _run_concurrently(n_threads, worker):
+    barrier = threading.Barrier(n_threads)
+
+    def gate(tid):
+        barrier.wait()
+        worker(tid)
+
+    threads = [threading.Thread(target=gate, args=(t,)) for t in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def test_concurrent_context_updates_no_lost_write(tmp_path):
+    """读-改-写（SELECT data → merge → REPLACE）必须串行，否则浅合并丢键。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    n_threads, n_writes = 4, 15
+
+    def worker(tid):
+        for i in range(n_writes):
+            repo.update_research_context("p1", {f"t{tid}_k{i}": f"v{i}"})
+
+    _run_concurrently(n_threads, worker)
+    ctx = repo.get_research_context("p1")
+    assert len(ctx) == n_threads * n_writes, f"丢写：{len(ctx)} != {n_threads * n_writes}"
+
+
+def test_concurrent_proposal_seq_unique(tmp_path):
+    """`_next_seq`（MAX(seq)+1）并发下不得撞 seq（撞号 = 保存序错乱）。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    n_threads, n_writes = 4, 10
+
+    def worker(tid):
+        for i in range(n_writes):
+            repo.save_proposal("p1", f"# 方案 {tid}-{i}", version="final")
+
+    _run_concurrently(n_threads, worker)
+    with sqlite3.connect(repo.db_path) as conn:
+        seqs = [r[0] for r in conn.execute(
+            "SELECT seq FROM proposals WHERE project_id='p1'")]
+    assert len(seqs) == n_threads * n_writes
+    assert len(set(seqs)) == n_threads * n_writes, f"seq 重复：{sorted(seqs)}"
+
+
+def test_concurrent_field_site_seq_unique(tmp_path):
+    """`_upsert_json_record` 的 insert 分支同走 `_next_seq`，新记录 seq 必须无重复。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    n_threads, n_writes = 4, 10
+
+    def worker(tid):
+        for i in range(n_writes):
+            repo.save_field_site("p1", {"name": f"{tid}-{i}"})
+
+    _run_concurrently(n_threads, worker)
+    with sqlite3.connect(repo.db_path) as conn:
+        seqs = [r[0] for r in conn.execute(
+            "SELECT seq FROM field_sites WHERE project_id='p1'")]
+    assert len(seqs) == n_threads * n_writes
+    assert len(set(seqs)) == n_threads * n_writes
+    assert len(repo.list_field_sites("p1")) == n_threads * n_writes

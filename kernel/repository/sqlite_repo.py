@@ -213,6 +213,35 @@ class SqliteRepository:
         finally:
             conn.close()
 
+    @contextmanager
+    def _tx(self):
+        """单写者事务（审计二 R04）：``BEGIN IMMEDIATE`` 开场即抢写锁。
+
+        三个读-改-写点（研究上下文浅合并、阶段历史追加、`MAX(seq)+1` 序次分配）
+        在默认 DEFERRED 事务下是“先读后抢”：两个线程都能读到旧值，后提交者
+        覆盖前者（丢写/撞 seq）。IMMEDIATE 把竞争前置为写锁串行，配合
+        ``busy_timeout=5000`` 排队；`isolation_level=None` 关掉 pysqlite 的隐式
+        BEGIN，否则它会自己插 DEFERRED 事务、抢锁时机失控。
+        只用于写方法；纯读方法继用 `_connect`（WAL 下读者不阻）。
+        """
+        conn = sqlite3.connect(self._db_path, timeout=5.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")   # 已提交/已关事务时静默忽略原始异常
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            conn.close()
+
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
             cur = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -349,7 +378,7 @@ class SqliteRepository:
         if phase not in PHASES:
             raise ValueError(f"未知阶段: {phase}")
         now = _now()
-        with self._connect() as conn:
+        with self._tx() as conn:
             row = conn.execute(
                 "SELECT phase, phase_history FROM projects WHERE project_id=?",
                 (pid,)).fetchone()
@@ -370,7 +399,7 @@ class SqliteRepository:
     def update_research_context(self, pid: str, patch: dict) -> None:
         self._require(pid)
         now = _now()
-        with self._connect() as conn:
+        with self._tx() as conn:
             row = conn.execute(
                 "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
             data = json.loads(row["data"]) if row else {}
@@ -446,7 +475,7 @@ class SqliteRepository:
 
     def save_field_site(self, pid: str, record: dict) -> str:
         self._require(pid)
-        with self._connect() as conn:
+        with self._tx() as conn:
             entry = self._upsert_json_record(conn, pid, record, "field_sites", "site")
             # 对齐 json_repo：记录变更同事务推进 updated_at（json 侧经 _save 刷新）
             conn.execute(
@@ -464,7 +493,7 @@ class SqliteRepository:
 
     def save_informant(self, pid: str, record: dict) -> str:
         self._require(pid)
-        with self._connect() as conn:
+        with self._tx() as conn:
             entry = self._upsert_json_record(conn, pid, record, "informants", "inf")
             conn.execute(
                 "UPDATE projects SET updated_at=? WHERE project_id=?",
@@ -558,7 +587,7 @@ class SqliteRepository:
         """
         self._require(pid)
         entry_id = _new_id("know")
-        with self._connect() as conn:
+        with self._tx() as conn:
             conn.execute(
                 "INSERT INTO knowledge(id, project_id, title, content, source,"
                 " category, tags, created_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -626,8 +655,8 @@ class SqliteRepository:
         uid = record_id.rsplit("_", 1)[-1]   # 与 id 同源（json 侧 id/后缀共用 uid）
         filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
         saved_at = _now()
-        dep_hash = self._current_confirm_hash(pid)
-        with self._connect() as conn:
+        with self._tx() as conn:
+            dep_hash = self._current_confirm_hash(pid)   # 指纹与登记同事务（R04）
             exists = conn.execute(
                 "SELECT 1 FROM proposals WHERE project_id=? AND filename=?",
                 (pid, filename)).fetchone()
@@ -700,7 +729,7 @@ class SqliteRepository:
         """
         self._require(pid)
         now = _now()
-        with self._connect() as conn:
+        with self._tx() as conn:
             row = conn.execute(
                 "SELECT data FROM field_sites WHERE project_id=? AND id=?",
                 (pid, site_id)).fetchone()
@@ -747,7 +776,7 @@ class SqliteRepository:
         rec = ConfirmationRecord(
             kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
         payload = rec.model_dump(mode="json")
-        with self._connect() as conn:
+        with self._tx() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO confirmations(project_id, id, kind, subject,"
                 " confirmed_at, inputs_hash, dep_hash) VALUES(?,?,?,?,?,?,?)",
