@@ -50,7 +50,11 @@ export function WindowCard({ data, degraded }: ToolCardProps) {
       title="调研时窗分析"
       subtitle={dates.length >= 2
         ? `${dates[0]} → ${dates[dates.length - 1]} · 采样 ${dates.length} 点` : undefined}
-      statusChip={<span className="text-[11px] text-inkfaint">{a.budget_feasible ? "预算可行" : "预算紧张"}</span>}
+      statusChip={a.budget_feasible == null
+        ? <span className="text-[11px] text-ochre">待核验（仅已知小计）</span>
+        : <span className={`text-[11px] ${a.budget_feasible ? "text-bamboo" : "text-danger"}`}>
+            {a.budget_feasible ? "预算内" : "超预算"}
+          </span>}
       degraded={degraded}
     >
       {a.degraded ? <Notice tone="ochre">{a.degraded}</Notice> : null}
