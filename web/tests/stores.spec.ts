@@ -34,6 +34,21 @@ describe("tools store 幂等", () => {
     expect(t.status).toBe("failed");
     expect(t.degraded).toBe("flyai_unavailable");
   });
+  test("tool_completed 携带 error 三元组（配额提示数据源）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent(ev({ event: "tool_started", call_id: "c3", tool: "search_pois", args: {}, purpose: "" }));
+    s.applyEvent(ev({ event: "tool_completed", call_id: "c3", ok: false, data: null,
+      error: { code: "flyai_rate_limited", message: "rate limited", hint: "配额说明" } }));
+    const t = useToolsStore.getState().byCallId["c3"];
+    expect(t.error?.code).toBe("flyai_rate_limited");
+    expect(t.error?.hint).toBe("配额说明");
+  });
+  test("成功 completed 的 error 归约为 null", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent(ev({ event: "tool_started", call_id: "c4", tool: "search_hotels", args: {}, purpose: "" }));
+    s.applyEvent(ev({ event: "tool_completed", call_id: "c4", ok: true, data: { items: [] } }));
+    expect(useToolsStore.getState().byCallId["c4"].error).toBeNull();
+  });
 });
 
 describe("conversation store 流式拼接", () => {

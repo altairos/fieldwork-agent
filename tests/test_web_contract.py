@@ -41,6 +41,16 @@ class DegradedFlyAI:
         return _stub
 
 
+class RateLimitedFlyAI:
+    """每日共享配额用尽降级。"""
+    def __getattr__(self, name):
+        def _stub(**kw):
+            return Envelope(ok=False, error=ToolError(
+                code="flyai_rate_limited", message="rate limited",
+                hint="飞猪 API 配额说明：申请 https://flyai.open.fliggy.com/"))
+        return _stub
+
+
 @pytest.fixture
 def web_env(tmp_path):
     repo = JsonRepository(projects_dir=tmp_path / "projects")
@@ -115,6 +125,28 @@ def test_flyai_degraded_envelope(web_env):
     events = tm.replay("p1", turn.turn_id, after_seq=0)
     completed = next(e for e in events if e.event == "tool_completed")
     assert completed.data["ok"] is False
+    assert events[-1].event == "turn_done"
+
+
+def test_flyai_rate_limited_error_passthrough(web_env):
+    """配额用尽 → tool_completed.data 携带 error 三元组（前端据此渲染配额提示卡）。"""
+    repo, tm = web_env
+    llm = ScriptedLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "配额用尽"},
+         {"content": "配额用尽", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    asyncio.run(_run(repo, "p1", turn.turn_id, "搜住宿", tm, llm, RateLimitedFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    completed = next(e for e in events if e.event == "tool_completed")
+    assert completed.data["ok"] is False
+    assert completed.data["error"]["code"] == "flyai_rate_limited"
+    assert "flyai.open.fliggy.com" in completed.data["error"]["hint"]
     assert events[-1].event == "turn_done"
 
 

@@ -22,12 +22,21 @@ export interface ToolStarted {
   purpose: string;
 }
 
+/** 工具失败时的机器可读错误三元组（对齐 web_host ToolCompleted.error；旧事件无此字段）。 */
+export interface ToolErrorInfo {
+  code: string;
+  message: string;
+  hint: string;
+}
+
 /** 工具调用完成事件（degraded 为降级标记，如 "flyai_unavailable"）。 */
 export interface ToolCompleted {
   call_id: string;
   ok: boolean;
   data: unknown;
   degraded?: string | null;
+  /** 失败时的错误三元组（如配额用尽 flyai_rate_limited）；成功或旧事件为 null/缺省。 */
+  error?: ToolErrorInfo | null;
 }
 
 /** 阶段迁移事件（Python 侧 from_phase/to_phase 以 alias "from"/"to" 上线）。 */

@@ -120,10 +120,27 @@ def _journey_item(journey: dict[str, Any]) -> SearchItem:
     )
 
 
+# 每日共享配额（5000 次赠送额度用完后每日限 100 次）用尽的宽匹配标记：
+# 未抓过真实触发样本，宁可多匹配常见限流文案
+_RATE_LIMIT_MARKERS = (
+    "rate limit", "too many requests", "quota", "429",
+    "调用次数", "限流", "请求过于频繁",
+)
+_FLYAI_KEY_URL = "https://flyai.open.fliggy.com/"
+_RATE_LIMIT_HINT = (
+    "飞猪 API 配额说明：5000 次赠送额度用完后每日限 100 次免费调用，次日恢复。"
+    f"您也可以申请自己的免费 API Key（含 5000 次赠送额度）：{_FLYAI_KEY_URL} ，"
+    "填入后即可使用自己的额度"
+)
+
+
 def _error_envelope(message: str) -> Envelope:
     """把 ``_run_command`` 的错误字符串映射为机器可读错误码。"""
     low = message.lower()
-    if "not found" in low:
+    # 配额分支优先级最高：命中即引导用户申请自己的 API Key
+    if any(marker in low for marker in _RATE_LIMIT_MARKERS):
+        code, hint = ("flyai_rate_limited", _RATE_LIMIT_HINT)
+    elif "not found" in low:
         code, hint = ("flyai_unavailable", "未找到 flyai CLI，请安装后确认其在 PATH 中可执行")
     elif "timed out" in low:
         code, hint = ("flyai_timeout", "flyai 命令 30 秒超时，可放宽网络或缩小筛选条件后重试")

@@ -117,6 +117,30 @@ def test_error_envelope_carries_hint(monkeypatch):
     assert env.error.hint  # 降级提示不可为空，便于宿主给出下一步建议
 
 
+def test_rate_limit_markers_map_to_quota_code_and_hint(monkeypatch):
+    """每日共享配额用尽（宽匹配常见限流文案）→ flyai_rate_limited + 配额说明 hint。
+
+    未抓过真实触发样本，宁可多匹配：rate limit / too many requests / quota /
+    429 / 调用次数 / 限流 等常见模式都归入配额分支，hint 引导申请自己的 API Key。
+    """
+    cases = [
+        "rate limited",
+        "Too Many Requests",
+        "API quota exceeded",
+        "HTTP 429: forbidden",
+        "超出每日调用次数上限",
+        "请求触发限流，请稍后再试",
+    ]
+    for msg in cases:
+        client = FlyAIClient()
+        monkeypatch.setattr(client, "_run_command",
+                            lambda a, m=msg: {"status": -1, "error": m})
+        env = client.search_keyword("q")
+        assert not env.ok and env.error.code == "flyai_rate_limited", msg
+        assert "飞猪 API 配额说明" in env.error.hint
+        assert "https://flyai.open.fliggy.com/" in env.error.hint
+
+
 # ---------------------------------------------------------------- 子进程 env 注入（审计 F05）
 
 

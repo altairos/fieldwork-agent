@@ -27,6 +27,8 @@ class ToolCompleted(BaseModel):
     ok: bool = True
     data: Any = None
     degraded: str | None = None
+    # 失败时的机器可读错误三元组（含配额用尽等场景）；旧事件默认无此字段
+    error: dict | None = None
 
 
 class PhaseTransition(BaseModel):

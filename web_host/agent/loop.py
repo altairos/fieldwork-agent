@@ -8,7 +8,12 @@ from typing import Any
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.sources.flyai import RecordingClient
-from fieldwork_agent.runtime.loop import _assistant_message, _coerce_args, _tool_content
+from fieldwork_agent.runtime.loop import (
+    _assistant_message,
+    _coerce_args,
+    _error_dict,
+    _tool_content,
+)
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
 from fieldwork_agent.web_host.agent.state_tools import build_state_tools
@@ -117,7 +122,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     data = data.model_dump(mode="json")
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": env.ok,
-                                 "data": data, "degraded": env.degraded})
+                                 "data": data, "degraded": env.degraded,
+                                 "error": _error_dict(env)})
                 messages.append({"role": "tool", "tool_call_id": call_id,
                                  "content": _tool_content(name, env)})
                 if name == "analyze_fieldwork_window" and env.ok:

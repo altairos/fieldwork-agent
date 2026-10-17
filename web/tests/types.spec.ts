@@ -16,6 +16,11 @@ describe("types compile & shape", () => {
     const ev: SseEvent = { event: "tool_completed", call_id: "c1", ok: false, data: null, degraded: "flyai_unavailable" };
     expect(ev.event).toBe("tool_completed");
   });
+  test("tool_completed error optional", () => {
+    const ev: SseEvent = { event: "tool_completed", call_id: "c1", ok: false, data: null,
+      error: { code: "flyai_rate_limited", message: "rate limited", hint: "申请 https://flyai.open.fliggy.com/" } };
+    expect(ev.event).toBe("tool_completed");
+  });
   test("item page price nullable", () => {
     const page: ItemPage = { items: [{ name: "x", price: null, price_raw: null, jump_url: null, pic_url: null, extra: {} }], total: 1, cheapest: null, dearest: null };
     expect(page.items[0].price).toBeNull();

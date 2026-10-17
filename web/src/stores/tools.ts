@@ -1,9 +1,10 @@
 import { create } from "zustand";
-import type { SseEvent } from "../types/events";
+import type { SseEvent, ToolErrorInfo } from "../types/events";
 
 export interface ToolCall {
   call_id: string; tool: string; args: Record<string, unknown>; purpose: string;
   status: "running" | "done" | "failed"; ok?: boolean; data?: unknown; degraded?: string | null;
+  error?: ToolErrorInfo | null;
 }
 interface ToolsState {
   byCallId: Record<string, ToolCall>;
@@ -26,7 +27,8 @@ export const useToolsStore = create<ToolsState>()((set) => ({
       const prev = st.byCallId[ev.call_id];
       if (!prev) return {};                            // 无 started 的孤立 completed：忽略
       return { byCallId: { ...st.byCallId, [ev.call_id]: {
-        ...prev, status: ev.ok ? "done" : "failed", ok: ev.ok, data: ev.data, degraded: ev.degraded ?? null } } };
+        ...prev, status: ev.ok ? "done" : "failed", ok: ev.ok, data: ev.data, degraded: ev.degraded ?? null,
+        error: ev.error ?? null } } };
     }
     return {};
   }),

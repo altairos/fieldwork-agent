@@ -54,15 +54,23 @@ def _brief(value: Any) -> Any:
     return value
 
 
+def _error_dict(env: Envelope) -> dict | None:
+    """失败包络 → {code,message,hint} 三元组；成功返回 None（事件/摘要共用形状）。"""
+    if env.ok:
+        return None
+    err = env.error
+    return {"code": getattr(err, "code", ""),
+            "message": getattr(err, "message", ""),
+            "hint": getattr(err, "hint", "")}
+
+
 def _summarize(name: str, env: Envelope) -> dict:
     """Envelope → 结构化摘要（供 LLM 读；形状见模块 docstring 与 task 报告）。"""
     out: dict[str, Any] = {"tool": name, "ok": env.ok}
     if env.degraded:
         out["degraded"] = env.degraded
     if not env.ok:
-        err = env.error
-        out["error"] = {"code": getattr(err, "code", ""),
-                        "message": getattr(err, "message", "")}
+        out["error"] = _error_dict(env)
         return out
 
     data = env.data
@@ -183,7 +191,8 @@ def run_tool_loop(llm: Any, messages: list[dict],
                                 "arguments": args})
             if on_event:
                 on_event("tool_completed", {"call_id": call_id, "ok": env.ok,
-                                            "data": env.data, "degraded": env.degraded})
+                                            "data": env.data, "degraded": env.degraded,
+                                            "error": _error_dict(env)})
         if time.monotonic() - start > max_wall_seconds:
             limit_reason = "回合时长已达上限，请基于已有信息回答"
             break

@@ -157,6 +157,30 @@ describe("ToolActivityStrip 细节", () => {
     expect(rows[1].textContent).toContain("profile_field_site");
     expect(rows[1].textContent).toContain("喜洲镇"); // purpose 为空时回落 args 摘要
   });
+  test("配额用尽：每个失败行标记，条下渲染一次性申请 Key 通知卡", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "search_hotels", args: {}, purpose: "住宿" });
+    s.applyEvent({ event: "tool_started", call_id: "c2", tool: "search_pois", args: {}, purpose: "景点" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: false, data: null, degraded: null,
+      error: { code: "flyai_rate_limited", message: "rate limited", hint: "" } });
+    s.applyEvent({ event: "tool_completed", call_id: "c2", ok: false, data: null,
+      error: { code: "flyai_rate_limited", message: "rate limited", hint: "" } });
+    render(<ToolActivityStrip />);
+    expect(screen.getAllByText("每日共享配额已用尽")).toHaveLength(2);        // 每个失败行各一次
+    expect(screen.getAllByText(/您也可以申请自己的免费 API Key/)).toHaveLength(1); // 通知卡仅渲染一次
+    const link = screen.getByRole("link", { name: /flyai\.open\.fliggy\.com/ });
+    expect(link).toHaveAttribute("href", "https://flyai.open.fliggy.com/");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+  test("普通失败行不触发配额通知卡", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "search_hotels", args: {}, purpose: "住宿" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: false, data: null, degraded: null,
+      error: { code: "flyai_error", message: "boom", hint: "" } });
+    render(<ToolActivityStrip />);
+    expect(screen.queryByText(/每日共享配额已用尽/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/您也可以申请自己的免费 API Key/)).not.toBeInTheDocument();
+  });
 });
 
 describe("Timeline 工具结果卡（同源 tools store）", () => {

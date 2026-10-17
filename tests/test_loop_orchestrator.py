@@ -101,6 +101,59 @@ def test_tool_error_envelope_goes_back_as_tool_message():
     assert tool_msgs and '"ok": false' in tool_msgs[-1]["content"]
 
 
+def test_rate_limit_error_transparent_in_event_and_summary():
+    """flyai_rate_limited 配额错误：completed 事件与 tool 摘要均携带 error 三元组。
+
+    前端靠事件里的 error.code 驱动配额提示卡；LLM 靠摘要里的 hint 转述申请地址
+    （其他端：CLI/MCP 经同一摘要链路呈现链接）。
+    """
+    events = []
+
+    def dispatch(name, args):
+        return Envelope(ok=False,
+                        error=ToolError(code="flyai_rate_limited",
+                                        message="rate limited",
+                                        hint="飞猪 API 配额说明：申请 https://flyai.open.fliggy.com/"))
+
+    def on_event(ev, payload):
+        events.append((ev, payload))
+
+    llm = ScriptedLLM([
+        {"content": "", "tool_calls": [
+            {"id": "1", "name": "search_ai", "arguments": {}}], "finish_reason": "tool_calls"},
+        {"content": "配额用尽", "tool_calls": None},
+    ])
+    run_tool_loop(llm, [{"role": "user", "content": "x"}], dispatch, tools=[],
+                  on_event=on_event)
+    completed = [p for ev, p in events if ev == "tool_completed"][0]
+    assert completed["error"]["code"] == "flyai_rate_limited"
+    assert "flyai.open.fliggy.com" in completed["error"]["hint"]
+    # 摘要同样带 hint，LLM 可转述申请地址
+    tool_msgs = [m for m in llm.seen[-1][0] if m.get("role") == "tool"]
+    assert tool_msgs and "flyai.open.fliggy.com" in tool_msgs[-1]["content"]
+
+
+def test_success_completed_event_error_is_none():
+    """成功事件 error 为 None（additive 字段，不污染既有消费者）。"""
+    events = []
+
+    def dispatch(name, args):
+        return Envelope(ok=True, data={"items": []})
+
+    def on_event(ev, payload):
+        events.append((ev, payload))
+
+    llm = ScriptedLLM([
+        {"content": "", "tool_calls": [
+            {"id": "1", "name": "search_ai", "arguments": {}}], "finish_reason": "tool_calls"},
+        {"content": "done", "tool_calls": None},
+    ])
+    run_tool_loop(llm, [{"role": "user", "content": "x"}], dispatch, tools=[],
+                  on_event=on_event)
+    completed = [p for ev, p in events if ev == "tool_completed"][0]
+    assert completed["error"] is None
+
+
 def test_tool_call_cap_stops():
     tc = {"content": "", "tool_calls": [
         {"id": "x", "name": "search_ai", "arguments": {"query": "q"}}],

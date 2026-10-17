@@ -15,10 +15,16 @@ import { useToolsStore, type ToolCall } from "../../stores/tools";
  *   降级态 line 447：整行 `opacity-60` + 工具名 `line-through decoration-inkfaint/60` +
  *      `chip bg-ochrewash text-ochre border-ochre/25 ml-1`「降级 · flyai_unavailable」+ 尾部 `text-inkfaint ml-auto text-[11px]`
  *   进行中：`dot bg-cinnabar animate-pulse`（设计板 line 264 的进行中态语义，PulseDot 已内建）
+ *   配额用尽（error.code=flyai_rate_limited）：行尾标「每日共享配额已用尽」，
+ *      条下渲染一次性通知卡（配额说明 + 申请自己的 API Key 外链）
  *
  * 同源红线②：只读 tools store（tool_started/tool_completed 归约结果），不发请求、不转述数字；
  * 简述取内核下发的 `purpose` 原文，缺失时回落 `args` 的标量键值（原样呈现，不加工、不猜语义）。
  */
+
+/** 每日共享配额用尽的错误码与申请页地址（与 kernel.sources.flyai._RATE_LIMIT_HINT 同源）。 */
+const RATE_LIMIT_CODE = "flyai_rate_limited";
+const FLYAI_KEY_URL = "https://flyai.open.fliggy.com/";
 
 /** args → 简述：只取标量值（字符串/数字/布尔），最多 3 项，原样 `key value`。 */
 function argsSummary(args: Record<string, unknown>, limit = 3): string {
@@ -36,14 +42,17 @@ function Row({ call }: { call: ToolCall }) {
   const degraded = Boolean(call.degraded);
   const failed = call.status === "failed";
   const running = call.status === "running";
+  const rateLimited = failed && call.error?.code === RATE_LIMIT_CODE;
   const dot: DotTone = running ? "cinnabar" : failed ? "ochre" : "bamboo";
   const desc = call.purpose || argsSummary(call.args);
   const tail = running
     ? "进行中"
     : failed
-      ? call.data === null || call.data === undefined
-        ? "未取得数据"
-        : "调用失败"
+      ? rateLimited
+        ? "每日共享配额已用尽"
+        : call.data === null || call.data === undefined
+          ? "未取得数据"
+          : "调用失败"
       : "";
 
   return (
@@ -70,12 +79,37 @@ function Row({ call }: { call: ToolCall }) {
   );
 }
 
+/** 配额用尽一次性通知卡：配额说明 + 申请自己的免费 API Key（新账号含 5000 次赠送额度）。 */
+function QuotaNoticeCard() {
+  return (
+    <div className="rounded-md border border-ochre/25 bg-ochrewash px-3 py-2.5 text-[12px] leading-relaxed">
+      <div className="flex items-center gap-1.5 font-medium text-ochre">
+        <IconAlert className="w-3.5 h-3.5 shrink-0" />
+        飞猪 API 配额说明
+      </div>
+      <p className="mt-1 text-inksoft">5000 次赠送额度用完后每日限 100 次免费调用，次日恢复。</p>
+      <p className="mt-1 text-inksoft">
+        您也可以申请自己的免费 API Key：
+        <a
+          className="ml-1 underline decoration-ochre/50 underline-offset-2 hover:decoration-ochre"
+          href={FLYAI_KEY_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
+          flyai.open.fliggy.com
+        </a>
+      </p>
+    </div>
+  );
+}
+
 /** 工具活动条；本回合尚无任何调用时不渲染（不留空壳）。 */
 export function ToolActivityStrip() {
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
   if (order.length === 0) return null;
   const calls = order.map((id) => byCallId[id]).filter((c): c is ToolCall => Boolean(c));
+  const quotaExhausted = calls.some((c) => c.status === "failed" && c.error?.code === RATE_LIMIT_CODE);
   return (
     <div className="hairline rounded-lg bg-card px-4 py-3 space-y-2">
       <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-1">AGENT 工具活动</div>
@@ -84,6 +118,7 @@ export function ToolActivityStrip() {
           <Row key={call.call_id} call={call} />
         ))}
       </ul>
+      {quotaExhausted && <QuotaNoticeCard />}
     </div>
   );
 }
