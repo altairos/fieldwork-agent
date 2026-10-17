@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
@@ -412,3 +413,25 @@ def test_r09_new_proposal_after_confirm_stale(json_repo):
     json_repo.confirm_proposal("p1", did)
     json_repo.save_proposal("p1", "# 方案 v2", version="final")
     assert json_repo.is_proposal_confirmation_stale("p1") is True
+
+
+# ------------------------------------------------------------ 同刻度保存的顺序稳定性
+
+
+def test_proposal_latest_stable_within_same_wallclock_tick(json_repo, monkeypatch):
+    """同一壁钟 tick 内连续保存（Windows 时钟分辨率 ~15.6ms，CI 偶发两次保存
+    落同一 tick），latest 判定必须稳定：saved_at 平局时按保存顺序，不得退化
+    为随机 uid 字典序（uid 无单调性，曾致 CI windows 矩阵间歇红）。"""
+    import fieldwork_agent.kernel.repository.json_repo as jr
+
+    monkeypatch.setattr(jr, "_now", lambda: "2026-10-16T18:55:00.123456")
+    # 后保存者 uid 字典序更小：旧实现按 (saved_at, id) 排序必把 v2 排到前面
+    uids = iter(["ffffffff", "00000000"])
+    monkeypatch.setattr(
+        jr.uuid, "uuid4", lambda: SimpleNamespace(hex=next(uids) + "0" * 24)
+    )
+    json_repo.save_proposal("p1", "v1", version="draft")
+    json_repo.save_proposal("p1", "v2", version="draft")
+    docs = json_repo.list_proposals("p1")
+    assert [d["content"] for d in docs] == ["v1", "v2"]
+    assert json_repo.get_latest_proposal("p1")["content"] == "v2"

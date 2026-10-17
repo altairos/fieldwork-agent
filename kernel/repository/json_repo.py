@@ -463,7 +463,10 @@ class JsonRepository:
                         },
                     )
                 )
-        docs.sort(key=lambda d: (d.get("saved_at") or "", d.get("id") or ""))
+        # 平局只用 saved_at：时钟分辨率不够时（Windows ~15.6ms）同 tick 保存的
+        # saved_at 相同，稳定排序保持保存顺序（append 顺序即版本顺序）；
+        # id 尾部是随机 uid 无单调性，绝不能做 tie-break（CI windows 矩阵间歇红）。
+        docs.sort(key=lambda d: d.get("saved_at") or "")
         return docs
 
     def get_latest_proposal(self, pid: str) -> dict | None:
