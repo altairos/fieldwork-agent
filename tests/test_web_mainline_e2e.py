@@ -3,11 +3,12 @@
 
 覆盖审计第二批退出条件：通过真实 FastAPI 用户入口从空项目走到 finished；
 刷新（重建 repo）后状态和文档仍在；修改预算后旧方案确认失效（stale）。
-确定性 LLM stub 驱动，不联网（受控真实 API 验收另见部署手册，不入 CI）。
+确定性 LLM / flyai stub 驱动，不联网（受控真实 API 验收另见部署手册，不入 CI）。
 """
 import asyncio
 
 import pytest
+from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.web_host.app import create_app
 from httpx import ASGITransport, AsyncClient
@@ -29,6 +30,18 @@ class ScriptLLM:
 
     def chat(self, messages, **kwargs):
         return {"content": ""}
+
+
+class E2EFlyAI:
+    """e2e 万能 flyai 桩：所有搜索恒返 100.0 单结果，不联网
+    （tests/test_web_agent_loop.py 的 FakeFlyAI 同构）。"""
+
+    def __getattr__(self, name):
+        def _stub(**kw):
+            return Envelope(ok=True, data=ItemPage(
+                items=[SearchItem(name=f"{name}-结果", price=100.0)],
+                total=1, cheapest=100.0, dearest=100.0))
+        return _stub
 
 
 _PROPOSAL_ARGS = {
@@ -81,11 +94,27 @@ async def test_mainline_empty_project_to_finished(app, client):
           "finish_reason": "tool_calls", "usage": {}}],
         # 回合 1 第 2 帧：收尾文本（轮末确定性抽取仍会跑，Task 2/4）
         [{"delta": "好的"}, {"content": "好的，我们开始梳理研究信息。", "usage": {}}],
-        # 回合 2 第 1 帧：compose_proposal 工具调用（F04 落盘）
+        # 回合 2（③）第 1 帧：profile_field_site 真实工具摸底（E2EFlyAI 桩）
+        [{"content": "", "tool_calls": [
+            {"id": "c2", "name": "profile_field_site",
+             "arguments": {"location": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        # 回合 2（③）第 2 帧：收尾文本
+        [{"delta": "已"}, {"content": "已摸底大理田野情况。", "usage": {}}],
+        # 回合 3（⑤）第 1 帧：compose_itinerary 真实工具排程（E2EFlyAI 桩）
+        [{"content": "", "tool_calls": [
+            {"id": "c3", "name": "compose_itinerary",
+             "arguments": {"departure": "上海", "destinations": ["大理"],
+                           "start_date": "2026-07-10", "duration_days": 3,
+                           "budget_total": 20000}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        # 回合 3（⑤）第 2 帧：收尾文本
+        [{"delta": "已"}, {"content": "已排好行程。", "usage": {}}],
+        # 回合 4（⑥）第 1 帧：compose_proposal 工具调用（F04 落盘）
         [{"content": "", "tool_calls": [
             {"id": "c1", "name": "compose_proposal", "arguments": _PROPOSAL_ARGS}],
           "finish_reason": "tool_calls", "usage": {}}],
-        # 回合 2 第 2 帧：收尾文本
+        # 回合 4（⑥）第 2 帧：收尾文本
         [{"delta": "已"}, {"content": "已生成研究方案。", "usage": {}}],
     ])
 
@@ -95,6 +124,7 @@ async def test_mainline_empty_project_to_finished(app, client):
                                                 "topic": "宗族变迁"})
     assert resp.status_code == 201
     app.state.llm = llm
+    app.state.flyai = E2EFlyAI()
 
     # ② 第一回合：工具调用写入 purpose/scale/research_questions（方案 B 深挖），
     # 轮末抽取补齐 budget/time_window/departure_city/target_location（F03）
@@ -113,10 +143,13 @@ async def test_mainline_empty_project_to_finished(app, client):
                   if m.get("role") == "user"]
     assert sum("上海" in t for t in user_texts) == 1
 
-    # ③ 确认田野点：差 informant，不推进
+    # ③ 真实工具回合：profile_field_site 摸底大理，轮末 _persist_tool_results
+    # 自动落盘田野点（confirmed=False）；确认时差 informant 不推进
+    await _post_message(client, "帮我摸底大理的田野情况")
     repo = app.state.repo
-    sid = repo.save_field_site("p1", {"name": "大理", "confirmed": False,
-                                      "profile": {"location": "大理"}})
+    sites = repo.list_field_sites("p1")
+    assert len(sites) == 1 and sites[0]["name"] == "大理"
+    sid = sites[0]["id"]
     resp = await client.post(f"/projects/p1/field-sites/{sid}/confirm")
     assert resp.status_code == 200
     assert resp.json()["field_site"]["confirmed"] is True
@@ -130,15 +163,20 @@ async def test_mainline_empty_project_to_finished(app, client):
     assert resp.json()["phase_transition"] == {"from": "field_site_profiles",
                                                "to": "itinerary_planning"}
 
-    # ⑤ 行程 + travel_date/purpose → C→D（has_itinerary 走 cache_search 判定）
-    repo.cache_search("p1", "itinerary::大理", "compose_itinerary",
-                      {"destinations": ["大理"], "legs": []})
+    # ⑤ 真实工具回合：compose_itinerary 排行程，轮末落盘行程快照
+    # （source_ref 已是真实快照引用，Task 7）；has_itinerary 即备，轮末
+    # check_and_advance 当场推进 C→D（phases.py 只看 has_itinerary，
+    # 不看 travel_date）——PUT 只补齐 ctx，无阶段可推
+    await _post_message(client, "排一下行程")
+    assert any(c["tool"] == "compose_itinerary"
+               for c in repo.list_cached_searches("p1"))
+    snap = (await client.get("/projects/p1")).json()
+    assert snap["phase"] == "proposal_generation"
     resp = await client.put("/projects/p1/research-context",
                             json={"travel_date": "2026-07-10", "purpose": "课程作业"})
     assert resp.status_code == 200
     assert resp.json()["research_context"]["travel_date"] == "2026-07-10"
-    assert resp.json()["phase_transition"] == {"from": "itinerary_planning",
-                                               "to": "proposal_generation"}
+    assert resp.json()["phase_transition"] is None
 
     # ⑥ 第二回合：compose_proposal 落盘（F04）+ by-id 可读（F13）
     await _post_message(client, "生成方案")
