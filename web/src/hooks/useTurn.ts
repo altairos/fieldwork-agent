@@ -7,7 +7,8 @@ import { useUiStore } from "../stores/ui";
 import type { EventEnvelope } from "../types/events";
 
 /**
- * 回合句柄（R4 两步式：POST /messages 创建回合 → GET SSE 订阅事件流）。
+ * 回合句柄（R4 两步式：POST /messages 创建回合 → GET SSE 订阅事件流；
+ * adopt 领养首页已创建的首轮回合，只订阅不创建）。
  *
  * 生命周期：组件卸载或 projectId 变化时中止进行中的流——否则旧项目的 SSE 回调会继续把事件
  * 写进（已被跨项目 reset 清空的）全局 store，造成状态串台，并泄漏一条常驻连接。
@@ -73,11 +74,41 @@ export function useTurn(projectId: string) {
     }
   }, [projectId, busy]);
 
+  // 领养回合（首页两步创建→跳转接住，轮 4）：不 POST 创建，只订阅该回合事件流。
+  // 回放的 message_delta/tool/turn_done 正常进 store；结束后 re-hydrate 对齐后端
+  // 事实史——回放不含 user 帧（user 消息只落 chat_history），首页首问由覆盖式
+  // hydrate 补齐（与回放的并发竞态由 conversation store 的 turn_done 查重收敛）。
+  const adopt = useCallback(async (turnId: string) => {
+    abortRef.current?.abort();               // StrictMode/重复领养：先断旧流
+    turnIdRef.current = turnId;
+    seenRef.current = new Set();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setBusy(true);
+    try {
+      await streamTurnEvents(projectId, turnId, {
+        signal: ctrl.signal,
+        onEvent: (env: EventEnvelope) => { seenRef.current = dispatchEvent(env, seenRef.current); },
+        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
+        onClose: () => { setBusy(false); },
+      });
+    } catch (err) {
+      useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
+    } finally {
+      setBusy(false);
+      // re-hydrate：以 GET /messages 的后端事实为准（含 user 首问）；失败静默——
+      // store 已有回放内容兑底，刷新自愈
+      rest.getMessages(projectId)
+        .then((msgs) => useConversationStore.getState().hydrate(msgs))
+        .catch(() => {});
+    }
+  }, [projectId]);
+
   const cancel = useCallback(async () => {
     abortRef.current?.abort();
     if (turnIdRef.current) await rest.cancelTurn(projectId, turnIdRef.current).catch(() => {});
     setBusy(false);
   }, [projectId]);
 
-  return { send, cancel, busy, conflict, keyMissing };
+  return { send, adopt, cancel, busy, conflict, keyMissing };
 }

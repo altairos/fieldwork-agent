@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ProjectHub } from "../src/routes/ProjectHub";
 import { ProposalView } from "../src/routes/ProposalView";
 import { ProposalViewer } from "../src/components/proposal/ProposalViewer";
@@ -23,12 +23,18 @@ beforeEach(() => {
 // 项目列表收进「继续上次」折叠入口；学科/模板/侧栏说明等冗余区块移除。
 // ──────────────────────────────────────────────────────────────────────────
 describe("ProjectHub（极简首页）", () => {
+  /** 位置探针：显示 pathname+search，供断言跳转是否携带 ?turn=（轮 4 首问） */
+  function LocationProbe() {
+    const loc = useLocation();
+    return <div data-testid="loc">{loc.pathname}{loc.search}</div>;
+  }
+
   function renderHome() {
     return render(
       <MemoryRouter initialEntries={["/"]}>
         <Routes>
           <Route path="/" element={<ProjectHub />} />
-          <Route path="/p/:id" element={<div data-testid="workspace" />} />
+          <Route path="/p/:id" element={<><div data-testid="workspace" /><LocationProbe /></>} />
         </Routes>
       </MemoryRouter>,
     );
@@ -128,6 +134,39 @@ describe("ProjectHub（极简首页）", () => {
     renderHome();
     expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/想研究什么/)).toBeEnabled();
+  });
+
+  // ── 轮 4：首页一句话即对话起点 ──
+  // 此前 purpose 只写 research_context 不发 turn，跳转后对话页「尚无对话」，输入被
+  // 静默吞进右栏；现在创建项目后把 purpose 原文发为首轮 turn，跳转携带 ?turn= 供
+  // 对话页订阅回放（adopt 行为见 useTurn.spec / workspace.spec）。
+  test("创建即开聊：purpose 同时发为首轮 turn，跳转携带 ?turn=", async () => {
+    vi.mocked(rest.rest.listProjects).mockResolvedValue([] as any);
+    vi.mocked(rest.rest.createProject).mockResolvedValue({ project_id: "p7" } as any);
+    vi.mocked(rest.rest.createTurn).mockResolvedValue({ turn_id: "t7", status: "running" } as any);
+    renderHome();
+    fireEvent.change(await screen.findByPlaceholderText(/想研究什么/), {
+      target: { value: "研究宗族组织" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" }));
+    await waitFor(() =>
+      expect(vi.mocked(rest.rest.createTurn)).toHaveBeenCalledWith("p7", "研究宗族组织"));
+    expect(await screen.findByTestId("loc")).toHaveTextContent("/p/p7?turn=t7");
+  });
+
+  test("首轮 turn 建立失败（如未配 key 403）：不阻塞进入项目页", async () => {
+    vi.mocked(rest.rest.listProjects).mockResolvedValue([] as any);
+    vi.mocked(rest.rest.createProject).mockResolvedValue({ project_id: "p8" } as any);
+    vi.mocked(rest.rest.createTurn).mockRejectedValue(new Error("403 llm_key_required"));
+    renderHome();
+    fireEvent.change(await screen.findByPlaceholderText(/想研究什么/), {
+      target: { value: "想法B" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" }));
+    // 项目本身已建好：仍进入项目页，只是不带 ?turn=（对话页降级文案/手动首问兜底）
+    expect(await screen.findByTestId("workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("loc")).toHaveTextContent("/p/p8");
+    expect(screen.getByTestId("loc")).not.toHaveTextContent("turn=");
   });
 });
 

@@ -22,7 +22,15 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     }
     if (ev.event === "turn_done") {
       const content = st.streamBuffer;
-      const msgs = content ? [...st.messages, { role: "assistant" as const, content }] : st.messages;
+      let msgs = st.messages;
+      if (content) {
+        // hydrate 完整史与 SSE 回放并发的双写保护（轮 4 adopt）：末条已是同文
+        // assistant 则不重复 append，否则首页首问会出两条相同回复
+        const last = msgs[msgs.length - 1];
+        if (!last || last.role !== "assistant" || last.content !== content) {
+          msgs = [...msgs, { role: "assistant" as const, content }];
+        }
+      }
       return { messages: msgs, streamBuffer: "", turnRunning: false, lastUsage: ev.usage };
     }
     return {};

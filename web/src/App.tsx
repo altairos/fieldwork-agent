@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { BrowserRouter, Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { rest } from "./api/rest";
 import { Composer } from "./components/chat/Composer";
 import { PhaseBanner } from "./components/chat/PhaseBanner";
@@ -49,6 +49,8 @@ function Workspace() {
   const toggleLeft = useUiStore((s) => s.toggleLeft);
   const toggleRight = useUiStore((s) => s.toggleRight);
   const turn = useTurn(projectId);
+  const turnAdopt = turn.adopt;   // 解构出稳定引用再进 effect 依赖（turn 对象每渲染新引用）
+  const [searchParams] = useSearchParams();
   const [composerLocked, setComposerLocked] = useState(false);
 
   // 跨项目 reset：按 projectId 变化清空四 store（幂等，StrictMode 双执行安全）
@@ -115,6 +117,16 @@ function Workspace() {
       alive = false;
     };
   }, [projectId, loadSnapshot]);
+
+  // 首页两步创建携带的首轮回合（?turn=，轮 4）：接住后立即 replace 清 query
+  // （防刷新重放/分享链接重触发），再订阅该回合的 SSE 回放——首页输入由此成为
+  // 对话页第一条消息。replace 后 searchParams 变化触发重跑，turnId 已空则早退。
+  useEffect(() => {
+    const turnId = searchParams.get("turn");
+    if (!projectId || !turnId) return;
+    navigate(`/p/${projectId}`, { replace: true });
+    void turnAdopt(turnId);
+  }, [projectId, searchParams, navigate, turnAdopt]);
 
   // Escape 关闭移动端抽屉（对齐 ThemeSwitcher 键盘关闭惯例）；桌面无抽屉，无副作用
   useEffect(() => {

@@ -176,3 +176,66 @@ describe("useTurn — 卸载/跨项目切换中止旧流（Fix #1）", () => {
     expect(signals[0].aborted).toBe(true);            // 旧流已断：其回调不会再污染新项目 store
   });
 });
+
+describe("useTurn — adopt（领养首页创建的首轮回合，轮 4）", () => {
+  /** 独立 fetch 桩：/events → SSE；GET /messages → 后端事实史（adopt 结束后 re-hydrate 用）。 */
+  function stubAdopt(sse: { resp: unknown }, history: unknown[]) {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/events")) return sse.resp;
+      if (String(url) === "/projects/p1/messages" && init?.method !== "POST") {
+        return jsonResp(history, true, 200);
+      }
+      throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { fetchMock };
+  }
+
+  test("不 POST 创建回合；回放事件进 store；结束后 re-hydrate 对齐后端事实史（含首问）", async () => {
+    const sse = sseResp([
+      'id: 1\nevent: message_delta\ndata: {"turn_id":"t9","seq":1,"text":"你好，"}\n\n',
+      'id: 2\nevent: message_delta\ndata: {"turn_id":"t9","seq":2,"text":"田野罗盘"}\n\n',
+      'id: 3\nevent: turn_done\ndata: {"turn_id":"t9","seq":3,"reply_id":"t9","usage":{}}\n\n',
+    ]);
+    const { fetchMock } = stubAdopt(sse, [
+      { role: "user", content: "研究宗族" },
+      { role: "assistant", content: "你好，田野罗盘" },
+    ]);
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.adopt("t9"); });
+    await act(async () => { await tick(); });   // re-hydrate 的异步收敛落定
+
+    // 领养 ≠ 创建：绝无 POST /messages
+    const posts = fetchMock.mock.calls.filter(
+      ([u, i]: [string, RequestInit?]) => String(u).endsWith("/messages") && i?.method === "POST");
+    expect(posts).toHaveLength(0);
+    // 回放内容已进 store，且 re-hydrate 后最终一致（user 首问竞态由覆盖式 hydrate 修正）
+    expect(useConversationStore.getState().messages).toEqual([
+      { role: "user", content: "研究宗族" },
+      { role: "assistant", content: "你好，田野罗盘" },
+    ]);
+    expect(useConversationStore.getState().turnRunning).toBe(false);
+    expect(result.current.busy).toBe(false);
+    expect(sse.cancel).toHaveBeenCalledTimes(1);      // turn_done 后连接释放
+  });
+
+  test("重复领养先断旧流（StrictMode 双执行/防双订阅泄漏）", async () => {
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/events")) {
+        const sig = init?.signal as AbortSignal;
+        signals.push(sig);
+        return { ok: true, status: 200, body: { getReader: () => hangingReader(sig) } };
+      }
+      return jsonResp([], true, 200);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { void result.current.adopt("t1"); await tick(); });
+    await act(async () => { void result.current.adopt("t2"); await tick(); });
+
+    expect(signals).toHaveLength(2);                  // 两次订阅各起一流
+    expect(signals[0].aborted).toBe(true);           // 第二次领养先断第一次的流
+    expect(signals[1].aborted).toBe(false);
+  });
+});
