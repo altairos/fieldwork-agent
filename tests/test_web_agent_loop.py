@@ -27,6 +27,26 @@ class FakeFlyAI:
         return _stub
 
 
+class ChatFakeLLM(FakeLLM):
+    """带非流式 chat() 的 Fake：compose_proposal/compose_interview_guide
+    走 llm.chat()（kernel.llm 契约）；返回空 content → 触发模板降级路径，
+    测试不依赖真实 LLM。"""
+    def chat(self, messages, **kw):
+        return {"content": ""}
+
+
+# F04：compose_proposal 完整四硬渠道参数（独立于 Task 2 的 NA 豁免路径）
+_PROPOSAL_ARGS = {
+    "ctx": {"discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+            "budget": "2万", "time_window": "7月", "departure_city": "上海",
+            "target_location": "大理"},
+    "sites": [{"name": "大理", "confirmed": True, "profile": {"location": "大理"}}],
+    "itinerary": {"legs": []},
+    "informants": [{"code": "INF-01", "type": "宗族长老",
+                    "relation": "同乡会引荐", "contact": "", "notes": ""}],
+}
+
+
 @pytest.fixture
 def env(tmp_path):
     repo = JsonRepository(projects_dir=tmp_path / "projects")
@@ -149,3 +169,228 @@ def test_cancel_stops_loop(env):
     from fieldwork_agent.web_host.agent.loop import run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
     assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+
+
+def test_user_message_not_duplicated_to_llm(env):
+    """F09：当前用户消息只发一次给模型（不随 history 重复）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "ok"}, {"content": "ok", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "我要去大理", tm, llm, FakeFlyAI()))
+    msgs = llm.calls[0][0]
+    dup = [m for m in msgs if m["role"] == "user" and m["content"] == "我要去大理"]
+    assert len(dup) == 1
+
+
+def test_extraction_persists_research_context(env):
+    """F03：对话中的研究信息轮末写回结构化状态（确定性抽取打底）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好"}, {"content": "好", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id,
+                         "我是社会学背景，从上海去大理调研", tm, llm, FakeFlyAI()))
+    ctx = repo.get_research_context("p1")
+    assert ctx.get("discipline") == "社会学"
+    assert ctx.get("departure_city") == "上海"
+    assert ctx.get("target_location") == "大理"
+
+
+def test_compose_proposal_persisted_as_document(env):
+    """F04：compose_proposal 成功后文档落盘（kind/version 如实记录）。"""
+    repo, tm = env
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _PROPOSAL_ARGS}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert docs[0]["kind"] == "proposal"
+    doc = repo.get_proposal_by_id("p1", docs[0]["id"])
+    assert doc["content"].startswith("# ")
+    assert "## " in doc["content"]  # 八章降级结构
+
+
+def test_compose_interview_guide_persisted(env):
+    """F04：compose_interview_guide 的产物拼合落盘为 interview_guide 文档。"""
+    repo, tm = env
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_interview_guide",
+                                          "arguments": {"topic": "宗族变迁",
+                                                        "informant_types": ["宗族长老"]}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成访谈提纲", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert docs[0]["kind"] == "interview_guide"
+    doc = repo.get_proposal_by_id("p1", docs[0]["id"])
+    assert "## 宗族长老" in doc["content"]
+
+
+# ---------------------------------------------------------------- 快照链（spec §5.1）
+
+
+def test_search_snapshot_persisted_and_turn_done_carries_ids(env):
+    """回合内搜索即时落盘为快照；turn_done 事件携带 snapshot_ids。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    cached = repo.list_cached_searches("p1")
+    assert len(cached) == 1 and cached[0]["tool"] == "search_hotels"
+    assert "search_hotels" in cached[0]["query"] and "大理" in cached[0]["query"]
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["snapshot_ids"] == [cached[0]["id"]]
+
+
+def test_dispatch_injects_live_snapshot_refs():
+    """dispatch 对声明 snapshot_refs 形参的 fn 注入活字典当前内容（Task 11 消费）。"""
+    from fieldwork_agent.kernel.models import Envelope
+    from fieldwork_agent.kernel.registry import _REGISTRY, CapabilityMeta, register
+    from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
+    from pydantic import BaseModel
+
+    class ProbeArgs(BaseModel):
+        pass
+
+    def probe(*, snapshot_refs=None):
+        return Envelope(ok=True, data={"refs": snapshot_refs})
+
+    register(CapabilityMeta(name="probe_tool", description="p", fn=probe,
+                            args_model=ProbeArgs))
+    try:
+        live = {"大理": "flyai 快照 srch_1（2026-10-16 查询）"}
+        dispatch = build_dispatch_fn(None, None, live_snapshot_refs=live)
+        env = dispatch("probe_tool", {})
+        assert env.ok and env.data["refs"] == live
+        live["喜洲"] = "flyai 快照 srch_2（2026-10-16 查询）"  # 活字典：后续调用可见
+        assert dispatch("probe_tool", {}).data["refs"]["喜洲"]
+    finally:
+        _REGISTRY.pop("probe_tool", None)
+
+
+# ------------------------------------------- 时窗回写（spec §5.3，final-review Fix-2）
+
+
+class WindowLLM(FakeLLM):
+    """流式脚本驱动对话；非流式 chat 返回节庆 JSON（analyze 节庆抽取契约）。"""
+
+    def __init__(self, script, chat_content):
+        super().__init__(script)
+        self._chat_content = chat_content
+
+    def chat(self, messages, **kw):
+        return {"content": self._chat_content}
+
+
+_ANALYZE_ARGS = {
+    "departure": "昆明", "destination": "西昌",
+    "range_start": "2026-07-01", "range_end": "2026-07-15",
+    "duration_days": 3, "budget_total": 5000.0, "sample_step": 7,
+}
+
+
+def test_analyze_window_writes_time_window_to_research_context(env):
+    """spec §5.3：analyze 成功后宿主把推荐时窗确定性回写 research_context.time_window。
+
+    FakeFlyAI 采样恒 cheapest=100 → 手算首窗 [07-01, 07-03]：
+    est = 100×2 航 + 100×2 晚 + 150×3 餐 = 850 → reasons[0] 含「估算 ¥850」。
+    """
+    repo, tm = env
+    llm = WindowLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "analyze_fieldwork_window",
+                                         "arguments": dict(_ANALYZE_ARGS)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ], chat_content='[{"name": "火把节", "approx_start": "2026-07-05",'
+                    ' "approx_end": "2026-07-06", "approx_dates": "农历六月廿四",'
+                    ' "relevance": "r"}]')
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    tw = repo.get_research_context("p1")["time_window"]
+    assert tw.startswith("2026-07-01 ~ 2026-07-03（推荐时窗：")
+    assert "估算 ¥850" in tw
+    # 时窗快照本身仍落盘（既有行为不变）
+    cached = repo.list_cached_searches("p1")
+    assert any(c["tool"] == "analyze_fieldwork_window" for c in cached)
+
+
+def test_analyze_window_empty_windows_leaves_time_window_untouched(env, monkeypatch):
+    """windows 为空/首窗缺日期时不回写：不抛错、time_window 保持原值。"""
+    repo, tm = env
+    repo.update_research_context("p1", {"time_window": "原有：7 月中旬"})
+    from fieldwork_agent.web_host.agent import loop as agent_loop
+
+    def _fake_build_dispatch_fn(flyai_client, llm, live_snapshot_refs=None):
+        def dispatch(name, args):
+            return Envelope(ok=True, data={"windows": []})
+        return dispatch
+
+    monkeypatch.setattr(agent_loop, "build_dispatch_fn", _fake_build_dispatch_fn)
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "analyze_fieldwork_window",
+                                         "arguments": dict(_ANALYZE_ARGS)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "ok"},
+         {"content": "ok", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
+    assert "error" not in types
+    assert repo.get_research_context("p1")["time_window"] == "原有：7 月中旬"
+
+
+def test_r05_finalize_failure_sets_failed(env, monkeypatch):
+    """审计二 R05：轮末持久化异常 → error 事件 + failed 终态，绝不悬挂 running。"""
+    repo, tm = env
+    import fieldwork_agent.web_host.agent.loop as loop_mod
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("抽取崩溃")
+
+    monkeypatch.setattr(loop_mod, "_apply_extractions", boom)
+    llm = FakeLLM([[{"delta": "好"}, {"content": "好", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {"total_tokens": 5}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "turn_done" not in types
+    errs = [e for e in events if e.event == "error"]
+    assert errs and errs[-1].data["code"] == "internal_error"
+    assert "轮末持久化失败" in errs[-1].data["message"]
+    assert tm.get_turn("p1", turn.turn_id).status == "failed"

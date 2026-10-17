@@ -10,7 +10,7 @@
  * - GET /projects、POST /projects、GET /projects/:id、GET /projects/:id/proposal
  *   → 固定假数据（够前端联调即可）
  * - GET /projects/:id/proposals            → 版本列表（Task 8 rest.listProposals 消费）
- * - GET  /projects/:id/proposal/download    → text/markdown 附件（L4 下载断言）
+ * - GET  /projects/:id/proposal/download    → 三格式附件（?format=md|docx|txt，默认 md）
  * - GET  /settings/status                    → key 配置状态（web_host/api/settings.py 同构；
  *   默认 configured:true 建模阿里云部署形态）；POST /__test/settings 供 e2e 翻转
  * - POST /projects/:id/messages 带 403 门（服务端未配且无 X-DashScope-Key 头 → llm_key_required，
@@ -234,12 +234,14 @@ const RE_EVENTS = /^\/projects\/([^/]+)\/turns\/([^/]+)\/events$/;
 const RE_CANCEL = /^\/projects\/([^/]+)\/turns\/([^/]+)\/cancel$/;
 const RE_PROPOSALS = /^\/projects\/([^/]+)\/proposals$/;
 const RE_DOWNLOAD = /^\/projects\/([^/]+)\/proposal\/download$/;
+const RE_BY_ID_DOWNLOAD = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/download$/;
 const RE_PROPOSAL = /^\/projects\/([^/]+)\/proposal$/;
 const RE_PROJECT = /^\/projects\/([^/]+)$/;
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDelayMs: number): Promise<void> {
   const method = req.method ?? "GET";
-  const path = new URL(req.url ?? "/", `http://localhost:${PORT}`).pathname;
+  const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+  const path = url.pathname;
 
   if (method === "OPTIONS") {
     res.writeHead(204, CORS_HEADERS);
@@ -317,10 +319,63 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     return;
   }
 
-  // GET /projects/:id/proposal/download → text/markdown 附件。
+  // GET /projects/:id/proposal/download → 三格式附件（?format=md|docx|txt，默认 md）。
   // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
+  // mock 职责边界：只复刻后端的状态码/响应头/文件名形状（docx 返回 PK 魔数、txt 轻量去标记），不引入 python-docx 逻辑。
   if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
     const doc = fakeProposal();
+    const format = url.searchParams.get("format") ?? "md";
+    if (format === "docx") {
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
+      res.end(Buffer.from("PK\u0003\u0004mock docx"));
+      return;
+    }
+    if (format === "txt") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
+      res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="proposal.md"`,
+      ...CORS_HEADERS,
+    });
+    res.end(doc.markdown);
+    return;
+  }
+
+  // GET /projects/:id/proposals/:docId/download → 三格式附件（by-id 端点，ProposalView 主入口）。
+  if (method === "GET" && (m = RE_BY_ID_DOWNLOAD.exec(path))) {
+    const doc = fakeProposal();
+    const format = url.searchParams.get("format") ?? "md";
+    if (format === "docx") {
+      res.writeHead(200, {
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="proposal.docx"`,
+        ...CORS_HEADERS,
+      });
+      res.end(Buffer.from("PK\u0003\u0004mock docx"));
+      return;
+    }
+    if (format === "txt") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": `attachment; filename="proposal.txt"`,
+        ...CORS_HEADERS,
+      });
+      res.end(doc.markdown.replace(/^#+\s*/gm, "").replace(/[*`]/g, ""));
+      return;
+    }
     res.writeHead(200, {
       "Content-Type": "text/markdown; charset=utf-8",
       "Content-Disposition": `attachment; filename="proposal.md"`,

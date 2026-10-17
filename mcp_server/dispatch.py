@@ -5,12 +5,16 @@
 （None 字段省略，见 ``envelope_dict``）。
 """
 import inspect
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 # capabilities 从 registry 直导（kernel/__init__ 导出的别名是 CAPABILITIES）
 from fieldwork_agent.kernel.models import Envelope
 from fieldwork_agent.kernel.registry import capabilities
+
+# 终审⑥：INTERNAL 分支要可观测。库代码只取 logger，不配 handler/basicConfig（宿主决定落地）
+logger = logging.getLogger(__name__)
 
 UNKNOWN_TOOL = "unknown_tool"
 INVALID_ARGS = "invalid_args"
@@ -48,14 +52,34 @@ def _declares(parameters: _Parameters, key: str) -> bool:
     return param is not None and param.kind is not inspect.Parameter.VAR_KEYWORD
 
 
+def _resolve(name: str) -> Any:
+    """按名解析 handler：两张导入期快照优先，都未命中再回落查一次活注册表（终审⑤/M1）。
+
+    ``_CAPABILITY_FNS`` 是 import 期快照，而 ``mapping.capability_tools()`` 每次活取注册表：
+    将来若出现延迟注册，tools/list 会广告出快照里没有的名字，tools/call 却答 unknown_tool。
+    回落 ``capabilities()`` 消除这层不对称；快照命中优先，monkeypatch 替身语义不变。
+    """
+    fn = _CLIENTLESS_SINGLETONS.get(name) or _CAPABILITY_FNS.get(name)
+    if fn is not None:
+        return fn
+    meta = capabilities().get(name)
+    return meta.fn if meta is not None else None
+
+
 def call_capability(name: str, arguments: dict, ctx: dict) -> dict:
     """按能力名分派并把结果折进统一包络；保留键按 ``fn`` 签名 + ctx 双条件注入。"""
-    fn = _CLIENTLESS_SINGLETONS.get(name) or _CAPABILITY_FNS.get(name)
+    fn = _resolve(name)
     if fn is None:
         return _error(UNKNOWN_TOOL, f"未知工具: {name}",
                       "先 list_tools 获取可用工具名")
     try:
+        # 终审③：签名探测单独成段——取不到签名（C 内建等）是服务端缺陷，
+        # 与"客户端传错参数"无关，不得混进 INVALID_ARGS。
         parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError) as exc:
+        logger.error("工具 %s 签名不可探测，折 internal_error 包络", name, exc_info=True)
+        return _error(INTERNAL, f"无法探测工具签名: {exc}")
+    try:
         injected = dict(arguments)   # 副本上动手，不污染调用方 dict
         for key in RESERVED_KEYS:
             # 信任边界（评审 Important#1）：先无条件剥离客户端可能塞入的同名值，
@@ -72,6 +96,7 @@ def call_capability(name: str, arguments: dict, ctx: dict) -> dict:
         return _error(INVALID_ARGS, f"参数校验失败: {exc}",
                       "对照该工具 inputSchema 修正参数")
     except Exception as exc:                 # 业务异常折进包络，保留消息（不吞错）
+        logger.error("工具 %s 执行异常，折 internal_error 包络", name, exc_info=True)
         return _error(INTERNAL, f"执行异常: {exc}")
     if isinstance(result, Envelope):
         return envelope_dict(result)

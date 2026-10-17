@@ -27,6 +27,12 @@ from datetime import datetime
 from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
+from fieldwork_agent.kernel.models import ConfirmationRecord
+from fieldwork_agent.kernel.repository.confirm_hash import (
+    ProposalConfirmError,
+    compute_confirm_hash,
+)
+from fieldwork_agent.kernel.repository.guard import cache_id_violation
 
 # 消息滚动窗口上限（state 内只留最近 N 条，全量在 jsonl）
 MESSAGE_WINDOW = 50
@@ -38,9 +44,21 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
-def _new_id(prefix: str) -> str:
-    """时间戳前缀保证可排序，随机后缀保证全局唯一（``get_cached_search`` 不带 pid）。"""
-    return f"{prefix}_{datetime.now():%Y%m%d%H%M%S}_{uuid.uuid4().hex[:8]}"
+def _new_id(prefix: str, directory: Path | None = None) -> str:
+    """时间戳前缀 + 同秒序号保证可排序且单调，随机尾仅防同秒碰撞（读取已按
+    项目域收窄，审计二 R01）。
+
+    文件名即 id 的调用方（knowledge / search_cache）传 directory：序号取该
+    目录同秒已有文件数，文件名字典序 == 保存顺序——时钟分辨率不足
+    （Windows ~15.6ms）时同秒条目不退化为随机 uid 字典序（否则确认指纹
+    第四/五路随之随机抖动）。存 state 列表的调用方（site / inf）顺序由
+    append 保证，传 None。
+    """
+    stamp = f"{datetime.now():%Y%m%d%H%M%S}"
+    if directory is None:
+        return f"{prefix}_{stamp}_{uuid.uuid4().hex[:8]}"
+    seq = sum(1 for _ in directory.glob(f"{prefix}_{stamp}_*.json"))
+    return f"{prefix}_{stamp}_{seq:04x}{uuid.uuid4().hex[:4]}"
 
 
 def _default_state(project_id: str) -> dict:
@@ -57,6 +75,8 @@ def _default_state(project_id: str) -> dict:
         "field_sites": [],
         "informants": [],
         "proposals": [],
+        "confirmations": [],
+        "proposal_confirmed": False,
         "travel_plan": None,
         # 旧单值键（读兼容用，新写入一律进 proposals[]）
         "researcher_info": {},
@@ -290,7 +310,7 @@ class JsonRepository:
 
     def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
         self._require(pid)
-        cid = _new_id("srch")
+        cid = _new_id("srch", self._cache_dir(pid))
         cached_at = _now()
         serialized = json.dumps(result, ensure_ascii=False)
         payload = {"id": cid, "query": query, "tool": tool, "cached_at": cached_at}
@@ -327,18 +347,26 @@ class JsonRepository:
             )
         return index
 
-    def get_cached_search(self, cid: str) -> dict | None:
-        """按全局唯一 id 跨项目定位（签名不含 pid，见 Protocol 注释）。"""
-        if not self._projects_dir.exists():
+    def get_cached_search(self, pid: str, cid: str) -> dict | None:
+        """按项目域读取快照（审计二 R01）：cid 过白名单后只在 pid 的 search_cache 内定位。"""
+        if cache_id_violation(cid):
             return None
-        for path in self._projects_dir.glob(f"*/search_cache/{cid}.json"):
-            try:
-                data = self._read_json(path)
-            except ValueError:
-                continue
-            if data is not None:
-                return data
-        return None
+        try:
+            self._require(pid)
+        except KeyError:
+            return None
+        trusted = self._cache_dir(pid).resolve()
+        # 受信根包含校验（spec §1.3）：缓存目录自身 symlink/junction 外指时，
+        # 仅比较条目父目录相等不够——先确认 trusted 仍在 projects_root 之下
+        if not trusted.is_relative_to(self._projects_dir.resolve()):
+            return None
+        candidate = (trusted / f"{cid}.json").resolve()
+        if candidate.parent != trusted:
+            return None
+        try:
+            return self._read_json(candidate)
+        except ValueError:
+            return None
 
     # ------------------------------------------------------------------ 知识库
 
@@ -353,7 +381,7 @@ class JsonRepository:
     ) -> str:
         self._require(pid)
         entry = {
-            "id": _new_id("know"),
+            "id": _new_id("know", self._knowledge_dir(pid)),
             "title": title,
             "content": content,
             "source": source,
@@ -408,6 +436,8 @@ class JsonRepository:
             "version": version,
             "filename": f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md",
             "saved_at": _now(),
+            # 审计二 R09：保存时落五路依赖指纹，确认时校验
+            "dep_hash": self._current_confirm_hash(pid, state),
         }
         path = self._output_dir(pid) / record["filename"]
         if path.exists():
@@ -445,9 +475,106 @@ class JsonRepository:
                         },
                     )
                 )
-        docs.sort(key=lambda d: (d.get("saved_at") or "", d.get("id") or ""))
+        # 平局只用 saved_at：时钟分辨率不够时（Windows ~15.6ms）同 tick 保存的
+        # saved_at 相同，稳定排序保持保存顺序（append 顺序即版本顺序）；
+        # id 尾部是随机 uid 无单调性，绝不能做 tie-break（CI windows 矩阵间歇红）。
+        docs.sort(key=lambda d: d.get("saved_at") or "")
         return docs
 
     def get_latest_proposal(self, pid: str) -> dict | None:
         docs = self.list_proposals(pid)
         return docs[-1] if docs else None
+
+    # ---------------------------------------------------------------- 确认与失效（第二批 F04）
+
+    def confirm_field_site(self, pid: str, site_id: str) -> bool:
+        """按记录 id 把田野点置为已确认；未知 id 返回 False（幂等）。"""
+        state = self._load(pid)
+        for site in state["field_sites"]:
+            if site.get("id") == site_id:
+                site["confirmed"] = True
+                state["updated_at"] = _now()
+                self._save(pid, state)
+                return True
+        return False
+
+    def _current_confirm_hash(self, pid: str, state: dict) -> str:
+        """当前五路依赖指纹（审计二 R09）：ctx/田野点/报道人/知识库/最新行程快照。"""
+        return compute_confirm_hash(
+            state.get("research_context") or {},
+            self.list_field_sites(pid),
+            self.list_informants(pid),
+            self.list_knowledge(pid),
+            self._latest_itinerary_cid(pid))
+
+    def _latest_itinerary_cid(self, pid: str) -> str:
+        """最新一次 compose_itinerary 快照 id（无则空串）——五路指纹之⑤。
+
+        list_cached_searches 按文件名（时间戳前缀）升序，最新在末尾。
+        """
+        for cached in reversed(self.list_cached_searches(pid)):
+            if cached.get("tool") == "compose_itinerary":
+                return cached["id"]
+        return ""
+
+    def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
+        """审计二 R09：确认**指定**文档（doc_id 空则取最新一份，兼容旧调用面）。
+
+        四重校验均 raise ``ProposalConfirmError``：文档不存在 ``not_found``、
+        类型非 proposal ``wrong_kind``、缺依赖指纹 ``dep_hash_missing``（legacy
+        文档）、指纹不一致 ``dep_hash_mismatch``（五路依赖已变化）。
+        """
+        state = self._load(pid)
+        if not doc_id:
+            doc_id = state["proposals"][-1]["id"] if state.get("proposals") else ""
+        record = next(
+            (r for r in state.get("proposals") or [] if r.get("id") == doc_id), None)
+        if record is None:
+            raise ProposalConfirmError(
+                f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
+        if record.get("kind", "proposal") != "proposal":
+            raise ProposalConfirmError(
+                f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
+        current = self._current_confirm_hash(pid, state)
+        if not record.get("dep_hash"):
+            raise ProposalConfirmError(
+                "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
+        if record["dep_hash"] != current:
+            raise ProposalConfirmError(
+                "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
+        rec = ConfirmationRecord(
+            kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+        state.setdefault("confirmations", []).append(rec.model_dump(mode="json"))
+        state["proposal_confirmed"] = True
+        state["updated_at"] = rec.confirmed_at
+        self._save(pid, state)
+        return rec.model_dump(mode="json")
+
+    def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
+        """按记录 id 取文档（含 content 正文，兼容 legacy_ 前缀）；不存在返回 None。"""
+        for record in self.list_proposals(pid):
+            if record.get("id") == doc_id:
+                return record
+        return None
+
+    def is_proposal_confirmation_stale(self, pid: str) -> bool:
+        """五路依赖指纹与确认时不一致，或确认后产生了新 proposal 文档 → True。
+
+        无确认记录 → False（从未确认，无所谓失效）；legacy 记录无
+        ``dep_hash`` → True（无法判定依赖是否变化，保守要求重新确认）；
+        新增 ``interview_guide`` 不使 proposal 确认失效（spec §3 按类型判定）。
+        """
+        state = self._load(pid)
+        records = state.get("confirmations") or []
+        if not records:
+            return False
+        latest = next(
+            (r["id"] for r in reversed(state.get("proposals") or [])
+             if r.get("kind", "proposal") == "proposal"), "")
+        subject = records[-1].get("subject", "")
+        if subject and latest and subject != latest:
+            return True  # 确认后产生了新 proposal（产物侧失效，spec §3 按类型判定）
+        dep_hash = records[-1].get("dep_hash", "")
+        if not dep_hash:
+            return True  # legacy 确认记录无指纹，保守视失效
+        return dep_hash != self._current_confirm_hash(pid, state)

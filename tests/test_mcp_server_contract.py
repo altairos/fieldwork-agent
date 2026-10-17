@@ -18,7 +18,7 @@ from mcp import ClientSession
 from mcp.server.lowlevel import Server as LowLevelServer
 from mcp.shared.memory import create_client_server_memory_streams
 
-EXPECTED = 22
+EXPECTED = 23
 
 
 @pytest.fixture

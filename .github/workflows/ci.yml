@@ -53,7 +53,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # vitest 5 / jsdom 30 / undici 8 均要求 Node >=22（jsdom 下限 22.22.2）
+          # 本地开发环境为 Node 24，CI 与之保持一致
+          node-version: "24"
 
       - name: Install deps
         run: npm ci

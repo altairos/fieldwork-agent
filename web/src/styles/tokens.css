@@ -5,24 +5,25 @@
 @layer base {
   html, body, #root { height: 100%; }
   body {
-    background-color: #F9F6F0;
-    color: #2A2724;
+    /* 底色/文字随主题（themes.css 四套 CSS 变量） */
+    background-color: rgb(var(--fw-paper));
+    color: rgb(var(--fw-ink));
     /* 全局宋体：单一衬线族贯穿标题/正文/UI */
     font-family: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
     -webkit-font-smoothing: auto;
     letter-spacing: .01em;
-    /* 宣纸纤维暗纹：极低对比噪点 */
+    /* 宣纸纤维暗纹：极低对比噪点（前两层主题色随 --fw-grain1/2） */
     background-image:
-      radial-gradient(circle at 18% 22%, rgba(168,65,46,.014), transparent 42%),
-      radial-gradient(circle at 82% 78%, rgba(58,92,116,.014), transparent 46%),
+      radial-gradient(circle at 18% 22%, var(--fw-grain1), transparent 42%),
+      radial-gradient(circle at 82% 78%, var(--fw-grain2), transparent 46%),
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.02'/%3E%3C/svg%3E");
   }
 }
 
 @layer components {
   .num { font-family: "Fraunces", "Noto Serif SC", serif; font-variant-numeric: lining-nums; }
-  .hairline { border: 1px solid #E2D9C8; }
-  .rule { height: 1px; background: #E2D9C8; opacity: .7; }
+  .hairline { border: 1px solid rgb(var(--fw-hairline)); }
+  .rule { height: 1px; background: rgb(var(--fw-hairline)); opacity: .7; }
   .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px;
           border-radius: 9999px; font-size: 11.5px; line-height: 18px; border: 1px solid transparent; }
   /* 状态点（工具活动条/图例）：设计板 line 80 同源；PulseDot 与 Header 已引用 */
@@ -40,7 +41,38 @@
   .proposal-body blockquote ul, .proposal-body blockquote ol { font-size: 13.5px; line-height: 1.9; margin-bottom: 0; }
 }
 
-/* 滚动条 */
+/* 触控热区扩展（移动端适配批次 B）：触屏（无 hover + 粗指针）下伪元素外扩命中区，
+   视觉零变化——桌面 hover 设备完全不生成伪元素。挂载于文字链钮/chip 等小热区控件
+   （RightDock toast、DegradedBanner 关闭、Tabs、VersionSwitch）：
+   ~18px 文字钮 → 28px、24px 临界 chip → 34px（WCAG 2.5.8 AA 24px 达标）。 */
+@media (hover: none) and (pointer: coarse) {
+  .tapzone { position: relative; }
+  .tapzone::after { content: ""; position: absolute; inset: -5px; }
+}
+
+/* 移动端覆盖层入场动效（批次 C 打磨）：抽屉左滑入 / 遮罩淡入 / 底部面板上浮。
+   挂载即播（className 切换触发）；不出场动画（display 切换瞬时收起，e2e toBeHidden
+   基于 display:none 判定不受影响）。reduced-motion 下全关（无障碍红线）。 */
+@keyframes fw-drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes fw-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fw-sheet-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+.drawer-in { animation: fw-drawer-in .22s ease-out; }
+.fade-in { animation: fw-fade-in .18s ease-out; }
+.sheet-in { animation: fw-sheet-in .22s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .drawer-in, .fade-in, .sheet-in { animation: none; }
+}
+
+/* 滚动条（thumb 随主题） */
 .scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.scroll::-webkit-scrollbar-thumb { background: #D8CDB8; border-radius: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--fw-thumb); border-radius: 8px; }
 .scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* 键盘焦点全局基线（可点性四连之 focus-visible）：按钮/链接/交互 role 键盘聚焦时
+   给主题色描边（随 themes.css 四套皮肤切换）；输入框不入列——它们走各自外壳的
+   focus-within 惯例（如 Composer 输入壳 border-cinnabar/50）。
+   :where 零特异性，组件可用 focus-visible: 工具类按需覆盖（如 ThemeSwitcher）。 */
+:where(button, a, summary, [role="tab"], [role="menuitemradio"]):focus-visible {
+  outline: 2px solid rgb(var(--fw-cinnabar));
+  outline-offset: 2px;
+}

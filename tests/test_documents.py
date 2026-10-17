@@ -15,6 +15,12 @@ from fieldwork_agent.kernel.models import InformantCandidate, ProposalDoc, Resea
 CTX = ResearchContext(discipline="社会学", topic="宗族变迁", scale="单人调研",
                       budget="2万", time_window="6-9月", target_location="喜洲")
 SITES = [{"name": "喜洲", "confirmed": True, "profile": {"accommodation": "..."}}]
+# 审计第二批 F12：非访谈研究（interviews_not_applicable）豁免访谈渠道硬条件
+NA_CTX = ResearchContext(
+    discipline="社会学", topic="历史文献研究", scale="单人调研",
+    budget="2万", time_window="6-9月", target_location="喜洲",
+    interviews_not_applicable=True,
+    interviews_na_reason="采用档案与文献分析法，不需访谈对象")
 
 
 class FakeLLM:
@@ -298,3 +304,23 @@ def test_suggest_informants_registered():
     props = tool[0]["function"]["parameters"]["properties"]
     assert {"research_topic", "discipline", "site_profile"} <= set(props)
     assert "llm" not in props
+
+
+# 审计第二批 F12：非访谈研究（interviews_not_applicable）豁免访谈渠道硬条件
+
+
+def test_context_block_na_exempts_informant_channel():
+    block = build_context_block(NA_CTX, SITES, {"legs": []}, [], [])
+    assert "不适用访谈方法" in block
+    assert "档案与文献分析法" in block
+
+
+def test_context_block_still_raises_without_na_flag():
+    with pytest.raises(ValueError, match="缺少渠道"):
+        build_context_block(CTX, SITES, {"legs": []}, [], [])  # informants 为空且未声明 NA
+
+
+def test_degrade_na_exempts_informant_section():
+    doc = compose_proposal(NA_CTX, SITES, {"legs": []}, [], [], llm=None)
+    assert len(doc.sections) == 8  # 八章降级版照常产出
+    assert "不适用访谈方法" in doc.markdown

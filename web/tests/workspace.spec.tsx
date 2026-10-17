@@ -64,7 +64,7 @@ describe("Workspace 接线（App.tsx）", () => {
     render(<App />);
 
     // 中栏：Composer 输入框 + 时间线空态（尚无回合）
-    expect(screen.getByRole("textbox")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toBeInTheDocument();
     expect(screen.getByText(/尚无对话/)).toBeInTheDocument();
     // 右栏：默认进度面板；红线①——快照/阶段到位也不自动切 Tab
     expect(screen.getByText(/采集进度/)).toBeInTheDocument();
@@ -94,7 +94,7 @@ describe("Workspace 无 key 拦截（可浏览不可发）", () => {
     // 可浏览：快照照常加载
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
     // 不可发：输入框禁用 + 锁提示
-    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).toBeDisabled();
     expect(screen.getByTestId("composer-lock-hint")).toHaveTextContent("未配置百炼 API Key");
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
@@ -105,7 +105,7 @@ describe("Workspace 无 key 拦截（可浏览不可发）", () => {
     render(<App />);
 
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).not.toBeDisabled();
     expect(fn.mock.calls.map((c) => c[0])).not.toContain("/settings/status");
   });
 
@@ -114,7 +114,7 @@ describe("Workspace 无 key 拦截（可浏览不可发）", () => {
     render(<App />);
 
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
-    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "消息输入" })).not.toBeDisabled();
     expect(screen.queryByTestId("composer-lock-hint")).not.toBeInTheDocument();
   });
 });

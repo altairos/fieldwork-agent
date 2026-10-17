@@ -1,6 +1,10 @@
 """guidance 子包测试 — 阶段推进纯函数、消息提取、访谈对象库（全部纯数据，不联网不调 LLM）。"""
 
 from fieldwork_agent.kernel.guidance import extract, informants, phases
+from fieldwork_agent.kernel.guidance.extract import (
+    apply_message_extractions,
+    extract_time_window,
+)
 from fieldwork_agent.kernel.models import (
     FieldSiteRecord,
     InformantCandidate,
@@ -277,3 +281,44 @@ def test_match_examples_garbage_topic_falls_back_to_all():
     """全部落空的主题 → 兜底返回全部示范词条（降级路径宁给参考起点也不给空结果）。"""
     # "饕餮貔貅" 的二字组在精选集 approach/question_domains/examples 中必然零命中
     assert informants.match_examples("饕餮貔貅") == list(informants.INFORMANT_EXAMPLES.values())
+
+# ────────────────────────────────────────────────────────────────
+# 审计第二批 F03：time_window 采集 + 组合抽取器（CLI/Web 共用）
+# ────────────────────────────────────────────────────────────────
+
+
+def test_extract_time_window_patterns():
+    assert extract_time_window("我打算2026年3月到2026年6月去调研") == {
+        "time_window": "2026年3月到2026年6月"}
+    assert extract_time_window("计划2026年7月出发") == {"time_window": "2026年7月"}
+    assert extract_time_window("大概3月到5月之间成行") == {"time_window": "3月到5月"}
+    assert extract_time_window("就9月去吧") == {"time_window": "9月"}
+    assert extract_time_window("我暑假去") == {"time_window": "暑假"}
+    assert extract_time_window("寒假期间过去") == {"time_window": "寒假期间"}
+    assert extract_time_window("时间还没定") == {}
+
+
+def test_apply_message_extractions_combines_and_respects_existing():
+    existing = {"discipline": "人类学", "time_window": "暑假"}
+    found = apply_message_extractions("我是社会学背景，从上海去大理调研", existing)
+    # discipline 已填（人类学）不被消息里的"社会学"覆盖
+    assert "discipline" not in found
+    assert found.get("departure_city") == "上海"
+    assert found.get("target_location") == "大理"
+    # time_window 已填同样不覆盖
+    assert "time_window" not in found
+
+
+def test_apply_message_extractions_collects_when_empty():
+    found = apply_message_extractions("社会学，2026年3月去，预算2万", {})
+    assert found.get("discipline") == "社会学"
+    assert found.get("time_window") == "2026年3月"
+    assert found.get("budget") == "2万"
+
+
+def test_apply_message_extractions_extras_dotted_key_respects_existing():
+    existing = {"extras": {"region": "西南"}}
+    found = apply_message_extractions("我想去华南看看", existing)
+    assert "extras.region" not in found  # extras.region 已填不覆盖
+    found2 = apply_message_extractions("我想去华南看看", {})
+    assert found2.get("extras.region") == "华南"

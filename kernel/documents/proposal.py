@@ -42,8 +42,11 @@ PROPOSAL_SECTIONS: list[str] = [
 # 能力边界（审阅意见 R1）：当前仅 global 完整实现；回退时在文档**头部前置声明**
 # 而非仅尾注，避免用户误以为拿到的是目标体例的可直接提交材料。
 SUPPORTED_MODES = ("global",)
+# 体例枚举 → 中文标签（与前端 ProposalCard MODE_LABEL 同口径）：回退头部插入中文标签，
+# 避免导出文档头部出现裸英文枚举。
+MODE_LABELS = {"global": "英美式八章", "kaiti": "开题报告", "grant": "基金申报"}
 MODE_FALLBACK_HEADER = ("> ⚠ 体例说明：您选择的「{mode}」体例尚未实现（开题/基金体例待深化），"
-                        "本稿实际为通用八章草稿（适用海外/港澳申请与课程场景），"
+                        "本稿实际为英美式八章草稿（适用海外/港澳申请与课程场景），"
                         "不构成可直接提交的申报材料。\n\n")
 
 # 模板降级尾注（无 llm / llm error 分支共用）
@@ -142,6 +145,16 @@ def _bullets_informants(items: list[dict]) -> list[str]:
     return lines or ["- （暂无访谈对象）"]
 
 
+def _informants_bullets(items: list[dict], ctx: ResearchContext) -> list[str]:
+    """访谈对象 bullets（审计 F12）：非访谈研究豁免空候选，其余沿用既有渲染。"""
+    if items:
+        return _bullets_informants(items)
+    if getattr(ctx, "interviews_not_applicable", False):
+        reason = getattr(ctx, "interviews_na_reason", "") or "研究者已声明本研究不适用访谈方法"
+        return [f"- 不适用访谈方法：{reason}"]
+    return _bullets_informants(items)  # 空且未声明 NA → 既有占位（raise 由调用方把关）
+
+
 def _bullets_knowledge(items: list[dict]) -> list[str]:
     lines: list[str] = []
     for k in items:
@@ -169,7 +182,7 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         raise ValueError("缺少渠道: 田野点")
     if itinerary is None or (isinstance(itinerary, dict) and len(itinerary) == 0):
         raise ValueError("缺少渠道: 行程")
-    if not informants:
+    if not informants and not getattr(ctx, "interviews_not_applicable", False):
         raise ValueError("缺少渠道: 访谈对象")
 
     def _section(title: str, bullets: list[str]) -> str:
@@ -179,7 +192,7 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         _section("研究者信息", _bullets_researcher(ctx)),
         _section("田野点", _bullets_sites(sites)),
         _section("行程", _bullets_itinerary(itinerary)),
-        _section("访谈对象", _bullets_informants(informants)),
+        _section("访谈对象", _informants_bullets(informants, ctx)),
     ]
     kb = _bullets_knowledge(knowledge)
     if kb:
@@ -205,7 +218,7 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
     bodies: list[list[str]] = [
         _bullets_researcher(ctx),
         _bullets_sites(sites),
-        _bullets_informants(informant_items),
+        _informants_bullets(informant_items, ctx),
         _bullets_itinerary(itinerary),
         [
             f"- 预算：{ctx.budget or '待补充'}",
@@ -309,7 +322,7 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
     effective = requested if requested in SUPPORTED_MODES else "global"
     if effective != requested:
         # 审阅意见 R1：能力限制头部前置声明（而非仅在文末附注）
-        markdown = MODE_FALLBACK_HEADER.format(mode=requested) + markdown
+        markdown = MODE_FALLBACK_HEADER.format(mode=MODE_LABELS.get(requested, requested)) + markdown
 
     return ProposalDoc(
         markdown=markdown,

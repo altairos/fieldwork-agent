@@ -109,7 +109,7 @@ def migrate_to_sqlite(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
             sqlite_repo._import_record("informants", pid, i)
             report["informants"] += 1
         for c in json_repo.list_cached_searches(pid):        # 缓存（取全量含 result）
-            full = json_repo.get_cached_search(c["id"])
+            full = json_repo.get_cached_search(pid, c["id"])
             if full is not None:
                 sqlite_repo._import_cache(pid, full)
                 report["search_cache"] += 1

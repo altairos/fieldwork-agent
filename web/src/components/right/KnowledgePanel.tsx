@@ -12,7 +12,7 @@ import { useProjectStore } from "../../stores/project";
  *   条目卡 line 665 `hairline rounded-lg bg-card p-3` + 主行 `text-[12.5px] font-medium`
  *     + 副行 `text-[11px] text-inkfaint mt-1`（此处主行 = 槽位值，副行 = 槽位名，不臆造资料标题）
  *   学术纵深卡 lines 379-382 `hairline rounded-lg bg-card p-5` + `font-serif text-[15px] font-600 mb-2`
- *     + `text-[12px] text-inksoft leading-relaxed`（正文逐字取自设计板 line 381）
+ *     + `text-[12px] text-inksoft leading-relaxed`（正文同设计板 line 381；R1 口径修订见 DEPTH_TEXT 注释）
  *   底部说明行 line 668 `hairline rounded-lg bg-paper/60 p-3 mt-3 flex items-center gap-2
  *     text-[12px] text-inkfaint`
  *
@@ -45,9 +45,13 @@ const PURPOSE_LABEL: Record<string, string> = {
   global: "海外/留学申请",
 };
 
-/** 学术纵深静态说明（设计板 line 381 逐字）。 */
-const DEPTH_TEXT =
-  "内置 10+ 类访谈对象类型库（村落长老/宗族头人/宗教人士/基层干部/返乡务工者/非遗传承人…），每类含接近策略、注意事项、建议提问域与伦理提示，可自动生成半结构式访谈提纲并嵌入提案第三章。";
+/**
+ * 学术纵深静态说明（与设计板 line 381 同源；2026-10-16 按审阅意见 R1 修订：去掉
+ * 「自动生成…嵌入提案第三章」——访谈提纲是独立文档（compose_interview_guide 产出），
+ * 仅被方案的方法/伦理章节引用，不存在自动嵌入机制。导出供 ProjectHub 侧栏复用同文案）。
+ */
+export const DEPTH_TEXT =
+  "内置 10+ 类访谈对象类型库（村落长老/宗族头人/宗教人士/基层干部/返乡务工者/非遗传承人…），每类含接近策略、注意事项、建议提问域与伦理提示，可据此起草半结构式访谈提纲，供方案的方法与伦理章节引用。";
 
 export function KnowledgePanel() {
   const snapshot = useProjectStore((s) => s.snapshot);

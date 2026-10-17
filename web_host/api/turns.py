@@ -3,6 +3,7 @@ import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from fieldwork_agent.web_host.api.guard import checked_project_id, checked_turn_id
 from fieldwork_agent.web_host.deps import get_flyai_raw, get_llm, get_repo, get_turn_manager
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
@@ -25,6 +26,8 @@ class CreateTurnRequest(BaseModel):
 # 页面 key 请求头（首页「API 密钥」卡存 localStorage，rest.ts 统一注入）
 DASHSCOPE_HEADER = "X-DashScope-Key"
 FLYAI_HEADER = "X-FlyAI-Key"
+# 套餐类型（coding/token）：套餐 Key（sk-sp-）配专属 OpenAI 兼容端点，白名单映射
+DASHSCOPE_PLAN_HEADER = "X-DashScope-Plan"
 
 
 def _header(request: Request, name: str) -> str:
@@ -33,9 +36,10 @@ def _header(request: Request, name: str) -> str:
 
 def _build_llm(api_key: str, request: Request):
     """按页面 key 构建回合级 LLMClient（模块级工厂，测试可 monkeypatch）。"""
-    from fieldwork_agent.kernel.llm import LLMClient
+    from fieldwork_agent.kernel.llm import LLMClient, plan_base_url
 
-    return LLMClient(api_key, request.app.state.config.llm_models)
+    base_url = plan_base_url(_header(request, DASHSCOPE_PLAN_HEADER))
+    return LLMClient(api_key, request.app.state.config.llm_models, base_url)
 
 
 def _resolve_clients(request: Request):
@@ -70,6 +74,7 @@ def _resolve_clients(request: Request):
 async def create_turn(project_id: str, body: CreateTurnRequest,
                       request: Request, background: BackgroundTasks):
     repo = get_repo(request)
+    checked_project_id(project_id, repo)
     tm = get_turn_manager(request)
     try:
         repo.get_state(project_id)
@@ -96,6 +101,9 @@ async def _execute_turn(app, pid, tid, text, llm, flyai):
 
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
 async def stream_events(project_id: str, turn_id: str, request: Request):
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:
@@ -130,6 +138,9 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
 async def cancel_turn(project_id: str, turn_id: str, request: Request):
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
     if handle is None:

@@ -20,6 +20,9 @@
   假设，``rooms`` 可调）；``市内与餐饮`` = 人均日标准(``meals_local_per_person_day``，
   默认 150) × 人数 × 天数（estimate，不再按总预算百分比）。每条携带
   ``currency/unit/quantity/people/priced_at/source_ref`` 可复核口径；
+- 快照回链（M3）：``snapshot_refs`` 为宿主注入参数（同 ``client``，不进 schema），
+  形如 ``{"大理": "flyai 快照 srch_xxx（日期 查询）"}``；预算条目 ``source_ref``
+  追加该引用，无注入时退回 "flyai 实时报价"；
 - **预算完整性**：``coverage`` complete/partial/unknown 按腿与住宿报价可得性判定，
   缺失项进 ``uncovered``；``over_budget`` 仅在 complete 时为真——partial 时 total
   只是已知小计，不得据此宣布"预算内/超支"；
@@ -179,13 +182,21 @@ def _select(cands: list[dict], prefer_key: str | None = None
     return chosen, (priced[1:] + unpriced)[:MAX_ALTERNATIVES]
 
 
+def _source_of(snapshot_refs: dict[str, str] | None, dest: str) -> str:
+    """预算条目来源引用（M3 §5.1）：有快照回链快照，否则退回实时报价口径。"""
+    if snapshot_refs and dest in snapshot_refs:
+        return snapshot_refs[dest]
+    return "flyai 实时报价"
+
+
 # ---------------------------------------------------------------- 能力实现
 
 
 def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       duration_days: int, budget_total: float, researcher_count: int = 1,
                       rooms: int = 0, meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT,
-                      *, client: FlyAIClient | None = None) -> Envelope:
+                      *, client: FlyAIClient | None = None,
+                      snapshot_refs: dict[str, str] | None = None) -> Envelope:
     """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与可复核预算（日期只用 timedelta）。"""
     if client is None:
         client = FlyAIClient()
@@ -300,7 +311,9 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                                     amount=round(leg["chosen"]["price"] * researcher_count, 2),
                                     source="cheapest", unit="票价×人数",
                                     quantity=1.0, people=researcher_count,
-                                    priced_at=priced_at, source_ref=leg["chosen"]["name"]))
+                                    priced_at=priced_at,
+                                    source_ref=f"{leg['chosen']['name']}"
+                                               f"（{_source_of(snapshot_refs, leg['to'])}）"))
         else:
             uncovered.append(f"交通（{leg['from']}→{leg['to']}）")
     for stay in stays:
@@ -312,7 +325,9 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                                     source="cheapest", unit="每晚价×夜数×房间数",
                                     quantity=float(stay["nights"]), people=rooms_eff,
                                     priced_at=priced_at,
-                                    source_ref=stay["chosen"]["name"] if stay["chosen"] else ""))
+                                    source_ref=(f"{stay['chosen']['name']}"
+                                                f"（{_source_of(snapshot_refs, stay['dest'])}）")
+                                    if stay["chosen"] else ""))
         else:
             uncovered.append(f"住宿（{stay['dest']}）")
     meal_amount = round(meals_local_per_person_day * researcher_count * duration_days, 2)

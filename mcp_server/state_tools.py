@@ -8,24 +8,25 @@ handler 统一收具名参数（server 以 ``handlers[name](**arguments)`` 调�
 终审 C1：``project_id`` 是客户端可控输入，而 ``JsonRepository`` 以 ``root / pid``
 直拼文件系统路径——本模块提供统一净化守卫 ``guard_project_id``（handler 与
 ``resources.py`` 项目类 URI 路由两处入口共用），拒绝目录穿越（``../``、反斜杠、
-Windows 绝对路径/盘符整体替换基路径）。kernel 不改动，薄壳层拦截。
+Windows 绝对路径/盘符整体替换基路径）；规则实现已下沉 kernel/repository/guard.py
+（审计 F01 单一来源），本模块薄壳折 MCP 错误包络。
 """
-import re
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
+from fieldwork_agent.kernel.repository.guard import project_id_violation
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 from mcp.types import Tool, ToolAnnotations
 
 ITINERARY_STATE_KEYS = ("itinerary", "travel_plan")   # 兼容旧键
 
-# project_id 净化规则（终审 C1）：字符黑名单 + containment 双保险
-PID_MAX_LEN = 64
+# project_id 净化规则（终审 C1）：规则实现已下沉 kernel/repository/guard.py
+# （审计 F01 单一来源），本模块只留提示文案用于 MCP 错误包络折叠。
 PID_RULE_HINT = "project_id 仅允许字母数字下划线连字符等安全字符"
-_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
 
 
 def _ok(data: Any) -> dict:
@@ -42,44 +43,14 @@ def _not_found(project_id: str) -> dict:
                 "先 create_project 或使用 list_projects 查已有项目")
 
 
-def _pid_violation(project_id: Any, repo: Any = None) -> str:
-    """project_id 非法则返回原因，合法返回空串。
-
-    两层防御：
-
-    1. 字符校验——拒绝非字符串/空串、长度 >64、``/``、``\\``、``..``、null 字节、
-       Windows 盘符模式（``C:`` 开头，含盘符相对路径 ``C:evil``）；
-    2. containment 双保险——repo 若带 ``root`` 属性（``JsonRepository`` 的非
-       Protocol 成员，json_repo.py 明示"仅供宿主排障与契约套件直读"，薄壳属宿主），
-       则要求 ``(root / pid).resolve()`` 仍落在 ``root.resolve()`` 之内；
-       仅实现 ``ProjectRepository`` Protocol 的替身没有 ``root``，只靠字符校验。
-    """
-    if not isinstance(project_id, str) or not project_id:
-        return "project_id 须为非空字符串"
-    if len(project_id) > PID_MAX_LEN:
-        return f"project_id 长度不得超过 {PID_MAX_LEN}"
-    if "/" in project_id or "\\" in project_id:
-        return "project_id 不得含路径分隔符（/ 或 \\）"
-    if ".." in project_id:
-        return "project_id 不得含 .."
-    if "\x00" in project_id:
-        return "project_id 不得含 null 字节"
-    if _DRIVE_LETTER_RE.match(project_id):
-        return "project_id 不得为 Windows 盘符路径"
-    root = getattr(repo, "root", None)
-    if root is not None:
-        if not (root / project_id).resolve().is_relative_to(root.resolve()):
-            return "project_id 不得指向项目根目录之外"
-    return ""
-
-
 def guard_project_id(project_id: Any, repo: Any = None) -> dict | None:
     """统一净化守卫：非法 project_id → ``invalid_args`` 错误包络；合法 → None。
 
-    业务失败折包络、不抛协议异常（全局约束）。``resources.read_resource`` 的
-    项目类 URI 路由复用本函数（单向 import，state_tools 不依赖 resources）。
+    规则实现于 kernel/repository/guard.py（审计 F01 单一来源）；本函数只折
+    MCP 错误包络并回显原始输入（CLI 侧诊断用——与 Web 侧不回显策略不同）。
+    ``resources.read_resource`` 的项目类 URI 路由复用本函数。
     """
-    reason = _pid_violation(project_id, repo)
+    reason = project_id_violation(project_id, repo)
     if not reason:
         return None
     return _err("invalid_args", f"非法 project_id: {project_id!r}（{reason}）",
@@ -112,8 +83,14 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
         try:
-            repo.update_research_context(project_id, patch)
+            # 审计二 R05：与 Web 工具/REST 同一校验来源，原子拒绝非法 patch
+            clean = sanitize_context_patch(
+                patch, current=repo.get_research_context(project_id))
+            repo.update_research_context(project_id, clean)
             return _ok(repo.get_research_context(project_id))
+        except ValueError as exc:
+            return _err("invalid_args", str(exc),
+                        "可写白名单：" + context_fields_hint())
         except KeyError:
             return _not_found(project_id)
 
@@ -167,10 +144,12 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
             return _not_found(project_id)
         has_itinerary = any(state.get(k) for k in ITINERARY_STATE_KEYS)
         # 确定性判定（纯规则，绝不经 LLM）；实际切阶段由宿主 set_phase 落地
+        # 审计二 R09：失效确认（五路指纹不一致 / legacy 无指纹）不算已确认
         result = phases.check_advance(
             state["phase"], ctx, sites, informants,
             has_itinerary, bool(state.get("proposals")),
-            bool(state.get("proposal_confirmed")))
+            bool(state.get("proposal_confirmed"))
+            and not repo.is_proposal_confirmation_stale(project_id))
         return _ok(result.model_dump())
 
     return {"create_project": create_project, "list_projects": list_projects,
@@ -213,7 +192,7 @@ STATE_TOOLS: list[Tool] = [
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "patch": {"type": "object",
-                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）"}},
+                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）；任一字段非法则整次拒绝"}},
                       "required": ["project_id", "patch"]},
          annotations=_annotations()),
     Tool(name="save_field_site",

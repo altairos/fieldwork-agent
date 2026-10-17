@@ -32,13 +32,32 @@ Thumbs.db
 docs/promo/
 
 # 前期研究
+docs/superpowers/
+docs/research/
+
 # 前端 web/ 工程
 web/node_modules/
 web/dist/
 web/playwright-report/
 web/test-results/
+web/tsconfig.tsbuildinfo
+
+# 根目录 node_modules（工具临时安装，勿提交）
+node_modules/
+
+# superpowers 技能工作目录（临时产物）
+.superpowers/
 
 # 部署打包产物（本地 tar 包 + 上云发布暂存，勿提交）
 fieldwork-agent-deploy.tar.gz
 *.tar.gz
 .qw-pages-deploy/
+
+#审计报告
+docs/reviews
+
+tools/spike_flyai_window.py
+.workbuddy/
+
+# 本地诊断脚本/日志（临时产物，不入库）
+.tmp_home/

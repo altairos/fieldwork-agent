@@ -21,7 +21,12 @@ export default defineConfig({
     baseURL: "http://localhost:5173",
     trace: "on-first-retry",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "chromium", testIgnore: /mobile\.spec\.ts/, use: { ...devices["Desktop Chrome"] } },
+    // 移动视口（批次 B）：Pixel 7 412×915（hasTouch/isMobile），仅跑 mobile.spec.ts；
+    // 桌面 project 反向 testIgnore，避免同一 spec 双视口重跑（汉堡钮 lg:hidden 桌面不可见必挂）。
+    { name: "mobile", testMatch: /mobile\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+  ],
   webServer: [
     {
       // mock 后端（PORT=8300 匹配 vite proxy /projects→:8300）

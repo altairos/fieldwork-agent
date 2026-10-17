@@ -18,6 +18,11 @@
 - 项目数据存于运行用户的 `~/.fieldwork_agent/projects`（本机 root → `/root/.fieldwork_agent/projects`）。
 - **Tier S 资产（`secrets/`）默认不在部署包内**，服务会回落到内置 **Tier P 公开版**提示词/访谈库，
   功能完整、仅提示词为开源简版。要用生产版见第 6 节。
+- **前置依赖**：`curl`（健康检查）——部署脚本步骤 2 已包含 `dnf install -y curl`。
+- **旅行搜索依赖**：`nodejs + npm + @fly-ai/flyai-cli`——部署脚本检测到 npm 会自动安装；
+  不装只影响 `/ready` 的 `flyai_cli` 项（页面与其他功能正常，旅行搜索不可用）。
+- **公网令牌**：公网部署建议设置 `FIELDWORK_APP_TOKEN` 访问令牌（所有 `/projects`、`/settings`
+  接口要求 `X-App-Token` 请求头匹配）——说明见 `deploy/aliyun/fieldwork-web.env.example` 注释段。
 
 ---
 
@@ -62,8 +67,9 @@ cd /opt/fieldwork-agent
 sudo bash deploy/aliyun/deploy.sh
 ```
 
-脚本会：装系统依赖 → 建 `.venv` → `pip install -e .` → 生成 env 模板 →
-按实际路径安装 systemd 单元 → 启动 → 本地 `/health` 冒烟。看到 `{"status":"ok"}` 即后端起来了。
+脚本会：装系统依赖 → 建 `.venv` → `pip install -e .` → 检测/安装 flyai CLI → 生成 env 模板 →
+按实际路径安装 systemd 单元 → 启动 → 本地 `/health` + `/ready` 冒烟（失败即报错退出）。
+看到 `/health ok` 与 `/ready ok` 即部署成功。
 
 ---
 
@@ -72,6 +78,7 @@ sudo bash deploy/aliyun/deploy.sh
 ```bash
 vi /opt/fieldwork-agent/deploy/aliyun/fieldwork-web.env
 # 填入 DASHSCOPE_API_KEY=sk-xxxx   （可选 FLYAI_API_KEY=）
+# 可选 FIELDWORK_APP_TOKEN=（公网部署建议设置，前端设置卡填同一令牌）
 # 保存后重启：
 systemctl restart fieldwork-web.service
 ```
@@ -171,3 +178,5 @@ cd /opt/fieldwork-agent && .venv/bin/pip install -e . && systemctl restart field
 | 机票/酒店搜索显示不可用 | 未配 `FLYAI_API_KEY`，属预期降级 |
 | 端口被占用启动失败 | `ss -ltnp | grep 2143` 查占用，或改端口（同步改 service 与本文档） |
 | 提示词像是简版 | 未启用 Tier S，见第 6 节 |
+| 接口 401 `app_token_required` | 服务端设了 FIELDWORK_APP_TOKEN 但浏览器未填/填错——首页「API 密钥」卡填写同一令牌 |
+| `/ready` 返回 `not_ready` | 按响应里 checks 找 false 项：`flyai_cli=false` 装 CLI；`projects_dir_writable=false` 查目录属主 |

@@ -179,3 +179,36 @@ export function IconClock(props: IconProps) {
     </Line>
   );
 }
+
+// ── 主题切换（ThemeSwitcher）追加 ──
+
+/** 调色板（界面配色） · 无设计板 symbol，按同一线形语言补画 */
+export function IconPalette(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="M12 3a9 9 0 1 0 0 18c.8 0 1.5-.7 1.5-1.5 0-.4-.15-.75-.4-1-.25-.3-.4-.65-.4-1 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z" />
+      <circle cx="7.5" cy="11.5" r="1" />
+      <circle cx="10.5" cy="7.5" r="1" />
+      <circle cx="15" cy="8.5" r="1" />
+    </Line>
+  );
+}
+
+// ── 移动端适配（批次 A）追加 ──
+
+/** 菜单（Header 汉堡钮，触发左栏抽屉） · 无设计板 symbol，按同一线形语言补画 */
+export function IconMenu(props: IconProps) {
+  return <Line {...props}><path d="M4 6h16M4 12h16M4 18h16" /></Line>;
+}
+
+// ── 「我的」卡（导出格式偏好）追加 ──
+
+/** 单人（「我的」卡） · 无设计板 symbol，按同一线形语言补画 */
+export function IconUser(props: IconProps) {
+  return (
+    <Line {...props}>
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
+    </Line>
+  );
+}

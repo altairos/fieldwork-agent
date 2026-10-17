@@ -17,7 +17,7 @@ export function ChapterNav({
   onSelect: (index: number) => void;
 }) {
   return (
-    <nav className="flex-1 overflow-y-auto scroll px-3 py-3 space-y-0.5 text-[13px] min-h-0" aria-label="提案章节导航">
+    <nav className="flex-1 overflow-y-auto scroll overscroll-contain px-3 py-3 space-y-0.5 text-[13px] min-h-0" aria-label="提案章节导航">
       {sections.map((title, i) => {
         const active = i === activeIndex;
         return (

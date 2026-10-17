@@ -46,6 +46,7 @@ class SearchItem(BaseModel):
     jump_url: str | None = None
     pic_url: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+    schedule: Schedule | None = None    # 航班/火车深层结构；平铺路径恒 None
 
 
 class ItemPage(BaseModel):
@@ -112,6 +113,16 @@ class BudgetItem(BaseModel):
     source_ref: str = ""
 
 
+class Schedule(BaseModel):
+    """航班/火车班次结构（深层解析产物；酒店/POI 为 None）。"""
+
+    dep_time: str = ""                  # "08:30"
+    arr_time: str = ""                  # "10:05"
+    duration_minutes: int | None = None # 全程分钟数（缺省未知）
+    stops: int = 0                      # 中转/经停次数（segments-1）
+    cabin: str = ""                     # 舱位/席别
+
+
 class BudgetBreakdown(BaseModel):
     """预算汇总（审阅意见 R2）。
 
@@ -145,6 +156,49 @@ class ItineraryPlan(BaseModel):
     generated_at: str = ""
     # 审阅意见 R3：产出时的关键输入哈希，宿主用于判断行程是否因输入变更而失效
     inputs_hash: str = ""
+
+
+# ---------------------------------------------------------------- 时窗分析
+
+# ── 时窗分析（analyze_fieldwork_window；spec §4.1）─────────────────
+
+
+class FestivalInfo(BaseModel):
+    """LLM 抽取的节庆信息（农历→公历换算由 LLM 完成，内核只做区间求交）。"""
+
+    name: str = ""                 # "彝族火把节"
+    approx_dates: str = ""         # "农历六月廿四，约7月下旬"（人类可读原文）
+    approx_start: str = ""         # ISO 日期 "2027-07-26"
+    approx_end: str = ""           # ISO 日期 "2027-07-28"
+    relevance: str = ""            # 对研究主题的观察价值
+
+
+class PriceCurve(BaseModel):
+    """多日期采样价格曲线（None = 该采样点失败，曲线缺值）。"""
+
+    dates: list[str] = Field(default_factory=list)
+    flight_min: list[float | None] = Field(default_factory=list)   # 该日出发最低价
+    hotel_min: list[float | None] = Field(default_factory=list)    # 当晚入住最低价
+
+
+class RecommendedWindow(BaseModel):
+    """推荐时窗（end = start + duration_days - 1）。"""
+
+    start: str = ""
+    end: str = ""
+    score: float = 0.0             # 0-100，确定性评分
+    reasons: list[str] = Field(default_factory=list)   # 模板拼装理由链（含统计数字）
+    evidence: dict[str, Any] = Field(default_factory=dict)   # 七键评分明细：price_score/festival_score/budget_score/flight_min/hotel_min/estimate/festivals
+
+
+class WindowAnalysis(BaseModel):
+    """analyze_fieldwork_window 的 data 载荷。"""
+
+    windows: list[RecommendedWindow] = Field(default_factory=list)  # 按 score 降序，≤3
+    price_curve: PriceCurve = PriceCurve()
+    festivals: list[FestivalInfo] = Field(default_factory=list)     # 可为空（抽取降级）
+    budget_feasible: bool = False       # 最优窗口预算是否可行
+    degraded: str | None = None         # 体验模式/节庆降级/部分采样失败说明
 
 
 # ---------------------------------------------------------------- 研究上下文
@@ -234,12 +288,15 @@ class ConfirmationRecord(BaseModel):
 
     ``kind``：site / itinerary / proposal；``subject``：项目内标识（如田野点名）。
     输入变更后用 ``inputs_stale(record.inputs_hash, 当前哈希)`` 判断旧确认是否失效。
+    审计二 R09：``dep_hash`` 为五路依赖指纹（confirm_hash.compute_confirm_hash）；
+    空串 = legacy 记录（无指纹，失效判定保守视 stale）。
     """
 
     kind: str = ""
     subject: str = ""
     confirmed_at: str = ""
     inputs_hash: str = ""
+    dep_hash: str = ""
 
 
 def compute_inputs_hash(payload: dict[str, Any]) -> str:

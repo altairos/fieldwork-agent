@@ -4,7 +4,7 @@ import { test, expect, type Request } from "@playwright/test";
  * 首页 API key 鉴权端到端 — 跑在 mock server（8300，经 vite proxy）：
  *   ① 服务端未配（POST /__test/settings 翻转）+ 浏览器无 key → 工作台「可浏览不可发」
  *      （快照/时间线照常渲染，Composer textarea disabled + 锁提示）
- *   ② 首页「API 密钥」卡保存 key → 「浏览器已存」徽标 → 返回工作台输入解锁
+ *   ② 首页「密钥 / 登录」弹层保存 key → 「浏览器已存」徽标 → 返回工作台输入解锁
  *   ③ 发送 → 请求头携带 X-DashScope-Key（page.on("request") 断言）→ mock 回合正常回放
  *
  * 翻转/恢复直连 mock 端口（Node fetch；afterAll 无 fixture，不走 playwright request）。
@@ -42,10 +42,11 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   await expect(page.getByTestId("composer-lock-hint")).toContainText("未配置百炼 API Key");
   await expect(page.getByRole("button", { name: "发送" })).toBeDisabled();
 
-  // ② 首页密钥卡：保存 key → 徽标翻转「浏览器已存」
+  // ② 首页密钥弹层（右上角「密钥 / 登录」入口 → KeyDialog）：保存 key → 徽标翻转「浏览器已存」
   await page.goto("/");
+  await page.getByRole("button", { name: "密钥 / 登录" }).click();
   await expect(page.getByText("API 密钥", { exact: true })).toBeVisible();
-  // 两个 password 输入按顺序：百炼（必填）→ 飞猪（可选）
+  // password 输入按顺序：百炼（必填）→ 访问令牌（飞猪 Key 已收进高级选项，默认隐藏）
   await page.locator('input[type="password"]').first().fill("sk-e2e-dashscope");
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByText("浏览器已存").first()).toBeVisible();
