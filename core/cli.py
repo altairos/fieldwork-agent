@@ -289,8 +289,8 @@ def print_help():
   直接输入文本      等同于 chat <文本>
 
 【方案生成】
-  generate          基于当前所有信息生成完整研究方案
-                     输出为 Markdown 文件
+  generate          基于当前所有信息生成研究方案草稿
+                     输出为 Markdown 文件，投稿/开题前请人工核校补齐
 
 【知识库】
   knowledge add     添加自有研究资料到本地知识库
