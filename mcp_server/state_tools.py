@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
+from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
 from fieldwork_agent.kernel.repository.guard import project_id_violation
@@ -82,8 +83,14 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
         try:
-            repo.update_research_context(project_id, patch)
+            # 审计二 R05：与 Web 工具/REST 同一校验来源，原子拒绝非法 patch
+            clean = sanitize_context_patch(
+                patch, current=repo.get_research_context(project_id))
+            repo.update_research_context(project_id, clean)
             return _ok(repo.get_research_context(project_id))
+        except ValueError as exc:
+            return _err("invalid_args", str(exc),
+                        "可写白名单：" + context_fields_hint())
         except KeyError:
             return _not_found(project_id)
 
@@ -137,10 +144,12 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
             return _not_found(project_id)
         has_itinerary = any(state.get(k) for k in ITINERARY_STATE_KEYS)
         # 确定性判定（纯规则，绝不经 LLM）；实际切阶段由宿主 set_phase 落地
+        # 审计二 R09：失效确认（五路指纹不一致 / legacy 无指纹）不算已确认
         result = phases.check_advance(
             state["phase"], ctx, sites, informants,
             has_itinerary, bool(state.get("proposals")),
-            bool(state.get("proposal_confirmed")))
+            bool(state.get("proposal_confirmed"))
+            and not repo.is_proposal_confirmation_stale(project_id))
         return _ok(result.model_dump())
 
     return {"create_project": create_project, "list_projects": list_projects,
@@ -183,7 +192,7 @@ STATE_TOOLS: list[Tool] = [
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "patch": {"type": "object",
-                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）"}},
+                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）；任一字段非法则整次拒绝"}},
                       "required": ["project_id", "patch"]},
          annotations=_annotations()),
     Tool(name="save_field_site",

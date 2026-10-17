@@ -144,7 +144,8 @@ async def test_mainline_empty_project_to_finished(app, client):
     assert snap["phase"] == "proposal_generation"  # 草稿未确认不推进（R3 三态）
 
     # ⑦ 确认方案 → finished（F04）
-    resp = await client.post("/projects/p1/proposal/confirm")
+    resp = await client.post("/projects/p1/proposal/confirm",
+                             json={"doc_id": docs[0]["id"]})
     assert resp.status_code == 200
     assert resp.json()["phase_transition"] == {"from": "proposal_generation",
                                                "to": "finished"}

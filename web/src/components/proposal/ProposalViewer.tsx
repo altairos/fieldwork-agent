@@ -100,7 +100,7 @@ export function ProposalViewer({
       <div className="rule my-8" />
       <div className="text-center text-[11.5px] text-inkfaint">
         <img src="/fieldwork-logo-full.svg" alt="" className="w-5 h-5 mr-2 align-middle inline-block" />
-        田野罗盘 · 由结构化田野数据自动生成 · Markdown 为唯一事实源
+        田野罗盘 · 结构化田野数据辅助生成的方案草稿 · Markdown 为唯一事实源
       </div>
     </article>
   );

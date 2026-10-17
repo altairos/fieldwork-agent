@@ -8,8 +8,8 @@ import { test, expect } from "@playwright/test";
  *
  * CI 门禁红线：本文件不允许 test.skip / test.fixme 静默绕过；断言语义不可删，
  * UI 文案变化时只调整选择器。选择器与实际 DOM 的对应关系（已逐一核验组件源码）：
- *   - Hub 标题 = ProjectHub h1「你的田野调研项目」；创建按钮 aria-label「创建项目」
- *     （头部「新建项目」按钮只聚焦输入框、不创建，故不可用 /新建/ 模糊匹配）
+ *   - Hub 标题 = ProjectHub h1「田野罗盘」；创建按钮 = 输入框旁发送钮 aria-label「创建项目」
+ *     （页面无其他「创建」字样控件，用 aria-label 精确匹配发送钮）
  *   - 工作台输入框 = Composer textarea aria-label「消息输入」，Enter 发送
  *   - 住宿卡 = HotelCard(SearchResultCard)，条目行 li 内 Price 渲染「¥180」（mock payload price=180）
  *   - 航班降级 chip = CardShell「降级 · flyai_unavailable」（活动条同款 chip 另有一处，故 scope 到卡片内）
@@ -18,9 +18,9 @@ import { test, expect } from "@playwright/test";
  *   - 下载 = ProposalView 左栏「下载 .md」按钮（Header 的导出按钮文案为「导出」，不冲突）
  */
 test("L4 完整剧本：新建项目→工作台回合→工具卡价格→阶段推进→提案八章→下载", async ({ page }) => {
-  // ① 项目集：新建项目（h1 断言用 heading role，避免与 kicker「PROJECT HUB · 项目集」双匹配）
+  // ① 首页：新建项目（h1「田野罗盘」用 heading role 精确匹配；kicker「FIELDWORK COMPASS」非 heading）
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "你的田野调研项目" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "田野罗盘" })).toBeVisible();
   // 填一句话描述（Hub 页唯一 textarea；fill 触发 React onChange）
   const desc = page.locator("textarea").first();
   await desc.fill("研究西南少数民族村落的宗族组织变迁，单人驻村三个月，预算两万元");

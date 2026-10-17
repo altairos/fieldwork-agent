@@ -62,3 +62,12 @@ def turn_id_violation(turn_id: Any) -> str:
     if not isinstance(turn_id, str) or not TURN_ID_RE.fullmatch(turn_id):
         return "turn_id 须为 16 位小写十六进制（服务端生成格式）"
     return ""
+
+CACHE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def cache_id_violation(cache_id: Any) -> str:
+    """搜索快照 id 专用（审计二 R01）：单段白名单，先于任何文件系统拼接。"""
+    if not isinstance(cache_id, str) or not CACHE_ID_RE.fullmatch(cache_id):
+        return "cid 须为 1-64 位字母数字、下划线或连字符"
+    return ""

@@ -16,6 +16,7 @@
 """
 import json
 import os
+import shutil
 import subprocess
 from typing import Any
 
@@ -159,6 +160,30 @@ def _page_envelope(payload: dict[str, Any]) -> Envelope:
     ), degraded=str(system_message) if system_message else None)
 
 
+def _resolve_flyai_executable() -> str:
+    """解析 flyai 可执行路径（Windows 联调坑：CreateProcess 不解析 PATHEXT）。
+
+    npm 全局安装的入口是 flyai.cmd/flyai.ps1，裸名 "flyai" 直接
+    FileNotFoundError；shutil.which 按 PATHEXT 命中全路径后即可执行。
+    未命中时回落裸名，保留原 ``flyai CLI not found`` 降级链。
+    """
+    return shutil.which("flyai") or "flyai"
+
+
+def _recover_stdout_payload(stdout: str) -> dict[str, Any] | None:
+    """退出码非 0 时尝试从 stdout 恢复完整负载，恢复不了返回 None。
+
+    判据：stdout 是完整的 JSON 对象（CLI 的通信协议就是 stdout JSON）。
+    命中即以负载为准——成功负载直接采信，自报失败负载原样透传
+    （保留 ``rate limited`` 等诊断细节）；混入非 JSON 输出自然解析失败。
+    """
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 class FlyAIClient:
     """flyai CLI 的 8 个原子搜索工具封装（无状态）。"""
 
@@ -167,14 +192,22 @@ class FlyAIClient:
 
     def _run_command(self, args: list) -> dict[str, Any]:
         """执行 flyai 子命令，返回解析后的 JSON；任何异常都折成 ``{status:-1,error}``。"""
-        cmd = ["flyai"] + args
+        cmd = [_resolve_flyai_executable()] + args
         # 审计 F05：页面级 key（回合级实例化）注入子进程 env——
         # flyai CLI 解析链 env.FLYAI_API_KEY 优先级最高，注入即覆盖服务端单例配置。
         env = {**os.environ, "FLYAI_API_KEY": self.api_key} if self.api_key else None
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+            # text=True 默认随 locale（Windows cp936），中文结果必乱码——显式 UTF-8
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace",
+                                    timeout=30, env=env)
             if result.returncode != 0:
-                return {"status": -1, "error": result.stderr or "command failed"}
+                # flyai CLI 1.0.16 Windows 退出阶段 libuv 断言崩溃（exit 0xC0000409），
+                # 但 stdout JSON 已完整写出——退出码不可信时按内容判定
+                recovered = _recover_stdout_payload(result.stdout)
+                if recovered is None:
+                    return {"status": -1, "error": result.stderr or "command failed"}
+                return recovered
             data = json.loads(result.stdout)
             return data
         except FileNotFoundError:

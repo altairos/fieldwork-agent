@@ -6,9 +6,9 @@ import { streamTurnEvents } from "../src/api/sse";
 describe("keys", () => {
   beforeEach(() => localStorage.clear());
 
-  it("saveKeys 三参写入并可读回", () => {
+  it("saveKeys 三参写入并可读回（plan 未传不动，读回空）", () => {
     saveKeys("sk-a", "fly-b", "tok-c");
-    expect(getKeys()).toEqual({ dashscope: "sk-a", flyai: "fly-b", appToken: "tok-c" });
+    expect(getKeys()).toEqual({ dashscope: "sk-a", flyai: "fly-b", appToken: "tok-c", plan: "" });
   });
 
   it("两参调用不动已存令牌（向后兼容）", () => {
@@ -25,10 +25,10 @@ describe("keys", () => {
     expect(authHeaders()).toEqual({});
   });
 
-  it("clearKeys 清三项", () => {
-    saveKeys("sk-a", "fly-b", "tok-c");
+  it("clearKeys 清全部（含套餐 plan）", () => {
+    saveKeys("sk-a", "fly-b", "tok-c", "coding");
     clearKeys();
-    expect(getKeys()).toEqual({ dashscope: "", flyai: "", appToken: "" });
+    expect(getKeys()).toEqual({ dashscope: "", flyai: "", appToken: "", plan: "" });
   });
 
   it("streamTurnEvents 携带 App Token 头", async () => {

@@ -71,6 +71,26 @@ function stubFetch(snap: object = SNAP) {
   return calls;
 }
 
+/** stubFetch 变体：confirm 端点返回 4xx + {detail}（R09 拒绝路径），其余端点照常。 */
+function stubFetchWithConfirmFailure(failure: { status: number; detail: string }) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url === "/projects/p1/proposal/confirm") {
+        return {
+          ok: false,
+          status: failure.status,
+          text: async () => JSON.stringify({ detail: failure.detail }),
+        } as Response;
+      }
+      if (url === "/projects/p1") return json(SNAP);
+      if (url === "/projects/p1/proposals") return json(VERSIONS);
+      if (url === "/projects/p1/proposal") return json(LATEST);
+      return json({});
+    }),
+  );
+}
+
 function mount() {
   return render(
     <MemoryRouter initialEntries={["/p/p1/proposal"]}>
@@ -112,7 +132,7 @@ describe("ProposalView 版本/kind 加载与方案确认", () => {
     expect(await screen.findByText("提纲正文")).toBeTruthy();
   });
 
-  it("点确认方案——POST confirm、回读快照、提示阶段推进（F04）", async () => {
+  it("点确认方案——POST confirm 携 doc_id、回读快照、提示阶段推进（F04/R09）", async () => {
     const calls = stubFetch();
     mount();
     await screen.findByText("最新版正文");
@@ -121,6 +141,8 @@ describe("ProposalView 版本/kind 加载与方案确认", () => {
     const confirms = calls.filter((c) => c.url === "/projects/p1/proposal/confirm");
     expect(confirms).toHaveLength(1);
     expect((confirms[0].init as RequestInit | undefined)?.method).toBe("POST");
+    expect(JSON.parse(String((confirms[0].init as RequestInit).body)))
+      .toEqual({ doc_id: "prop_2" });
     // confirm 后需回读项目快照刷新题头/阶段/确认状态
     expect(calls.filter((c) => c.url === "/projects/p1").length).toBeGreaterThanOrEqual(2);
   });
@@ -130,5 +152,26 @@ describe("ProposalView 版本/kind 加载与方案确认", () => {
     mount();
     expect(await screen.findByText(/请重新确认/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "重新确认方案" })).toBeTruthy();
+  });
+
+  it("kind 切换到访谈提纲后确认按钮禁用（R09：只能确认 proposal）", async () => {
+    stubFetch();
+    mount();
+    await screen.findByText("最新版正文");
+    // 「访谈提纲（kind 切换）」按钮 → toggleKind 从版本列表取 guide_1（by-id 加载）
+    fireEvent.click(screen.getByRole("button", { name: /访谈提纲/ }));
+    expect(await screen.findByText("提纲正文")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "确认方案" })).toBeDisabled();
+  });
+
+  it("确认被拒（409）——直显后端 detail 文案（R09）", async () => {
+    stubFetchWithConfirmFailure({
+      status: 409,
+      detail: "研究输入已变化，该文档的确认已过期：请重新生成方案",
+    });
+    mount();
+    await screen.findByText("最新版正文");
+    fireEvent.click(screen.getByRole("button", { name: "确认方案" }));
+    expect(await screen.findByText(/请重新生成方案/)).toBeTruthy();
   });
 });

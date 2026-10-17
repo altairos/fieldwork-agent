@@ -42,8 +42,11 @@ PROPOSAL_SECTIONS: list[str] = [
 # 能力边界（审阅意见 R1）：当前仅 global 完整实现；回退时在文档**头部前置声明**
 # 而非仅尾注，避免用户误以为拿到的是目标体例的可直接提交材料。
 SUPPORTED_MODES = ("global",)
+# 体例枚举 → 中文标签（与前端 ProposalCard MODE_LABEL 同口径）：回退头部插入中文标签，
+# 避免导出文档头部出现裸英文枚举。
+MODE_LABELS = {"global": "英美式八章", "kaiti": "开题报告", "grant": "基金申报"}
 MODE_FALLBACK_HEADER = ("> ⚠ 体例说明：您选择的「{mode}」体例尚未实现（开题/基金体例待深化），"
-                        "本稿实际为通用八章草稿（适用海外/港澳申请与课程场景），"
+                        "本稿实际为英美式八章草稿（适用海外/港澳申请与课程场景），"
                         "不构成可直接提交的申报材料。\n\n")
 
 # 模板降级尾注（无 llm / llm error 分支共用）
@@ -319,7 +322,7 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
     effective = requested if requested in SUPPORTED_MODES else "global"
     if effective != requested:
         # 审阅意见 R1：能力限制头部前置声明（而非仅在文末附注）
-        markdown = MODE_FALLBACK_HEADER.format(mode=requested) + markdown
+        markdown = MODE_FALLBACK_HEADER.format(mode=MODE_LABELS.get(requested, requested)) + markdown
 
     return ProposalDoc(
         markdown=markdown,

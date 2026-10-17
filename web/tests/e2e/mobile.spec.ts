@@ -23,7 +23,7 @@ import { test, expect } from "@playwright/test";
 test("移动端冒烟：单栏无横溢 + 汉堡抽屉开关 + 右栏折叠面板 + 提案页单栏", async ({ page }) => {
   // ① 首页（ProjectHub）加载 + 无横向溢出
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "你的田野调研项目" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "田野罗盘" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // 新建项目进工作台（mock 流程同 fieldwork.spec）

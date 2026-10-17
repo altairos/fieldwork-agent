@@ -59,14 +59,14 @@ def create_server(config: "Config | None" = None,
 
     - ``config=None``：无 LLM（文档能力自然模板降级）、FlyAIClient 默认实例
       （无 CLI/key 时搜索走 flyai_unavailable 体验降级）——L3 契约测试即此路径；
-    - ``repo=None``：按 ``Config.projects_dir`` 建 JsonRepository。
+    - ``repo=None``：按 ``FA_STORAGE`` 经 ``make_repository`` 选后端（默认 json）。
     """
     cfg: Any = config
     if repo is None:
         from fieldwork_agent.core.config import Config
-        from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+        from fieldwork_agent.kernel.repository.factory import make_repository
         cfg = config or Config()
-        repo = JsonRepository(projects_dir=cfg.projects_dir)
+        repo = make_repository(cfg)
 
     llm = None
     if cfg is not None and getattr(cfg, "dashscope_available", False):

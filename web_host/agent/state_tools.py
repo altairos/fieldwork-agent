@@ -1,17 +1,16 @@
 # web_host/agent/state_tools.py
-"""Web 回合受限状态写工具（审计 F03 方案②）：update_research_context。
+"""Web 回合受限状态写工具（审计 F03 方案② / 审计二 R05）：update_research_context。
 
-与 mcp_server/state_tools.py 同构的宿主层工具：字段白名单 + 值校验 +
-Envelope 包络；区别在于绑定单一项目 pid（loop 每回合构建，不入全局
-registry——kernel 能力保持只读，状态写只在宿主层发生）。
+与 mcp_server/state_tools.py 同构的宿主层工具：校验规则统一来自
+kernel/context_patch.py（单一来源，三入口一致）；区别在于绑定单一项目
+pid（loop 每回合构建，不入全局 registry——kernel 能力保持只读，状态写
+只在宿主层发生）。任一字段非法即整次拒绝（原子语义），绝不部分写入。
 """
-from fieldwork_agent.kernel.models import Envelope, ToolError
-
-ALLOWED_CONTEXT_FIELDS = (
-    "discipline", "topic", "site_status", "scale", "budget",
-    "time_window", "departure_city", "target_location", "travel_date",
-    "purpose", "interviews_not_applicable", "interviews_na_reason",
+from fieldwork_agent.kernel.context_patch import (
+    context_fields_hint,
+    sanitize_context_patch,
 )
+from fieldwork_agent.kernel.models import Envelope, ToolError
 
 _SCHEMA = {
     "type": "function",
@@ -25,7 +24,7 @@ _SCHEMA = {
             "properties": {
                 "patch": {
                     "type": "object",
-                    "description": "要写入的字段 → 新值（白名单外键静默忽略）",
+                    "description": "要写入的字段 → 新值；白名单外键或类型不符将整次拒绝",
                 },
                 "reason": {
                     "type": "string",
@@ -42,22 +41,14 @@ def build_state_tools(repo, pid: str):
     """构建绑定 pid 的受限状态写工具：返回 (schemas, handlers)。"""
 
     def update_research_context(patch: dict, reason: str = "") -> Envelope:
-        clean = {}
-        for key, value in (patch or {}).items():
-            if key not in ALLOWED_CONTEXT_FIELDS:
-                continue
-            if isinstance(value, bool):
-                clean[key] = value
-            elif isinstance(value, str) and value.strip():
-                clean[key] = value.strip()
-        if not clean:
+        try:
+            clean = sanitize_context_patch(
+                patch, current=repo.get_research_context(pid))
+        except ValueError as exc:
             return Envelope(ok=False, error=ToolError(
-                code="invalid_arguments",
-                message="patch 为空：至少一个白名单字段且值为非空字符串或布尔",
-                hint="可写白名单：" + "、".join(ALLOWED_CONTEXT_FIELDS)))
-        ctx = dict(repo.get_research_context(pid))
-        ctx.update(clean)
-        repo.update_research_context(pid, ctx)
+                code="invalid_arguments", message=str(exc),
+                hint="可写白名单：" + context_fields_hint()))
+        repo.update_research_context(pid, clean)
         return Envelope(ok=True, data={"updated": sorted(clean)})
 
     return [_SCHEMA], {"update_research_context": update_research_context}

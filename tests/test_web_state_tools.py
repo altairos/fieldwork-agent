@@ -36,15 +36,18 @@ def env(tmp_path):
     return repo, tm
 
 
-def test_whitelist_filters_and_persists(env):
+def test_r05_unknown_field_rejected_atomically(env):
+    """审计二 R05：白名单外键 + 空白值 → 整次拒绝（原子），绝不部分写入。"""
     repo, _ = env
     schemas, handlers = build_state_tools(repo, "p1")
     assert [s["function"]["name"] for s in schemas] == ["update_research_context"]
     envl = handlers["update_research_context"](
         patch={"budget": "5万", "hacked": "x", "topic": "  "})
-    assert envl.ok
-    assert envl.data == {"updated": ["budget"]}
-    assert repo.get_research_context("p1").get("budget") == "5万"
+    assert not envl.ok
+    assert envl.error.code == "invalid_arguments"
+    assert "未知字段：hacked" in envl.error.message
+    assert "topic 不得为空白字符串" in envl.error.message
+    assert repo.get_research_context("p1").get("budget") is None
 
 
 def test_bool_flag_persists(env):
@@ -86,3 +89,14 @@ def test_loop_state_tool_call_persists(env):
                          tm, llm, FakeFlyAI()))
     ctx = repo.get_research_context("p1")
     assert ctx.get("budget") == "5万" and ctx.get("scale") == "两人同行"
+
+
+def test_r05_bool_type_strict(env):
+    """审计二 R05：布尔字段收字符串 "true" → 拒绝（旧实现会当普通字符串收下）。"""
+    repo, _ = env
+    _, handlers = build_state_tools(repo, "p1")
+    envl = handlers["update_research_context"](
+        patch={"interviews_not_applicable": "true"})
+    assert not envl.ok
+    assert envl.error.code == "invalid_arguments"
+    assert "interviews_not_applicable 须为布尔" in envl.error.message

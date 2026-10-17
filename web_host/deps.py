@@ -5,23 +5,25 @@ from fastapi import Request
 
 def init_deps(app, *, config=None, repo=None) -> None:
     from fieldwork_agent.core.config import Config
-    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.kernel.repository.factory import make_repository
     from fieldwork_agent.kernel.sources.flyai import FlyAIClient
     from fieldwork_agent.web_host.turn_manager import TurnManager
 
     cfg = config or Config()
     if repo is None:
-        repo = JsonRepository(projects_dir=cfg.projects_dir)
+        repo = make_repository(cfg)
     app.state.config = cfg
     app.state.repo = repo
     app.state.flyai = FlyAIClient(getattr(cfg, "flyai_api_key", ""))
     app.state.turn_manager = TurnManager(root=cfg.projects_dir)
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
-        from fieldwork_agent.kernel.llm import LLMClient
+        from fieldwork_agent.kernel.llm import LLMClient, plan_base_url
 
         try:
-            app.state.llm = LLMClient(cfg.dashscope_api_key, cfg.llm_models)
+            app.state.llm = LLMClient(
+                cfg.dashscope_api_key, cfg.llm_models,
+                base_url=plan_base_url(getattr(cfg, "dashscope_plan", "")))
         except RuntimeError:
             pass
     # R4：进程重启后遗留 running → interrupted

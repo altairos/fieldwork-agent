@@ -288,12 +288,15 @@ class ConfirmationRecord(BaseModel):
 
     ``kind``：site / itinerary / proposal；``subject``：项目内标识（如田野点名）。
     输入变更后用 ``inputs_stale(record.inputs_hash, 当前哈希)`` 判断旧确认是否失效。
+    审计二 R09：``dep_hash`` 为五路依赖指纹（confirm_hash.compute_confirm_hash）；
+    空串 = legacy 记录（无指纹，失效判定保守视 stale）。
     """
 
     kind: str = ""
     subject: str = ""
     confirmed_at: str = ""
     inputs_hash: str = ""
+    dep_hash: str = ""
 
 
 def compute_inputs_hash(payload: dict[str, Any]) -> str:

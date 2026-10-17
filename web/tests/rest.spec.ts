@@ -1,7 +1,7 @@
 // web/tests/rest.spec.ts —— rest 六方法请求形状 + 快照新键类型（Task 6/7 端点的前端接线）
 import type { Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { rest } from "../src/api/rest";
+import { ApiError, apiDetail, rest } from "../src/api/rest";
 import { startMockServer } from "../mock/sseServer";
 import type { ProjectSnapshot } from "../src/types/models";
 
@@ -29,7 +29,7 @@ describe("rest 状态修正/确认/by-id 方法", () => {
     expect(r.phase_transition).toBeNull();
   });
 
-  it("confirmFieldSite/confirmProposal 发 POST 到对应端点", async () => {
+  it("confirmFieldSite/confirmProposal 发 POST 到对应端点（R09：确认携 doc_id）", async () => {
     const calls = stubFetch([
       { field_site: {}, phase_transition: null },
       { confirmation: {}, proposal_confirmed: true, phase_transition: null },
@@ -37,9 +37,10 @@ describe("rest 状态修正/确认/by-id 方法", () => {
     await rest.confirmFieldSite("p1", "site_1");
     expect(calls[0].url).toBe("/projects/p1/field-sites/site_1/confirm");
     expect(calls[0].init?.method).toBe("POST");
-    await rest.confirmProposal("p1");
+    await rest.confirmProposal("p1", "prop_2");
     expect(calls[1].url).toBe("/projects/p1/proposal/confirm");
     expect(calls[1].init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ doc_id: "prop_2" });
   });
 
   it("adoptInformant 以 {candidate} 包装 POST", async () => {
@@ -57,6 +58,13 @@ describe("rest 状态修正/确认/by-id 方法", () => {
     expect(r.id).toBe("prop_1");
     expect(rest.proposalByIdDownloadUrl("p1", "prop_1")).toBe(
       "/projects/p1/proposals/prop_1/download");
+  });
+
+  it("apiDetail 解析 FastAPI {detail} 文案（R09）", () => {
+    expect(apiDetail(new ApiError(409,
+      JSON.stringify({ detail: "研究输入已变化：请重新生成方案" }))))
+      .toBe("研究输入已变化：请重新生成方案");
+    expect(apiDetail(new ApiError(500, "Internal Error"))).toBeNull();
   });
 });
 

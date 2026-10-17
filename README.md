@@ -1,233 +1,252 @@
 # 田野罗盘 (Fieldwork Agent)
 
-> 面向人类学/社会学田野调查者的 AI 旅行规划助手  
-> 基于飞猪 FlyAI 全品类旅行搜索能力，引导式访谈 → 自动生成可提交的研究方案（Research Proposal）
+> 面向人类学/社会学田野调查者的 AI 旅行规划助手
+> 基于飞猪 FlyAI 全品类旅行搜索能力，引导式访谈 → 辅助生成研究方案（Research Proposal）草稿
 
-## 一句话介绍
+## 项目用途
 
-**田野罗盘** — 帮田野调查者从"想去哪里"到"怎么抵达、住在哪里、调研什么"，一站式生成完整研究方案。
+**田野罗盘**帮田野调查者完成从"想去哪里"到"怎么抵达、住在哪里、调研什么"的全流程筹备：
 
-## 架构总览
+- **引导式访谈**：五阶段推进（研究定位 → 田野点画像 → 行程规划 → 方案生成 → 已完成），推进判定为确定性纯函数，不由 LLM 宣布。
+- **真实数据检索**：深度集成飞猪 FlyAI 全部 8 个搜索工具（航班/火车/酒店/POI/关键词/AI 语义/万豪酒店/万豪套餐），行程、预算、文化场所均基于实时搜索数据并标注来源。
+- **方案产出**：生成结构完整的研究方案 Markdown 草稿（当前为英美式八章体例，适用海外/港澳申请与课程场景；高校开题、国家社科活页体例在规划中）。
+- **三种宿主形态**：交互式 CLI、FastAPI Web 宿主（REST + SSE 实时事件流 + React 前端）、标准 MCP Server。
 
-```
-┌─────────────────────────────────────────────┐
-│         CLI 交互界面 (core/cli.py)            │
-│       prompt_toolkit 驱动的交互式终端           │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│     FieldAgent 内核宿主 (core/orchestrator)   │
-│  · 对话生命周期 + LLM function calling 决策    │
-│  · 取 registry schema → client_kernel_dispatch│
-│  · 轮末落盘 + check_advance 确定性推进         │
-│  · Config (core/config.py) 为无状态底座        │
-└──┬────────────────┬───────────────┬─────────┘
-   │                │               │
-┌──▼──────────┐ ┌───▼────────────┐ ┌▼─────────────────┐
-│ runtime/    │ │ kernel/        │ │ kernel/          │
-│ loop.py     │ │ sources/       │ │ guidance/        │
-│ 共用回合循环 │ │  flyai 8 搜索原语│ │ documents/       │
-│ LLM ↔ 工具   │ │ aggregation/   │ │ 五阶段推进·提取 ·  │
-│             │ │ 画像/行程聚合    │ │ 方案/提纲/候选生成  │
-└─────────────┘ └───┬────────────┘ └──────────────────┘
-                    │
-┌───────────────────▼─────────────────────────┐
-│  kernel/registry.py + kernel/models.py       │
-│  · 能力注册表：build_tool_schemas 单一来源     │
-│  · 统一包络 Envelope/ToolError + 共享契约模型   │
-├─────────────────────────────────────────────┤
-│  kernel/repository/  (JsonRepository)        │
-│  · 本地 JSON 项目状态 · 知识库 · 搜索缓存 · 方案 │
-└─────────────────────────────────────────────┘
-```
+架构分层：`core/`（宿主编排）→ `runtime/`（共用回合循环）→ `kernel/`（无状态能力内核，只依赖标准库 + pydantic，绝不反向 import 宿主层）。开发者细节见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
-`kernel` 无状态、只依赖标准库 + pydantic，绝不反向 import `core/`/`runtime`；
-`kernel/llm.py` 提供 DashScope OpenAI 兼容端点的 `LLMClient`（function calling），由宿主注入。
+## 安装步骤
 
-## 快速开始
-
-### 安装依赖
+### 后端（Python >= 3.10）
 
 ```bash
-# Python 依赖
-pip install -U dashscope prompt-toolkit
+# 仓库根目录执行
+python -m venv .venv
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+# Linux/macOS
+source .venv/bin/activate
 
-# FlyAI CLI（飞猪旅行搜索能力）
-npm i -g @fly-ai/flyai-cli
+# 运行时 + 开发依赖（pytest / ruff / httpx）
+pip install -e ".[dev]"
+# 仅运行时依赖
+pip install -e .
 
-# 安装 Skill
-npx skills add alibaba-flyai/flyai-skill -g -y --agent '*'
+# MCP 宿主需要可选依赖
+pip install -e ".[mcp]"
 ```
 
-### 配置密钥
+> 仓库根目录即 Python 包 `fieldwork_agent`（通过 `[tool.setuptools] package-dir` 映射），目录名与包名不同是正常的，不要重命名仓库目录。
+
+### 前端（Node >= 22.22.2）
 
 ```bash
-# 百炼 API Key（用于 LLM 对话）
-export DASHSCOPE_API_KEY="sk-xxx"
-
-# FlyAI API Key（自动从 ~/.flyai/config.json 读取，无需额外配置）
+cd web
+npm install
 ```
 
-### 启动
+### 外部依赖（可选）
+
+| 能力 | 安装命令 | 缺失时行为 |
+|------|---------|-----------|
+| LLM 对话 | 随 pip 依赖安装（dashscope），需配置密钥 | 降级为规则回复 |
+| 旅行搜索 | `npm i -g @fly-ai/flyai-cli` | 跳过旅行搜索，纯文本方案 |
+
+## 运行方式
+
+### CLI
 
 ```bash
-cd fieldwork_agent
-python -m fieldwork_agent
+fieldwork                # console script（需 pip install -e .）
+python -m fieldwork_agent   # 等价
 ```
 
-### 操作流程示例
+### Web 宿主（FastAPI + 内置前端）
+
+```bash
+fieldwork-web            # 监听 http://127.0.0.1:8300
+```
+
+`web/dist` 存在时自动挂载到 `/`（API 路由优先，SPA 深链 fallback）；dist 缺失时仅提供 API。
+
+### Web 前端（开发期）
+
+```bash
+cd web
+npm run dev              # Vite 开发服务器 :5173，/projects /health /settings 代理 → :8300
+npm run mock             # 无后端联调：mock SSE 服务器 :8301
+npm run build            # 构建产物 → web/dist
+npm run test             # vitest 单元/组件测试
+npm run test:e2e         # Playwright 端到端（首次需 npx playwright install）
+```
+
+## 存储后端与迁移
+
+项目数据默认落 JSON 文件树（`~/.fieldwork_agent/projects/`，`JsonRepository`）；
+也可切换单文件 SQLite 后端（`SqliteRepository`，WAL 模式，CLI/Web/MCP 同一契约）：
+
+```powershell
+$env:FA_STORAGE = "sqlite"   # 切换后端（默认 json；未知值安全回落 json）
+```
+
+> 注意：CLI REPL（`fieldwork` 命令行交互）当前仍直接使用 JSON 存储，`FA_STORAGE=sqlite` 暂只对 Web 宿主与 MCP Server 生效——CLI 侧接入属后续任务。
+
+已有 JSON 存量项目可一次性搬入 SQLite（幂等，可重复执行）：
+
+```powershell
+fieldwork migrate --to-sqlite                              # 全部项目
+fieldwork migrate --to-sqlite --project-id my_research     # 单个项目
+fieldwork migrate --to-sqlite --force   # 同名存量项目：备份后覆盖重迁（R03）
+```
+
+- **迁移范围**：8 类数据——项目/阶段（含 `phase_history`）、研究上下文、全量消息史
+  （`chat_history.jsonl`）、田野点、报道人、搜索缓存、知识库、提案文档（含旧
+  `proposal_draft`/`final_proposal` 单值键）、确认记录（`confirmations` +
+  `proposal_confirmed`）。迁移后自动做行数与抽样字段校验，不一致即报错终止，
+  不留半迁移状态。
+- **迁移期单写者**：迁移期间请停止对同一批项目的其他写入（只跑迁移进程），完成后再
+  设 `FA_STORAGE=sqlite` 启动宿主，避免双后端并发写造成分叉。
+- **冲突保护**：SQLite 侧已存在同名项目且无迁移标记时，`migrate` 默认报错中止（不
+  清空存量）；`--force` 先用 sqlite3 Backup API 做滚动备份（`fieldwork.db.bak.1`
+  最新，共留 3 份）再整项目清空重导。
+- **JSON 只读回退**：迁移不删除、不改动 JSON 目录——不设 `FA_STORAGE`（或设回
+  `json`）即回到 JSON 后端；SQLite 库（`~/.fieldwork_agent/fieldwork.db`）留存，
+  可随时删除重迁，天然回滚。
+
+### MCP Server
+
+```bash
+fieldwork-mcp                                      # console script
+python -m fieldwork_agent.mcp_server               # 等价（stdio）
+.venv/Scripts/python.exe demo_mcp_client.py        # 演示客户端（手动运行，不进 CI）
+```
+
+MCP 能力面：22 个工具（13 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
+
+### 测试与静态检查
+
+```bash
+pytest              # 全部基于 mock：不需要 API Key、不联网、不起子进程
+pytest -k flyai     # 按关键字筛选
+ruff check .
+```
+
+### 服务器部署（阿里云轻量服务器）
+
+完整流程见 [deploy/aliyun/DEPLOY.md](deploy/aliyun/DEPLOY.md)（一键脚本 `deploy/aliyun/deploy.sh`、systemd 单元、Nginx 反代配置均在 `deploy/aliyun/`）。
+
+- 监听端口 **2143**，访问地址：（待补：公网 IP 或已备案域名）
+- scp 上传地址、服务器登录方式：（待补）
+- 部署后临时访问：`http://<待补：公网IP>:2143/`
+
+## 使用示例
+
+### CLI 五阶段交互
 
 ```
 fieldwork > new my_research
 ✅ 新项目已创建: my_research
 
-fieldwork [my_research] (📍 研究定位) > 
+fieldwork [my_research] (📍 研究定位) >
 我是社会学博士生，想研究西南少数民族村落的宗族组织变迁。
-单人调研，计划3个月驻村观察。经费来自国家社科基金青年项目，预算2万元。
+单人调研，计划3个月驻村观察，经费来自国家社科基金青年项目，预算2万元，
 时间窗口是明年6-9月。
 
 💡 引导问题:
   • 您对田野地点的确定程度如何？（已明确地点 / 有区域范围 / 希望我推荐）
 ```
 
-## Web 宿主（FastAPI）
+阶段随信息完备自动推进（提示符中的 `(📍 研究定位)` 等标签同步变化）；`generate` 生成方案草稿。
 
-```bash
-pip install -e ".[dev]"
-fieldwork-web                    # 启动在 http://127.0.0.1:8300
-```
-
-开发期前端（Plan 4）通过 Vite proxy 转发 `/projects` 到 `:8300`。
-
-端点概览：
-- `POST /projects` — 创建项目
-- `GET /projects/{id}` — 项目快照
-- `POST /projects/{id}/messages` — 创建回合（返回 turn_id）
-- `GET /projects/{id}/turns/{tid}/events` — SSE 事件流
-- `POST /projects/{id}/turns/{tid}/cancel` — 取消回合
-- `GET /projects/{id}/proposal` — 最新提案
-- `GET /projects/{id}/proposal/download` — 下载 .md
-
-## Web 前端
-
-前端在 `web/`（Vite + React + TypeScript + Tailwind），消费 Web 宿主的 REST + SSE。
-
-### 开发
-
-```powershell
-cd web
-npm install
-npm run dev          # vite dev :5173，proxy /projects → :8300
-```
-
-另起 Web 宿主：`fieldwork-web`（:8300）。无后端时可用 mock 联调：`npm run mock`（:8301，两步式 SSE 回放）。
-
-### 构建与挂载
-
-```powershell
-cd web && npm run build   # 产物 → web/dist
-```
-
-`web/dist` 存在时，Web 宿主（`fieldwork-web`）自动挂载到 `/`（API 路由优先，SPA 深链 fallback）。访问 `http://127.0.0.1:8300/`。
-
-### 测试
-
-```powershell
-cd web
-npm run test         # vitest 单元/组件
-npm run test:e2e     # Playwright L4 端到端（首次需 npx playwright install）
-```
-
-## 🎯 飞猪 FlyAI 全部 8 个工具深度集成
-
-| 工具 | 田野调查场景 | 调用策略 |
-|------|------------|---------|
-| `search-flight` | 跨省调研大交通 | 按价格排序筛选预算内选项 |
-| `search-train` | 高铁备选方案 | 时长优先排序 |
-| `search-hotel` | 住宿搜索（民宿/客栈优先） | 多策略：民宿→经济酒店→距离筛选 |
-| `search-poi` | 文化场所检索（30+分类） | 人文古迹/宗教场所/古镇古村/博物馆并行 |
-| `keyword-search` | 广义覆盖（签证/保险/租车等） | 任何阶段兜底搜索 |
-| `ai-search` ⭐ | **AI语义理解复杂意图** | 核心杀手锏——自然语言描述行程需求 |
-| `marriott-hotel` | 高端酒店备选 | 团队调研或接待专家时推荐 |
-| `marriott-package` | 体验套餐/下午茶 | 邀请同行学者时的接待安排 |
-
-> **覆盖范围（实测 2026-10-14）**：机票明确支持国内+国际，酒店/POI/语义搜索覆盖海外主流目的地与港澳台（曼谷/清迈/加德满都/香港均验通）；火车限境内+港澳直通（香港西九龙）。海外偏远田野点（如巴新高地）无村级住宿供给，Agent 会如实声明并给出"枢纽城市+当地学术接待"二段式方案。
-
-## 四阶段引导式访谈流程
-
-### 📍 阶段 A：研究定位
-收集学科背景、研究问题、田野点确定程度、调研规模、经费与时间窗口。
-
-### 🗺️ 阶段 B：田野点画像
-对候选地点全面采集：交通可达性、住宿条件、文化资源、生活配套。
-Agent 会同时调用多个 FlyAI 工具获取真实数据。
-
-### 🗓️ 阶段 C：行程规划
-综合航班+火车+住宿+文化景点，对比最优路线，设计调研节奏和缓冲期。
-
-### 📝 阶段 D：方案生成
-整合全部信息，生成结构完整的研究方案（Research Proposal）Markdown 草稿。
-当前输出为通用八章体例（适用海外/港澳申请与课程场景）；高校开题、国家社科活页体例在规划中。
-行程、预算、文化场所均基于实时搜索数据并标注来源与完整性；缺数据时如实标记待核验，不虚构参考文献。
-
-## 命令参考
+### CLI 命令一览
 
 | 命令 | 说明 |
 |------|------|
 | `new [name]` | 创建新项目 |
 | `list` | 列出所有项目 |
 | `open <id>` | 打开已有项目 |
-| `chat <消息>` | 发送对话消息 |
-| `generate` | 生成完整研究方案 |
-| `knowledge add <标题>` | 添加自有资料到知识库 |
-| `knowledge list` | 查看知识库内容 |
-| `status` | 查看项目状态 |
-| `sync dingtalk` | 同步方案到钉钉（可选） |
+| `chat <消息>` | 发送对话消息（不带参数进入逐行输入模式；直接输入文本等同） |
+| `generate` | 基于当前所有信息生成研究方案草稿（Markdown，投稿/开题前请人工核校） |
+| `knowledge add <标题>` | 添加自有研究资料到本地知识库 |
+| `knowledge list` | 查看知识库条目 |
+| `status` | 查看当前项目完整状态 |
+| `sync dingtalk` | 将最新方案同步到钉钉群（需配置 webhook） |
 | `help` | 显示帮助 |
+| `quit` / `exit` / `q` | 退出 |
 
-## 目录结构
+### Web API（节选）
 
-```
-fieldwork_agent/
-├── core/                    # 宿主层：编排与状态，不含业务规则
-│   ├── config.py            # 全局配置（本地优先，自动读取 flyai CLI 配置）
-│   ├── orchestrator.py      # FieldAgent 内核宿主：组装 + 分派 + 落盘 + 确定性推进
-│   └── cli.py               # 交互式终端界面
-├── runtime/                 # 共用回合循环（CLI/Web 同一套 LLM↔工具多轮逻辑）
-│   └── loop.py              # run_tool_loop
-├── kernel/                  # 无状态能力内核（只依赖标准库 + pydantic）
-│   ├── __init__.py          # 聚合导入各能力模块：裸 import kernel 即注册 13 项能力
-│   ├── registry.py          # 能力注册表 + build_tool_schemas（工具 schema 单一来源）
-│   ├── models.py            # 共享契约：Envelope/ToolError/SearchItem/ResearchContext…
-│   ├── llm.py               # LLMClient（DashScope OpenAI 兼容端点，function calling）
-│   ├── sources/             # flyai.py：FlyAIClient + 8 搜索原语（argv 拼装 → 归一化包络）
-│   ├── aggregation/         # site_profile.py 田野点画像 · itinerary.py 行程组合
-│   ├── documents/           # proposal.py 八章方案与访谈提纲 · informants.py 候选生成
-│   ├── guidance/            # phases.py 五阶段与 check_advance · extract.py · informants.py
-│   └── repository/          # protocol.py 契约 · json_repo.py JsonRepository 持久化
-├── tests/                   # 全 mock 测试（无 Key、不联网、不起子进程）
-├── __init__.py
-├── __main__.py              # 入口点
-└── README.md
+```bash
+# 创建项目
+curl -X POST http://127.0.0.1:8300/projects
+
+# 创建回合（返回 turn_id）
+curl -X POST http://127.0.0.1:8300/projects/<id>/messages -H "Content-Type: application/json" -d '{"content": "..."}'
+
+# SSE 事件流
+curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 ```
 
-## 比赛适配
+主要端点：`POST /projects`、`GET /projects/{id}`、`POST /projects/{id}/messages`、`GET /projects/{id}/turns/{tid}/events`（SSE）、`POST /projects/{id}/turns/{tid}/cancel`、`GET /projects/{id}/proposal`（及 `/download`、`/proposals` 历史版本）、`PUT /projects/{id}/research-context`、`GET /settings/status`、`GET /health`、`GET /ready`。
 
-本作品针对 OPC 飞猪旅行智能体大赛设计：
+## 关键配置说明
 
-- **创新性 40%** — 将飞猪 8 个旅行搜索工具创造性应用于学术田野调查场景，ai-search 作为核心差异化能力处理自然语言复杂意图
-- **完整度 30%** — 四阶段访谈全流程跑通，每个阶段都触发真实的 FlyAI 工具调用，输出稳定可验证
-- **市场前景 30%** — 高校研究生、社科研究者、NGO 调研人员都是高频刚需用户，具备持续演进空间
+### 环境变量
 
-## 降级策略
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `DASHSCOPE_API_KEY` | 是（LLM 功能） | 阿里云百炼/通义千问密钥，缺失时降级为规则回复 |
+| `FLYAI_API_KEY` | 否 | 飞猪 FlyAI 密钥；未设置时自动回退读取 `~/.flyai/config.json` 的 `key` 字段 |
+| `FIELDWORK_APP_TOKEN` | 否 | Web 宿主访问令牌；非空时所有 `/projects`、`/settings` 接口要求 `X-App-Token` 请求头匹配（仅环境变量，不落盘） |
+| `FA_INTERVIEW_MODEL` | 否 | 对话推进模型，默认 `qwen3.8-flash` |
+| `FA_PROPOSAL_MODEL` | 否 | 长文方案模型，默认 `qwen-max` |
+| `FA_EXTRACT_MODEL` | 否 | 结构化抽取模型，默认 `qwen3.8-flash` |
+| `DASHSCOPE_HTTP_BASE_URL` | 否 | DashScope OpenAI 兼容端点，默认官方地址 |
+| `FIELDWORK_ASSETS_DIR` | 否 | Tier S 私有资产目录（见下） |
 
-| 缺失组件 | 降级行为 |
-|---------|---------|
-| DashScope SDK | 规则回复（基于关键词匹配） |
-| FlyAI CLI | 跳过旅行搜索，纯文本方案 |
-| FlyAI 体验模式（无正式 Key） | 正常搜索但价格脱敏（如 ¥5x）、结果受限，systemMessage 提示透传给用户 |
-| 两者都缺失 | 基础问答模式 |
+### 配置优先级（`core/config.py`）
 
-## License
+1. 环境变量初始化；
+2. 若存在 `~/.fieldwork_agent/config.json` 则**覆盖**环境变量（密钥、三槽模型、钉钉配置）；
+3. FlyAI 密钥：环境变量 `FLYAI_API_KEY` 优先，为空时回退 `~/.flyai/config.json`。
 
-MIT
+设置 FlyAI 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：
+
+```bash
+flyai config set key <YOUR_API_KEY>     # 写入 ~/.flyai/config.json
+```
+
+### 数据与资产目录
+
+- **项目数据**：`~/.fieldwork_agent/projects/<id>/`（state.json、chat_history.jsonl、knowledge/、search_cache/、output/proposal_*.md）。
+- **提示词资产三级体系**（`kernel/assets.py` 探测链，先命中先用）：
+  1. 环境变量 `FIELDWORK_ASSETS_DIR` 指向目录；
+  2. `<repo>/secrets/`（Tier S 私有完整版，独立私有仓库，被主仓 `.gitignore` 忽略）；
+  3. `~/.fieldwork_agent/assets/`；
+  4. 内置 Tier P 公开简版（默认）。
+
+  覆盖为整体替换、不做深层合并；坏 JSON / 结构校验失败会抛 `AssetsError`。泄露检查：`python tools/check_secrets_leak.py`。
+
+## 常见问题
+
+| 现象 | 原因与处理 |
+|------|-----------|
+| Windows 终端报 `UnicodeEncodeError` | 中文 Windows 控制台默认 GBK。CLI 入口已自动切 UTF-8（`_ensure_utf8_stdio`），若自定义脚本复现，参照其实现处理 |
+| 管道喂 stdin 启动失败 | prompt_toolkit 需要真实 TTY，属交互库限制非 bug；验证启动逻辑请用真实终端，或对单元逻辑写 pytest |
+| PowerShell 拒绝加载 `flyai.ps1` | 改用 `flyai.cmd`，或 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| 对话无回复 / 日志报 LLM 错误 | `DASHSCOPE_API_KEY` 未配置或填错 |
+| 机票/酒店搜索不可用 | 未配置 FlyAI 密钥或未装 flyai CLI，属预期降级（其余功能正常） |
+| 接口返回 401 `app_token_required` | 服务端设置了 `FIELDWORK_APP_TOKEN` 但请求未带/带错 `X-App-Token` 头 |
+| Web 页面 502 或无前端 | `web/dist` 未构建——`cd web && npm run build` 后重启 |
+| `/ready` 返回 `not_ready` | 按响应 `checks` 定位：`flyai_cli=false` 装 CLI；`projects_dir_writable=false` 查目录属主 |
+| 公网访问连不上但本机 `/health` 通 | 云防火墙/安全组未放行 2143 端口 |
+| 路径传 `~/...` 不生效 | 程序不自动展开 `~`，请用绝对路径 |
+
+## 已知限制
+
+1. **搜索覆盖范围**：机票支持国内+国际；酒店/POI/语义搜索覆盖海外主流目的地与港澳台；**火车限境内 + 港澳直通**（如香港西九龙）。海外偏远田野点（如村级）无住宿供给时，Agent 会如实声明并给出"枢纽城市 + 当地学术接待"二段式方案，不虚构供给。
+2. **FlyAI 体验模式**：无正式 Key 时可正常搜索但价格脱敏（如 ¥5x）、结果受限。
+3. **方案体例**：当前输出为英美式八章体例；高校开题、国家社科活页体例尚未支持（规划中）。方案为草稿，投稿/开题前须人工核校——缺数据处如实标记"待核验"，不虚构参考文献。
+4. **Tier S 资产默认不在部署包内**：线上默认使用内置 Tier P 公开简版提示词/访谈库，功能完整但提示词为简版。
+5. **测试盲区（Roadmap 未完成项）**：流式输出（需 mock `Generation`）、以 fake flyai stub 跑通五阶段的端到端集成测试、钉钉同步的测试覆盖尚未建立。
+6. **单人 LLM 决策**：工具决策依赖宿主 LLM function calling（无关键词路由兜底），模型不可用时工具调用链路整体降级。
+7. **数据本地化**：项目数据仅存本地 `~/.fieldwork_agent/`，无多用户/鉴权体系；公网部署须自行配合 `FIELDWORK_APP_TOKEN` 与防火墙策略。

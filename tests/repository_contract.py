@@ -1,27 +1,31 @@
 """L2 repository 契约套件 — 每个 ``ProjectRepository`` 实现都必须全绿（spec §5.1）。
 
 用法：具体实现的测试文件 ``from repository_contract import TestContract, repo,
-repo_factory`` 即继承全部用例；Plan 5 把 ``make_sqlite_repo`` 追加进
-``REPO_FACTORIES`` 就变成 Json/Sqlite 双跑，**本文件零改动**。
+repo_factory`` 即继承全部用例；``REPO_FACTORIES`` 已双跑 Json/Sqlite，
+新增实现只需追加一个工厂。
 
 实现中立纪律：
-- 用例只经 Protocol 方法访问被测实现；唯一例外是 64KB 截断用例需要直读落盘文件，
-  借用实现自带的 ``root`` 属性（视为实现细节，不得在其他用例出现）；
-- 落盘布局、文件名、编码方式等 Json 专属假设一律留在 ``tests/test_json_repo.py``。
+- 全部用例仅经 Protocol 方法访问被测实现（64KB 截断经 ``get_cached_search``
+  断言，不直读落盘）；
+- 落盘布局、文件名、编码方式等实现专属假设一律留在 ``tests/test_json_repo.py``
+  与 ``tests/test_sqlite_repo.py``。
 """
-
-import json
 
 import pytest
 from fieldwork_agent.kernel.guidance.phases import PHASES
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
 
 
 def make_json_repo(tmp_path):
     return JsonRepository(projects_dir=tmp_path / "projects")
 
 
-REPO_FACTORIES = [make_json_repo]
+def make_sqlite_repo(tmp_path):
+    return SqliteRepository(db_path=tmp_path / "fieldwork.db")
+
+
+REPO_FACTORIES = [make_json_repo, make_sqlite_repo]
 
 
 @pytest.fixture(params=REPO_FACTORIES)
@@ -129,7 +133,7 @@ class TestContract:
 
     def test_cache_roundtrip(self, repo):
         cid = repo.cache_search("p1", "大理住宿", "search_hotel", {"items": [1, 2]})
-        full = repo.get_cached_search(cid)
+        full = repo.get_cached_search("p1", cid)
         assert full["query"] == "大理住宿"
         assert full["tool"] == "search_hotel"
         assert full["result"] == {"items": [1, 2]}
@@ -137,17 +141,22 @@ class TestContract:
         assert repo.list_cached_searches("p1")[0]["query"] == "大理住宿"
 
     def test_unknown_cache_id_returns_none(self, repo):
-        assert repo.get_cached_search("no_such_id") is None
+        assert repo.get_cached_search("p1", "no_such_id") is None
+
+    def test_r01_cache_scoped_to_own_project(self, repo, repo_factory, tmp_path):
+        """审计二 R01：快照读取收窄到项目域，跨项目 id 不可见。"""
+        other = repo_factory(tmp_path)
+        other.create("p2")
+        cid = other.cache_search("p2", "秘密查询", "search_hotel", {"items": [1]})
+        assert other.get_cached_search("p2", cid)["query"] == "秘密查询"
+        assert repo.get_cached_search("p1", cid) is None
 
     def test_cache_truncated_64kb(self, repo):
         big = {"blob": "x" * 100_000}
         cid = repo.cache_search("p1", "q", "search_ai", big)
-        stored = json.loads(
-            (repo.root / "p1" / "search_cache" / f"{cid}.json").read_text(encoding="utf-8")
-        )
-        # 超限后 result 被整体替换为截断标记（Interfaces / Step 3 / 全局约束三处一致）
-        assert stored["result"]["truncated"] is True
-        assert len(stored["result"]["preview"]) <= 64 * 1024
+        stored = repo.get_cached_search("p1", cid)["result"]   # 经 Protocol，不直读落盘
+        assert stored["truncated"] is True
+        assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
     # ---------------------------------------------------------------- 知识库
 
@@ -194,16 +203,16 @@ class TestContract:
         assert repo.confirm_field_site("p1", sid) is True
         repo.update_research_context("p1", {"budget": "2万"})
         repo.save_proposal("p1", "# 方案", version="final")
-        repo.confirm_proposal("p1")
-        assert repo.is_proposal_confirmation_stale("p1") is False
         doc_id = repo.get_latest_proposal("p1")["id"]
+        repo.confirm_proposal("p1", doc_id)
+        assert repo.is_proposal_confirmation_stale("p1") is False
         assert repo.get_proposal_by_id("p1", doc_id)["content"] == "# 方案"
         repo.update_research_context("p1", {"budget": "5万"})
         assert repo.is_proposal_confirmation_stale("p1") is True
 
     def test_confirmation_stale_after_new_proposal(self, repo):
         repo.save_proposal("p1", "# 方案", version="final")
-        repo.confirm_proposal("p1")
+        repo.confirm_proposal("p1", repo.get_latest_proposal("p1")["id"])
         assert repo.is_proposal_confirmation_stale("p1") is False
         repo.save_proposal("p1", "# 方案 v2", version="final")
         assert repo.is_proposal_confirmation_stale("p1") is True

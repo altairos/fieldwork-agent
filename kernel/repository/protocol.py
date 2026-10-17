@@ -91,11 +91,11 @@ class ProjectRepository(Protocol):
         """缓存索引（不含 ``result``）：``{"id", "query", "tool", "cached_at"}``。"""
         ...
 
-    def get_cached_search(self, cid: str) -> dict | None:
-        """按 id 取完整缓存（含 ``result``）；不存在返回 ``None``。
+    def get_cached_search(self, pid: str, cid: str) -> dict | None:
+        """按项目域取完整缓存（含 ``result``）；不存在或跨项目返回 ``None``。
 
-        签名不带 ``pid``（与旧 ``get_search_result_by_id`` 一致），故 id 必须
-        全局唯一，实现据此跨项目定位。
+        审计二 R01：cid 过白名单（guard.CACHE_ID_RE）后只在 ``pid`` 的
+        search_cache 内定位，绝不做跨项目 glob。
         """
         ...
 
@@ -150,9 +150,12 @@ class ProjectRepository(Protocol):
         """按记录 id 把田野点置为已确认；未知 id 返回 ``False``，已确认幂等返回 ``True``。"""
         ...
 
-    def confirm_proposal(self, pid: str, subject: str = "") -> dict:
-        """落一条 ``ConfirmationRecord``（关键输入字段当前值哈希）并置
-        ``proposal_confirmed=True``；返回 ``model_dump(mode="json")`` 的记录副本。"""
+    def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
+        """审计二 R09：确认**指定**文档（``doc_id`` 空则取最新一份）。四重校验
+        （不存在 ``not_found`` / 非 proposal ``wrong_kind`` / 缺指纹
+        ``dep_hash_missing`` / 指纹不一致 ``dep_hash_mismatch``）raise
+        ``ProposalConfirmError``；通过则落 ``ConfirmationRecord``（含 ``dep_hash``）
+        并置 ``proposal_confirmed=True``。"""
         ...
 
     def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
@@ -161,6 +164,7 @@ class ProjectRepository(Protocol):
         ...
 
     def is_proposal_confirmation_stale(self, pid: str) -> bool:
-        """最近一次方案确认的输入哈希与当前关键输入不一致，或确认后产生了新文档
-        （``subject`` 不再是最新提案 id）→ ``True``；无确认记录返回 ``False``。"""
+        """最近一次方案确认的五路依赖指纹与当前不一致，或确认后产生了新
+        ``kind=proposal`` 文档（``subject`` 不再是最新 proposal id）→ ``True``；
+        新增 ``interview_guide`` 不影响；无确认记录返回 ``False``。"""
         ...
