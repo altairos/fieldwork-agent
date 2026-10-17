@@ -157,3 +157,81 @@ async def test_unknown_turn_404(client):
     # 审计 F01 接线后 turn_id 先过格式守卫（400），未知回合须用合法格式探测 404
     r = await client.get("/projects/p1/turns/decafbad01234567/events")
     assert r.status_code == 404
+
+
+# ------------------------------------------------ 套餐端点（X-DashScope-Plan）
+# 套餐 Key（sk-sp-）与通用端点不互通（401）；页面/服务端各自可声明套餐类型，
+# 白名单映射到专属 OpenAI 兼容端点。
+
+
+async def test_turn_dashscope_plan_header_selects_endpoint(app, monkeypatch):
+    """X-DashScope-Plan: coding → 回合级 LLMClient 用 Coding 套餐白名单端点。"""
+    import fieldwork_agent.kernel.llm as llm_mod
+
+    app.state.llm = None
+    built: list[dict] = []
+
+    def fake_client(api_key, models, base_url=None):
+        built.append({"api_key": api_key, "models": models, "base_url": base_url})
+        return FakeLLM()
+
+    # turns._build_llm 延迟 import llm 模块属性，monkeypatch 模块级 LLMClient 即生效
+    monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        r = await c.post("/projects/p1/messages", json={"text": "hi"},
+                         headers={"X-DashScope-Key": "sk-sp-x",
+                                  "X-DashScope-Plan": "coding"})
+        assert r.status_code == 201
+    assert built == [{"api_key": "sk-sp-x", "models": app.state.config.llm_models,
+                      "base_url": "https://coding.dashscope.aliyuncs.com/v1"}]
+
+
+async def test_turn_unknown_plan_rejected_to_default(app, monkeypatch):
+    """未知 plan（含任意 URL）→ base_url None：白名单拒绝，走 SDK 原生端点。"""
+    import fieldwork_agent.kernel.llm as llm_mod
+
+    app.state.llm = None
+    built: list[dict] = []
+
+    def fake_client(api_key, models, base_url=None):
+        built.append({"base_url": base_url})
+        return FakeLLM()
+
+    monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        r = await c.post("/projects/p1/messages", json={"text": "hi"},
+                         headers={"X-DashScope-Key": "sk-sp-x",
+                                  "X-DashScope-Plan": "https://evil.example.com/v1"})
+        assert r.status_code == 201
+    assert built == [{"base_url": None}]
+
+
+def test_init_deps_singleton_uses_config_plan(tmp_path, monkeypatch):
+    """init_deps：Config.dashscope_plan（FA_DASHSCOPE_PLAN）→ 启动单例 base_url。"""
+    from types import SimpleNamespace
+
+    import fieldwork_agent.kernel.llm as llm_mod
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.web_host.app import create_app
+    from fieldwork_agent.web_host.deps import init_deps
+
+    created: dict = {}
+
+    def fake_client(api_key, models, base_url=None):
+        created.update(api_key=api_key, models=models, base_url=base_url)
+
+    monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
+    cfg = SimpleNamespace(
+        dashscope_available=True, dashscope_api_key="sk-sp-x",
+        llm_models={"interview": "q"}, projects_dir=tmp_path,
+        flyai_api_key="", dashscope_plan="token",
+    )
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    app = create_app(config=None, repo=repo)
+    init_deps(app, config=cfg, repo=repo)
+    assert created == {
+        "api_key": "sk-sp-x", "models": {"interview": "q"},
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    }

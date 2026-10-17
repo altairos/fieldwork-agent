@@ -26,6 +26,8 @@ class CreateTurnRequest(BaseModel):
 # 页面 key 请求头（首页「API 密钥」卡存 localStorage，rest.ts 统一注入）
 DASHSCOPE_HEADER = "X-DashScope-Key"
 FLYAI_HEADER = "X-FlyAI-Key"
+# 套餐类型（coding/token）：套餐 Key（sk-sp-）配专属 OpenAI 兼容端点，白名单映射
+DASHSCOPE_PLAN_HEADER = "X-DashScope-Plan"
 
 
 def _header(request: Request, name: str) -> str:
@@ -34,9 +36,10 @@ def _header(request: Request, name: str) -> str:
 
 def _build_llm(api_key: str, request: Request):
     """按页面 key 构建回合级 LLMClient（模块级工厂，测试可 monkeypatch）。"""
-    from fieldwork_agent.kernel.llm import LLMClient
+    from fieldwork_agent.kernel.llm import LLMClient, plan_base_url
 
-    return LLMClient(api_key, request.app.state.config.llm_models)
+    base_url = plan_base_url(_header(request, DASHSCOPE_PLAN_HEADER))
+    return LLMClient(api_key, request.app.state.config.llm_models, base_url)
 
 
 def _resolve_clients(request: Request):

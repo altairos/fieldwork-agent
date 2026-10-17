@@ -18,10 +18,12 @@ def init_deps(app, *, config=None, repo=None) -> None:
     app.state.turn_manager = TurnManager(root=cfg.projects_dir)
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
-        from fieldwork_agent.kernel.llm import LLMClient
+        from fieldwork_agent.kernel.llm import LLMClient, plan_base_url
 
         try:
-            app.state.llm = LLMClient(cfg.dashscope_api_key, cfg.llm_models)
+            app.state.llm = LLMClient(
+                cfg.dashscope_api_key, cfg.llm_models,
+                base_url=plan_base_url(getattr(cfg, "dashscope_plan", "")))
         except RuntimeError:
             pass
     # R4：进程重启后遗留 running → interrupted
