@@ -298,26 +298,33 @@ export function FieldSitesPanel() {
     sites.push({ id: "", name, confirmed: false, profile: hit.data, liveOnly: true, degraded: hit.degraded });
   }
 
+  // R06b 提示条（含重试）：空站点与列表两个返回分支共用——
+  // 空态不能吞掉提示（终审 Minor #1：项目刚建尚无田野点、回合后回读失败时仍需可见可重试）。
+  const refreshBanner = refreshError && (
+    <div className="flex items-center justify-between gap-2 text-[11px] text-ochre mb-2">
+      <span>{refreshError}</span>
+      <button type="button" onClick={retryRefresh} disabled={retrying}
+              className="underline disabled:opacity-50">重试</button>
+    </div>
+  );
+
   if (sites.length === 0) {
     return (
-      <EmptyState
-        icon={<IconPin className="w-4 h-4" />}
-        title="尚无田野点"
-        hint="在中栏说明目标地点与出发城市，罗盘会做四维画像并在此投影"
-      />
+      <div>
+        {refreshBanner}
+        <EmptyState
+          icon={<IconPin className="w-4 h-4" />}
+          title="尚无田野点"
+          hint="在中栏说明目标地点与出发城市，罗盘会做四维画像并在此投影"
+        />
+      </div>
     );
   }
 
   return (
     <div>
       <div className="font-serif text-[15px] font-semibold mb-3">{`田野点 · ${sites.length}`}</div>
-      {refreshError && (
-        <div className="flex items-center justify-between gap-2 text-[11px] text-ochre mb-2">
-          <span>{refreshError}</span>
-          <button type="button" onClick={retryRefresh} disabled={retrying}
-                  className="underline disabled:opacity-50">重试</button>
-        </div>
-      )}
+      {refreshBanner}
       {confirmError && <div className="text-[11px] text-ochre mb-2">{confirmError}</div>}
       {sites.map((site, i) => (
         <SiteBlock key={`${site.name}-${i}`} site={site}

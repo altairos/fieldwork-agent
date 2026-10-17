@@ -168,4 +168,16 @@ describe("FieldSitesPanel — R06b 回读失败提示与重试", () => {
     expect(screen.getByText(MSG)).toBeInTheDocument();
     expect(screen.getByText("重试")).toBeInTheDocument();
   });
+
+  test("项目无田野点 + refreshError → 空态下提示条仍可见且重试可点（终审 Minor #1）", async () => {
+    useProjectStore.getState().loadSnapshot({ ...SNAP, field_sites: [] });
+    useProjectStore.getState().setRefreshError(MSG);
+    const calls = stubFetchSeq([{ body: { ...SNAP, field_sites: [] } }]);
+    render(<FieldSitesPanel />);
+    expect(screen.getByText("尚无田野点")).toBeInTheDocument();   // 空态本体照常渲染
+    expect(screen.getByText(MSG)).toBeInTheDocument();           // 提示条不被空态早返回吞掉
+    fireEvent.click(screen.getByText("重试"));                    // 重试入口可点
+    await waitFor(() => expect(calls[0]?.url).toBe("/projects/p1"));
+    await waitFor(() => expect(useProjectStore.getState().refreshError).toBeNull());
+  });
 });
