@@ -427,6 +427,36 @@ def test_itinerary_quotes_bound_to_live_snapshots(env):
     assert old and all(c["id"] != stay_cid for c in old)
 
 
+
+# ------------------------------------------- D6 规格键字典精确匹配（audit3 终审）
+
+
+def test_resolve_live_refs_matches_keys_with_fullwidth_parens():
+    r"""D6：含全角括号/空白的目的地名键不再被正则静默漏配——逐键精确子串替换。
+
+    旧正则 ``@live:[A-Za-z_]+:[^\s（）()]+`` 在「杭州（余杭）」的全角括号处截断，
+    键永不匹配 → 原键残留；字典精确匹配后键体可为任意字符。
+    """
+    from fieldwork_agent.web_host.agent.loop import _resolve_live_refs
+    live_refs = {"@live:search_hotels:杭州（余杭）|2026-11-01|2026-11-03":
+                 "flyai 快照 c9（2026-10-18 查询）"}
+    data = {"budget": {"items": [
+        {"source_ref": "@live:search_hotels:杭州（余杭）|2026-11-01|2026-11-03"}]}}
+    out = _resolve_live_refs(data, live_refs)
+    assert out["budget"]["items"][0]["source_ref"] == "flyai 快照 c9（2026-10-18 查询）"
+    assert "@live:" not in json.dumps(out, ensure_ascii=False)
+
+
+def test_resolve_live_refs_longest_key_first_avoids_prefix_truncation():
+    """D6：hotel_types 尾段键是其裸键前缀——按键长降序替换，长键胜出无截断。"""
+    from fieldwork_agent.web_host.agent.loop import _resolve_live_refs
+    live_refs = {"@live:search_hotels:大理|d1|d2": "ref-bare",
+                 "@live:search_hotels:大理|d1|d2|民宿,客栈": "ref-guesthouse"}
+    key = "@live:search_hotels:大理|d1|d2|民宿,客栈"
+    out = _resolve_live_refs({"ref": key}, live_refs)
+    assert out["ref"] == "ref-guesthouse"          # 长键先替换，未被裸键前缀截断
+
+
 # ------------------------------------------- 时窗回写（spec §5.3，final-review Fix-2）
 
 

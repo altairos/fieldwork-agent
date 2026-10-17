@@ -1,7 +1,6 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
 import asyncio
 import json
-import re
 import time
 from datetime import datetime
 from typing import Any
@@ -262,8 +261,6 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
     return (call_id, name, env)
 
 
-_LIVE_REF_RE = re.compile(r"@live:[A-Za-z_]+:[^\s（）()]+")
-
 
 def _live_key(method: str, kwargs: dict) -> str:
     """从 recorder 捕获的调用参数生成规格键——与 kernel 侧 live_*_ref 逐字符一致。"""
@@ -286,13 +283,20 @@ def _live_key(method: str, kwargs: dict) -> str:
 
 
 def _resolve_live_refs(obj, live_refs: dict[str, str]):
-    """递归把 obj 中的 @live: 规格键替换为真实快照引用（无匹配则原样保留）。"""
+    """递归把 obj 中的 @live: 规格键替换为真实快照引用（无匹配则原样保留）。
+
+    字典精确匹配（D6）：键体可为任意字符（含全角括号/空白地名），
+    逐键子串替换；按键长降序避免前缀键截断（如 hotel_types 尾段键是其裸键前缀）。
+    """
     if isinstance(obj, dict):
         return {k: _resolve_live_refs(v, live_refs) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_resolve_live_refs(v, live_refs) for v in obj]
     if isinstance(obj, str):
-        return _LIVE_REF_RE.sub(lambda m: live_refs.get(m.group(0), m.group(0)), obj)
+        for key in sorted(live_refs, key=len, reverse=True):
+            if key in obj:
+                obj = obj.replace(key, live_refs[key])
+        return obj
     return obj
 
 
