@@ -111,6 +111,27 @@ describe("conversation store failTurn（回合创建被拒时回滚乐观 UI）"
   });
 });
 
+describe("conversation store hydrate（刷新回填）", () => {
+  test("hydrate 覆盖 messages 且不动流式状态", () => {
+    useConversationStore.getState().hydrate([
+      { role: "user", content: "你好" },
+      { role: "assistant", content: "收到" },
+    ]);
+    const s = useConversationStore.getState();
+    expect(s.messages).toEqual([
+      { role: "user", content: "你好" },
+      { role: "assistant", content: "收到" },
+    ]);
+    expect(s.turnRunning).toBe(false);
+    expect(s.streamBuffer).toBe("");
+  });
+  test("reset 清空回填史（跨项目不串台）", () => {
+    useConversationStore.getState().hydrate([{ role: "user", content: "x" }]);
+    useConversationStore.getState().reset();
+    expect(useConversationStore.getState().messages).toEqual([]);
+  });
+});
+
 describe("project + ui 阶段推进(右栏不自动切)", () => {
   test("phase_transition 改 phase，ui.activeTab 不变，pendingSuggestion 置位", () => {
     useUiStore.getState().setActiveTab("progress");

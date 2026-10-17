@@ -159,6 +159,29 @@ async def test_unknown_turn_404(client):
     assert r.status_code == 404
 
 
+# ------------------------------------------------ 消息史恢复（刷新回填）
+
+
+async def test_list_messages_restores_history(client):
+    """GET /projects/{pid}/messages：按时间序回 role/content，供前端刷新后回填对话窗。
+
+    只回 role/content（钉死契约）：ts/metadata 是内核内部细节，不进 API 面。
+    """
+    await client.post("/projects/p1/messages", json={"text": "你好"})
+    await asyncio.sleep(0.5)  # 等后台回合完成（assistant 消息落盘）
+    m = await client.get("/projects/p1/messages")
+    assert m.status_code == 200
+    assert m.json() == [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "收到"},
+    ]
+
+
+async def test_list_messages_unknown_project_404(client):
+    r = await client.get("/projects/ghost/messages")
+    assert r.status_code == 404
+
+
 # ------------------------------------------------ 套餐端点（X-DashScope-Plan）
 # 套餐 Key（sk-sp-）与通用端点不互通（401）；页面/服务端各自可声明套餐类型，
 # 白名单映射到专属 OpenAI 兼容端点。

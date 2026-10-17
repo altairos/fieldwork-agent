@@ -70,6 +70,22 @@ def _resolve_clients(request: Request):
     return llm, flyai
 
 
+@router.get("/projects/{project_id}/messages")
+async def list_messages(project_id: str, request: Request):
+    """消息史恢复（刷新回填）：按时间序回 role/content 全量史。
+
+    只回 role/content（ts/metadata 是内核内部细节，不进 API 面）；
+    ``limit=0`` 走 repo 语义取全量。
+    """
+    repo = get_repo(request)
+    checked_project_id(project_id, repo)
+    try:
+        messages = repo.get_messages(project_id, limit=0)
+    except KeyError:
+        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    return [{"role": m["role"], "content": m["content"]} for m in messages]
+
+
 @router.post("/projects/{project_id}/messages", status_code=201)
 async def create_turn(project_id: str, body: CreateTurnRequest,
                       request: Request, background: BackgroundTasks):

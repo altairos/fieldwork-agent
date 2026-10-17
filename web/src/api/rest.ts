@@ -71,6 +71,8 @@ export const rest = {
     req<{ project_id: string; phase: string }>("/projects", { method: "POST", body: JSON.stringify(body) }),
   listProjects: () => req<ProjectSummary[]>("/projects"),
   getProject: (id: string) => req<ProjectSnapshot>(`/projects/${id}`),
+  getMessages: (id: string) =>
+    req<{ role: "user" | "assistant"; content: string }[]>(`/projects/${id}/messages`),
   createTurn: (id: string, text: string, idempotencyKey?: string) =>
     req<CreateTurnResponse>(`/projects/${id}/messages`,
       { method: "POST", body: JSON.stringify({ text, idempotency_key: idempotencyKey }) }),

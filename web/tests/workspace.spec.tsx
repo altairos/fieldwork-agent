@@ -30,12 +30,16 @@ const SNAP: ProjectSnapshot = {
   phase_history: [],
 };
 
-/** 桩 fetch：按 URL 分发最小 Response（/settings/status → 已配置；其余 → rest payload）。 */
-function stubFetch(opts: { rest: unknown; restOk?: boolean; settings?: unknown }) {
+/** 桩 fetch：按 URL 分发最小 Response（/settings/status → 已配置；/messages → 对话史；其余 → rest payload）。 */
+function stubFetch(opts: { rest: unknown; restOk?: boolean; settings?: unknown; messages?: unknown }) {
   const fn = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/settings/status") {
       const p = opts.settings ?? { dashscope_configured: true, flyai_configured: true };
+      return { ok: true, status: 200, json: async () => p, text: async () => String(p) };
+    }
+    if (url === "/projects/p1/messages") {
+      const p = opts.messages ?? [];
       return { ok: true, status: 200, json: async () => p, text: async () => String(p) };
     }
     const ok = opts.restOk ?? true;
@@ -83,6 +87,20 @@ describe("Workspace 接线（App.tsx）", () => {
     expect(await screen.findByText(/项目快照加载失败/)).toBeInTheDocument();
     expect(screen.getByText(/snapshot_failed/)).toBeInTheDocument();
     expect(useProjectStore.getState().snapshot).toBeNull();
+  });
+
+  test("挂载即回填对话史（刷新恢复）：历史消息上屏，空态消失", async () => {
+    const fn = stubFetch({ rest: SNAP, messages: [
+      { role: "user", content: "帮我定位选题" },
+      { role: "assistant", content: "已收到，先聊研究动机" },
+    ] });
+    render(<App />);
+
+    // 历史消息经 hydrate 上屏；「尚无对话」空态不再出现（刷新丢史回归钉）
+    expect(await screen.findByText("帮我定位选题")).toBeInTheDocument();
+    expect(screen.getByText("已收到，先聊研究动机")).toBeInTheDocument();
+    expect(screen.queryByText(/尚无对话/)).not.toBeInTheDocument();
+    expect(fn.mock.calls.map((c) => c[0])).toContain("/projects/p1/messages");
   });
 });
 

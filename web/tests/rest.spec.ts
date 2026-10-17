@@ -66,6 +66,14 @@ describe("rest 状态修正/确认/by-id 方法", () => {
       .toBe("研究输入已变化：请重新生成方案");
     expect(apiDetail(new ApiError(500, "Internal Error"))).toBeNull();
   });
+
+  it("getMessages 发 GET /projects/{id}/messages（刷新回填）", async () => {
+    // stubFetch 的 resps[0] 即 json() 返回体：本端点返回消息数组，需双层嵌套
+    const calls = stubFetch([[{ role: "user", content: "你好" }]]);
+    const r = await rest.getMessages("p1");
+    expect(calls[0].url).toBe("/projects/p1/messages");
+    expect(r).toEqual([{ role: "user", content: "你好" }]);
+  });
 });
 
 describe("types: 快照确认状态与记录 id", () => {

@@ -95,6 +95,22 @@ function Workspace() {
           hint: "请刷新重试",
         });
       });
+    // 对话史回填（刷新恢复）：与快照并列拉取互不阻塞；reset effect 先于本 effect
+    // 声明执行，hydrate 一定落在清空之后。失败如实上屏，不静默留"尚无对话"假象。
+    rest
+      .getMessages(projectId)
+      .then((msgs) => {
+        if (alive) useConversationStore.getState().hydrate(msgs);
+      })
+      .catch((err: unknown) => {
+        if (!alive) return;
+        useUiStore.getState().applyEvent({
+          event: "error",
+          code: "history_failed",
+          message: `对话历史加载失败：${String(err)}`,
+          hint: "请刷新重试",
+        });
+      });
     return () => {
       alive = false;
     };
