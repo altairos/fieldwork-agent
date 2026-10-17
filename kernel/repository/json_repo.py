@@ -44,9 +44,21 @@ def _now() -> str:
     return datetime.now().isoformat()
 
 
-def _new_id(prefix: str) -> str:
-    """时间戳前缀保证可排序，随机后缀防同秒碰撞（读取已按项目域收窄，审计二 R01）。"""
-    return f"{prefix}_{datetime.now():%Y%m%d%H%M%S}_{uuid.uuid4().hex[:8]}"
+def _new_id(prefix: str, directory: Path | None = None) -> str:
+    """时间戳前缀 + 同秒序号保证可排序且单调，随机尾仅防同秒碰撞（读取已按
+    项目域收窄，审计二 R01）。
+
+    文件名即 id 的调用方（knowledge / search_cache）传 directory：序号取该
+    目录同秒已有文件数，文件名字典序 == 保存顺序——时钟分辨率不足
+    （Windows ~15.6ms）时同秒条目不退化为随机 uid 字典序（否则确认指纹
+    第四/五路随之随机抖动）。存 state 列表的调用方（site / inf）顺序由
+    append 保证，传 None。
+    """
+    stamp = f"{datetime.now():%Y%m%d%H%M%S}"
+    if directory is None:
+        return f"{prefix}_{stamp}_{uuid.uuid4().hex[:8]}"
+    seq = sum(1 for _ in directory.glob(f"{prefix}_{stamp}_*.json"))
+    return f"{prefix}_{stamp}_{seq:04x}{uuid.uuid4().hex[:4]}"
 
 
 def _default_state(project_id: str) -> dict:
@@ -298,7 +310,7 @@ class JsonRepository:
 
     def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
         self._require(pid)
-        cid = _new_id("srch")
+        cid = _new_id("srch", self._cache_dir(pid))
         cached_at = _now()
         serialized = json.dumps(result, ensure_ascii=False)
         payload = {"id": cid, "query": query, "tool": tool, "cached_at": cached_at}
@@ -369,7 +381,7 @@ class JsonRepository:
     ) -> str:
         self._require(pid)
         entry = {
-            "id": _new_id("know"),
+            "id": _new_id("know", self._knowledge_dir(pid)),
             "title": title,
             "content": content,
             "source": source,

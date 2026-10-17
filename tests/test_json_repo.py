@@ -435,3 +435,44 @@ def test_proposal_latest_stable_within_same_wallclock_tick(json_repo, monkeypatc
     docs = json_repo.list_proposals("p1")
     assert [d["content"] for d in docs] == ["v1", "v2"]
     assert json_repo.get_latest_proposal("p1")["content"] == "v2"
+
+
+def _freeze_same_tick(monkeypatch):
+    """把壁钟钉死在同一 tick：_new_id 的时间戳前缀与 _now() 全部固定，且
+    后保存者的 uid 字典序更小（旧实现的文件名排序必把后保存的排到前面）。"""
+    from datetime import datetime as real_datetime
+
+    import fieldwork_agent.kernel.repository.json_repo as jr
+
+    class FrozenDatetime:
+        @staticmethod
+        def now():
+            return real_datetime(2026, 10, 17, 12, 0, 0)
+
+    monkeypatch.setattr(jr, "datetime", FrozenDatetime)
+    monkeypatch.setattr(jr, "_now", lambda: "2026-10-17T12:00:00.123456")
+    uids = iter(["ffffffff", "00000000"])
+    monkeypatch.setattr(
+        jr.uuid, "uuid4", lambda: SimpleNamespace(hex=next(uids) + "0" * 24)
+    )
+
+
+def test_knowledge_order_stable_within_same_wallclock_tick(json_repo, monkeypatch):
+    """同一壁钟 tick 内连续入库的两条知识（Windows 时钟分辨率 ~15.6ms），
+    list_knowledge 顺序必须稳定为保存顺序：文件名字典序不得退化为随机 uid
+    ——它同时是确认指纹第四路（compute_confirm_hash 对列表顺序敏感）。"""
+    _freeze_same_tick(monkeypatch)
+    json_repo.add_knowledge("p1", "t1", "c1")
+    json_repo.add_knowledge("p1", "t2", "c2")
+    assert [e["title"] for e in json_repo.list_knowledge("p1")] == ["t1", "t2"]
+
+
+def test_latest_itinerary_cid_stable_within_same_wallclock_tick(json_repo, monkeypatch):
+    """同一壁钟 tick 内连续两次 compose_itinerary 缓存，_latest_itinerary_cid
+    必须取到后一次：它喂给确认指纹第五路，同 tick 判定随机会让 dep_hash
+    无故翻转（confirm_proposal / is_proposal_confirmation_stale 随机失效）。"""
+    _freeze_same_tick(monkeypatch)
+    cid1 = json_repo.cache_search("p1", "行程", "compose_itinerary", {"day": 1})
+    cid2 = json_repo.cache_search("p1", "行程", "compose_itinerary", {"day": 2})
+    assert [c["id"] for c in json_repo.list_cached_searches("p1")] == [cid1, cid2]
+    assert json_repo._latest_itinerary_cid("p1") == cid2
