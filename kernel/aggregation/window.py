@@ -146,10 +146,13 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
         festival_score = min(30.0, 15.0 * len(hits))
         f_min = min(f_vals) if f_vals else None
         h_min = min(h_vals) if h_vals else None
-        est = ((f_min * 2 if f_min is not None else 0.0)
-               + (h_min * nights if h_min is not None else 0.0)
-               + meal_daily * duration_days)
-        r = est / budget_total if budget_total > 0 else None
+        uncovered = [n for n, v in (("flight", f_min), ("hotel", h_min)) if v is None]
+        coverage = "partial" if uncovered else "full"
+        estimate_known = ((f_min * 2 if f_min is not None else 0.0)
+                          + (h_min * nights if h_min is not None else 0.0)
+                          + meal_daily * duration_days)
+        est = None if uncovered else estimate_known
+        r = est / budget_total if est is not None and budget_total > 0 else None
         budget_score = max(0.0, 30.0 * (1 - r)) if r is not None else 0.0
         reasons: list[str] = []
         if price_score > 0 and avg_w is not None and avg_all:
@@ -158,6 +161,9 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
         if r is not None:
             verdict = "预算内" if r <= 1 else "超预算"
             reasons.append(f"{verdict}：估算 ¥{est:.0f} / 预算 ¥{budget_total:.0f}")
+        elif uncovered:
+            reasons.append(f"已知小计 ¥{estimate_known:.0f}"
+                           f"（缺 {'/'.join(uncovered)} 报价，预算可行性待核验）")
         windows.append(RecommendedWindow(
             start=w_start, end=w_end,
             score=round(price_score + festival_score + budget_score, 2),
@@ -166,7 +172,9 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
                       "festival_score": festival_score,
                       "budget_score": round(budget_score, 2),
                       "flight_min": f_min, "hotel_min": h_min,
-                      "estimate": round(est, 2),
+                      "coverage": coverage, "uncovered": uncovered,
+                      "estimate": round(est, 2) if est is not None else None,
+                      "estimate_known": round(estimate_known, 2),
                       "festivals": [f.name for f in hits]},
         ))
         cur += timedelta(days=sample_step)
@@ -290,15 +298,18 @@ def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
     if widened:
         degraded.append(f"区间采样点超 {MAX_SAMPLES}，步进自动放大")
     top = windows[:3]
-    best_est = top[0].evidence.get("estimate") if top else None
+    best = top[0] if top else None
+    best_est = best.evidence.get("estimate") if best else None
+    if best is not None and best.evidence.get("uncovered"):
+        degraded.append(f"最优窗口缺 {'/'.join(best.evidence['uncovered'])} 报价，预算可行性待核验")
     analysis = WindowAnalysis(
         windows=top,
         price_curve=curve,
         festivals=festivals,
-        budget_feasible=bool(best_est is not None and best_est <= budget_total),
+        budget_feasible=bool(best_est <= budget_total) if best_est is not None else None,
         degraded="；".join(degraded) or None,
     )
-    return Envelope(ok=True, data=analysis)
+    return Envelope(ok=True, data=analysis, degraded=analysis.degraded)
 
 
 register(CapabilityMeta(

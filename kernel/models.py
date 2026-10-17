@@ -197,7 +197,7 @@ class WindowAnalysis(BaseModel):
     windows: list[RecommendedWindow] = Field(default_factory=list)  # 按 score 降序，≤3
     price_curve: PriceCurve = PriceCurve()
     festivals: list[FestivalInfo] = Field(default_factory=list)     # 可为空（抽取降级）
-    budget_feasible: bool = False       # 最优窗口预算是否可行
+    budget_feasible: bool | None = None       # 最优窗口预算是否可行
     degraded: str | None = None         # 体验模式/节庆降级/部分采样失败说明
 
 
