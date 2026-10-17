@@ -134,22 +134,15 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 """
 
 # v1 → v2 增量（审计二 R02）：存量行由 DEFAULT 值补齐，不改任何既有语义。
-_MIGRATE_V1_TO_V2 = """
-ALTER TABLE projects ADD COLUMN proposal_confirmed INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT '';
-CREATE TABLE IF NOT EXISTS confirmations (
-    id           TEXT NOT NULL,
-    project_id   TEXT NOT NULL,
-    kind         TEXT NOT NULL DEFAULT '',
-    subject      TEXT NOT NULL DEFAULT '',
-    confirmed_at TEXT NOT NULL DEFAULT '',
-    inputs_hash  TEXT NOT NULL DEFAULT '',
-    dep_hash     TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (project_id, id),
-    FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_confirmations_project ON confirmations(project_id);
-"""
+# confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对 v1 库
+# 在版本分支之前即已建好），增量面只剩两列；执行见 _ensure_schema 的显式事务
+# （补列与 user_version 同生共死，防「列已加、版本未进」的半迁移库重开锁死）。
+_MIGRATE_V1_TO_V2_COLUMNS = (
+    ("projects", "proposal_confirmed",
+     "ALTER TABLE projects ADD COLUMN proposal_confirmed INTEGER NOT NULL DEFAULT 0"),
+    ("proposals", "dep_hash",
+     "ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''"),
+)
 
 
 def _now() -> str:
@@ -253,8 +246,24 @@ class SqliteRepository:
             if cur == 0:
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             elif cur < SCHEMA_VERSION:
-                conn.executescript(_MIGRATE_V1_TO_V2)
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                # 显式单事务包住「补列 + 版本推进」：executescript 逐语句隐式提交，
+                # 中途被杀留下「列已持久化、版本未推进」的半迁移库，重开即
+                # duplicate column 锁死（终审 T2-M1）。缺列才补 = 半迁移库幂等恢复。
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for table, column, stmt in _MIGRATE_V1_TO_V2_COLUMNS:
+                        cols = {r[1] for r in conn.execute(
+                            f"PRAGMA table_info({table})")}
+                        if column not in cols:
+                            conn.execute(stmt)
+                    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                    conn.execute("COMMIT")
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                    raise
 
     def _require(self, pid: str) -> None:
         with self._connect() as conn:

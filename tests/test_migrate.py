@@ -179,16 +179,36 @@ def test_migrate_force_overwrites_with_backup(tmp_path):
 
 
 def test_backup_rolling_three(tmp_path):
-    """滚动 3 份：bak.1 最新，旧的一岁岁后移，超出 keep 丢弃。"""
+    """滚动 3 份且方向正确：bak.1 最新（marker-1..3）、逐级后移、超出丢弃。
+
+    内容敏感断言：各次备份前追加一条 marker，三代快照内容必须互异——
+    滚动方向写反（bak.1 变最旧）时本用例必红（终审 T4-M1）。
+    """
     json_repo, sqlite = _legacy(tmp_path)          # json_repo 本用例不用，仅为建库副作用
     del json_repo
-    migrate_mod.backup(sqlite, keep=3)
-    migrate_mod.backup(sqlite, keep=3)
-    migrate_mod.backup(sqlite, keep=3)
-    migrate_mod.backup(sqlite, keep=3)
-    for i in (1, 2, 3):
-        assert (tmp_path / f"fieldwork.db.bak.{i}").exists()
+    sqlite.create("p1")
+    for n in (1, 2, 3):
+        sqlite.append_message("p1", "user", f"marker-{n}")
+        migrate_mod.backup(sqlite, keep=3)
+
+    def msgs(i: int) -> list[str]:
+        conn = sqlite3.connect(tmp_path / f"fieldwork.db.bak.{i}")
+        try:   # 显式关闭：with 只提交不关连接，句柄滞留会让第 4 轮滚动
+            rows = [r[0] for r in conn.execute(   # 的 os.replace 报 WinError 32
+                "SELECT content FROM messages")]
+        finally:
+            conn.close()
+        return rows
+
+    assert msgs(1) == ["marker-1", "marker-2", "marker-3"]   # bak.1 = 最新快照
+    assert msgs(2) == ["marker-1", "marker-2"]
+    assert msgs(3) == ["marker-1"]
+
+    migrate_mod.backup(sqlite, keep=3)              # 第 4 次：最旧一代被顶出，keep 上限
     assert not (tmp_path / "fieldwork.db.bak.4").exists()
+    assert msgs(1) == ["marker-1", "marker-2", "marker-3"]  # 快照内容不变
+    assert msgs(3) == ["marker-1", "marker-2"]              # 原 bak.2 后移
+    assert not (tmp_path / "fieldwork.db.bak.tmp").exists() # tmp 不残留（联动 T4-M2）
 
 
 def test_backup_returns_none_when_db_absent(tmp_path):

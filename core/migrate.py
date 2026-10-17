@@ -47,6 +47,8 @@ def backup(sqlite_repo: SqliteRepository, keep: int = 3) -> Path | None:
     用 sqlite3 Backup API（而非 `shutil.copy`）：WAL 模式下 `-wal`/`-shm` 旁文件
     不必一起搬，备份得到的是一个自洽、已合并 WAL 的库快照。
     库文件不存在（首次迁移）→ ``None``，调用方记 0 份备份。
+    备份先写 ``.bak.tmp``、成功后才滚动后原子入位 ``bak.1``：中途失败不留半成品，
+    且失败轮不老化既有备份链（滚动发生在备份成功之后）。
     """
     src = sqlite_repo.db_path
     if not src.exists():
@@ -55,19 +57,24 @@ def backup(sqlite_repo: SqliteRepository, keep: int = 3) -> Path | None:
     def slot(i: int) -> Path:
         return src.with_name(f"{src.name}.bak.{i}")
 
+    tmp = src.with_name(f"{src.name}.bak.tmp")
+    try:
+        source = sqlite3.connect(src)
+        target = sqlite3.connect(tmp)
+        try:
+            source.backup(target)
+        finally:   # 显式关闭：with 语句只提交不关连接，Windows 下句柄滞留会让
+            source.close()   # 后续 os.replace 报 WinError 32
+            target.close()
+    except Exception:
+        tmp.unlink(missing_ok=True)   # 半成品不落链（终审 T4-M2）
+        raise
     for i in range(keep - 1, 0, -1):
         older, newer = slot(i), slot(i + 1)
         if older.exists():
             os.replace(older, newer)
-    latest = slot(1)
-    source = sqlite3.connect(src)
-    target = sqlite3.connect(latest)
-    try:
-        source.backup(target)
-    finally:   # 显式关闭：with 语句只提交不关连接，Windows 下句柄滞留会让
-        source.close()   # 下一轮滚动的 os.replace 报 WinError 32
-        target.close()
-    return latest
+    os.replace(tmp, slot(1))          # 原子入位：bak.1 要么整份、要么没有
+    return slot(1)
 
 
 def _mark_project(sqlite_repo: SqliteRepository, pid: str) -> None:

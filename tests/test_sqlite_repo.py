@@ -325,6 +325,45 @@ def test_v1_db_upgrades_to_v2_in_place(tmp_path):
     assert repo.list_proposals("p1")[0]["content"] == "正文"
 
 
+def test_half_migrated_v1_db_reopens(tmp_path):
+    """半迁移库恢复（终审 T2-M1）：两列已加、user_version 仍=1（迁移中途被杀的
+    等价终态）——打开必须成功并补齐版本，而非 duplicate column 锁死。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(_V1_MIN)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','field_site_profiles','[]')")
+        conn.execute("ALTER TABLE projects ADD COLUMN proposal_confirmed"
+                     " INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''")
+    repo = SqliteRepository(db_path=db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert repo.get_phase("p1") == "field_site_profiles"
+
+
+def test_v1_to_v2_migration_atomic_on_failure(tmp_path, monkeypatch):
+    """增量迁移原子性（终审 T2-M1）：事务尾段失败 → 补列与版本推进一并不落盘。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(_V1_MIN)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','field_site_profiles','[]')")
+    from fieldwork_agent.kernel.repository import sqlite_repo as sr
+    poison = ("projects", "no_such_column", "SELECT boom")   # 同型三元组、语句必败
+    monkeypatch.setattr(sr, "_MIGRATE_V1_TO_V2_COLUMNS",
+                        sr._MIGRATE_V1_TO_V2_COLUMNS + (poison,))
+    with pytest.raises(sqlite3.OperationalError):
+        SqliteRepository(db_path=db)
+    with sqlite3.connect(db) as conn:
+        assert "dep_hash" not in {r[1] for r in conn.execute("PRAGMA table_info(proposals)")}
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    monkeypatch.undo()
+    assert SqliteRepository(db_path=db).get_phase("p1") == "field_site_profiles"
+
+
 def test_future_schema_version_rejected(tmp_path):
     """高版本库不得被低版本代码降级打开（R02 版本纪律）。"""
     db = tmp_path / "fieldwork.db"
