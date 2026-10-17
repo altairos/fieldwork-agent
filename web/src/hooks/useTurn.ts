@@ -3,6 +3,7 @@ import { rest, ApiError } from "../api/rest";
 import { streamTurnEvents } from "../api/sse";
 import { dispatchEvent } from "../lib/dispatch";
 import { useConversationStore } from "../stores/conversation";
+import { useProjectStore } from "../stores/project";
 import { useUiStore } from "../stores/ui";
 import type { EventEnvelope } from "../types/events";
 
@@ -54,6 +55,19 @@ export function useTurn(projectId: string) {
     // ── 第二步：订阅 SSE 事件流 ──
     // 此阶段消息已被后端接受，异常只如实上屏；绝不调 failTurn（会弹掉真实对话内容）。
     // 流内错误由 onError 回调处理（重连耗尽后），turnRunning 由 error/turn_done 事件与 onClose 负责。
+
+    // ── R06a：回合末回读项目快照 ──
+    // 工具产物（田野点画像等）轮末才落盘，流内事件不含持久化记录；首见 turn_done 后异步回读，
+    // 失败只置 refreshError 提示态，绝不向回合流抛错、不阻塞收尾。
+    const refreshSnapshot = async () => {
+      try {
+        useProjectStore.getState().loadSnapshot(await rest.getProject(projectId));
+        useProjectStore.getState().setRefreshError(null);
+      } catch {
+        useProjectStore.getState().setRefreshError("快照刷新失败，最新田野点/行程可能未显示");
+      }
+    };
+
     turnIdRef.current = turnId;
     seenRef.current = new Set();
     const ctrl = new AbortController();
@@ -62,7 +76,12 @@ export function useTurn(projectId: string) {
     try {
       await streamTurnEvents(projectId, turnId, {
         signal: ctrl.signal,
-        onEvent: (env: EventEnvelope) => { seenRef.current = dispatchEvent(env, seenRef.current); },
+        onEvent: (env: EventEnvelope) => {
+          // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
+          const prev = seenRef.current;
+          seenRef.current = dispatchEvent(env, seenRef.current);
+          if (env.event === "turn_done" && seenRef.current !== prev) void refreshSnapshot();
+        },
         onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
         onClose: () => { setBusy(false); },
       });
