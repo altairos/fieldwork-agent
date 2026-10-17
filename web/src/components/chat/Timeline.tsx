@@ -32,7 +32,7 @@ import { ToolActivityStrip } from "./ToolActivityStrip";
 const PHASE_EXAMPLES: Record<string, string[]> = {
   research_positioning: [
     "我想研究村落宗族组织的变迁，帮我定位学科与核心研究问题",
-    "时问窗 10 天、经费 2 万，这个选题的规模可行吗",
+    "时间窗 10 天、经费 2 万，这个选题的规模可行吗",
     "帮我梳理这个选题需要回答的三个关键问题",
   ],
   field_site_profiles: [
@@ -46,8 +46,8 @@ const PHASE_EXAMPLES: Record<string, string[]> = {
     "预算超了，帮我压缩住宿开销",
   ],
   proposal_generation: [
-    "基于当前行程生成八章研究方案",
-    "把访谈提纲并入方案第四章",
+    "基于当前行程生成八章方案草稿",
+    "把访谈提纲要点并入方法论章节",
   ],
 };
 export function Timeline() {

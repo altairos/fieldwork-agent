@@ -118,7 +118,7 @@ describe("PhaseBanner 尾文解锁条件提示", () => {
       to: "proposal_generation",
     });
     render(<PhaseBanner />);
-    expect(screen.getByText(/八章 Research Proposal/)).toBeInTheDocument();
+    expect(screen.getByText(/英美式八章方案草稿/)).toBeInTheDocument();
     expect(screen.queryByText(/解锁/)).not.toBeInTheDocument();
   });
 });

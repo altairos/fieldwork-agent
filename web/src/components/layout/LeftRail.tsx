@@ -32,7 +32,7 @@ export const DEFAULT_PHASES: PhaseItem[] = [
   { id: "research_positioning", letter: "A", label: "研究定位", desc: "学科·问题·规模·经费·时间窗", unlock: "田野点画像" },
   { id: "field_site_profiles", letter: "B", label: "田野点画像", desc: "交通·住宿·文化·配套四维", unlock: "行程规划" },
   { id: "itinerary_planning", letter: "C", label: "行程规划", desc: "节奏·缓冲·预算·备选路线", unlock: "方案生成" },
-  { id: "proposal_generation", letter: "D", label: "方案生成", desc: "八章 Research Proposal" },
+  { id: "proposal_generation", letter: "D", label: "方案生成", desc: "英美式八章方案草稿" },
 ];
 
 export function LeftRail({

@@ -16,8 +16,9 @@ import { useUiStore } from "../../stores/ui";
  *   发送键 line 520 `h-9 w-9 grid place-items-center rounded-md bg-cinnabar` → 复用 Task 5 `Button`
  *     primary（其配色即 line 520 的 bg-cinnabar / #F7EFE6 / hover #96382a，token 外值已在 Button 内注行号）
  *   底注 line 522-524：`flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint`
- *     「阶段推进由可验证条件判定，非模型自由发挥」+ 右侧 `ml-auto`「qwen3.8-flash · function calling」
- *     （模型名为 core/config.py L32 `FA_INTERVIEW_MODEL` 的缺省值，可被环境变量覆盖）
+ *     「阶段推进由可验证条件判定，非模型自由发挥」+ 右侧 `ml-auto`「模型可配置 · function calling」
+ *     （型号由 core/config.py L36 `FA_INTERVIEW_MODEL` 决定且可被环境变量覆盖，此处不硬编码
+ *     具体型号，避免配置漂移时前端显示失真——审阅意见 R5 口径）
  *
  * 交互：回车发送 / Shift+Enter 换行 / 输入法组合中（isComposing）不发送；busy 时发送键禁用并显示「取消」；
  * conflict（POST /messages 409）如实提示“已有回合在执行”（useTurn 的 conflict 状态），不重试、不静默吞错；
@@ -129,14 +130,14 @@ export function Composer({
           <IconLock className="w-3.5 h-3.5 shrink-0" />
           {locked
             ? lockHint
-            : <span>缺少百炼 API Key：请回首页「API 密钥」卡填写并保存后重试。</span>}
+            : <span>缺少百炼 API Key：请回首页「密钥 / 登录」填写并保存后重试。</span>}
         </div>
       )}
 
       {/* 底注：窄屏 flex-wrap 防挤溢，模型名 sm 以下隐藏（辅助信息，375px 临界溢出） */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10.5px] text-inkfaint">
         <span>阶段推进由可验证条件判定，非模型自由发挥</span>
-        <span className="ml-auto num hidden sm:inline">qwen3.8-flash · function calling</span>
+        <span className="ml-auto hidden sm:inline">模型可配置 · function calling</span>
       </div>
     </div>
   );

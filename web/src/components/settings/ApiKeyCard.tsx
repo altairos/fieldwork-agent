@@ -5,7 +5,8 @@ import { Button } from "../ui/Button";
 import { IconCheck } from "../ui/icons";
 
 /**
- * ApiKeySection —「我的」卡（MyCard）的 API 密钥节（原独立卡改造，卡壳移入 MyCard）。
+ * ApiKeySection — API 密钥配置节：首页「密钥 / 登录」弹层（KeyDialog）内承载。
+ * （「我的」卡解体后，导出格式迁提案页下载区、配色走对话页 Header。）
  * 百炼 Key 必填（无 key 不进入对话，见 Workspace 拦截）；飞猪 Key 为可选高级项——
  * 计费核验：飞猪 AI 开放平台不计费，服务端已配共享正式 Key，开箱即用，
  * 仅需覆盖时（如共享额度耗尽）才自填，默认收进折叠区。
@@ -31,22 +32,24 @@ export function ApiKeySection() {
   const [dashscope, setDashscope] = useState("");
   const [flyai, setFlyai] = useState("");
   const [appToken, setAppToken] = useState("");
+  const [plan, setPlan] = useState(""); // 百炼套餐类型（coding/token）：空 = 默认端点
   const [server, setServer] = useState<SettingsStatus | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [justSaved, setJustSaved] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false); // 飞猪 Key 可选高级项，默认收起
+  const [showAdvanced, setShowAdvanced] = useState(false); // 飞猪 Key / 套餐端点可选高级项，默认收起
 
   useEffect(() => {
     const k = getKeys();
     setDashscope(k.dashscope); // password 型回显圆点，可清空重输
     setFlyai(k.flyai);
     setAppToken(k.appToken);
+    setPlan(k.plan);
     rest.settingsStatus().then(setServer).catch(() => setServer(null));
     rest.health().then(setHealth).catch(() => setHealth(null));
   }, []);
 
   function save() {
-    saveKeys(dashscope, flyai, appToken); // 留空即移除该项，回落服务端配置
+    saveKeys(dashscope, flyai, appToken, plan); // 留空即移除该项，回落服务端配置
     setJustSaved(true);
   }
 
@@ -55,6 +58,7 @@ export function ApiKeySection() {
     setAppToken("");
     setDashscope("");
     setFlyai("");
+    setPlan("");
     setJustSaved(false);
   }
 
@@ -79,14 +83,24 @@ export function ApiKeySection() {
           type="password"
           value={dashscope}
           onChange={(e) => {
-            setDashscope(e.target.value);
+            const v = e.target.value;
+            setDashscope(v);
             setJustSaved(false);
+            // 套餐 Key（sk-sp-）配专属端点：自动展开高级项供选择配套端点；
+            // 换回普通 key 则自动回落默认端点（普通 key 配套餐端点同样 401）
+            if (v.trim().startsWith("sk-sp-")) setShowAdvanced(true);
+            else if (v.trim() !== "") setPlan("");
           }}
           placeholder="sk-…"
           autoComplete="off"
           className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] pointer-coarse:text-[16px] text-ink outline-none placeholder:text-inkfaint"
         />
       </label>
+      {dashscope.trim().startsWith("sk-sp-") && !plan && (
+        <p className="text-[11px] text-cinnabar -mt-1.5 mb-2.5 leading-relaxed">
+          检测到套餐 Key（sk-sp- 开头）：需在高级选项选择配套端点，否则默认端点将 401
+        </p>
+      )}
       <label className="block mb-3.5">
         <span className="flex items-center justify-between text-[11.5px] text-inksoft mb-1">
           访问令牌（App Token）
@@ -117,22 +131,41 @@ export function ApiKeySection() {
         <span className={`${fa.cls} text-[11.5px]`}>{fa.text}</span>
       </div>
       {showAdvanced && (
-        <label className="block mb-3.5">
-          <span className="flex items-center justify-between text-[11.5px] text-inksoft mb-1">
-            飞猪 API Key（可选）
-          </span>
-          <input
-            type="password"
-            value={flyai}
-            onChange={(e) => {
-              setFlyai(e.target.value);
-              setJustSaved(false);
-            }}
-            placeholder="可留空——默认用服务端共享 Key"
-            autoComplete="off"
-            className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] pointer-coarse:text-[16px] text-ink outline-none placeholder:text-inkfaint"
-          />
-        </label>
+        <>
+          <label className="block mb-3.5">
+            <span className="flex items-center justify-between text-[11.5px] text-inksoft mb-1">
+              百炼套餐类型（端点）
+            </span>
+            <select
+              value={plan}
+              onChange={(e) => {
+                setPlan(e.target.value);
+                setJustSaved(false);
+              }}
+              className="w-full hairline rounded-md bg-paper/60 px-2.5 h-8 text-[12.5px] text-ink outline-none"
+            >
+              <option value="">按量付费（默认端点）</option>
+              <option value="coding">Coding 套餐（sk-sp- 专属端点）</option>
+              <option value="token">Token 套餐（sk-sp- 专属端点）</option>
+            </select>
+          </label>
+          <label className="block mb-3.5">
+            <span className="flex items-center justify-between text-[11.5px] text-inksoft mb-1">
+              飞猪 API Key（可选）
+            </span>
+            <input
+              type="password"
+              value={flyai}
+              onChange={(e) => {
+                setFlyai(e.target.value);
+                setJustSaved(false);
+              }}
+              placeholder="可留空——默认用服务端共享 Key"
+              autoComplete="off"
+              className="w-full hairline rounded-md bg-paper/60 px-3 h-8 text-[12.5px] pointer-coarse:text-[16px] text-ink outline-none placeholder:text-inkfaint"
+            />
+          </label>
+        </>
       )}
       <div className="flex items-center gap-2">
         <Button size="sm" onClick={save}>

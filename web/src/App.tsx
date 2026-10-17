@@ -155,7 +155,7 @@ function Workspace() {
               <span>
                 未配置百炼 API Key：请回
                 <Link to="/" className="text-indigo underline underline-offset-2 mx-0.5">
-                  首页「API 密钥」卡
+                  首页「密钥 / 登录」
                 </Link>
                 填写并保存后返回本页。
               </span>

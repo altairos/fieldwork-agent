@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, apiDetail, rest, type ProposalMeta } from "../api/rest";
 import { ChapterNav } from "../components/proposal/ChapterNav";
+import { ExportFormatChips } from "../components/proposal/ExportFormatChips";
 import { ProposalViewer } from "../components/proposal/ProposalViewer";
 import { VersionSwitch } from "../components/proposal/VersionSwitch";
 import { Header } from "../components/layout/Header";
@@ -258,6 +259,8 @@ export function ProposalView() {
             onSelect={jumpToChapter}
           />
           <div className="p-3 border-t border-hairline space-y-2">
+            {/* 导出格式选择（首页「我的」卡解体后迁此：chips 即改即生效于下载 URL/文案） */}
+            <ExportFormatChips />
             <Button variant="primary" className="w-full" disabled={!doc} onClick={download}>
               <IconDownload className="w-4 h-4" />
               下载 .{format}
