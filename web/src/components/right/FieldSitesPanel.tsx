@@ -231,6 +231,7 @@ function SiteBlock({ site, onConfirm, confirming }: {
 
 export function FieldSitesPanel() {
   const snapshot = useProjectStore((s) => s.snapshot);
+  const refreshError = useProjectStore((s) => s.refreshError);   // R06b：回合末回读失败提示
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
 
@@ -247,6 +248,22 @@ export function FieldSitesPanel() {
 
   const [confirming, setConfirming] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
+  // R06b：重试走与 R06a 相同的回读路径——成功清提示，失败保持提示（如实反馈）。
+  const retryRefresh = async () => {
+    const pid = snapshot?.project_id;
+    if (!pid || retrying) return;
+    setRetrying(true);
+    try {
+      useProjectStore.getState().loadSnapshot(await rest.getProject(pid));
+      useProjectStore.getState().setRefreshError(null);
+    } catch {
+      useProjectStore.getState().setRefreshError("快照刷新失败，最新田野点/行程可能未显示");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const confirmSite = async (site: SiteView) => {
     const pid = snapshot?.project_id;
@@ -294,6 +311,13 @@ export function FieldSitesPanel() {
   return (
     <div>
       <div className="font-serif text-[15px] font-semibold mb-3">{`田野点 · ${sites.length}`}</div>
+      {refreshError && (
+        <div className="flex items-center justify-between gap-2 text-[11px] text-ochre mb-2">
+          <span>{refreshError}</span>
+          <button type="button" onClick={retryRefresh} disabled={retrying}
+                  className="underline disabled:opacity-50">重试</button>
+        </div>
+      )}
       {confirmError && <div className="text-[11px] text-ochre mb-2">{confirmError}</div>}
       {sites.map((site, i) => (
         <SiteBlock key={`${site.name}-${i}`} site={site}
