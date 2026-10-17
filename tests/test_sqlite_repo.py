@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
+from fieldwork_agent.kernel.repository.confirm_hash import compute_confirm_hash
 
 
 def make_sqlite_repo(tmp_path: Path) -> SqliteRepository:
@@ -16,7 +17,7 @@ def test_schema_created_with_user_version(tmp_path):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert version == 1
+    assert version == 2
     for t in ("projects", "research_context", "messages", "field_sites",
               "informants", "search_cache", "knowledge", "proposals", "schema_meta"):
         assert t in tables, f"缺表 {t}"
@@ -284,3 +285,108 @@ def test_get_state_proposals_exclude_content(tmp_path):
     assert len(st["proposals"]) == 1
     assert "content" not in st["proposals"][0]
     assert st["proposals"][0]["filename"].endswith(".md")
+
+
+_V1_MIN = """
+CREATE TABLE projects (
+    project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    phase TEXT NOT NULL, phase_history TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE proposals (
+    id TEXT NOT NULL, project_id TEXT NOT NULL, kind TEXT NOT NULL, version TEXT NOT NULL,
+    filename TEXT NOT NULL, content TEXT NOT NULL, saved_at TEXT NOT NULL, seq INTEGER NOT NULL,
+    PRIMARY KEY (project_id, id));
+PRAGMA user_version=1;
+"""
+
+
+def test_schema_version_is_two(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    with sqlite3.connect(repo.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert "dep_hash" in {r[1] for r in conn.execute("PRAGMA table_info(proposals)")}
+        assert "proposal_confirmed" in {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "confirmations" in tables
+
+
+def test_v1_db_upgrades_to_v2_in_place(tmp_path):
+    """存量 v1 库：增量补列补表、版本推进、既有行原样保留（绝不 DROP 重建）。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(_V1_MIN)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','field_site_profiles','[]')")
+        conn.execute(
+            "INSERT INTO proposals(id,project_id,kind,version,filename,content,saved_at,seq)"
+            " VALUES('prop_1','p1','proposal','final','a.md','正文','2026-01-02',1)")
+    repo = SqliteRepository(db_path=db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        row = conn.execute(
+            "SELECT p.proposal_confirmed, q.dep_hash FROM projects p"
+            " JOIN proposals q ON q.project_id = p.project_id"
+            " WHERE p.project_id='p1'").fetchone()
+    assert row[0] == 0 and row[1] == ""      # 默认值补齐，不改语义
+    assert repo.get_phase("p1") == "field_site_profiles"
+    assert repo.list_proposals("p1")[0]["content"] == "正文"
+
+
+def test_future_schema_version_rejected(tmp_path):
+    """高版本库不得被低版本代码降级打开（R02 版本纪律）。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE t(x)")
+        conn.execute("PRAGMA user_version=99")
+    with pytest.raises(RuntimeError, match="schema 版本"):
+        SqliteRepository(db_path=db)
+
+
+def test_save_proposal_records_dep_hash(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.update_research_context("p1", {"topic": "宗族"})
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    expected = compute_confirm_hash(
+        repo.get_research_context("p1"), repo.list_field_sites("p1"),
+        repo.list_informants("p1"), repo.list_knowledge("p1"), "")
+    with sqlite3.connect(repo.db_path) as conn:
+        stored = conn.execute(
+            "SELECT dep_hash FROM proposals WHERE id=?", (rid,)).fetchone()[0]
+    assert stored == expected and len(stored) == 40
+    assert repo.get_state("p1")["proposals"][0]["dep_hash"] == stored
+    assert repo.list_proposals("p1")[0]["dep_hash"] == stored
+
+
+def test_get_state_omits_empty_dep_hash(tmp_path):
+    """legacy 迁移行（dep_hash 空串）不得出现该键——与 json 侧旧记录键集全等。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo._import_proposal("p1", {"id": "legacy_proposal_draft", "kind": "proposal",
+                                 "version": "draft", "filename": "l.md",
+                                 "content": "旧", "saved_at": "2026-01-01"})
+    assert "dep_hash" not in repo.get_state("p1")["proposals"][0]
+    assert "dep_hash" not in repo.list_proposals("p1")[0]
+
+
+def test_get_state_confirmation_defaults(tmp_path):
+    """空项目也要吐出确认两面（json `_load` 经 `_default_state` 补齐的等价物）。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    st = repo.get_state("p1")
+    assert st["confirmations"] == []
+    assert st["proposal_confirmed"] is False
+
+
+def test_latest_itinerary_cid_takes_last_saved(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.cache_search("p1", "q1", "search_hotel", {"a": 1})
+    repo.cache_search("p1", "q2", "compose_itinerary", {"b": 2})
+    repo.cache_search("p1", "q3", "search_pois", {"c": 3})
+    last = repo.cache_search("p1", "q4", "compose_itinerary", {"d": 4})
+    assert repo._latest_itinerary_cid("p1") == last
+    assert repo._current_confirm_hash("p1") == compute_confirm_hash(
+        {}, repo.list_field_sites("p1"), repo.list_informants("p1"),
+        repo.list_knowledge("p1"), last)
