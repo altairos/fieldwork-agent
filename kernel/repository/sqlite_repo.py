@@ -17,7 +17,10 @@ from datetime import datetime
 from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
-from fieldwork_agent.kernel.repository.confirm_hash import compute_confirm_hash
+from fieldwork_agent.kernel.models import ConfirmationRecord
+from fieldwork_agent.kernel.repository.confirm_hash import (
+    ProposalConfirmError, compute_confirm_hash)
+from fieldwork_agent.kernel.repository.guard import cache_id_violation
 
 SCHEMA_VERSION = 2
 MESSAGE_WINDOW = 50
@@ -186,6 +189,13 @@ class SqliteRepository:
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    @property
+    def root(self) -> Path:
+        """库文件父目录（非 Protocol 成员）：宿主 /ready 可写探针与 ``guard``
+        的 containment 校验都经 ``getattr(repo, "root", None)`` 取根，sqlite
+        后端同样得给出一个真实受信目录，否则探针退化为“不可写”。"""
+        return self._db_path.parent
 
     @contextmanager
     def _connect(self):
@@ -509,12 +519,19 @@ class SqliteRepository:
             for r in rows
         ]
 
-    def get_cached_search(self, cid: str) -> dict | None:
-        """按全局唯一 id 跨项目定位（签名不含 pid，id 为全局 PK，天然跨项目）。"""
+    def get_cached_search(self, pid: str, cid: str) -> dict | None:
+        """按项目域读取快照（审计二 R01）：cid 先过白名单，再只在 ``pid`` 域内定位。
+
+        旧版以全局 PK 跳项目定位（同一库内可拿到他人快照）；新签名与
+        ``json_repo`` 逐字一致：非法 cid / 跨项目 / 不存在均返回 ``None``（不抛）。
+        """
+        if cache_id_violation(cid):
+            return None
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, query, tool, result, cached_at FROM search_cache WHERE id=?",
-                (cid,)).fetchone()
+                "SELECT id, query, tool, result, cached_at FROM search_cache"
+                " WHERE project_id=? AND id=?",
+                (pid, cid)).fetchone()
         if row is None:
             return None
         return {
@@ -673,6 +690,105 @@ class SqliteRepository:
             self.list_knowledge(pid),
             self._latest_itinerary_cid(pid))
 
+    # ---------------------------------------- 确认与失效（审计二 R09，镜像 json_repo）
+
+    def confirm_field_site(self, pid: str, site_id: str) -> bool:
+        """按记录 id 把田野点置为已确认；未知 id 返回 ``False``（幂等）。
+
+        对齐 json 侧：只改 ``confirmed``，没有动条目 ``saved_at``；项目级
+        ``updated_at`` 推进（json 侧经 ``_save`` 刷新）。
+        """
+        self._require(pid)
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM field_sites WHERE project_id=? AND id=?",
+                (pid, site_id)).fetchone()
+            if row is None:
+                return False
+            entry = json.loads(row["data"])
+            entry["confirmed"] = True
+            conn.execute(
+                "UPDATE field_sites SET data=? WHERE project_id=? AND id=?",
+                (_dumps(entry), pid, site_id))
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?", (now, pid))
+        return True
+
+    def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
+        """确认**指定**文档（``doc_id`` 空则取登记尾条，兼容旧调用面）。
+
+        四重校验与错误文案与 ``json_repo.confirm_proposal`` 逐字一致（契约套件
+        不校错误文案，但上游 API 把 ``.code`` 折成给用户的提示）。
+        """
+        self._require(pid)
+        with self._connect() as conn:
+            if not doc_id:
+                row = conn.execute(
+                    "SELECT id FROM proposals WHERE project_id=? ORDER BY seq DESC LIMIT 1",
+                    (pid,)).fetchone()
+                doc_id = row["id"] if row else ""
+            record = conn.execute(
+                "SELECT kind, dep_hash FROM proposals WHERE project_id=? AND id=?",
+                (pid, doc_id)).fetchone()
+        if record is None:
+            raise ProposalConfirmError(
+                f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
+        if record["kind"] != "proposal":
+            raise ProposalConfirmError(
+                f"文档类型为 {record['kind']}，只能确认 proposal 文档", "wrong_kind")
+        current = self._current_confirm_hash(pid)
+        if not record["dep_hash"]:
+            raise ProposalConfirmError(
+                "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
+        if record["dep_hash"] != current:
+            raise ProposalConfirmError(
+                "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
+        rec = ConfirmationRecord(
+            kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+        payload = rec.model_dump(mode="json")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO confirmations(project_id, id, kind, subject,"
+                " confirmed_at, inputs_hash, dep_hash) VALUES(?,?,?,?,?,?,?)",
+                (pid, _legacy_id(payload), rec.kind, rec.subject, rec.confirmed_at,
+                 rec.inputs_hash, rec.dep_hash))
+            conn.execute(
+                "UPDATE projects SET proposal_confirmed=1, updated_at=?"
+                " WHERE project_id=?", (rec.confirmed_at, pid))
+        return payload
+
+    def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
+        """按记录 id 取文档（含 ``content``，天然兼容 ``legacy_`` 前缀）。"""
+        for record in self.list_proposals(pid):
+            if record.get("id") == doc_id:
+                return record
+        return None
+
+    def is_proposal_confirmation_stale(self, pid: str) -> bool:
+        """无确认 → ``False``；确认对象不再是最新 proposal / 记录无指纹 /
+        五路指纹与当前不一致 → ``True``（三级判定逐字镜像 json 侧）。
+
+        新增 ``interview_guide`` 不使 proposal 确认失效：最新 id 只在
+        ``kind='proposal'`` 行里取。
+        """
+        self._require(pid)
+        with self._connect() as conn:
+            conf = conn.execute(
+                "SELECT subject, dep_hash FROM confirmations WHERE project_id=?"
+                " ORDER BY rowid DESC LIMIT 1", (pid,)).fetchone()
+            if conf is None:
+                return False
+            latest = conn.execute(
+                "SELECT id FROM proposals WHERE project_id=? AND kind='proposal'"
+                " ORDER BY seq DESC LIMIT 1", (pid,)).fetchone()
+        subject, latest_id = conf["subject"], (latest["id"] if latest else "")
+        if subject and latest_id and subject != latest_id:
+            return True
+        if not conf["dep_hash"]:
+            return True
+        return conf["dep_hash"] != self._current_confirm_hash(pid)
+
     # -------------------------------------------------- 迁移 raw-import（仅供 core.migrate 调用，不属 Protocol）
     #
     # 与公开写方法的区别：原样插入完整记录、保留 id/saved_at/ts/created_at/
@@ -775,3 +891,27 @@ class SqliteRepository:
                  entry.get("tool") or entry.get("source_tool", ""),
                  _dumps(entry.get("result") or {}),
                  entry.get("cached_at") or ""))
+
+    def _import_confirmation(self, pid: str, entry: dict) -> None:
+        """确认记录原样入库（五字段全存，id 取内容哈希作幂等去重键）。
+
+        ``get_state`` 读出时按 rowid（= 插入序）回到与 json 侧 `confirmations[]`
+        同序的列表，且只返五个 model_dump 键。
+        """
+        payload = {"kind": entry.get("kind", ""), "subject": entry.get("subject", ""),
+                   "confirmed_at": entry.get("confirmed_at", ""),
+                   "inputs_hash": entry.get("inputs_hash", ""),
+                   "dep_hash": entry.get("dep_hash", "")}
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO confirmations(project_id, id, kind, subject,"
+                " confirmed_at, inputs_hash, dep_hash) VALUES(?,?,?,?,?,?,?)",
+                (pid, _legacy_id(payload), payload["kind"], payload["subject"],
+                 payload["confirmed_at"], payload["inputs_hash"], payload["dep_hash"]))
+
+    def _set_proposal_confirmed(self, pid: str, value: bool) -> None:
+        """raw 回写确认态（json 侧 ``state["proposal_confirmed"]`` 的列化）。"""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET proposal_confirmed=? WHERE project_id=?",
+                (1 if value else 0, pid))

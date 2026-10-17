@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
-from fieldwork_agent.kernel.repository.confirm_hash import compute_confirm_hash
+from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError, compute_confirm_hash
 
 
 def make_sqlite_repo(tmp_path: Path) -> SqliteRepository:
@@ -187,7 +187,7 @@ def test_cache_roundtrip(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
     cid = repo.cache_search("p1", "大理住宿", "search_hotel", {"items": [1, 2]})
-    full = repo.get_cached_search(cid)
+    full = repo.get_cached_search("p1", cid)
     assert full["query"] == "大理住宿" and full["tool"] == "search_hotel"
     assert full["result"] == {"items": [1, 2]}
     assert [c["id"] for c in repo.list_cached_searches("p1")] == [cid]
@@ -197,25 +197,16 @@ def test_cache_roundtrip(tmp_path):
 def test_unknown_cache_id_returns_none(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
-    assert repo.get_cached_search("no_such_id") is None
+    assert repo.get_cached_search("p1", "no_such_id") is None
 
 
 def test_cache_truncated_64kb(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
     cid = repo.cache_search("p1", "q", "search_ai", {"blob": "x" * 100_000})
-    stored = repo.get_cached_search(cid)["result"]
+    stored = repo.get_cached_search("p1", cid)["result"]
     assert stored["truncated"] is True
     assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
-
-
-def test_get_cached_search_cross_project(tmp_path):
-    """cid 全局唯一：不带 pid 也能跨项目定位。"""
-    repo = make_sqlite_repo(tmp_path)
-    repo.create("p1")
-    repo.create("p2")
-    cid = repo.cache_search("p2", "q", "search_ai", {"x": 1})
-    assert repo.get_cached_search(cid)["result"] == {"x": 1}
 
 
 def test_knowledge_roundtrip_and_search(tmp_path):
@@ -390,3 +381,131 @@ def test_latest_itinerary_cid_takes_last_saved(tmp_path):
     assert repo._current_confirm_hash("p1") == compute_confirm_hash(
         {}, repo.list_field_sites("p1"), repo.list_informants("p1"),
         repo.list_knowledge("p1"), last)
+
+
+# ------------------------------------------------------------------ R01：缓存读取收窄到项目域
+
+def test_get_cached_search_scoped_to_project(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.create("p2")
+    cid = repo.cache_search("p2", "秘密查询", "search_hotel", {"items": [1]})
+    assert repo.get_cached_search("p2", cid)["query"] == "秘密查询"
+    assert repo.get_cached_search("p1", cid) is None      # 跳项目 id 不可见
+
+
+def test_get_cached_search_bad_cid_returns_none(tmp_path):
+    """cid 先过白名单（guard.CACHE_ID_RE），不做任何文件系统/SQL 拼接。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    for bad in ("../escape", "", "a" * 65, "with space", "a\\b", None):
+        assert repo.get_cached_search("p1", bad) is None
+
+
+def test_root_is_db_file_parent(tmp_path):
+    """宿主探针（web_host/app.py 的 /ready 可写探测、guard 的 containment）
+    经 getattr(repo, "root", None) 取根；sqlite 侧给库文件父目录。"""
+    repo = make_sqlite_repo(tmp_path)
+    assert repo.root == tmp_path
+
+
+# ------------------------------------------------------------------ R09：确认与失效
+
+def test_confirm_field_site(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    sid = repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+    saved_at = repo.list_field_sites("p1")[0]["saved_at"]
+    assert repo.confirm_field_site("p1", sid) is True
+    site = repo.list_field_sites("p1")[0]
+    assert site["confirmed"] is True
+    assert site["saved_at"] == saved_at            # 对齐 json：确认不改条目 saved_at
+    assert repo.confirm_field_site("p1", "nope") is False
+
+
+def test_confirm_proposal_four_rejections(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", "nope")
+    assert exc.value.code == "not_found"
+    gid = repo.save_proposal("p1", "# 提纲", kind="interview_guide", version="final")
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", gid)
+    assert exc.value.code == "wrong_kind"
+    repo._import_proposal("p1", {"id": "legacy_draft", "kind": "proposal",
+                                 "version": "draft", "filename": "l.md",
+                                 "content": "旧", "saved_at": "2026-01-01"})
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", "legacy_draft")
+    assert exc.value.code == "dep_hash_missing"
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    repo.update_research_context("p1", {"budget": "5万"})
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", rid)
+    assert exc.value.code == "dep_hash_mismatch"
+
+
+def test_confirm_proposal_success_writes_confirmation(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.update_research_context("p1", {"topic": "宗族"})
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    rec = repo.confirm_proposal("p1", rid)
+    assert rec["kind"] == "proposal" and rec["subject"] == rid
+    assert rec["inputs_hash"] == "" and len(rec["dep_hash"]) == 40
+    st = repo.get_state("p1")
+    assert st["proposal_confirmed"] is True
+    assert st["confirmations"] == [rec]          # 键集 == model_dump(mode="json")
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_confirm_proposal_defaults_to_latest_registered(tmp_path):
+    """doc_id 缺省取登记表尾条（json 侧同样不限 kind：尾条是 guide 时报 wrong_kind）。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_proposal("p1", "# 方案", version="final")
+    assert repo.confirm_proposal("p1")["kind"] == "proposal"
+    repo.save_proposal("p1", "# 提纲", kind="interview_guide", version="final")
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1")
+    assert exc.value.code == "wrong_kind"
+
+
+def test_confirmation_stale_after_new_proposal(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    repo.confirm_proposal("p1", rid)
+    assert repo.is_proposal_confirmation_stale("p1") is False
+    repo.save_proposal("p1", "# 方案 v2", version="final")
+    assert repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_legacy_confirmation_without_dep_hash_is_stale(tmp_path):
+    """无指纹的旧确认记录：无法判定依赖，保守视失效。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo._import_confirmation("p1", {"kind": "proposal", "subject": "prop_x",
+                                     "confirmed_at": "2026-01-01",
+                                     "inputs_hash": "h" * 40})
+    assert repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_no_confirmation_is_not_stale(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_proposal("p1", "# 方案", version="final")
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_get_proposal_by_id(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    assert repo.get_proposal_by_id("p1", rid)["content"] == "# 方案"
+    assert repo.get_proposal_by_id("p1", "nope") is None
+    repo._import_proposal("p1", {"id": "legacy_proposal_draft", "kind": "proposal",
+                                 "version": "draft", "filename": "l.md",
+                                 "content": "旧", "saved_at": "2026-01-01"})
+    assert repo.get_proposal_by_id("p1", "legacy_proposal_draft")["content"] == "旧"
