@@ -14,7 +14,9 @@ Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=/opt/fieldwork-agent
 # 缺失不报错（前缀 -）；真实密钥写在此文件，chmod 600，勿提交 git。
 EnvironmentFile=-/opt/fieldwork-agent/deploy/aliyun/fieldwork-web.env
-ExecStart=/opt/fieldwork-agent/.venv/bin/uvicorn fieldwork_agent.web_host.app:create_app --factory --host 0.0.0.0 --port 2143
+# --http h11：百炼探测节点（Java 客户端）默认发 h2c 明文升级头，
+# httptools 实现会拦截为 400（Unsupported upgrade request）；h11 按普通请求放行。
+ExecStart=/opt/fieldwork-agent/.venv/bin/uvicorn fieldwork_agent.web_host.app:create_app --factory --http h11 --host 0.0.0.0 --port 2143
 Restart=always
 RestartSec=3
 # 轻量服务器资源有限，给个软上限防止失控；不需要可删。

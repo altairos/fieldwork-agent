@@ -115,7 +115,11 @@ python -m fieldwork_agent.mcp_server               # 等价（stdio）
 .venv/Scripts/python.exe demo_mcp_client.py        # 演示客户端（手动运行，不进 CI）
 ```
 
-MCP 能力面：22 个工具（13 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
+MCP 能力面：23 个工具（14 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
+
+部署形态下 Web 进程同时暴露 Streamable HTTP 端点 `/mcp`（与页面同端口），可直接注册到
+阿里百炼等 MCP 客户端；多租户 key 归属（`x-flyai-key` / `x-dashscope-key` 动态 Header
+逐请求覆盖服务器 env 兜底）见 [deploy/aliyun/DEPLOY.md](deploy/aliyun/DEPLOY.md) 第 7 节。
 
 ### 测试与静态检查
 
