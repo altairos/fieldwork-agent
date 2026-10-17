@@ -101,10 +101,10 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     tasks: list[tuple[str, str, Callable[[], Envelope]]] = [
         # 住宿三策略：民宿优先 + 酒店备选 + AI 语义（驻村意图，结果并入住宿段）
         ("accommodation", "", lambda: _safe_call(
-            client.search_hotels, location, check_in=travel_date,
+            client.search_hotels, dest_name=location, check_in=travel_date,
             hotel_types="民宿,客栈", max_price=str(int(budget_per_night)))),
         ("accommodation", "", lambda: _safe_call(
-            client.search_hotels, location, check_in=travel_date,
+            client.search_hotels, dest_name=location, check_in=travel_date,
             max_price=str(int(budget_per_night * BUDGET_MARKUP)))),
         ("accommodation", "", lambda: _safe_call(
             client.search_ai, f"{location} 适合长期驻村的便宜住宿 民宿 招待所")),

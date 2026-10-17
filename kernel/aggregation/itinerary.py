@@ -20,9 +20,9 @@
   假设，``rooms`` 可调）；``市内与餐饮`` = 人均日标准(``meals_local_per_person_day``，
   默认 150) × 人数 × 天数（estimate，不再按总预算百分比）。每条携带
   ``currency/unit/quantity/people/priced_at/source_ref`` 可复核口径；
-- 快照回链（M3）：``snapshot_refs`` 为宿主注入参数（同 ``client``，不进 schema），
-  形如 ``{"大理": "flyai 快照 srch_xxx（日期 查询）"}``；预算条目 ``source_ref``
-  追加该引用，无注入时退回 "flyai 实时报价"；
+- 快照回链（R08）：预算条目 ``source_ref`` 携带规格键（``@live:工具:参数``，由
+  ``live_flight_ref`` 等纯函数生成）；宿主轮末以真实快照引用替换（web_host loop
+  的 ``_resolve_live_refs``），kernel 不感知宿主；
 - **预算完整性**：``coverage`` complete/partial/unknown 按腿与住宿报价可得性判定，
   缺失项进 ``uncovered``；``over_budget`` 仅在 complete 时为真——partial 时 total
   只是已知小计，不得据此宣布"预算内/超支"；
@@ -182,11 +182,19 @@ def _select(cands: list[dict], prefer_key: str | None = None
     return chosen, (priced[1:] + unpriced)[:MAX_ALTERNATIVES]
 
 
-def _source_of(snapshot_refs: dict[str, str] | None, dest: str) -> str:
-    """预算条目来源引用（M3 §5.1）：有快照回链快照，否则退回实时报价口径。"""
-    if snapshot_refs and dest in snapshot_refs:
-        return snapshot_refs[dest]
-    return "flyai 实时报价"
+def live_flight_ref(origin: str, dest: str, dep_date: str) -> str:
+    """规格键（R08 §6）：只依赖入参，宿主轮末据此替换为真实快照引用。"""
+    return f"@live:search_flights:{origin}>{dest}|{dep_date}"
+
+
+def live_train_ref(origin: str, dest: str, dep_date: str) -> str:
+    return f"@live:search_trains:{origin}>{dest}|{dep_date}"
+
+
+def live_hotel_ref(dest: str, check_in: str, check_out: str,
+                   hotel_types: str = "") -> str:
+    ref = f"@live:search_hotels:{dest}|{check_in}|{check_out}"
+    return f"{ref}|{hotel_types}" if hotel_types else ref
 
 
 # ---------------------------------------------------------------- 能力实现
@@ -195,8 +203,7 @@ def _source_of(snapshot_refs: dict[str, str] | None, dest: str) -> str:
 def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       duration_days: int, budget_total: float, researcher_count: int = 1,
                       rooms: int = 0, meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT,
-                      *, client: FlyAIClient | None = None,
-                      snapshot_refs: dict[str, str] | None = None) -> Envelope:
+                      *, client: FlyAIClient | None = None) -> Envelope:
     """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与可复核预算（日期只用 timedelta）。"""
     if client is None:
         client = FlyAIClient()
@@ -239,10 +246,10 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         if w["nights"] <= 0:
             continue
         tasks.append(("hotel", (idx, "民宿"), lambda w=w: _safe_call(
-            client.search_hotels, w["dest"], check_in=w["check_in"],
+            client.search_hotels, dest_name=w["dest"], check_in=w["check_in"],
             check_out=w["check_out"], hotel_types="民宿,客栈")))
         tasks.append(("hotel", (idx, "酒店"), lambda w=w: _safe_call(
-            client.search_hotels, w["dest"], check_in=w["check_in"],
+            client.search_hotels, dest_name=w["dest"], check_in=w["check_in"],
             check_out=w["check_out"])))
 
     transport_cands: dict[int, list[dict]] = defaultdict(list)
@@ -307,26 +314,30 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     for leg in legs:
         if leg["chosen"] is not None:
             priced_count += 1
+            ref_fn = (live_train_ref if leg["chosen"].get("mode") == "train"
+                      else live_flight_ref)
             items.append(BudgetItem(name=f"交通（{leg['from']}→{leg['to']}）",
                                     amount=round(leg["chosen"]["price"] * researcher_count, 2),
                                     source="cheapest", unit="票价×人数",
                                     quantity=1.0, people=researcher_count,
                                     priced_at=priced_at,
                                     source_ref=f"{leg['chosen']['name']}"
-                                               f"（{_source_of(snapshot_refs, leg['to'])}）"))
+                                               f"（{ref_fn(leg['from'], leg['to'], leg['date'])}）"))
         else:
             uncovered.append(f"交通（{leg['from']}→{leg['to']}）")
     for stay in stays:
         if stay["nightly_price"] is not None:
             priced_count += 1
+            hotel_ref = (live_hotel_ref(stay["dest"], stay["check_in"], stay["check_out"],
+                                        "民宿,客栈" if stay["chosen"].get("guesthouse") else "")
+                         if stay["chosen"] else "")
             items.append(BudgetItem(name=f"住宿（{stay['dest']}）",
                                     amount=round(stay["nightly_price"] * stay["nights"]
                                                  * rooms_eff, 2),
                                     source="cheapest", unit="每晚价×夜数×房间数",
                                     quantity=float(stay["nights"]), people=rooms_eff,
                                     priced_at=priced_at,
-                                    source_ref=(f"{stay['chosen']['name']}"
-                                                f"（{_source_of(snapshot_refs, stay['dest'])}）")
+                                    source_ref=f"{stay['chosen']['name']}（{hotel_ref}）"
                                     if stay["chosen"] else ""))
         else:
             uncovered.append(f"住宿（{stay['dest']}）")
