@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from fieldwork_agent.core import migrate as migrate_mod
 from fieldwork_agent.core.migrate import migrate_to_sqlite
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
@@ -77,6 +78,8 @@ def test_migrate_imports_all_seven_types(legacy_json_repo, tmp_path):
     assert report["search_cache"] == 1
     assert report["knowledge"] == 1
     assert report["proposals"] == 1
+    assert report["confirmations"] == 0      # fixture 无确认记录
+    assert report["conflicts"] == 0 and report["backups"] == 0
 
 
 def test_migrate_idempotent(legacy_json_repo, tmp_path):
@@ -140,3 +143,85 @@ def test_migrate_two_legacy_projects_same_proposal_id(tmp_path):
             "SELECT project_id FROM proposals WHERE id='legacy_proposal_draft'"
             " ORDER BY project_id").fetchall()
     assert [r[0] for r in rows] == ["legacy_a", "legacy_b"]
+
+
+def _legacy(tmp_path):
+    """拷 fixture 为单个 legacy_project 项目，返回 (json_repo, sqlite)。"""
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    shutil.copytree(FIXTURE, projects / "legacy_project")
+    return (JsonRepository(projects_dir=projects),
+            SqliteRepository(db_path=tmp_path / "fieldwork.db"))
+
+
+def test_migrate_conflict_rejected_without_force(tmp_path):
+    """R03：同名但未标迁移的项目 = 可能的原生存量，不得静默清空。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    sqlite.create("legacy_project")                       # 无 migrated: 标记的同名项目
+    sqlite.append_message("legacy_project", "user", "原生写入的消息")
+    with pytest.raises(RuntimeError, match="force"):
+        migrate_to_sqlite(json_repo, sqlite)
+    assert len(sqlite.get_messages("legacy_project", 0)) == 1   # 未被清空
+    assert sqlite.get_messages("legacy_project", 0)[0]["content"] == "原生写入的消息"
+
+
+def test_migrate_force_overwrites_with_backup(tmp_path):
+    json_repo, sqlite = _legacy(tmp_path)
+    sqlite.create("legacy_project")
+    sqlite.append_message("legacy_project", "user", "原生写入的消息")
+    report = migrate_to_sqlite(json_repo, sqlite, force=True)
+    assert report["conflicts"] == 1 and report["backups"] == 1
+    assert len(sqlite.get_messages("legacy_project", 0)) == 4   # 覆盖为 json 侧全量
+    bak = tmp_path / "fieldwork.db.bak.1"
+    assert bak.exists()
+    with sqlite3.connect(bak) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_backup_rolling_three(tmp_path):
+    """滚动 3 份：bak.1 最新，旧的一岁岁后移，超出 keep 丢弃。"""
+    json_repo, sqlite = _legacy(tmp_path)          # json_repo 本用例不用，仅为建库副作用
+    del json_repo
+    migrate_mod.backup(sqlite, keep=3)
+    migrate_mod.backup(sqlite, keep=3)
+    migrate_mod.backup(sqlite, keep=3)
+    migrate_mod.backup(sqlite, keep=3)
+    for i in (1, 2, 3):
+        assert (tmp_path / f"fieldwork.db.bak.{i}").exists()
+    assert not (tmp_path / "fieldwork.db.bak.4").exists()
+
+
+def test_backup_returns_none_when_db_absent(tmp_path):
+    repo = SqliteRepository(db_path=tmp_path / "fieldwork.db")
+    repo.create("p1")
+    (tmp_path / "fieldwork.db").unlink()          # 模拟首迁：库文件不存在
+    assert migrate_mod.backup(repo) is None
+
+
+def test_migrate_imports_confirmations(tmp_path):
+    """确认面（confirmations 列表 + proposal_confirmed）全量搬迁并进 _verify。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    pid = json_repo.list_projects()[0]["project_id"]
+    rid = json_repo.save_proposal(pid, "# 方案", version="final")
+    rec = json_repo.confirm_proposal(pid, rid)
+    report = migrate_to_sqlite(json_repo, sqlite)
+    assert report["confirmations"] == 1
+    js, ss = json_repo.get_state(pid), sqlite.get_state(pid)
+    assert ss["confirmations"] == js["confirmations"] == [rec]
+    assert ss["proposal_confirmed"] is True
+
+
+def test_verify_catches_confirmation_drift(tmp_path):
+    """_verify 盖到确认面：sqlite 侧确认表少一行 → 报错终止。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    pid = json_repo.list_projects()[0]["project_id"]
+    rid = json_repo.save_proposal(pid, "# 方案", version="final")
+    json_repo.confirm_proposal(pid, rid)
+    with sqlite._connect() as conn:                 # 先标记已迁→跳过导入，只跑 _verify
+        conn.execute("INSERT INTO projects(project_id,created_at,updated_at,phase)"
+                     " VALUES(?,?,?,?)", (pid, "2026-01-01", "2026-01-02",
+                                          json_repo.get_phase(pid)))
+        conn.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)",
+                     (f"migrated:{pid}", "json"))
+    with pytest.raises(RuntimeError, match="confirmations"):
+        migrate_to_sqlite(json_repo, sqlite)
