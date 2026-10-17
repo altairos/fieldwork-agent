@@ -504,6 +504,70 @@ def test_analyze_window_empty_windows_leaves_time_window_untouched(env, monkeypa
     assert repo.get_research_context("p1")["time_window"] == "原有：7 月中旬"
 
 
+# ------------------------------- state tools 缺参容错（轮 4 实测：卡死根因）
+
+
+def test_state_tool_missing_arg_degrades_not_fails(env):
+    """LLM 调 update_research_context 漏传 patch（实测 args={}）：
+    此前 ``(**args)`` 的 TypeError 炸穿 gather → 整轮 error+failed，
+    已流出的正文全部丢失且 LLM 无从自救。期望：折成
+    invalid_arguments 信封发给 LLM，下一轮补参重试，回合正常完成。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1",
+                                          "name": "update_research_context",
+                                          "arguments": {}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好的"},
+         {"content": "好的", "tool_calls": None, "finish_reason": "stop",
+          "usage": {"total_tokens": 5}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "error" not in types, "缺参不应炸掉整轮"
+    assert types[-1] == "turn_done"
+    completed = next(e for e in events if e.event == "tool_completed")
+    assert completed.data["ok"] is False
+    assert completed.data["error"]["code"] == "invalid_arguments"
+    assert "patch" in completed.data["error"]["message"]
+
+
+def test_state_tool_missing_arg_recovers_with_patch(env):
+    """同场景的自救闭环：LLM 收到 invalid_arguments 后补 patch 重试成功
+    （研究上下文真被写入），回合完成。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1",
+                                          "name": "update_research_context",
+                                          "arguments": {}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2",
+                                          "name": "update_research_context",
+                                          "arguments": {"patch": {"topic": "滇剧传承"}}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已记录"},
+         {"content": "已记录", "tool_calls": None, "finish_reason": "stop",
+          "usage": {"total_tokens": 6}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "研究滇剧", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "error" not in types and types[-1] == "turn_done"
+    completed = [e for e in events if e.event == "tool_completed"]
+    assert len(completed) == 2
+    assert completed[0].data["ok"] is False      # 首次缺参被拒
+    assert completed[1].data["ok"] is True       # 补参重试成功
+    assert repo.get_research_context("p1").get("topic") == "滇剧传承"
+
+
 def test_r05_finalize_failure_sets_failed(env, monkeypatch):
     """审计二 R05：轮末持久化异常 → error 事件 + failed 终态，绝不悬挂 running。"""
     repo, tm = env

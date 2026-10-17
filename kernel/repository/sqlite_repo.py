@@ -17,6 +17,11 @@ from datetime import datetime
 from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
+from fieldwork_agent.kernel.models import ConfirmationRecord
+from fieldwork_agent.kernel.repository.confirm_hash import (
+    ProposalConfirmError,
+    compute_confirm_hash,
+)
 
 SCHEMA_VERSION = 1
 MESSAGE_WINDOW = 50
@@ -101,12 +106,24 @@ CREATE TABLE IF NOT EXISTS proposals (
     version    TEXT NOT NULL,
     filename   TEXT NOT NULL,                   -- 合成导出名（裁决4）
     content    TEXT NOT NULL,                   -- 事实源（spec §5.3）
+    dep_hash     TEXT NOT NULL DEFAULT '',               -- R09 依赖指纹（确认失效判定）
     saved_at   TEXT NOT NULL,
     seq        INTEGER NOT NULL,
     PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_project ON proposals(project_id, seq);
+
+CREATE TABLE IF NOT EXISTS confirmations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id   TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    confirmed_at TEXT NOT NULL,
+    dep_hash     TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_confirmations_project ON confirmations(project_id, id);
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
@@ -254,6 +271,9 @@ class SqliteRepository:
                  "filename": r["filename"], "saved_at": r["saved_at"]}
                 for r in proposal_rows
             ],
+            "confirmations": self._list_confirmations(pid),
+            "proposal_confirmed": any(
+                c.get("kind") == "proposal" for c in self._list_confirmations(pid)),
             # legacy 空默认（读兼容键，对齐 json_repo _default_state）
             "travel_plan": None,
             "researcher_info": {},
@@ -444,12 +464,17 @@ class SqliteRepository:
             for r in rows
         ]
 
-    def get_cached_search(self, cid: str) -> dict | None:
-        """按全局唯一 id 跨项目定位（签名不含 pid，id 为全局 PK，天然跨项目）。"""
+    def get_cached_search(self, pid: str, cid: str) -> dict | None:
+        """按 (pid, cid) 定位（R01：读取收窄到项目域，跨项目 id 不可见）。"""
+        try:
+            self._require(pid)
+        except KeyError:
+            return None
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, query, tool, result, cached_at FROM search_cache WHERE id=?",
-                (cid,)).fetchone()
+                "SELECT id, query, tool, result, cached_at FROM search_cache"
+                " WHERE project_id=? AND id=?",
+                (pid, cid)).fetchone()
         if row is None:
             return None
         return {
@@ -541,6 +566,7 @@ class SqliteRepository:
         """
         self._require(pid)
         record_id = _new_id("prop")
+        dep_hash = self._current_confirm_hash(pid)
         uid = record_id.rsplit("_", 1)[-1]   # 与 id 同源（json 侧 id/后缀共用 uid）
         filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
         saved_at = _now()
@@ -553,31 +579,143 @@ class SqliteRepository:
                 filename = filename[:-3] + f"_{uid}.md"
             conn.execute(
                 "INSERT INTO proposals(id, project_id, kind, version, filename,"
-                " content, saved_at, seq) VALUES(?,?,?,?,?,?,?,?)",
-                (record_id, pid, kind, version, filename, markdown, saved_at,
-                 self._next_seq(conn, "proposals", pid)))
+                " content, dep_hash, saved_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
+                (record_id, pid, kind, version, filename, markdown, dep_hash,
+                 saved_at, self._next_seq(conn, "proposals", pid)))
             conn.execute(
                 "UPDATE projects SET updated_at=? WHERE project_id=?", (saved_at, pid))
         return record_id
 
     def list_proposals(self, pid: str) -> list[dict]:
-        """六键全量（含 content）；ORDER BY seq 平价 json 的保存序。"""
+        """七键全量（含 content 与 dep_hash）；ORDER BY seq 平价 json 的保存序。"""
         self._require(pid)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, kind, version, filename, saved_at, content"
+                "SELECT id, kind, version, filename, saved_at, content, dep_hash"
                 " FROM proposals WHERE project_id=? ORDER BY seq",
                 (pid,)).fetchall()
         return [
             {"id": r["id"], "kind": r["kind"], "version": r["version"],
              "filename": r["filename"], "saved_at": r["saved_at"],
-             "content": r["content"]}
+             "content": r["content"], "dep_hash": r["dep_hash"]}
             for r in rows
         ]
 
     def get_latest_proposal(self, pid: str) -> dict | None:
         docs = self.list_proposals(pid)   # _require 经此传导（json 同为间接触发）
         return docs[-1] if docs else None
+
+    # ------------------------------------------------------------------ 确认与失效（R09）
+
+    def _list_confirmations(self, pid: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, subject, confirmed_at, dep_hash FROM confirmations"
+                " WHERE project_id=? ORDER BY id",
+                (pid,)).fetchall()
+        return [
+            {"kind": r["kind"], "subject": r["subject"],
+             "confirmed_at": r["confirmed_at"], "dep_hash": r["dep_hash"]}
+            for r in rows
+        ]
+
+    def confirm_field_site(self, pid: str, site_id: str) -> bool:
+        """确认田野点：翻 data.confirmed=True（不写 confirmations，对齐 json_repo）。"""
+        self._require(pid)
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM field_sites WHERE project_id=? AND id=?",
+                (pid, site_id)).fetchone()
+            if row is None:
+                return False
+            entry = json.loads(row["data"])
+            entry["confirmed"] = True
+            entry["saved_at"] = now
+            conn.execute(
+                "UPDATE field_sites SET data=?, saved_at=? WHERE project_id=? AND id=?",
+                (_dumps(entry), now, pid, site_id))
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?", (now, pid))
+        return True
+
+    def _current_confirm_hash(self, pid: str) -> str:
+        return compute_confirm_hash(
+            self.get_research_context(pid),
+            self.list_field_sites(pid),
+            self.list_informants(pid),
+            self.list_knowledge(pid),
+            self._latest_itinerary_cid(pid))
+
+    def _latest_itinerary_cid(self, pid: str) -> str:
+        for cached in reversed(self.list_cached_searches(pid)):
+            if cached.get("tool") == "compose_itinerary":
+                return cached["id"]
+        return ""
+
+    def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
+        """四重校验后写 confirmations（对齐 json_repo 语义与错误码）。"""
+        self._require(pid)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, kind, dep_hash FROM proposals"
+                " WHERE project_id=? ORDER BY seq",
+                (pid,)).fetchall()
+        records = [
+            {"id": r["id"], "kind": r["kind"], "dep_hash": r["dep_hash"]}
+            for r in rows
+        ]
+        if not doc_id:
+            proposals = [r for r in records if r.get("kind", "proposal") == "proposal"]
+            doc_id = proposals[-1]["id"] if proposals else ""
+        record = next((r for r in records if r.get("id") == doc_id), None)
+        if record is None:
+            raise ProposalConfirmError(f"文档不存在： {doc_id or '（尚无文档）'}", "not_found")
+        if record.get("kind", "proposal") != "proposal":
+            raise ProposalConfirmError(
+                f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
+        current = self._current_confirm_hash(pid)
+        if not record.get("dep_hash"):
+            raise ProposalConfirmError(
+                "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
+        if record["dep_hash"] != current:
+            raise ProposalConfirmError(
+                "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
+        rec = ConfirmationRecord(
+            kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO confirmations(project_id, kind, subject, confirmed_at,"
+                " dep_hash) VALUES(?,?,?,?,?)",
+                (pid, rec.kind, rec.subject, rec.confirmed_at, rec.dep_hash))
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?",
+                (rec.confirmed_at, pid))
+        return rec.model_dump(mode="json")
+
+    def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
+        for record in self.list_proposals(pid):
+            if record.get("id") == doc_id:
+                return record
+        return None
+
+    def is_proposal_confirmation_stale(self, pid: str) -> bool:
+        self._require(pid)
+        records = self._list_confirmations(pid)
+        if not records:
+            return False
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM proposals WHERE project_id=? AND kind=? ORDER BY seq",
+                (pid, "proposal")).fetchall()
+        latest = rows[-1]["id"] if rows else ""
+        subject = records[-1].get("subject", "")
+        if subject and latest and subject != latest:
+            return True
+        dep_hash = records[-1].get("dep_hash", "")
+        if not dep_hash:
+            return True
+        return dep_hash != self._current_confirm_hash(pid)
 
     # -------------------------------------------------- 迁移 raw-import（仅供 core.migrate 调用，不属 Protocol）
     #
@@ -659,10 +797,11 @@ class SqliteRepository:
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO proposals(id, project_id, kind, version,"
-                " filename, content, saved_at, seq) VALUES(?,?,?,?,?,?,?,?)",
+                " filename, content, dep_hash, saved_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
                 (entry.get("id") or _legacy_id(entry), pid,
                  entry.get("kind", "proposal"), entry.get("version", "draft"),
                  entry.get("filename", ""), entry.get("content") or "",
+                 entry.get("dep_hash") or "",
                  entry.get("saved_at") or "",
                  self._next_seq(conn, "proposals", pid)))
 

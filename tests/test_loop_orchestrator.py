@@ -4,7 +4,7 @@ R5 修订：loop 放 ``fieldwork_agent.runtime.loop``（非 kernel）。测试�
 ScriptedLLM 脚本驱动、dispatch 用桩，不联网、不调 subprocess、无 key。
 """
 from fieldwork_agent.kernel.models import Envelope, ToolError
-from fieldwork_agent.runtime.loop import LoopResult, run_tool_loop
+from fieldwork_agent.runtime.loop import LoopResult, _summarize, _tool_content, run_tool_loop
 
 # 8 搜索原语名集（与 kernel.sources.flyai 注册一致；import 即触发 register）
 _SEARCH_NAMES = {
@@ -406,3 +406,81 @@ def test_acceptance_smoke_no_key(fake_config):
     assert "模板降级" in markdown, "无 key 稿件需显式标注模板降级"
     on_disk = Path(fake_config.projects_dir) / pid / "output" / docs[-1]["filename"]
     assert on_disk.exists() and on_disk.read_text(encoding="utf-8") == markdown
+
+
+# ------------------------------------------- 工具降级追问指令（防"只标注就停"）
+
+
+def test_tool_content_degraded_appends_followup():
+    """degraded 工具结果附追问指令：LLM 必须转为引导性提问，不停在单方陈述。
+
+    回归：profile_field_site 返回 degraded+城市级无关 POI 后，回复停在
+    “必须换路径锁定”——标注了质量缺口但没有向用户提任何问题，对话中断。
+    """
+    env = Envelope(ok=True, data={"items": []}, degraded="交通段失败；活动段失败")
+    c = _tool_content("profile_field_site", env)
+    assert "引导性提问" in c
+    assert c.startswith("{"), "JSON 摘要在前，指令附后"
+
+
+def test_tool_content_failed_appends_followup():
+    env = Envelope(ok=False, error=ToolError(code="flyai_unavailable", message="no cli",
+                                              hint="装 CLI"))
+    assert "引导性提问" in _tool_content("search_hotels", env)
+
+
+def test_tool_content_normal_no_followup():
+    """正常结果不附指令（避免每轮注入噪声）。"""
+    env = Envelope(ok=True, data={"items": [{"name": "x"}]})
+    assert "引导性提问" not in _tool_content("search_hotels", env)
+
+
+def test_summarize_items_keep_price_rating():
+    """列表摘要保留 name+price/rating 关键标量：给 LLM 真数据可引，防幻觉补全。
+
+    回归：search_hotels 采样经时窗摘要只透出 hotel_min=28，后续零工具轮 LLM
+    把“¥28/晚（青旅级）”膨胀成三家不存在的青旅（真缓存是“尘外民宿¥28/
+    子栖小筑青舍¥35”）。摘要有真细节，LLM 才不会编。
+    """
+    env = Envelope(ok=True, data={"items": [
+        {"name": "尘外民宿(浦西万达广场店)", "price": 28.0, "rating": 4.8},
+        {"name": "子栖小筑青舍", "price": 35.0},
+        {"name": "无名"},
+        "非dict条目",
+    ]})
+    s = _summarize("search_hotels", env)
+    assert s["top_items"] == [
+        {"name": "尘外民宿(浦西万达广场店)", "price": 28.0, "rating": 4.8},
+        {"name": "子栖小筑青舍", "price": 35.0},
+        {"name": "无名"},
+    ]
+
+
+# ------------------------------------------- 数组参数字符串化的定向救援（轮 3 实测）
+
+def test_orchestrator_dispatch_coerces_json_string_list(fake_config, fake_flyai):
+    """LLM 把 list 参数序列化成 JSON 字符串（实测 interests='["宗族祠堂", …]'
+    触发 "Input should be a valid list"）→ 校验失败先定向救援：字符串能
+    json.loads 出 list 则转换重试，正常进入 handler。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    agent.flyai = fake_flyai
+    env = agent.client_kernel_dispatch("profile_field_site", {
+        "location": "晋江",
+        "interests": '["宗族祠堂", "祭祀仪式", "侨乡"]',
+    })
+    assert env.ok is True
+    # culture 段逐 interest 调 search_pois——字符串已被救成真 list
+    pois = [kw for name, kw in fake_flyai.calls if name == "search_pois"]
+    assert any(kw.get("category") == "宗族祠堂" for kw in pois)
+
+
+def test_orchestrator_dispatch_coerce_unparseable_still_fails(fake_config):
+    """救援不越界：非 JSON 字符串（解析不出 list）仍按 invalid_arguments 拒绝。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    env = agent.client_kernel_dispatch("profile_field_site", {
+        "location": "晋江", "interests": "宗族祠堂、祭祀仪式"})
+    assert env.ok is False and env.error.code == "invalid_arguments"

@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
+from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.sources.flyai import RecordingClient
 from fieldwork_agent.runtime.loop import (
@@ -241,7 +242,21 @@ async def _async_iter(sync_gen):
 
 async def _exec_tool(dispatch, name, args, call_id, local_handlers):
     if name in local_handlers:
-        env = local_handlers[name](**args)
+        # 能力工具走 dispatch（args_model 校验折 invalid_arguments）；
+        # state tools 无 args_model，此前 ``(**args)`` 缺参/多参的 TypeError
+        # 直接炸穿 gather → 整轮 error+failed，已流出的正文全部丢失且 LLM
+        # 无从自救（轮 4 实测：update_research_context 漏 patch）。对齐
+        # dispatch 语义：签名不匹配折 invalid_arguments（LLM 可补参重试），
+        # 其余异常折 internal_error，均不外抛。
+        try:
+            env = local_handlers[name](**args)
+        except TypeError as exc:
+            env = Envelope(ok=False, error=ToolError(
+                code="invalid_arguments", message=f"参数调用失败：{exc}",
+                hint="请按工具 schema 补齐必填参数（去掉未知参数）后重试"))
+        except Exception as exc:
+            env = Envelope(ok=False, error=ToolError(
+                code="internal_error", message=str(exc)))
     else:
         env = await asyncio.to_thread(dispatch, name, args)
     return (call_id, name, env)

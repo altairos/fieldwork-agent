@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import App from "../src/App";
 import { saveKeys } from "../src/lib/keys";
 import { useConversationStore } from "../src/stores/conversation";
@@ -30,8 +30,12 @@ const SNAP: ProjectSnapshot = {
   phase_history: [],
 };
 
-/** 桩 fetch：按 URL 分发最小 Response（/settings/status → 已配置；/messages → 对话史；其余 → rest payload）。 */
-function stubFetch(opts: { rest: unknown; restOk?: boolean; settings?: unknown; messages?: unknown }) {
+/** 桩 fetch：按 URL 分发最小 Response（/settings/status → 已配置；/messages → 对话史；
+ *  /turns/:id/events → SSE 回放（轮 4 adopt）；其余 → rest payload）。 */
+function stubFetch(opts: {
+  rest: unknown; restOk?: boolean; settings?: unknown; messages?: unknown;
+  sse?: Record<string, Uint8Array[]>;
+}) {
   const fn = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/settings/status") {
@@ -41,6 +45,16 @@ function stubFetch(opts: { rest: unknown; restOk?: boolean; settings?: unknown; 
     if (url === "/projects/p1/messages") {
       const p = opts.messages ?? [];
       return { ok: true, status: 200, json: async () => p, text: async () => String(p) };
+    }
+    const sseMatch = url.match(/^\/projects\/p1\/turns\/([^/]+)\/events$/);
+    if (sseMatch) {
+      const queue = [...(opts.sse?.[sseMatch[1]] ?? [])];
+      return { ok: true, status: 200, body: { getReader: () => ({
+        read: async () => (queue.length
+          ? { value: queue.shift() as Uint8Array, done: false }
+          : { value: undefined, done: true }),
+        cancel: async () => {},
+      }) } };
     }
     const ok = opts.restOk ?? true;
     return { ok, status: ok ? 200 : 500, json: async () => opts.rest, text: async () => String(opts.rest) };
@@ -134,5 +148,41 @@ describe("Workspace 无 key 拦截（可浏览不可发）", () => {
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "消息输入" })).not.toBeDisabled();
     expect(screen.queryByTestId("composer-lock-hint")).not.toBeInTheDocument();
+  });
+});
+
+describe("Workspace 接住首页首轮回合（?turn= 领养，轮 4）", () => {
+  test("?turn= 挂载：订阅该回合回放、正文上屏、replace 清 query、史一致", async () => {
+    const encoder = new TextEncoder();
+    const frames = (rows: string[]) => rows.map((r) => encoder.encode(r));
+    const fn = stubFetch({
+      rest: SNAP,
+      messages: [
+        { role: "user", content: "研究宗族组织" },
+        { role: "assistant", content: "你好，田野罗盘" },
+      ],
+      sse: {
+        t9: frames([
+          'id: 1\nevent: message_delta\ndata: {"turn_id":"t9","seq":1,"text":"你好，"}\n\n',
+          'id: 2\nevent: message_delta\ndata: {"turn_id":"t9","seq":2,"text":"田野罗盘"}\n\n',
+          'id: 3\nevent: turn_done\ndata: {"turn_id":"t9","seq":3,"reply_id":"t9","usage":{}}\n\n',
+        ]),
+      },
+    });
+    window.history.pushState({}, "", "/p/p1?turn=t9");
+    render(<App />);
+
+    // 回放正文上屏，空态消失——「跳转后尚无对话」的直接回归钉
+    expect(await screen.findByText("你好，田野罗盘")).toBeInTheDocument();
+    expect(screen.queryByText(/尚无对话/)).not.toBeInTheDocument();
+    // 订阅了首页创建的首轮回合
+    expect(fn.mock.calls.map((c) => c[0])).toContain("/projects/p1/turns/t9/events");
+    // 接住后立即 replace 清 query（防刷新重放/分享链接重触发）
+    await waitFor(() => expect(window.location.search).toBe(""));
+    // 最终与后端事实一致：[user 首问, assistant 回复]
+    expect(useConversationStore.getState().messages).toEqual([
+      { role: "user", content: "研究宗族组织" },
+      { role: "assistant", content: "你好，田野罗盘" },
+    ]);
   });
 });

@@ -15,8 +15,10 @@ import type { ProjectSummary } from "../types/models";
  *   等偏好不放首页——导出格式在提案页下载区，配色走对话页 Header）。
  * 已有项目收进输入区下方低调折叠入口「继续上次 · 我的项目（N）」：默认收起、
  *   无项目不渲染；列表加载失败如实提示但绝不阻塞创建（输入区始终可用，不等列表）。
- * 创建：POST createProject({ purpose }) → navigate(/p/:id)；跨项目 reset 由
- *   Workspace 挂载 effect 按 projectId 变化统一处理（App.tsx）。
+ * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
+ *   首轮消息) → navigate(/p/:id?turn=…)，对话页接住回合订阅回放（不再「尚无对话」）；
+ *   建回合失败不阻塞进入，降级为无 query 跳转。跨项目 reset 由 Workspace 挂载
+ *   effect 按 projectId 变化统一处理（App.tsx）。
  */
 
 /** 示例 chips：短标签 + 点击填入的完整示例文案（文案与旧版 placeholder/模板同源） */
@@ -105,7 +107,16 @@ export function ProjectHub() {
     setCreateError(null);
     try {
       const res = await rest.createProject({ purpose: text });
-      navigate(`/p/${res.project_id}`);
+      // 首轮 turn（轮 4）：首页一句话即对话起点——此前 purpose 只写 research_context
+      // 不发 turn，跳转后对话页「尚无对话」，输入被静默吞进右栏。建回合失败（如
+      // 未配 key 403）不阻塞进入：不带 ?turn= 跳转，对话页降级文案/手动首问兑底。
+      let turnId: string | null = null;
+      try {
+        turnId = (await rest.createTurn(res.project_id, text)).turn_id;
+      } catch {
+        turnId = null;
+      }
+      navigate(turnId ? `/p/${res.project_id}?turn=${turnId}` : `/p/${res.project_id}`);
     } catch (err: unknown) {
       setCreateError(`项目创建失败：${String(err)}`);
       setCreating(false);

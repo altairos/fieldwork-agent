@@ -3,10 +3,11 @@
 MCP Server 与 Web 宿主共用 ``build_tool_schemas()``，保证两侧工具定义不漂移；
 能力实现只需 ``register(CapabilityMeta(...))`` 即完成接入。
 """
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 _REGISTRY: dict[str, "CapabilityMeta"] = {}
 
@@ -29,6 +30,42 @@ def register(meta: CapabilityMeta) -> None:
 
 def capabilities() -> dict[str, CapabilityMeta]:
     return dict(_REGISTRY)
+
+
+def validate_tool_args(meta: CapabilityMeta, args: dict) -> tuple[dict | None, str]:
+    """``args_model`` 校验 + LLM 字符串化数组参数的定向救援。
+
+    部分模型（如 qwen）偶发把 list 参数序列化成 JSON 字符串（实测
+    interests='["宗族祠堂", …]' 触发 "Input should be a valid list"）。救援
+    只在原本要失败的路径上动手：错误为 valid list 且字段值能 json.loads 出
+    list 时转换重试，正常路径零影响；救不回仍返回首条错误 msg。
+    返回 ``(validated, "")`` 成功，或 ``(None, 首条错误 msg)`` 失败。
+    """
+    try:
+        return meta.args_model.model_validate(args).model_dump(), ""
+    except ValidationError as exc:
+        fixed = dict(args)
+        touched = False
+        for err in exc.errors():
+            loc = err.get("loc") or ()
+            if not loc or "valid list" not in str(err.get("msg", "")):
+                continue
+            val = fixed.get(loc[0])
+            if isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                except ValueError:
+                    continue
+                if isinstance(parsed, list):
+                    fixed[loc[0]] = parsed
+                    touched = True
+        if touched:
+            try:
+                return meta.args_model.model_validate(fixed).model_dump(), ""
+            except ValidationError as retry_exc:
+                exc = retry_exc
+        msg = exc.errors()[0].get("msg", "") if exc.errors() else str(exc)
+        return None, msg
 
 
 def build_tool_schemas() -> list[dict]:

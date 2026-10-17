@@ -132,6 +132,35 @@ describe("conversation store hydrate（刷新回填）", () => {
   });
 });
 
+describe("conversation store turn_done 查重（hydrate×回放双写保护，轮 4 首页首问）", () => {
+  test("hydrate 完整史已含同文 assistant：回放 turn_done 不重复 append", () => {
+    useConversationStore.getState().hydrate([
+      { role: "user", content: "研究宗族" },
+      { role: "assistant", content: "你好，田野罗盘" },
+    ]);
+    useConversationStore.getState().applyEvent(ev({ event: "message_delta", text: "你好，" }));
+    useConversationStore.getState().applyEvent(ev({ event: "message_delta", text: "田野罗盘" }));
+    useConversationStore.getState().applyEvent(ev({ event: "turn_done", reply_id: "t1", usage: {} }));
+    const after = useConversationStore.getState();
+    // adopt 订阅回放与 hydrate 并发：末条同文 assistant 不再追加第二条
+    expect(after.messages).toEqual([
+      { role: "user", content: "研究宗族" },
+      { role: "assistant", content: "你好，田野罗盘" },
+    ]);
+    expect(after.streamBuffer).toBe("");
+    expect(after.turnRunning).toBe(false);
+  });
+  test("末条不同文（正常流式回合）照常 append", () => {
+    useConversationStore.getState().pushUser("问");
+    useConversationStore.getState().applyEvent(ev({ event: "message_delta", text: "答" }));
+    useConversationStore.getState().applyEvent(ev({ event: "turn_done", reply_id: "t1", usage: {} }));
+    expect(useConversationStore.getState().messages).toEqual([
+      { role: "user", content: "问" },
+      { role: "assistant", content: "答" },
+    ]);
+  });
+});
+
 describe("project + ui 阶段推进(右栏不自动切)", () => {
   test("phase_transition 改 phase，ui.activeTab 不变，pendingSuggestion 置位", () => {
     useUiStore.getState().setActiveTab("progress");

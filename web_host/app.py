@@ -11,9 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 APP_TOKEN_HEADER = "X-App-Token"
-# 受保护前缀（审计 F02）：/projects、/settings 全族；/health、/ready 与静态前端
-# 豁免——页面要先能打开、健康探针不该被令牌拦住。
-_PROTECTED_PREFIXES = ("/projects", "/settings")
+# 受保护前缀（审计 F02 + MCP 改造2）：/projects、/settings、/mcp 全族；
+# /health、/ready 与静态前端豁免——页面要先能打开、健康探针不该被令牌拦住。
+_PROTECTED_PREFIXES = ("/projects", "/settings", "/mcp")
 
 
 def _is_protected(path: str) -> bool:
@@ -33,10 +33,27 @@ def _app_token_ok(request: Request) -> bool:
 def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     from fieldwork_agent.web_host.deps import init_deps
 
+    # 提前解析 cfg/repo：MCP /mcp 挂载与 Web API 必须共享同一 repo 实例
+    # （JsonRepository 进程内缓存 / Sqlite 连接），lifespan 里不再各建一份
+    cfg = config
+    if cfg is None:
+        from fieldwork_agent.core.config import Config
+        cfg = Config()
+    shared_repo = repo
+    if shared_repo is None:
+        from fieldwork_agent.kernel.repository.factory import make_repository
+        shared_repo = make_repository(cfg)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        init_deps(app, config=config, repo=repo)
-        yield
+        init_deps(app, config=cfg, repo=shared_repo)
+        # /mcp 的 session manager 需 lifespan 托管（SDK 契约：run() 只能进一次）
+        mcp_service = getattr(app.state, "mcp_service", None)
+        if mcp_service is not None:
+            async with mcp_service.run():
+                yield
+        else:
+            yield
 
     app = FastAPI(title="Fieldwork Web Host", version="0.1.0", lifespan=lifespan)
 
@@ -111,9 +128,41 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     app.include_router(settings.router)
     app.include_router(state.router)
 
+    # ---- MCP streamable HTTP（改造1/2）：必须在 SPA catch-all 之前挂载 ----
+    _mount_mcp(app, config=cfg, repo=shared_repo)
+
     # ---- 静态前端挂载（Task 10）：API 路由已注册，优先级高于 catch-all ----
     _mount_frontend(app, web_dist)
     return app
+
+
+def _mount_mcp(app: FastAPI, config=None, repo=None) -> None:
+    """挂 MCP streamable HTTP 端点到 /mcp（改造1/2，docs/research）。
+
+    - SDK 缺失（未装 ``mcp`` extra）→ http_entry import 即失败，此处静默降级
+      不挂载：Web 宿主其余功能完全不受影响（改造2 的降级承诺）；
+    - ``StreamableHTTPSessionManager.run()`` 只能进一次（SDK 契约），由
+      create_app 的 lifespan 经 ``app.state.mcp_service`` 托管；
+    - 挂载顺序必须在 ``_mount_frontend``（SPA catch-all GET）之前，否则
+      POST /mcp 被吞成 405。
+    """
+    try:
+        from fieldwork_agent.mcp_server.http_entry import StreamableHttpService
+    except ImportError:
+        return
+    service = StreamableHttpService(config=config, repo=repo)
+    # 不能用 app.mount：新版 Starlette 的 Mount 按 path+"/{path:path}" 编译，
+    # Mount("/mcp") 只匹配 "/mcp/<sub>" 而不匹配精确 "/mcp"（MCP 客户端
+    # POST 的就是端点本身，会漏到 SPA catch-all 变 405）。Route 精确挂载
+    # ASGI app，方法面全放行、语义交 SDK 自答（GET 探流/DELETE 会话终止）。
+    # 此刻 catch-all 尚未注册，append 顺序天然在前。
+    from starlette.routing import Route
+
+    app.router.routes.append(
+        Route("/mcp", endpoint=service.asgi, name="mcp",
+              methods=["GET", "POST", "DELETE"])
+    )
+    app.state.mcp_service = service
 
 
 def _mount_frontend(app: FastAPI, web_dist=None) -> None:

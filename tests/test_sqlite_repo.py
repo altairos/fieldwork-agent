@@ -18,7 +18,8 @@ def test_schema_created_with_user_version(tmp_path):
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert version == 1
     for t in ("projects", "research_context", "messages", "field_sites",
-              "informants", "search_cache", "knowledge", "proposals", "schema_meta"):
+              "informants", "search_cache", "knowledge", "proposals",
+              "confirmations", "schema_meta"):
         assert t in tables, f"缺表 {t}"
 
 
@@ -186,7 +187,7 @@ def test_cache_roundtrip(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
     cid = repo.cache_search("p1", "大理住宿", "search_hotel", {"items": [1, 2]})
-    full = repo.get_cached_search(cid)
+    full = repo.get_cached_search("p1", cid)
     assert full["query"] == "大理住宿" and full["tool"] == "search_hotel"
     assert full["result"] == {"items": [1, 2]}
     assert [c["id"] for c in repo.list_cached_searches("p1")] == [cid]
@@ -196,25 +197,27 @@ def test_cache_roundtrip(tmp_path):
 def test_unknown_cache_id_returns_none(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
-    assert repo.get_cached_search("no_such_id") is None
+    assert repo.get_cached_search("p1", "no_such_id") is None
 
 
 def test_cache_truncated_64kb(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
     cid = repo.cache_search("p1", "q", "search_ai", {"blob": "x" * 100_000})
-    stored = repo.get_cached_search(cid)["result"]
+    stored = repo.get_cached_search("p1", cid)["result"]
     assert stored["truncated"] is True
     assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
 
-def test_get_cached_search_cross_project(tmp_path):
-    """cid 全局唯一：不带 pid 也能跨项目定位。"""
+def test_get_cached_search_scoped_to_project(tmp_path):
+    """R01：读取收窄项目域——p1 读不到 p2 的快照，未知项目返回 None。"""
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
     repo.create("p2")
     cid = repo.cache_search("p2", "q", "search_ai", {"x": 1})
-    assert repo.get_cached_search(cid)["result"] == {"x": 1}
+    assert repo.get_cached_search("p2", cid)["result"] == {"x": 1}
+    assert repo.get_cached_search("p1", cid) is None
+    assert repo.get_cached_search("no_such_project", cid) is None
 
 
 def test_knowledge_roundtrip_and_search(tmp_path):

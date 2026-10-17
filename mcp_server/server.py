@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from fieldwork_agent.kernel.registry import capabilities
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
-from fieldwork_agent.mcp_server import dispatch, state_tools
+from fieldwork_agent.mcp_server import dispatch, request_ctx, state_tools
 from fieldwork_agent.mcp_server import prompts as prompts_mod
 from fieldwork_agent.mcp_server import resources as res_mod
 from fieldwork_agent.mcp_server.mapping import capability_tools
@@ -55,7 +55,7 @@ def _text_payload(payload: dict) -> CallToolResult:
 
 def create_server(config: "Config | None" = None,
                   repo: "ProjectRepository | None" = None) -> LowLevelServer:
-    """组装低层 MCP Server：22 tools（13 能力 + 9 状态）+ 资源面 + 2 prompts。
+    """组装低层 MCP Server：23 tools（14 能力 + 9 状态）+ 资源面 + 2 prompts。
 
     - ``config=None``：无 LLM（文档能力自然模板降级）、FlyAIClient 默认实例
       （无 CLI/key 时搜索走 flyai_unavailable 体验降级）——L3 契约测试即此路径；
@@ -77,6 +77,37 @@ def create_server(config: "Config | None" = None,
     client = FlyAIClient(api_key=cfg.flyai_api_key) if cfg is not None else FlyAIClient()
     # 宿主注入上下文：保留键 llm/client 的唯一来源（dispatch 信任边界）
     host_ctx = {"llm": llm, "client": client}
+    # 改造3：登记组装期 client。请求级动态 Header 覆盖会重建新 client，dispatch
+    # 据此识别并绕过绑死旧 client 的单例 partial（详见 dispatch._resolve）
+    dispatch._SINGLETON_CLIENT = client
+    # 请求级 LLMClient 重建沿用组装期模型三槽；cfg 为 None 时退 env 默认
+    if cfg is not None:
+        models_map = cfg.llm_models
+    else:
+        from fieldwork_agent.core.config import DEFAULT_LLM_MODELS
+        models_map = dict(DEFAULT_LLM_MODELS)
+
+    def _effective_host_ctx() -> dict:
+        """组装期 host_ctx + 请求级动态 Header 覆盖（改造3）。
+
+        contextvar（http_entry 中间件按请求 set/reset）里有对应 key 才重建宿主
+        对象；重建失败（缺 dashscope SDK 等）回落组装期值——服务端 env 恒兜底，
+        Header 只做逐请求增强，不带 key 时不新建任何对象。
+        """
+        ov = request_ctx.overrides()
+        if not ov:
+            return host_ctx
+        ctx = dict(host_ctx)
+        if ov.get("dashscope_api_key"):
+            try:
+                # 函数内 import：monkeypatch kernel.llm.LLMClient 的替身才能被看到
+                from fieldwork_agent.kernel.llm import LLMClient
+                ctx["llm"] = LLMClient(api_key=ov["dashscope_api_key"], models=models_map)
+            except RuntimeError:
+                pass   # 组装期 llm 兜底（可能 None → 文档能力模板降级）
+        if ov.get("flyai_api_key"):
+            ctx["client"] = FlyAIClient(api_key=ov["flyai_api_key"])
+        return ctx
 
     # Task 2 设计：fn 签名显式声明 client 的能力（8 搜索 + 2 聚合）填入共享
     # client 版分派表；文档能力不入表（走 host_ctx["llm"] 注入）
@@ -86,7 +117,7 @@ def create_server(config: "Config | None" = None,
             dispatch._CLIENTLESS_SINGLETONS[cap_name] = functools.partial(meta.fn, client=client)
 
     handlers = state_tools.build_handlers(repo)
-    tools = capability_tools() + state_tools.STATE_TOOLS   # 13 + 9 = 22（单一来源，不手抄）
+    tools = capability_tools() + state_tools.STATE_TOOLS   # 14 + 9 = 23（单一来源，不手抄）
 
     srv = LowLevelServer(SERVER_NAME, version=SERVER_VERSION)
 
@@ -110,7 +141,7 @@ def create_server(config: "Config | None" = None,
             # 能力路径：阻塞的 flyai 子进程/文档生成丢工作线程；
             # call_capability 自带包络兜底，不重复包
             payload = await anyio.to_thread.run_sync(
-                lambda: dispatch.call_capability(name, arguments, host_ctx))
+                lambda: dispatch.call_capability(name, arguments, _effective_host_ctx()))
         return _text_payload(payload)
 
     async def _list_resources(ctx: ServerRequestContext,

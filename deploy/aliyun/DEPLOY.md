@@ -11,16 +11,22 @@
 ## 0. 架构与前提（务必先读）
 
 - 服务入口不是 `fieldwork-web` 脚本（它写死 `127.0.0.1:8300`，外部访问不到），而是直接用
-  `uvicorn fieldwork_agent.web_host.app:create_app --factory --host 0.0.0.0 --port 2143`。
+  `uvicorn fieldwork_agent.web_host.app:create_app --factory --http h11 --host 0.0.0.0 --port 2143`。
+  `--http h11` 是**硬要求**：百炼探测节点（Java 客户端）默认发 h2c 明文升级头，uvicorn 默认
+  httptools 实现会拒为 400（详见第 7 节末尾注意事项）。
 - 运行密钥走**环境变量**（systemd `EnvironmentFile`）：
-  - `DASHSCOPE_API_KEY`（**必填**，通义千问/百炼）——没有它 LLM 不可用，对话/方案生成失效。
-  - `FLYAI_API_KEY`（可选，飞猪）——没有它机票/火车/酒店检索工具降级，其余功能正常。
+  - `DASHSCOPE_API_KEY`（Web 直访**必填**，通义千问/百炼）——没有它页面 LLM 不可用，对话/方案
+    生成失效；纯 MCP 托管模式可留空（调用方用 `x-dashscope-key` 动态 Header 自带 key，见第 7 节）。
+  - `FLYAI_API_KEY`（可选，飞猪）——服务器**全局兜底** key：未带 `x-flyai-key` 的飞猪调用都
+    消耗它；不填且调用方也没带，则机票/火车/酒店检索工具降级，其余功能正常（详见第 7 节）。
 - 项目数据存于运行用户的 `~/.fieldwork_agent/projects`（本机 root → `/root/.fieldwork_agent/projects`）。
 - **Tier S 资产（`secrets/`）默认不在部署包内**，服务会回落到内置 **Tier P 公开版**提示词/访谈库，
   功能完整、仅提示词为开源简版。要用生产版见第 6 节。
 - **前置依赖**：`curl`（健康检查）——部署脚本步骤 2 已包含 `dnf install -y curl`。
 - **旅行搜索依赖**：`nodejs + npm + @fly-ai/flyai-cli`——部署脚本检测到 npm 会自动安装；
-  不装只影响 `/ready` 的 `flyai_cli` 项（页面与其他功能正常，旅行搜索不可用）。
+  不装只影响 `/ready` 的 `flyai_cli` 项（页面与其他功能正常，旅行搜索不可用）。Web 与 MCP
+  两条路径的飞猪工具（8 个 search 工具）都经该 CLI 子进程出网，key 优先级：请求头
+  `x-flyai-key`（调用方的）→ env `FLYAI_API_KEY`（服务器兜底）。
 - **公网令牌**：公网部署建议设置 `FIELDWORK_APP_TOKEN` 访问令牌（所有 `/projects`、`/settings`
   接口要求 `X-App-Token` 请求头匹配）——说明见 `deploy/aliyun/fieldwork-web.env.example` 注释段。
 
@@ -31,7 +37,7 @@
 打包产物：`fieldwork-agent-deploy.tar.gz`（含源码 + 预构建 `web/dist` + 本 `deploy/` 目录；
 已排除 `.git/.venv/node_modules/缓存/secrets`）。服务器**无需装 Node**，因为 dist 已内置。
 
-如需重新打包，见第 8 节。
+如需重新打包，见第 9 节。
 
 ---
 
@@ -126,7 +132,41 @@ FIELDWORK_ASSETS_DIR=/opt/fieldwork-agent/secrets
 
 ---
 
-## 7. 备案完成后：域名 + HTTPS
+## 7. 百炼 MCP 接入（自定义 MCP + 多租户 key 归属）
+
+Web 进程同时暴露 MCP 端点 **`/mcp`**（Streamable HTTP，与页面同端口）。在阿里百炼控制台
+「Agent 编排 → MCP 列表 → 添加自定义 MCP Server」接入：
+
+| 配置项 | 值 |
+|---|---|
+| 服务地址 | `http://<公网IP>:2143/mcp`（备案后换 `https://<域名>/mcp`，见第 8 节） |
+| 鉴权 | 自定义 Header `X-App-Token: <与 env FIELDWORK_APP_TOKEN 同值>` |
+| 可选 Header | `x-flyai-key` / `x-dashscope-key` —— 调用方自带 key，逐请求覆盖服务器 env |
+
+### key 归属（哪次调用消耗谁的额度）
+
+| 调用层 | 优先级链 | 全部缺失时 |
+|---|---|---|
+| Agent 对话推理 | **调用方自己的百炼账号**（发生在百炼平台侧，不经过本服务器） | — |
+| MCP 内 LLM 工具（方案/访谈指南/纪要提取） | 请求头 `x-dashscope-key`（调用方的）→ env `DASHSCOPE_API_KEY`（服务器兜底） | 模板降级，零额度消耗 |
+| 飞猪搜索（8 个 search 工具 + 行程组装） | 请求头 `x-flyai-key`（调用方的）→ env `FLYAI_API_KEY`（服务器兜底） | `flyai_unavailable` 降级 |
+
+- env 里配的 key 是**全局兜底**：所有未带 Header 的调用共用（飞猪免费额度：注册赠送
+  5000 次 + 每日 100 次共享）。
+- 要让每个用户自理配额：在其百炼 MCP 配置里加 `x-flyai-key` / `x-dashscope-key` Header
+  即可——覆盖只在本次请求内生效、请求结束即复位，互不串号。
+- 本生产实例当前形态：`DASHSCOPE_API_KEY` 留空（LLM 工具靠动态 Header，无则模板降级、
+  零百炼消耗）+ `FLYAI_API_KEY` 填站主 key 兜底。
+- 动态 Header 机制实现见 `mcp_server/request_ctx.py`（ASGI 中间件 + contextvar，逐请求
+  重建 FlyAIClient / LLMClient）。
+
+> ⚠️ **不要丢 `--http h11`**：百炼探测节点是 Java 客户端，会发送 HTTP/2 明文升级（h2c）
+> 头，uvicorn 默认 httptools 实现直接拒为 400，百炼侧现象为「该 MCP 暂无可用工具，无法
+> 添加」。systemd 单元已固定 `--http h11` 规避；手工重启或改启动命令时务必保留该参数。
+
+---
+
+## 8. 备案完成后：域名 + HTTPS
 
 1. 域名 A 记录 → 服务器公网 IP。
 2. `dnf install -y nginx`，把 `deploy/aliyun/nginx-fieldwork.conf` 里的 `your-domain.com`
@@ -139,7 +179,7 @@ FIELDWORK_ASSETS_DIR=/opt/fieldwork-agent/secrets
 
 ---
 
-## 8. 日常运维
+## 9. 日常运维
 
 ```bash
 systemctl status  fieldwork-web.service     # 状态
@@ -168,7 +208,7 @@ cd /opt/fieldwork-agent && .venv/bin/pip install -e . && systemctl restart field
 
 ---
 
-## 9. 排错
+## 10. 排错
 
 | 现象 | 排查 |
 |---|---|
@@ -180,3 +220,5 @@ cd /opt/fieldwork-agent && .venv/bin/pip install -e . && systemctl restart field
 | 提示词像是简版 | 未启用 Tier S，见第 6 节 |
 | 接口 401 `app_token_required` | 服务端设了 FIELDWORK_APP_TOKEN 但浏览器未填/填错——首页「API 密钥」卡填写同一令牌 |
 | `/ready` 返回 `not_ready` | 按响应里 checks 找 false 项：`flyai_cli=false` 装 CLI；`projects_dir_writable=false` 查目录属主 |
+| 百炼添加 MCP 后提示「暂无可用工具」 | ① 启动命令是否带 `--http h11`（h2c 400，见第 7 节）；② `X-App-Token` 与 env `FIELDWORK_APP_TOKEN` 是否一致；③ `journalctl -u fieldwork-web -n 50` 看有无 `POST /mcp` 记录 |
+| MCP 飞猪工具报 `flyai_rate_limited` | 服务器兜底 key 配额耗尽——让调用方在百炼 MCP 配置加 `x-flyai-key` 自理，或更换更高额度 key |
