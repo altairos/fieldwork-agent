@@ -5,3 +5,7 @@
 约定（spec 公理 1）：kernel 能力函数**不碰本包**，落盘一律由宿主显式调用；
 本包只做状态读写，阶段推进语义归 ``kernel.guidance``。
 """
+from fieldwork_agent.kernel.repository.factory import make_repository
+from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
+
+__all__ = ["SqliteRepository", "make_repository"]

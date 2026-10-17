@@ -79,6 +79,34 @@ npm run test             # vitest 单元/组件测试
 npm run test:e2e         # Playwright 端到端（首次需 npx playwright install）
 ```
 
+## 存储后端与迁移
+
+项目数据默认落 JSON 文件树（`~/.fieldwork_agent/projects/`，`JsonRepository`）；
+也可切换单文件 SQLite 后端（`SqliteRepository`，WAL 模式，CLI/Web/MCP 同一契约）：
+
+```powershell
+$env:FA_STORAGE = "sqlite"   # 切换后端（默认 json；未知值安全回落 json）
+```
+
+> 注意：CLI REPL（`fieldwork` 命令行交互）当前仍直接使用 JSON 存储，`FA_STORAGE=sqlite` 暂只对 Web 宿主与 MCP Server 生效——CLI 侧接入属后续任务。
+
+已有 JSON 存量项目可一次性搬入 SQLite（幂等，可重复执行）：
+
+```powershell
+fieldwork migrate --to-sqlite                              # 全部项目
+fieldwork migrate --to-sqlite --project-id my_research     # 单个项目
+```
+
+- **迁移范围**：7 类数据——项目/阶段（含 `phase_history`）、研究上下文、全量消息史
+  （`chat_history.jsonl`）、田野点、报道人、搜索缓存、知识库、提案文档（含旧
+  `proposal_draft`/`final_proposal` 单值键）。迁移后自动做行数与抽样字段校验，
+  不一致即报错终止，不留半迁移状态。
+- **迁移期单写者**：迁移期间请停止对同一批项目的其他写入（只跑迁移进程），完成后再
+  设 `FA_STORAGE=sqlite` 启动宿主，避免双后端并发写造成分叉。
+- **JSON 只读回退**：迁移不删除、不改动 JSON 目录——不设 `FA_STORAGE`（或设回
+  `json`）即回到 JSON 后端；SQLite 库（`~/.fieldwork_agent/fieldwork.db`）留存，
+  可随时删除重迁，天然回滚。
+
 ### MCP Server
 
 ```bash

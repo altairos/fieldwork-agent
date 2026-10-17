@@ -41,6 +41,10 @@ class Config:
         self.proposal_model: str = os.getenv("FA_PROPOSAL_MODEL", "qwen-max")
         self.extract_model: str = os.getenv("FA_EXTRACT_MODEL", "qwen3.8-flash")
 
+        # 存储后端（spec §5.1 里程碑2：FA_STORAGE=sqlite 切换，默认 json）
+        self.storage_backend: str = os.getenv("FA_STORAGE", "json").lower()
+        self.sqlite_path: Path = CONFIG_DIR / "fieldwork.db"
+
         # 云同步（钉钉）
         self.dingtalk_webhook: str = ""
         self.dingtalk_enabled: bool = False

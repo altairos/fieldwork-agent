@@ -5,13 +5,13 @@ from fastapi import Request
 
 def init_deps(app, *, config=None, repo=None) -> None:
     from fieldwork_agent.core.config import Config
-    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.kernel.repository.factory import make_repository
     from fieldwork_agent.kernel.sources.flyai import FlyAIClient
     from fieldwork_agent.web_host.turn_manager import TurnManager
 
     cfg = config or Config()
     if repo is None:
-        repo = JsonRepository(projects_dir=cfg.projects_dir)
+        repo = make_repository(cfg)
     app.state.config = cfg
     app.state.repo = repo
     app.state.flyai = FlyAIClient(getattr(cfg, "flyai_api_key", ""))
