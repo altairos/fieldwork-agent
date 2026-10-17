@@ -10,6 +10,13 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".fieldwork_agent"
 PROJECTS_DIR = CONFIG_DIR / "projects"
 
+# 模型三槽默认值（server.py 请求级 LLMClient 重建在 cfg 缺席时也引用；单一来源）
+DEFAULT_LLM_MODELS: dict[str, str] = {
+    "interview": "qwen3.8-flash",
+    "proposal": "qwen-max",
+    "extract": "qwen3.8-flash",
+}
+
 
 class Config:
     """全局配置"""
@@ -37,9 +44,9 @@ class Config:
         self.dashscope_plan: str = os.getenv("FA_DASHSCOPE_PLAN", "")
 
         # 模型分档三槽：对话推进 / 长文方案 / 结构化抽取
-        self.interview_model: str = os.getenv("FA_INTERVIEW_MODEL", "qwen3.8-flash")
-        self.proposal_model: str = os.getenv("FA_PROPOSAL_MODEL", "qwen-max")
-        self.extract_model: str = os.getenv("FA_EXTRACT_MODEL", "qwen3.8-flash")
+        self.interview_model: str = os.getenv("FA_INTERVIEW_MODEL", DEFAULT_LLM_MODELS["interview"])
+        self.proposal_model: str = os.getenv("FA_PROPOSAL_MODEL", DEFAULT_LLM_MODELS["proposal"])
+        self.extract_model: str = os.getenv("FA_EXTRACT_MODEL", DEFAULT_LLM_MODELS["extract"])
 
         # 存储后端（spec §5.1 里程碑2：FA_STORAGE=sqlite 切换，默认 json）
         self.storage_backend: str = os.getenv("FA_STORAGE", "json").lower()

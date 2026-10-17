@@ -29,6 +29,9 @@ RESERVED_KEYS: tuple[str, ...] = ("llm", "client")
 _CAPABILITY_FNS = {name: meta.fn for name, meta in capabilities().items()}
 # 搜索原语的共享 FlyAIClient 版本 handler；由 server 组装时注入（Task 5）
 _CLIENTLESS_SINGLETONS: dict[str, Any] = {}
+# 组装期绑进单例 partial 的那个 client（server 写入，改造3）：请求级 ctx 携带
+# 不同 client（动态 Header 重建）时须绕过单例，否则旧闭包吞掉新 key
+_SINGLETON_CLIENT: Any = None
 
 _Parameters = Mapping[str, inspect.Parameter]
 
@@ -52,14 +55,22 @@ def _declares(parameters: _Parameters, key: str) -> bool:
     return param is not None and param.kind is not inspect.Parameter.VAR_KEYWORD
 
 
-def _resolve(name: str) -> Any:
+def _resolve(name: str, ctx: dict | None = None) -> Any:
     """按名解析 handler：两张导入期快照优先，都未命中再回落查一次活注册表（终审⑤/M1）。
 
     ``_CAPABILITY_FNS`` 是 import 期快照，而 ``mapping.capability_tools()`` 每次活取注册表：
     将来若出现延迟注册，tools/list 会广告出快照里没有的名字，tools/call 却答 unknown_tool。
     回落 ``capabilities()`` 消除这层不对称；快照命中优先，monkeypatch 替身语义不变。
+
+    改造3：单例 partial 绑死了组装期 client；请求级 ctx 携带**不同** client
+    （动态 Header 重建）时跳过单例，回落 ``_CAPABILITY_FNS`` 走 ctx 注入路径。
     """
-    fn = _CLIENTLESS_SINGLETONS.get(name) or _CAPABILITY_FNS.get(name)
+    req_client = (ctx or {}).get("client")
+    bypass = (_SINGLETON_CLIENT is not None and req_client is not None
+              and req_client is not _SINGLETON_CLIENT)
+    fn = None if bypass else _CLIENTLESS_SINGLETONS.get(name)
+    if fn is None:
+        fn = _CAPABILITY_FNS.get(name)
     if fn is not None:
         return fn
     meta = capabilities().get(name)
@@ -68,7 +79,7 @@ def _resolve(name: str) -> Any:
 
 def call_capability(name: str, arguments: dict, ctx: dict) -> dict:
     """按能力名分派并把结果折进统一包络；保留键按 ``fn`` 签名 + ctx 双条件注入。"""
-    fn = _resolve(name)
+    fn = _resolve(name, ctx)
     if fn is None:
         return _error(UNKNOWN_TOOL, f"未知工具: {name}",
                       "先 list_tools 获取可用工具名")
