@@ -472,6 +472,7 @@ class JsonRepository:
                             "version": version,
                             "filename": legacy["filename"],
                             "saved_at": legacy.get("saved_at", ""),
+                            "dep_hash": "",
                         },
                     )
                 )
