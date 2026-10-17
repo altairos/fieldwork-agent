@@ -13,6 +13,7 @@
 切换；端点取值仅限 ``PLAN_BASE_URLS`` 白名单（``plan_base_url()``），杜绝对任意 URL 直连。
 """
 import json
+import os
 from typing import Any
 
 try:
@@ -35,10 +36,69 @@ PLAN_BASE_URLS: dict[str, str] = {
     "token": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
 }
 
+# 默认端点（SDK 原生）+ 两套餐端点，NO_PROXY 直连豁免清单。
+_DASHSCOPE_HOSTS: tuple[str, ...] = (
+    "dashscope.aliyuncs.com",
+    "coding.dashscope.aliyuncs.com",
+    "token-plan.cn-beijing.maas.aliyuncs.com",
+)
+
+
+def ensure_dashscope_direct() -> None:
+    """把百炼域名并入进程级 ``NO_PROXY``（幂等，不覆盖已有配置）。
+
+    反代理劫持：Windows 上 dashscope SDK 底层的 requests 除环境变量外还读
+    注册表系统代理（本机 clash 类代理对百炼转发失败时，SDK 仅报 "url error"
+    掩盖真实原因）；百炼为国内服务直连最优。requests/httpx 均尊重
+    ``NO_PROXY``，模块 import 即调用，全宿主（web/cli/mcp）免配置。
+    """
+    cur = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
+    parts = [p.strip() for p in cur.split(",") if p.strip()]
+    for host in _DASHSCOPE_HOSTS:
+        if not any(p == host or p.endswith("." + host) for p in parts):
+            parts.append(host)
+    merged = ",".join(parts)
+    os.environ["NO_PROXY"] = merged
+    os.environ["no_proxy"] = merged
+
+
+ensure_dashscope_direct()
+
 
 def plan_base_url(plan: str | None) -> str | None:
     """套餐类型 → 白名单端点；空/default/未知/任意 URL → ``None``（走 SDK 原生端点）。"""
     return PLAN_BASE_URLS.get((plan or "").strip().lower())
+
+
+def _wants_thinking_off(model: str) -> bool:
+    """qwen3 系混合思考模型（qwen3.8/3.7/3.6/3.5，默认开思考）才需显式
+    ``enable_thinking=False``：思考流走 ``reasoning_content``、正文走
+    ``content``，本层只解析 ``content``，开着思考会出现工具结果回填后的
+    最终轮「只想不写」→ 正文为空，回合无回复即结束。门控边界：仅思考模型
+    （``-thinking`` 后缀，只接受 true）与非思考模型（qwen-max 等）传该参数
+    会被网关 400 NotSupportEnableThinking 拒绝，不能无条件传。
+    """
+    name = (model or "").lower()
+    return name.startswith("qwen3") and "-thinking" not in name
+
+
+# 默认端点的 OpenAI 兼容入口：所有对话模型统一路由，不按 aigc 服务路径区分，
+# 作为 SDK 原生路径週 400 "url error" 时的回退（内部常量，非用户输入）。
+_DEFAULT_COMPAT_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+def _is_gateway_url_error(response: Any) -> bool:
+    """百炼网关的「模型不在该 aigc 服务路径」信号。
+
+    网关把每个模型绑定到唯一服务路径（text/multimodal-generation），SDK 原生
+    调用固定打 text-generation；模型实际在其它路径时网关报 400 "url error"
+    ——消息文本误导，实为路径不匹配（见 dashscope SDK acli/providers/tongyi.py
+    的同款处理：双路径探测）。判定不限定状态码（SDK 包装形态未必稳定），
+    以 "url error" 特征串为准；仅在非 200 分支调用，误判回退到统一路由的
+    兼容端点也无害（其自有错误通道会给出真实原因）。
+    """
+    haystack = f"{getattr(response, 'code', '')} {getattr(response, 'message', '')}"
+    return "url error" in haystack.lower()
 
 
 def _field(obj: Any, key: str) -> Any:
@@ -139,9 +199,15 @@ class LLMClient:
         }
         if tools:
             call_kwargs["tools"] = tools
+        if _wants_thinking_off(self.models[slot]):
+            call_kwargs["enable_thinking"] = False
         response = Generation.call(**call_kwargs)
         if response.status_code != 200:
             # 契约四键恒在：消费方（宿主/loop）可无条件读 usage 等键，error 为附加错误通道。
+            if _is_gateway_url_error(response) and _HTTPX_AVAILABLE:
+                return self._compat_chat(messages, slot=slot, tools=tools,
+                                         temperature=temperature, max_tokens=max_tokens,
+                                         base_url=_DEFAULT_COMPAT_BASE)
             return {"content": "", "tool_calls": None, "finish_reason": "",
                     "usage": {}, "error": str(response.message)}
         choice = response.output.choices[0]
@@ -173,12 +239,23 @@ class LLMClient:
         }
         if tools:
             call_kwargs["tools"] = tools
+        if _wants_thinking_off(self.models[slot]):
+            call_kwargs["enable_thinking"] = False
         accumulated = ""
         final_tool_calls = None
         finish_reason = ""
         usage: dict = {}
         for response in Generation.call(**call_kwargs):
             if response.status_code != 200:
+                if (_is_gateway_url_error(response) and _HTTPX_AVAILABLE
+                        and not accumulated):
+                    # url error 必发于首 chunk（网关路由拒绝）；已输出过内容则不重试，
+                    # 避免兼容端点重复吐同样的增量。
+                    yield from self._compat_chat_stream(
+                        messages, slot=slot, tools=tools,
+                        temperature=temperature, max_tokens=max_tokens,
+                        base_url=_DEFAULT_COMPAT_BASE)
+                    return
                 yield {"content": "", "tool_calls": None, "finish_reason": "",
                        "usage": {}, "error": str(response.message)}
                 return
@@ -210,6 +287,8 @@ class LLMClient:
         }
         if tools:
             payload["tools"] = tools
+        if _wants_thinking_off(self.models[slot]):
+            payload["enable_thinking"] = False
         if stream:
             payload["stream"] = True
             payload["stream_options"] = {"include_usage": True}
@@ -217,10 +296,11 @@ class LLMClient:
 
     def _compat_chat(self, messages: list[dict], *, slot: str,
                      tools: list[dict] | None, temperature: float,
-                     max_tokens: int) -> dict[str, Any]:
+                     max_tokens: int, base_url: str | None = None) -> dict[str, Any]:
+        url_base = base_url or self.base_url
         try:
             resp = httpx.post(
-                f"{self.base_url}/chat/completions",
+                f"{url_base}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=self._compat_request(messages, slot=slot, tools=tools,
                                           temperature=temperature, max_tokens=max_tokens,
@@ -241,10 +321,12 @@ class LLMClient:
         }
 
     def _compat_chat_stream(self, messages: list[dict], *, slot: str,
-                            tools: list[dict] | None, temperature: float, max_tokens: int):
+                            tools: list[dict] | None, temperature: float, max_tokens: int,
+                            base_url: str | None = None):
+        url_base = base_url or self.base_url
         try:
             with httpx.stream(
-                "POST", f"{self.base_url}/chat/completions",
+                "POST", f"{url_base}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=self._compat_request(messages, slot=slot, tools=tools,
                                           temperature=temperature, max_tokens=max_tokens,

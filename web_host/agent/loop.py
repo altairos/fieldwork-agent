@@ -152,6 +152,43 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         tm.finish(pid, turn_id, "failed")
         return
 
+    # 空回复收敛（对齐 CLI runtime/loop.py 的触顶收敛）：主循环退出但零正文时
+    # 不让回合静默结束——追加 system 收敛指令再取一次最终回答（不带工具，
+    # 防继续调用）；仍空则发兑底文案。覆盖两类场景：预算触顶裸退出，及
+    # 思考模型最终轮「只想不写」（思考流在 reasoning_content、正文为空，
+    # 回合无回复即 completed）。cancel 已取消的回合不做兑底（终态 cancelled）。
+    handle = tm.get_turn(pid, turn_id)
+    if (llm is not None and not accumulated_reply
+            and not (handle and handle.cancel_event.is_set())):
+        limit_hit = (iterations >= max_iters or total_calls >= max_tool_calls
+                     or time.monotonic() - start > max_wall_seconds)
+        reason = ("本回合已达到处理上限。" if limit_hit
+                  else "上一轮未生成文字回复。")
+        messages.append({"role": "system", "content":
+                         reason + "请基于以上对话与工具结果，用中文给出简明的"
+                                 "阶段性回答；不要再调用工具。"})
+        try:
+            stream = llm.chat_stream(messages, tools=None, slot="interview")
+            iterations += 1
+            final_resp = None
+            async for chunk in _async_iter(stream):
+                if "delta" in chunk and chunk["delta"]:
+                    tm.append_event(pid, turn_id, "message_delta",
+                                    {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    final_resp = chunk
+            if final_resp and not final_resp.get("error"):
+                accumulated_reply = final_resp.get("content", "") or ""
+                usage_total = final_resp.get("usage", {}) or usage_total
+        except Exception:
+            accumulated_reply = ""  # 收敛重试失败不改变回合结果，走兑底文案
+        if not accumulated_reply:
+            fallback = ("（已达本回合处理上限，未能基于现有信息生成完整回答；"
+                        "请继续提问以接着现有材料推进。）" if limit_hit else
+                        "（本次未生成文字回复；请继续提问或稍后重试。）")
+            tm.append_event(pid, turn_id, "message_delta", {"text": fallback})
+            accumulated_reply = fallback
+
     # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 阶段推进
     # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
     try:

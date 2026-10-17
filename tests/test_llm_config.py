@@ -1,5 +1,6 @@
 """kernel.llm + Config 模型三槽 — 全 mock，不联网、不需要真实 API Key。"""
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -175,6 +176,74 @@ def test_chat_stream_yields_deltas_then_final():
     assert final["content"] == "你好" and final["finish_reason"] == "stop"
     assert final["usage"] == {"total_tokens": 10}
     assert final["tool_calls"] is None
+
+
+# ------------------------------------------------ 关闭思考模式（qwen3 混合思考模型）
+# qwen3.8/3.7/3.6/3.5 系混合思考模型默认开思考：思考流走 reasoning_content、
+# 正文走 content，本层只解析 content → 工具结果回填后的最终轮「只想不写」时
+# 正文为空（用户侧表现为无回复即结束）。修复：对支持该参数的模型在双路径
+# （SDK 原生 + OpenAI 兼容）显式传 enable_thinking=False；非思考模型
+# （qwen-max 等）与仅思考模型（-thinking 后缀，只接受 true）传了会被网关
+# 400 NotSupportEnableThinking 拒绝，须按模型名门控。
+
+
+def test_sdk_chat_disables_thinking_for_qwen3(monkeypatch):
+    resp = _fake_response(content="ok")
+    seen = {}
+
+    def fake_call(**kw):
+        seen.update(kw)
+        return resp
+
+    monkeypatch.setattr(llm_mod.Generation, "call", fake_call)
+    client = LLMClient(api_key="k", models={"interview": "qwen3.8-flash"})
+    client.chat([{"role": "user", "content": "hi"}], slot="interview")
+    assert seen["enable_thinking"] is False
+
+
+def test_sdk_chat_stream_disables_thinking_for_qwen3():
+    client = LLMClient.__new__(LLMClient)
+    client.api_key = "fake"
+    client.models = {"interview": "qwen3.8-flash"}
+    chunks = [MagicMock(status_code=200, output=MagicMock(choices=[
+        MagicMock(message=MagicMock(content="", tool_calls=None),
+                  finish_reason="stop")]), usage={})]
+    with patch("fieldwork_agent.kernel.llm.Generation") as MockGen:
+        MockGen.call.return_value = iter(chunks)
+        list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                slot="interview"))
+        assert MockGen.call.call_args.kwargs["enable_thinking"] is False
+
+
+def test_compat_payload_disables_thinking_for_qwen3():
+    client = LLMClient(api_key="k", models={"interview": "qwen3.8-flash"},
+                       base_url=_COMPAT_BASE)
+    for stream in (False, True):
+        payload = client._compat_request(
+            [{"role": "user", "content": "hi"}], slot="interview",
+            tools=None, temperature=0.7, max_tokens=64, stream=stream)
+        assert payload["enable_thinking"] is False
+
+
+@pytest.mark.parametrize("model", ["qwen-max", "qwen-plus",
+                                   "qwen3-vl-235b-a22b-thinking"])
+def test_thinking_toggle_omitted_for_unsupported_models(monkeypatch, model):
+    """非思考模型与仅思考模型：双路径均不传 enable_thinking（传了网关 400）。"""
+    resp = _fake_response(content="ok")
+    seen = {}
+
+    def fake_call(**kw):
+        seen.update(kw)
+        return resp
+
+    monkeypatch.setattr(llm_mod.Generation, "call", fake_call)
+    client = LLMClient(api_key="k", models={"proposal": model})
+    client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+    assert "enable_thinking" not in seen
+    payload = client._compat_request(
+        [{"role": "user", "content": "hi"}], slot="proposal",
+        tools=None, temperature=0.7, max_tokens=64, stream=True)
+    assert "enable_thinking" not in payload
 
 
 # ---------------------------------------------------------------- 套餐端点（plan 映射）
@@ -369,3 +438,167 @@ def test_compat_base_url_requires_httpx(monkeypatch):
     monkeypatch.setattr(llm_mod, "_HTTPX_AVAILABLE", False)
     with pytest.raises(RuntimeError, match="httpx"):
         LLMClient(api_key="k", models={"proposal": "m"}, base_url=_COMPAT_BASE)
+
+
+# ------------------------------------------- SDK url error → 兼容端点回退
+
+
+class TestUrlErrorCompatFallback:
+    """网关按模型绑定 aigc 服务路径，SDK 固定打 text-generation；模型在
+    multimodal 等路径时网关报 400 "url error"（消息文本误导，实为路径
+    不匹配）。回退到默认端点 OpenAI 兼容入口（统一路由）。"""
+
+    def _url_error_resp(self):
+        return SimpleNamespace(
+            status_code=400, code="url error",
+            message="url error, please check url！ For details, see: "
+                    "https://help.aliyun.com/zh/model-studio/error-code#error-url")
+
+    def test_chat_falls_back_to_compat(self, monkeypatch):
+        monkeypatch.setattr(llm_mod.Generation, "call", lambda **kw: self._url_error_resp())
+        ok = SimpleNamespace(status_code=200, json=lambda: {
+            "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+            "usage": {"total_tokens": 5}})
+        urls = []
+
+        def fake_post(url, **kw):
+            urls.append(url)
+            return ok
+
+        monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+        client = LLMClient(api_key="k", models={"proposal": "qwen3.8-flash"})
+        out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+        assert out["content"] == "hello"
+        assert out["usage"] == {"total_tokens": 5}
+        assert "error" not in out
+        assert urls and "compatible-mode/v1/chat/completions" in urls[0]
+
+    def test_chat_falls_back_regardless_of_status(self, monkeypatch):
+        """SDK 包装形态未必是 400：只认 "url error" 特征串。"""
+        resp = SimpleNamespace(status_code=500, code="",
+                               message="url error, please check url！")
+        monkeypatch.setattr(llm_mod.Generation, "call", lambda **kw: resp)
+        ok = SimpleNamespace(status_code=200, json=lambda: {
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {}})
+
+        def fake_post(url, **kw):
+            return ok
+
+        monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+        client = LLMClient(api_key="k", models={"proposal": "m"})
+        out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+        assert out["content"] == "hi"
+
+    def test_chat_keeps_other_sdk_errors(self, monkeypatch):
+        resp = SimpleNamespace(status_code=401, code="InvalidApiKey",
+                               message="Invalid API-key provided.")
+        monkeypatch.setattr(llm_mod.Generation, "call", lambda **kw: resp)
+
+        def boom(url, **kw):
+            raise AssertionError("非 url error 不应回退兼容端点")
+
+        monkeypatch.setattr(llm_mod.httpx, "post", boom)
+        client = LLMClient(api_key="k", models={"proposal": "m"})
+        out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+        assert out["error"] == "Invalid API-key provided."
+        assert out["content"] == ""
+
+    def test_stream_falls_back_to_compat(self, monkeypatch):
+        monkeypatch.setattr(llm_mod.Generation, "call",
+                            lambda **kw: iter([self._url_error_resp()]))
+        body = (b'data: {"choices":[{"delta":{"content":"hi"},'
+                b'"finish_reason":null}]}\n\n'
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                b'"usage":{"total_tokens":3}}\n\n'
+                b'data: [DONE]\n\n')
+        stream_resp = httpx.Response(
+            200, stream=httpx.ByteStream(body),
+            request=httpx.Request("POST", "https://x/v1/chat/completions"))
+        urls = []
+
+        class _CM:
+            def __enter__(self):
+                return stream_resp
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_stream(method, url, **kw):
+            urls.append(url)
+            return _CM()
+
+        monkeypatch.setattr(llm_mod.httpx, "stream", fake_stream)
+        client = LLMClient(api_key="k", models={"interview": "qwen3.8-flash"})
+        results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                          slot="interview"))
+        assert {"delta": "hi"} in results
+        assert results[-1]["content"] == "hi"
+        assert results[-1]["usage"] == {"total_tokens": 3}
+        assert urls and "compatible-mode/v1/chat/completions" in urls[0]
+
+    def test_stream_keeps_other_sdk_errors(self, monkeypatch):
+        resp = SimpleNamespace(status_code=401, code="InvalidApiKey",
+                               message="Invalid API-key provided.")
+        monkeypatch.setattr(llm_mod.Generation, "call", lambda **kw: iter([resp]))
+
+        def boom(method, url, **kw):
+            raise AssertionError("非 url error 不应回退兼容端点")
+
+        monkeypatch.setattr(llm_mod.httpx, "stream", boom)
+        client = LLMClient(api_key="k", models={"interview": "m"})
+        results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                          slot="interview"))
+        assert results == [{"content": "", "tool_calls": None, "finish_reason": "",
+                            "usage": {}, "error": "Invalid API-key provided."}]
+
+
+# ------------------------------------------------- NO_PROXY 直连豁免（反代理劫持）
+
+
+class TestDashscopeDirect:
+    def test_appends_all_plan_hosts(self, monkeypatch):
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        llm_mod.ensure_dashscope_direct()
+        merged = os.environ["NO_PROXY"]
+        for host in llm_mod._DASHSCOPE_HOSTS:
+            assert host in merged.split(","), merged
+
+    def test_requests_bypasses_dashscope_but_not_others(self, monkeypatch):
+        """有系统代理时：百炼域名豁免（直连），无关域名仍走代理。"""
+        import requests.utils as ru
+
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        llm_mod.ensure_dashscope_direct()
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+        assert ru.should_bypass_proxies("https://dashscope.aliyuncs.com",
+                                        no_proxy=None) is True
+        assert ru.should_bypass_proxies(
+            "https://coding.dashscope.aliyuncs.com", no_proxy=None) is True
+        assert ru.should_bypass_proxies(
+            "https://token-plan.cn-beijing.maas.aliyuncs.com", no_proxy=None) is True
+        assert ru.should_bypass_proxies("https://example.com",
+                                        no_proxy=None) is False
+        assert ru.get_environ_proxies("https://example.com") != {}
+
+    def test_idempotent_and_preserves_existing(self, monkeypatch):
+        """已有 NO_PROXY 追加不覆盖、重复调用不膨胀。
+
+        注：Windows 上 os.environ 键不区分大小写（NO_PROXY == no_proxy），
+        故不单独操作小写键；大小写双写在 Linux 上由实现保证。
+        """
+        monkeypatch.setenv("NO_PROXY", "example.com")
+        llm_mod.ensure_dashscope_direct()
+        once = os.environ["NO_PROXY"]
+        assert once.startswith("example.com")
+        llm_mod.ensure_dashscope_direct()
+        assert os.environ["NO_PROXY"] == once
+        assert once.split(",").count("dashscope.aliyuncs.com") == 1
+
+    def test_applied_on_import(self):
+        """llm 模块 import 即生效（模块级调用），全宿主（web/cli/mcp）免配置。"""
+        for host in llm_mod._DASHSCOPE_HOSTS:
+            assert host in os.environ.get("NO_PROXY", "")

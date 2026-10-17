@@ -13,10 +13,30 @@ from fieldwork_agent.kernel.models import (
 )
 
 
-def test_check_advance_a_to_b_needs_4_fields():
-    ctx = ResearchContext(discipline="人类学", topic="宗族", scale="单人", budget="2万")
-    r = phases.check_advance("research_positioning", ctx, [], [], False, False)
-    assert r.can_advance and r.to_phase == "field_site_profiles"
+def test_check_advance_a_to_b_needs_all_positioning_fields():
+    """方案 B（轮 2 产品决策）：六基础字段 + 深挖研究问题全齐才推进。
+
+    旧门槛 ``answered >= 4`` 允许缺位跳阶段，导致 A 阶段一答满四项就
+    冲进田野点画像、来不及深挖研究兴趣；收紧为七字段全齐（缺一返回
+    ``missing_fields`` 引导宿主继续追问而非推进）。
+    """
+    six = dict(purpose="kaiti", discipline="人类学", topic="宗族", scale="单人",
+               budget="2万", time_window="7月")
+    # 六基础字段齐但缺深挖研究问题 → 不推进，且 missing 指明缺口
+    no_deep = phases.check_advance(
+        "research_positioning", ResearchContext(**six), [], [], False, False)
+    assert not no_deep.can_advance
+    assert "research_questions" in no_deep.missing_fields
+    # 七字段全齐（深挖字段走本体槽位）→ 推进
+    full = phases.check_advance(
+        "research_positioning", ResearchContext(research_questions="宗族礼生角色", **six),
+        [], [], False, False)
+    assert full.can_advance and full.to_phase == "field_site_profiles"
+    # 深挖字段走 extras 同名兜底同样计入（与旧引擎 info 字典语义一致）
+    via_extras = phases.check_advance(
+        "research_positioning",
+        ResearchContext(extras={"research_questions": "宗族礼生角色"}, **six), [], [], False, False)
+    assert via_extras.can_advance
     r2 = phases.check_advance(
         "research_positioning", ResearchContext(discipline="人类学", topic="x"), [], [], False, False
     )
@@ -92,6 +112,7 @@ def test_check_advance_required_fields_shape():
         "scale",
         "budget",
         "time_window",
+        "research_questions",
     ]
     assert "target_location" in phases.REQUIRED_FIELDS["field_site_profiles"]
     assert phases.REQUIRED_FIELDS["finished"] == []
@@ -100,10 +121,21 @@ def test_check_advance_required_fields_shape():
 def test_check_advance_extras_can_fill_positioning_field():
     """字段本体为空但 extras 同名有值时同样计数（与旧引擎 info 字典语义一致）。"""
     ctx = ResearchContext(
-        discipline="社会学", topic="乡绅", scale="单人", extras={"budget": "自费"}
+        purpose="course", discipline="社会学", topic="乡绅", scale="单人",
+        time_window="寒假", extras={"budget": "自费", "research_questions": "乡绅治理"}
     )
     r = phases.check_advance("research_positioning", ctx, [], [], False, False)
     assert r.can_advance and r.to_phase == "field_site_profiles"
+
+
+def test_research_questions_survives_model_validate():
+    """深挖字段是 ResearchContext 正式槽位：宿主 check_and_advance 经
+    ``model_validate(repo dict)`` 构造 ctx，未声明键会被 Pydantic 丢弃，
+    字段必须声明才能计入推进（数据链防丢锚点）。"""
+    ctx = ResearchContext.model_validate(
+        {"topic": "宗族", "research_questions": "礼生角色的仪式实践"})
+    assert ctx.research_questions == "礼生角色的仪式实践"
+    assert ctx.extras == {}
 
 
 def test_check_advance_b_to_c_missing_keys():
@@ -170,6 +202,19 @@ def test_positioning_prompt_and_questions_ask_purpose_first():
     qs = phases.guiding_questions("research_positioning")
     assert "用途" in qs[0] or "场合" in qs[0]
     assert "用途" in phases.phase_prompt("research_positioning")
+
+
+def test_positioning_prompt_deep_digs_research_interest():
+    """轮 2 方案 A：A 阶段 prompt 指示深挖研究兴趣，未深挖不急于推进。"""
+    prompt = phases.phase_prompt("research_positioning")
+    # 深挖指令：初步方向之后追问动机与 2-3 个可研究问题，而非直接过下一项
+    assert "追问" in prompt and "2-3" in prompt
+    # 深挖成果经结构化字段沉淀（供 check_advance 七字段门槛计数）
+    assert "research_questions" in prompt
+    assert "update_research_context" in prompt
+    # 引导问题模板含同款深挖问句
+    qs = phases.guiding_questions("research_positioning")
+    assert any("2-3" in q and "研究问题" in q for q in qs)
 
 
 def test_prompts_are_honest_about_scope():

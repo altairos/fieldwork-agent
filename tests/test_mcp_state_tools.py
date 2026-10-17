@@ -36,7 +36,8 @@ def test_update_context_and_advance(tmp_path):
     h = build_handlers(make_repo(tmp_path))
     h["create_project"](project_id="p1")
     h["update_research_context"](project_id="p1", patch={
-        "discipline": "人类学", "topic": "宗族", "scale": "单人", "budget": "2万"})
+        "purpose": "kaiti", "discipline": "人类学", "topic": "宗族", "scale": "单人",
+        "budget": "2万", "time_window": "7月", "research_questions": "宗族礼生角色"})
     r = h["check_phase_advance"](project_id="p1")
     assert r["ok"] and r["data"]["can_advance"] is True
     assert r["data"]["to_phase"] == "field_site_profiles"

@@ -122,7 +122,7 @@ export interface ItineraryPlan {
 
 // ---------------------------------------------------------------- 研究上下文
 
-/** 研究定位十槽位；空字符串表示未填，extras 收野生字段。 */
+/** 研究定位槽位；空字符串表示未填，extras 收野生字段。 */
 export interface ResearchContext {
   discipline: string;
   topic: string;
@@ -135,6 +135,8 @@ export interface ResearchContext {
   travel_date: string;
   /** 输出用途（global|kaiti|grant|course，缺省视为 global）。 */
   purpose: string;
+  /** 深挖凝练的研究问题（轮 2 方案 B：A→B 推进的第七字段）。 */
+  research_questions: string;
   /** 非访谈型研究显式跳过访谈对象硬条件（附理由）。 */
   interviews_not_applicable: boolean;
   interviews_na_reason: string;

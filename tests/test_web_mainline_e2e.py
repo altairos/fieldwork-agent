@@ -71,7 +71,15 @@ async def _post_message(client: AsyncClient, text: str) -> None:
 
 async def test_mainline_empty_project_to_finished(app, client):
     llm = ScriptLLM([
-        # 回合 1：纯文本回复（触发轮末确定性抽取，Task 2/4）
+        # 回合 1 第 1 帧：update_research_context 工具调用（方案 B 深挖：
+        # 写入 purpose/scale/research_questions，reason 经 data 通道下发给前端状态卡）
+        [{"content": "", "tool_calls": [
+            {"id": "c0", "name": "update_research_context",
+             "arguments": {"patch": {"purpose": "课程作业", "scale": "单人调研",
+                                     "research_questions": "宗族网络如何在城市化中维系？"},
+                            "reason": "用户确认研究问题与调研安排"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        # 回合 1 第 2 帧：收尾文本（轮末确定性抽取仍会跑，Task 2/4）
         [{"delta": "好的"}, {"content": "好的，我们开始梳理研究信息。", "usage": {}}],
         # 回合 2 第 1 帧：compose_proposal 工具调用（F04 落盘）
         [{"content": "", "tool_calls": [
@@ -81,15 +89,16 @@ async def test_mainline_empty_project_to_finished(app, client):
         [{"delta": "已"}, {"content": "已生成研究方案。", "usage": {}}],
     ])
 
-    # ① 建项：discipline/topic 直接入 ctx（A 阶段已答 2/6）
+    # ① 建项：discipline/topic 直接入 ctx（A 阶段七字段已答 2）
     resp = await client.post("/projects", json={"project_id": "p1",
                                                 "discipline": "社会学",
                                                 "topic": "宗族变迁"})
     assert resp.status_code == 201
     app.state.llm = llm
 
-    # ② 第一回合：抽取补齐 budget/time_window/departure_city/target_location
-    #（F03）→ A→B（4/6 ≥ MIN_POSITIONING_ANSWERED）
+    # ② 第一回合：工具调用写入 purpose/scale/research_questions（方案 B 深挖），
+    # 轮末抽取补齐 budget/time_window/departure_city/target_location（F03）
+    # → A→B（7/7 字段全齐 ≥ MIN_POSITIONING_ANSWERED）
     await _post_message(client, "我从上海出发去大理调研，预算2万，2026年7月去")
     snap = (await client.get("/projects/p1")).json()
     ctx = snap["research_context"]
@@ -97,6 +106,7 @@ async def test_mainline_empty_project_to_finished(app, client):
     assert "大理" in str(ctx.get("target_location", ""))
     assert "2万" in str(ctx.get("budget", ""))
     assert "7月" in str(ctx.get("time_window", ""))
+    assert "宗族网络" in str(ctx.get("research_questions", ""))
     assert snap["phase"] == "field_site_profiles"
     # F09：用户消息恰发送一次（历史含本条 + build 不再重复附加）
     user_texts = [str(m.get("content", "")) for m in llm.sent[0]

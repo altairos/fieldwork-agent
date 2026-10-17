@@ -153,6 +153,86 @@ def test_llm_error_frame_emits_error_and_failed(env):
     assert not any(m["role"] == "assistant" for m in msgs)  # 不落盘空助手消息
 
 
+def test_empty_final_reply_converges_with_retry(env):
+    """症状③兜底：最终轮空正文（思考模型只想不写）不再静默结束——
+    追加 system 收敛指令重取一次（不带工具），重试正文如实发出。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+        [{"delta": "阶段性总结"},
+         {"content": "阶段性总结", "tool_calls": None, "finish_reason": "stop",
+          "usage": {"total_tokens": 3}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "error" not in types
+    assert types[-1] == "turn_done"
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert deltas == "阶段性总结"
+    assert len(llm.calls) == 2
+    conv_messages, conv_kw = llm.calls[1]
+    assert conv_messages[-1]["role"] == "system"   # 收敛指令已追加
+    assert "不要再调用工具" in conv_messages[-1]["content"]
+    assert conv_kw.get("tools") is None             # 收敛重试不带工具
+    msgs = repo.get_messages("p1")
+    assert any(m["role"] == "assistant" and m["content"] == "阶段性总结"
+               for m in msgs)
+
+
+def test_empty_reply_exhausted_emits_fallback(env):
+    """收敛重试仍空（两轮都只想不写）：发兜底文案 + 正常完成，绝不静默空回合。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+        [{"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "error" not in types
+    assert types[-1] == "turn_done"
+    deltas = [e.data["text"] for e in events if e.event == "message_delta"]
+    assert deltas and "未生成文字回复" in deltas[-1]
+    msgs = repo.get_messages("p1")
+    assert any(m["role"] == "assistant" and "未生成文字回复" in m["content"]
+               for m in msgs)
+
+
+def test_budget_hit_converges_gracefully(env):
+    """预算触顶（max_iters=1）不再裸退出：system 收敛指令 + 总结正文 + completed。
+
+    对齐 CLI runtime/loop.py 的触顶收敛（追 system 提示再取一次最终回答）。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "基于现有信息的总结"},
+         {"content": "基于现有信息的总结", "tool_calls": None,
+          "finish_reason": "stop", "usage": {"total_tokens": 8}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI(),
+                         max_iters=1))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "error" not in types
+    assert types[-1] == "turn_done"
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "基于现有信息的总结" in deltas
+    conv_messages = llm.calls[1][0]
+    assert conv_messages[-1]["role"] == "system"
+    assert "上限" in conv_messages[-1]["content"]
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
 def test_cancel_stops_loop(env):
     """取消后 loop 不再发新事件，终态为 cancelled。"""
     repo, tm = env

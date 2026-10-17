@@ -16,17 +16,18 @@ import { useProjectStore } from "../../stores/project";
  *   底部说明行 line 668 `hairline rounded-lg bg-paper/60 p-3 mt-3 flex items-center gap-2
  *     text-[12px] text-inkfaint`
  *
- * 同源红线②：只读 `snapshot.research_context`（REST 初始快照 = 内核 ResearchContext 十槽位），
- * 面板 0 处 fetch、不改写字段值（原样呈现内核抽取结果）；未填槽位如实计入「已填 N / 10」，
+ * 同源红线②：只读 `snapshot.research_context`（REST 初始快照 = 内核 ResearchContext 槽位），
+ * 面板 0 处 fetch、不改写字段值（原样呈现内核抽取结果）；未填槽位如实计入「已填 N / 总数」，
  * 不猜、不补默认值。
  * 说明：web_host 当前**无知识库/资料端点**（`GET /projects/{id}` 只回项目快照），故本面板不做
  * 设计板 line 668 的「添加自有资料」入口（避免死按钮），底部改为如实说明面板的投影性质。
  */
 
-/** 十槽位 → 中文行标（阶段 A 清单语汇取设计板 lines 622-627）。 */
+/** 槽位 → 中文行标（阶段 A 清单语汇取设计板 lines 622-627；轮 2 方案 B 加深挖槽）。 */
 const SLOTS: { key: string; label: string }[] = [
   { key: "discipline", label: "学科背景" },
-  { key: "topic", label: "研究问题" },
+  { key: "topic", label: "研究主题" },
+  { key: "research_questions", label: "研究问题" },
   { key: "site_status", label: "田野点确定度" },
   { key: "scale", label: "调研规模" },
   { key: "budget", label: "经费" },

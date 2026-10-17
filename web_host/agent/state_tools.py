@@ -49,6 +49,11 @@ def build_state_tools(repo, pid: str):
                 code="invalid_arguments", message=str(exc),
                 hint="可写白名单：" + context_fields_hint()))
         repo.update_research_context(pid, clean)
-        return Envelope(ok=True, data={"updated": sorted(clean)})
+        # 轮 2 症状②：reason 一并放进 data —— 前端 ToolCard 只消费 Envelope.data
+        # （Timeline 渲染不传 args），依据文本只能经此通道下发给状态卡；缺省省略键。
+        data = {"updated": sorted(clean)}
+        if reason:
+            data["reason"] = reason
+        return Envelope(ok=True, data=data)
 
     return [_SCHEMA], {"update_research_context": update_research_context}

@@ -10,7 +10,8 @@ Web 回合工具（``web_host/agent/state_tools.py``）、MCP
 ALLOWED_CONTEXT_FIELDS = (
     "discipline", "topic", "site_status", "scale", "budget",
     "time_window", "departure_city", "target_location", "travel_date",
-    "purpose", "interviews_not_applicable", "interviews_na_reason",
+    "purpose", "research_questions", "interviews_not_applicable",
+    "interviews_na_reason",
 )
 
 

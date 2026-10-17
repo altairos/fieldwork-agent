@@ -9,6 +9,7 @@ import { ProposalCard } from "./ProposalCard";
 import { SiteProfileCard } from "./SiteProfileCard";
 import { ToolCardFallback } from "./ToolCardFallback";
 import { TrainCard } from "./TrainCard";
+import { UpdateResearchContextCard } from "./UpdateResearchContextCard";
 import { WindowCard } from "./WindowCard";
 import type { ToolCardProps } from "./types";
 
@@ -16,11 +17,14 @@ import type { ToolCardProps } from "./types";
  * 工具卡片注册表 — `tool name → card component`（红线②：卡片消费 `tool_completed.data`，
  * 是中栏时间线与右栏面板的唯一同源数据）。
  *
- * **键集 = 内核真实能力名（14 项），逐字对齐，不臆造**：
+ * **键集 = 内核真实能力名（14 项）+ 宿主层状态工具（1 项），逐字对齐，不臆造**：
  * 实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py 单一注册表），
  * kernel registry 面 / `mcp_server/mapping.py` TOOL_GROUPS / `core/orchestrator.py`
  * _CAPABILITY_DISPATCH / 本表 四处一致（8 搜索原语 + 3 聚合 + 3 文档 = 14，
  * 其中 3 聚合含 analyze_fieldwork_window）。
+ * 轮 2 症状②例外：`update_research_context` 是宿主层状态工具
+ * （web_host/agent/state_tools.py 每回合注入 loop，非内核能力），
+ * 是唯一超出内核键集的注册项——不注册则状态写入落 Fallback 裸 JSON。
  *
  * 与 brief 示例表的差异（brief line 43 明示"若与上表不符，以内核为准"）：
  * - brief 的 `search_poi/search_domestic_flights/plan_itinerary/compile_budget/get_city_trips/
@@ -56,6 +60,8 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   search_pois: PoiCard,
   search_keyword: PoiCard,
   search_ai: PoiCard,
+  // 宿主层状态工具（轮 2 症状②，见头部注释例外说明）：data = {updated, reason}
+  update_research_context: UpdateResearchContextCard,
 };
 
 /** 取卡片组件；未注册工具（内核新增能力）落 Fallback，绝不抛错。 */

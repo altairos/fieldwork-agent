@@ -182,7 +182,8 @@ def test_phase_transition_deterministic(web_env):
     repo, tm = web_env
     repo.update_research_context("p1", {
         "purpose": "开题", "discipline": "人类学", "topic": "宗族",
-        "scale": "单人", "budget": "2万", "time_window": "三个月"})
+        "scale": "单人", "budget": "2万", "time_window": "三个月",
+        "research_questions": "宗族礼生角色"})
     llm = ScriptedLLM([[{"delta": "好的"},
                         {"content": "好的", "tool_calls": None,
                          "finish_reason": "stop", "usage": {}}]])

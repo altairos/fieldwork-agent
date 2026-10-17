@@ -87,6 +87,14 @@ def test_r05_atomic_rejection_collects_all_errors():
     assert "topic 不得为空白字符串" in msg
 
 
+def test_r05_research_questions_whitelisted_and_stripped():
+    """方案 B：深挖研究问题经 update_research_context 写入（三入口共用白名单）。"""
+    assert "research_questions" in ALLOWED_CONTEXT_FIELDS
+    out = sanitize_context_patch(
+        {"research_questions": " 宗族礼生角色在丧仪中的实践 "})
+    assert out == {"research_questions": "宗族礼生角色在丧仪中的实践"}
+
+
 def test_r05_hint_lists_all_fields():
     hint = context_fields_hint()
     for field in ALLOWED_CONTEXT_FIELDS:

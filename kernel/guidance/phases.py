@@ -35,8 +35,10 @@ PHASES: list[str] = [
     PHASE_FINISHED,
 ]
 
-# 研究定位阶段的最少作答数（沿用旧引擎 ``answered >= 4``，防一上来就跳阶段）
-MIN_POSITIONING_ANSWERED = 4
+# 研究定位阶段的推进门槛：七字段（六基础 + research_questions 深挖研究问题）
+# 全齐才推进。旧引擎 ``answered >= 4`` 允许缺位跳阶段，轮 2 产品决策收紧
+# （用户反馈：阶段推进太快，应先深挖用户研究兴趣再开始具体搜索）。
+MIN_POSITIONING_ANSWERED = 7
 
 
 def __getattr__(name: str):
@@ -52,6 +54,7 @@ GUIDING_QUESTIONS: dict[str, list[str]] = {
         "这份方案主要用在什么场合？（海外/港澳申请、高校开题、基金申报、课程作业）",
         "请问您的学科背景和研究取向是什么？（人类学/社会学/政治学/跨学科？）",
         "您初步的研究问题或关注焦点是什么？",
+        "围绕这个方向，您希望具体回答哪 2-3 个研究问题？为什么是它们？",
         "您对田野地点的确定程度如何？（已明确地点 / 有区域范围 / 希望我推荐）",
         "这次调研是单人还是团队？预计多长时间？",
         "经费来源和大致预算范围是怎样的？",
@@ -85,7 +88,7 @@ GUIDING_QUESTIONS: dict[str, list[str]] = {
 # 仅研究定位阶段的 ``check_advance`` 直接用它做推进计数）
 REQUIRED_FIELDS: dict[str, list[str]] = {
     PHASE_RESEARCH_POSITIONING: ["purpose", "discipline", "topic", "scale", "budget",
-                                 "time_window"],
+                                 "time_window", "research_questions"],
     PHASE_FIELD_SITE_PROFILES: ["target_location", "site_status"],
     PHASE_ITINERARY_PLANNING: ["departure_city", "target_location", "travel_date"],
     PHASE_PROPOSAL_GENERATION: ["topic", "target_location"],

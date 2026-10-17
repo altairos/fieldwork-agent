@@ -205,7 +205,7 @@ class WindowAnalysis(BaseModel):
 
 
 class ResearchContext(BaseModel):
-    """研究定位十槽位；空字符串表示未填，``extras`` 收野生字段。"""
+    """研究定位槽位；空字符串表示未填，``extras`` 收野生字段。"""
 
     discipline: str = ""
     topic: str = ""
@@ -218,6 +218,9 @@ class ResearchContext(BaseModel):
     travel_date: str = ""
     # 审阅意见 R1：输出用途（global|kaiti|grant|course，缺省视为 global）
     purpose: str = ""
+    # 轮 2 方案 B：深挖研究问题（经 update_research_context 写入，计入 A→B 推进；
+    # 必须声明为正式槽位——宿主经 model_validate(repo dict) 构造，未声明键会被丢弃）
+    research_questions: str = ""
     # 审阅意见 R3：非访谈型研究显式跳过访谈对象硬条件（附理由）
     interviews_not_applicable: bool = False
     interviews_na_reason: str = ""

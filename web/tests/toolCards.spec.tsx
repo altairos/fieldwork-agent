@@ -12,6 +12,7 @@ import { TrainCard } from "../src/components/cards/TrainCard";
 import { ItineraryCard } from "../src/components/cards/ItineraryCard";
 import { InformantCard } from "../src/components/cards/InformantCard";
 import { ProposalCard } from "../src/components/cards/ProposalCard";
+import { UpdateResearchContextCard } from "../src/components/cards/UpdateResearchContextCard";
 import { saveKeys } from "../src/lib/keys";
 import { useExportFormatStore } from "../src/stores/exportFormat";
 
@@ -59,10 +60,12 @@ describe("BudgetCard coverage", () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 补充断言：注册表 key 必须与内核 registry 注册名全等（不臆造、不漏映射）。
-// 名单取自实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py +
-// kernel/sources/flyai.py + kernel/aggregation/* + kernel/documents/*，14 项），
-// 与 mcp_server/mapping.py TOOL_GROUPS 的键集一致。
+// 补充断言：注册表 key 必须与真实工具名全等（不臆造、不漏映射）。
+// 名单分两组：内核名单取自实测 `fieldwork_agent.kernel.CAPABILITIES()`
+// （kernel/registry.py + kernel/sources/flyai.py + kernel/aggregation/* +
+// kernel/documents/*，14 项，与 mcp_server/mapping.py TOOL_GROUPS 键集一致）；
+// 宿主层状态工具（轮 2 症状②）由 web_host/agent/state_tools.py 每回合注入
+// loop，不经内核 registry，是注册表唯一超出内核键集的合法例外。
 // ──────────────────────────────────────────────────────────────────────────
 const KERNEL_TOOLS = [
   "profile_field_site",
@@ -81,12 +84,19 @@ const KERNEL_TOOLS = [
   "search_ai",
 ];
 
+/** 宿主层回合内状态工具（web_host/agent/state_tools.py build_state_tools）。 */
+const HOST_STATE_TOOLS = ["update_research_context"];
+
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 内核 14 能力名（无臆造 key）", () => {
-    expect(Object.keys(toolCardRegistry).sort()).toEqual([...KERNEL_TOOLS].sort());
+  test("注册表键集 = 内核 14 能力名 + 宿主状态工具（无臆造 key）", () => {
+    expect(Object.keys(toolCardRegistry).sort()).toEqual(
+      [...KERNEL_TOOLS, ...HOST_STATE_TOOLS].sort(),
+    );
   });
-  test("每个内核工具都命中专属卡片（不落 Fallback）", () => {
-    for (const tool of KERNEL_TOOLS) expect(getToolCard(tool)).not.toBe(ToolCardFallback);
+  test("每个注册工具都命中专属卡片（不落 Fallback）", () => {
+    for (const tool of [...KERNEL_TOOLS, ...HOST_STATE_TOOLS]) {
+      expect(getToolCard(tool)).not.toBe(ToolCardFallback);
+    }
   });
 });
 
@@ -174,10 +184,26 @@ describe("其余卡片", () => {
     expect(screen.getByText(/英美式八章/)).toBeInTheDocument();
     expect(screen.getByText("研究定位")).toBeInTheDocument();
   });
+  test("UpdateResearchContextCard 渲染已写入字段标签与依据行（轮 2 症状②）", () => {
+    render(<UpdateResearchContextCard data={{
+      updated: ["budget", "research_questions"],
+      reason: "用户确认预算为 5 万，并凝练 2-3 个研究问题",
+    }} />);
+    expect(screen.getByText(/研究定位已更新/)).toBeInTheDocument();
+    expect(screen.getByText("经费")).toBeInTheDocument();
+    expect(screen.getByText("研究问题")).toBeInTheDocument();
+    expect(screen.getByText(/用户确认预算为 5 万/)).toBeInTheDocument();
+  });
+  test("未知字段名原样呈现（不臆造标签），无 reason 不渲染依据行", () => {
+    render(<UpdateResearchContextCard data={{ updated: ["custom_field"] }} />);
+    expect(screen.getByText("custom_field")).toBeInTheDocument();
+    expect(screen.queryByText(/依据/)).not.toBeInTheDocument();
+  });
   test("data 为 null（工具失败）时各卡不抛错", () => {
     const cards: ComponentType<ToolCardProps>[] = [
       SiteProfileCard, PoiCard, HotelCard, FlightCard, TrainCard,
       ItineraryCard, BudgetCard, InformantCard, ProposalCard, ToolCardFallback,
+      UpdateResearchContextCard,
     ];
     for (const C of cards) {
       expect(() => render(<C data={null} degraded="flyai_unavailable" />)).not.toThrow();

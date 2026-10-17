@@ -100,3 +100,22 @@ def test_r05_bool_type_strict(env):
     assert not envl.ok
     assert envl.error.code == "invalid_arguments"
     assert "interviews_not_applicable 须为布尔" in envl.error.message
+
+
+def test_data_carries_updated_and_reason_for_card(env):
+    """轮 2 症状②：data 携带 updated 字段名 + reason 依据，供前端状态卡渲染。
+
+    前端 ToolCard 只消费 Envelope.data（Timeline 不传 args），reason 文本
+    必须经 data 通道下发给卡片，否则状态写入只剩键名列表无依据说明。
+    """
+    repo, _ = env
+    _, handlers = build_state_tools(repo, "p1")
+    envl = handlers["update_research_context"](
+        patch={"budget": "5万", "topic": "宗族礼生"}, reason="用户确认预算与主题")
+    assert envl.ok
+    assert envl.data["updated"] == ["budget", "topic"]
+    assert envl.data["reason"] == "用户确认预算与主题"
+    # reason 缺省时省略键：卡片不渲染空依据行，data 形状保持最小
+    envl2 = handlers["update_research_context"](patch={"scale": "单人"})
+    assert envl2.ok
+    assert envl2.data == {"updated": ["scale"]}

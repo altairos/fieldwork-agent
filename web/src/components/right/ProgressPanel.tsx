@@ -107,10 +107,12 @@ export function ProgressPanel() {
   );
 }
 
-/** 可编辑研究信息槽位（= ALLOWED_CONTEXT_FIELDS 的 10 个文本键；NA 布尔单独处理）。 */
+/** 可编辑研究信息槽位（= ALLOWED_CONTEXT_FIELDS 的 11 个文本键；NA 布尔单独处理；
+ *  轮 2 方案 B 加 research_questions 深挖槽）。 */
 const EDIT_FIELDS: { key: string; label: string }[] = [
   { key: "discipline", label: "学科背景" },
   { key: "topic", label: "研究主题" },
+  { key: "research_questions", label: "研究问题" },
   { key: "site_status", label: "身份/在场方式" },
   { key: "scale", label: "规模" },
   { key: "budget", label: "预算" },
