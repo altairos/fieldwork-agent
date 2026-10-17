@@ -340,3 +340,29 @@ def test_no_system_message_undegraded():
     env = flyai_module._page_envelope(
         {"status": 0, "data": {"itemList": [{"name": "民宿", "price": "¥150"}]}})
     assert env.degraded is None
+
+
+# ------------------------------------------- 真实错误透传与日期错误码（轮 3 实测）
+
+def test_execute_surfaces_message_key_error(monkeypatch):
+    """status!=0 且无 error 键但有 message 键（飞猪对过去日期的真实形态
+    CICO_CHECK_PARAM_ERROR）→ 原因进 error.message 并映射 flyai_invalid_date，
+    不再吞成兜底文案"flyai 调用失败"让 LLM 无从自救。"""
+    c = FlyAIClient()
+    monkeypatch.setattr(c, "_run_command", lambda args: {
+        "status": 1, "data": None, "systemMessage": None,
+        "message": "[CICO_CHECK_PARAM_ERROR] AI hotel search fail: 入离时间校验失败",
+    })
+    env = c.search_hotels("晋江", check_in="2026-10-07", check_out="2026-10-17")
+    assert env.ok is False and env.error is not None
+    assert "入离时间校验失败" in env.error.message
+    assert env.error.code == "flyai_invalid_date"
+
+
+def test_error_envelope_invalid_date_hint():
+    """入离时间校验失败 → flyai_invalid_date，hint 教 LLM 改用未来日期。"""
+    env = flyai_module._error_envelope(
+        "[CICO_CHECK_PARAM_ERROR] AI hotel search fail: 入离时间校验失败")
+    assert env.error is not None
+    assert env.error.code == "flyai_invalid_date"
+    assert "未来日期" in env.error.hint

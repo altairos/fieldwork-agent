@@ -42,7 +42,11 @@ from fieldwork_agent.kernel.models import (
     ResearchContext,
     ToolError,
 )
-from fieldwork_agent.kernel.registry import build_tool_schemas, capabilities
+from fieldwork_agent.kernel.registry import (
+    build_tool_schemas,
+    capabilities,
+    validate_tool_args,
+)
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.kernel.sources.flyai import (
     FlyAIClient,
@@ -56,7 +60,6 @@ from fieldwork_agent.kernel.sources.flyai import (
     search_trains,
 )
 from fieldwork_agent.runtime.loop import run_tool_loop
-from pydantic import ValidationError
 
 from .config import Config
 
@@ -172,12 +175,11 @@ class FieldAgent:
             impl, inject = _CAPABILITY_DISPATCH[name]
             meta = capabilities().get(name)
             if meta is not None:
-                try:
-                    validated = meta.args_model.model_validate(args).model_dump()
-                except ValidationError as exc:
+                validated, err_msg = validate_tool_args(meta, args)
+                if validated is None:
                     return Envelope(ok=False, error=ToolError(
                         code="invalid_arguments",
-                        message=f"参数校验失败：{exc.errors()[0].get('msg', '') if exc.errors() else exc}",
+                        message=f"参数校验失败：{err_msg}",
                         hint="请按工具 schema 提供参数"))
             else:  # 理论不应发生：registry 未注册同名能力
                 validated = dict(args)

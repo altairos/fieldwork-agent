@@ -4,8 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from fieldwork_agent.kernel.models import Envelope, ToolError
-from fieldwork_agent.kernel.registry import capabilities
-from pydantic import ValidationError
+from fieldwork_agent.kernel.registry import capabilities, validate_tool_args
 
 
 def build_dispatch_fn(flyai_client: Any, llm: Any,
@@ -21,12 +20,10 @@ def build_dispatch_fn(flyai_client: Any, llm: Any,
         if meta is None:
             return Envelope(ok=False, error=ToolError(
                 code="unknown_tool", message=f"未知工具: {name}"))
-        try:
-            validated = meta.args_model.model_validate(args).model_dump()
-        except ValidationError as exc:
-            msg = exc.errors()[0].get("msg", "") if exc.errors() else str(exc)
+        validated, err_msg = validate_tool_args(meta, args)
+        if validated is None:
             return Envelope(ok=False, error=ToolError(
-                code="invalid_arguments", message=f"参数校验失败：{msg}"))
+                code="invalid_arguments", message=f"参数校验失败：{err_msg}"))
         params = inspect.signature(meta.fn).parameters
         kwargs = dict(validated)
         if "client" in params:

@@ -54,6 +54,17 @@ def _brief(value: Any) -> Any:
     return value
 
 
+def _item_brief(item: dict) -> dict:
+    """条目 → {name + price/rating 关键标量（有值才带）：给 LLM 真数据可引，
+    防零工具轮把极值线索膨胀成编造的“实测数据”（店名/评分幻觉）。"""
+    out = {"name": item.get("name") or item.get("type") or item.get("title") or ""}
+    for k in ("price", "rating"):
+        v = item.get(k)
+        if v is not None:
+            out[k] = v
+    return out
+
+
 def _error_dict(env: Envelope) -> dict | None:
     """失败包络 → {code,message,hint} 三元组；成功返回 None（事件/摘要共用形状）。"""
     if env.ok:
@@ -77,7 +88,7 @@ def _summarize(name: str, env: Envelope) -> dict:
     if hasattr(data, "model_dump"):
         data = data.model_dump(mode="json")
 
-    # 搜索分页（ItemPage）：给极值与 top_items 名称，丢弃字段级噪声
+    # 搜索分页（ItemPage）：给极值与 top_items（name+price/rating），丢弃字段级噪声
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         items = data["items"]
         out["total"] = data.get("total", len(items))
@@ -85,17 +96,14 @@ def _summarize(name: str, env: Envelope) -> dict:
             out["cheapest"] = data["cheapest"]
         if data.get("dearest") is not None:
             out["dearest"] = data["dearest"]
-        out["top_items"] = [it.get("name", "") for it in items[:_TOP_ITEMS]
+        out["top_items"] = [_item_brief(it) for it in items[:_TOP_ITEMS]
                             if isinstance(it, dict)]
         return out
-    # 候选列表（suggest_informants 等）：给总数与前几条名称
+    # 候选列表（suggest_informants 等）：给总数与前几条（name+关键标量）
     if isinstance(data, list):
         out["total"] = len(data)
-        names = []
-        for it in data[:_TOP_ITEMS]:
-            if isinstance(it, dict):
-                names.append(it.get("name") or it.get("type") or it.get("title") or "")
-        out["top_items"] = [n for n in names if n]
+        out["top_items"] = [b for b in (_item_brief(it) for it in data[:_TOP_ITEMS]
+                                        if isinstance(it, dict)) if b["name"]]
         return out
     if isinstance(data, str):
         out["chars"] = len(data)
@@ -109,10 +117,23 @@ def _summarize(name: str, env: Envelope) -> dict:
     return out
 
 
+# 工具失败/降级时的追问指令：防 LLM"只标注数据缺口就停"——必须转为
+# 引导性提问收集替代信息（回归：degraded 画像轮回复停在单方陈述）。
+_DEGRADED_FOLLOWUP = (
+    "\n\n【系统提示：本次工具调用未取得可用数据。请勿就此停下：向用户如实标注"
+    "数据缺口后，立即转为引导性提问收集替代信息——例如具体村庄或县名、可引荐"
+    "的本地联系人、已知的祠堂/庙宇/文献线索——每轮以 1-2 个具体问题收尾，"
+    "保持对话推进。】"
+)
+
+
 def _tool_content(name: str, env: Envelope) -> str:
-    """摘要序列化为 JSON 字符串并截到安全上限（R5）。"""
+    """摘要序列化为 JSON 字符串并截到安全上限（R5）；失败/降级附追问指令。"""
     dumped = json.dumps(_summarize(name, env), ensure_ascii=False, default=str)
-    return dumped[:TOOL_CONTENT_LIMIT]
+    content = dumped[:TOOL_CONTENT_LIMIT]
+    if env.degraded or not env.ok:
+        content += _DEGRADED_FOLLOWUP
+    return content
 
 
 def _coerce_args(raw: Any) -> dict:

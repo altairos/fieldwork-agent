@@ -140,6 +140,12 @@ def _error_envelope(message: str) -> Envelope:
     # 配额分支优先级最高：命中即引导用户申请自己的 API Key
     if any(marker in low for marker in _RATE_LIMIT_MARKERS):
         code, hint = ("flyai_rate_limited", _RATE_LIMIT_HINT)
+    elif "入离时间校验失败" in message or "cico_check_param_error" in low:
+        # 飞猪对过去日期的拒绝（研究计划里的历史日程不能当实时搜索日期）
+        code, hint = ("flyai_invalid_date",
+                      "搜索日期无效（入离时间校验失败）：实时搜索仅支持未来日期，"
+                      "研究计划中的历史日程不能作为实时搜索日期——请改用未来的可比"
+                      "日期重试，并向用户说明价格仅为未来参照")
     elif "not found" in low:
         code, hint = ("flyai_unavailable", "未找到 flyai CLI，请安装后确认其在 PATH 中可执行")
     elif "timed out" in low:
@@ -240,7 +246,10 @@ class FlyAIClient:
         if not isinstance(payload, dict) or payload.get("status", 0) != 0 or "error" in payload:
             message = ""
             if isinstance(payload, dict):
-                message = str(payload.get("error") or "flyai 调用失败")
+                # 业务层错误可能在 error 键（CLI 自身）或 message 键（飞猪侧，
+                # 如 CICO_CHECK_PARAM_ERROR）——都透传，杜绝吞成兜底文案
+                message = str(payload.get("error") or payload.get("message")
+                              or "flyai 调用失败")
             return _error_envelope(message or "flyai 调用失败")
         return _page_envelope(payload)
 

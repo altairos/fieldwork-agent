@@ -7,7 +7,12 @@ _TOOL_GUIDANCE = (
     "（search_flights/search_trains/search_hotels/search_pois/search_keyword/search_ai 等）"
     "或聚合能力（profile_field_site/compose_itinerary）。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案。"
-    "不要臆造数据；工具不可用时如实说明并给出可执行的下一步。"
+    "不要臆造数据；工具不可用、降级或返回数据与田野需求不符时：如实标注质量与缺口，"
+    "并把下一步落成对用户的具体引导性提问（地点线索、村庄/县名、本地联系人、"
+    "已有材料等），保持对话推进，绝不停在单方陈述。"
+    "数据诚实：回复只引用本轮实际调用工具返回的数据；不得声称调用了本轮未调用的工具，"
+    "不得把历史轮数据包装成本轮实测——历史数据只能以“此前采样/上一轮显示”表述引用"
+    "且不得补造细节（店名/评分/价格等）。回答先直接回应用户当前问题，支撑数据放后。"
 )
 
 
