@@ -1,5 +1,7 @@
 # tests/test_web_agent_loop.py
 import asyncio
+import json
+import re
 
 import pytest
 from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
@@ -350,30 +352,79 @@ def test_search_snapshot_persisted_and_turn_done_carries_ids(env):
     assert done.data["snapshot_ids"] == [cached[0]["id"]]
 
 
-def test_dispatch_injects_live_snapshot_refs():
-    """dispatch 对声明 snapshot_refs 形参的 fn 注入活字典当前内容（Task 11 消费）。"""
-    from fieldwork_agent.kernel.models import Envelope
-    from fieldwork_agent.kernel.registry import _REGISTRY, CapabilityMeta, register
-    from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
-    from pydantic import BaseModel
+class TwoPriceFlyAI:
+    """R08 测试桩：search_hotels 按是否带 check_in 返回 11.0/22.0 两档价。
 
-    class ProbeArgs(BaseModel):
-        pass
+    参数驱动而非共享计数器——行程住宿调用走线程池，计数器 += 有线程竞争。
+    """
+    def search_hotels(self, *, dest_name="", check_in="", check_out="", **kw):
+        price = 11.0 if not check_in else 22.0
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name="客栈A", price=price)],
+            total=1, cheapest=price, dearest=price))
 
-    def probe(*, snapshot_refs=None):
-        return Envelope(ok=True, data={"refs": snapshot_refs})
+    def __getattr__(self, name):
+        def stub(**kw):
+            price = 100.0 if name == "search_trains" else 300.0
+            return Envelope(ok=True, data=ItemPage(
+                items=[SearchItem(name=f"{name}X", price=price)],
+                total=1, cheapest=price, dearest=price))
+        return stub
 
-    register(CapabilityMeta(name="probe_tool", description="p", fn=probe,
-                            args_model=ProbeArgs))
-    try:
-        live = {"大理": "flyai 快照 srch_1（2026-10-16 查询）"}
-        dispatch = build_dispatch_fn(None, None, live_snapshot_refs=live)
-        env = dispatch("probe_tool", {})
-        assert env.ok and env.data["refs"] == live
-        live["喜洲"] = "flyai 快照 srch_2（2026-10-16 查询）"  # 活字典：后续调用可见
-        assert dispatch("probe_tool", {}).data["refs"]["喜洲"]
-    finally:
-        _REGISTRY.pop("probe_tool", None)
+
+def test_itinerary_quotes_bound_to_live_snapshots(env):
+    """R08 金标准：行程预算里的 @live: 规格键在轮末被替换为真实快照引用。
+
+    直查（无日期）11.0 与行程内部带日期 22.0 的键天然不同——行程条目
+    只应绑定行程自己内部调用的快照。6 天昆明→大理：夜数 5、
+    researcher_count=1 → rooms_eff=1，住宿 = 22×5×1 = 110.0；
+    交通两腿各 100.0（train 100 < flight 300，民宿/酒店同价 prefer 胜出）。
+    """
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "compose_itinerary",
+                                          "arguments": {"departure": "昆明",
+                                                        "destinations": ["大理"],
+                                                        "start_date": "2026-11-01",
+                                                        "duration_days": 6,
+                                                        "budget_total": 5000}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "查酒店并排行程", tm,
+                         llm, TwoPriceFlyAI()))
+    index = repo.list_cached_searches("p1")
+    snaps = {c["id"]: c for c in index}
+    itin_cid = next(c["id"] for c in index if c["tool"] == "compose_itinerary")
+    plan = repo.get_cached_search("p1", itin_cid)["result"]
+    items = plan["budget"]["items"]
+
+    stay = next(b for b in items if b["name"].startswith("住宿"))
+    assert stay["amount"] == 110.0
+    stay_cid = re.search(r"flyai 快照 ([^\s（]+)", stay["source_ref"]).group(1)
+    assert snaps[stay_cid]["tool"] == "search_hotels"
+    assert repo.get_cached_search("p1", stay_cid)["result"]["cheapest"] == 22.0
+
+    transports = [b for b in items if b["name"].startswith("交通")]
+    assert len(transports) == 2
+    for t in transports:
+        assert t["amount"] == 100.0
+        leg_cid = re.search(r"flyai 快照 ([^\s（]+)", t["source_ref"]).group(1)
+        assert snaps[leg_cid]["tool"] == "search_trains"
+        assert repo.get_cached_search("p1", leg_cid)["result"]["cheapest"] == 100.0
+
+    assert "@live:" not in json.dumps(plan, ensure_ascii=False)
+    old = [c for c in index if c["tool"] == "search_hotels"
+           and repo.get_cached_search("p1", c["id"])["result"]["cheapest"] == 11.0]
+    assert old and all(c["id"] != stay_cid for c in old)
 
 
 # ------------------------------------------- 时窗回写（spec §5.3，final-review Fix-2）
@@ -431,7 +482,7 @@ def test_analyze_window_empty_windows_leaves_time_window_untouched(env, monkeypa
     repo.update_research_context("p1", {"time_window": "原有：7 月中旬"})
     from fieldwork_agent.web_host.agent import loop as agent_loop
 
-    def _fake_build_dispatch_fn(flyai_client, llm, live_snapshot_refs=None):
+    def _fake_build_dispatch_fn(flyai_client, llm):
         def dispatch(name, args):
             return Envelope(ok=True, data={"windows": []})
         return dispatch

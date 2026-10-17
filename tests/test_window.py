@@ -143,13 +143,18 @@ def test_score_windows_cap_by_festival_presence():
 
 
 def test_score_windows_flight_dimension_dropped():
-    """航班整类 None：交通维度剔除，est 只含住宿+餐费。"""
+    """航班整类 None：partial 语义——estimate=None、budget_score=0、reasons 明示缺价（R07）。"""
     curve = _curve(["2026-07-01", "2026-07-08"], [None, None], [200.0, 100.0])
     windows = _score_windows(curve, [], "2026-07-01", "2026-07-15",
                              duration_days=2, budget_total=5000.0, sample_step=7)
     top = windows[0]  # [07-08,07-09]
     assert top.evidence["flight_min"] is None
-    assert top.evidence["estimate"] == pytest.approx(400.0)  # 100×1 夜 + 150×2 天
+    assert top.evidence["coverage"] == "partial"
+    assert top.evidence["uncovered"] == ["flight"]
+    assert top.evidence["estimate"] is None
+    assert top.evidence["estimate_known"] == pytest.approx(400.0)  # 100×1 夜 + 150×2 天
+    assert top.evidence["budget_score"] == 0.0
+    assert "缺 flight 报价" in "；".join(top.reasons)
 
 
 # ── Task 7 节庆抽取 ──────────────────────────────────────
@@ -293,6 +298,24 @@ def test_analyze_fieldwork_window_all_sources_failed():
                                    duration_days=10, budget_total=5000.0,
                                    client=Dead(), llm=None)
     assert env.ok is False and env.error.code == "all_sources_failed"
+
+
+def test_analyze_budget_partial_flights_dead():
+    """仅航班失败（住宿在）：budget_feasible=None + degraded 明示缺价（R07 三态）。"""
+    class FlightsDead(AnalyzeStub):
+        def search_flights(self, origin, destination, dep_date="", **kw):
+            return Envelope(ok=False,
+                            error=ToolError(code="flyai_error", message="x", hint=""))
+
+    env = analyze_fieldwork_window("昆明", "西昌", "2026-07-01", "2026-07-29",
+                                   duration_days=10, budget_total=5000.0,
+                                   client=FlightsDead(), llm=None)
+    assert env.ok
+    assert env.data.budget_feasible is None
+    assert env.data.degraded and "缺 flight 报价" in env.data.degraded
+    assert env.degraded == env.data.degraded  # Envelope 级与 data 级同源
+    assert env.data.windows[0].evidence["estimate"] is None
+    assert env.data.windows[0].evidence["estimate_known"] > 0
 
 
 def test_analyze_fieldwork_window_registered():

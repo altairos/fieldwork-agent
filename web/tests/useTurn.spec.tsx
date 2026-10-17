@@ -56,6 +56,27 @@ function stubApi(post: unknown, ok: boolean, status: number, sse: { resp: unknow
   return { fetchMock, signals };
 }
 
+/** R06a 三路由桩：POST …/messages 走 jsonResp；GET /projects/{pid} 走 snap 响应（记录 URL 次序）；
+ *  其余（SSE …/events）走传入桩。 */
+function stubApiWithSnapshot(
+  post: unknown,
+  sse: { resp: unknown },
+  snap: { body: unknown; ok?: boolean; status?: number },
+) {
+  const snapGets: string[] = [];
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith("/messages")) return jsonResp(post, true, 200);
+    if (/\/projects\/[^/]+$/.test(u)) {
+      snapGets.push(u);
+      return jsonResp(snap.body, snap.ok ?? true, snap.status ?? 200);
+    }
+    return sse.resp;
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return { fetchMock, snapGets };
+}
+
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
@@ -174,6 +195,54 @@ describe("useTurn — 卸载/跨项目切换中止旧流（Fix #1）", () => {
     // cleanup 先 abort 旧流再用新 projectId 起 effect；abort 收尾的 setBusy 也须落在 act 内
     await act(async () => { rerender({ pid: "pB" }); await tick(); });
     expect(signals[0].aborted).toBe(true);            // 旧流已断：其回调不会再污染新项目 store
+  });
+});
+
+describe("useTurn — R06a · turn_done 后回读项目快照", () => {
+  const SNAP = { project_id: "p1", phase: "informants", field_sites: [],
+                 informants: [], proposals: [], phase_history: [] };
+
+  test("首见 turn_done → 恰好一次 GET /projects/p1，快照载入 store，refreshError 保持 null", async () => {
+    const sse = sseResp([
+      'id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"画像完成"}\n\n',
+      'id: 2\nevent: turn_done\ndata: {"turn_id":"t1","seq":2,"reply_id":"t1","usage":{"total_tokens":8}}\n\n',
+    ]);
+    const { snapGets } = stubApiWithSnapshot(CREATED, sse, { body: SNAP });
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.send("调研大理"); await tick(); });
+
+    expect(snapGets).toHaveLength(1);                       // 恰好一次（重复帧不重触发）
+    expect(snapGets[0]).toContain("/projects/p1");
+    expect(useProjectStore.getState().snapshot).toEqual(SNAP);
+    expect(useProjectStore.getState().phase).toBe("informants");
+    expect(useProjectStore.getState().refreshError).toBeNull();
+  });
+
+  test("回读 500 → refreshError 置位（回合本身不受影响，连接照常释放）", async () => {
+    const sse = sseResp([
+      'id: 1\nevent: turn_done\ndata: {"turn_id":"t1","seq":1,"reply_id":"t1","usage":{"total_tokens":8}}\n\n',
+    ]);
+    const { snapGets } = stubApiWithSnapshot(CREATED, sse,
+      { body: { detail: "boom" }, ok: false, status: 500 });
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.send("调研大理"); await tick(); });
+
+    expect(snapGets).toHaveLength(1);
+    expect(useProjectStore.getState().refreshError).toBe("快照刷新失败，最新田野点/行程可能未显示");
+    expect(result.current.busy).toBe(false);               // 回读失败不拖垮回合收尾
+    expect(sse.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("error 帧收尾（无 turn_done）→ 不发起快照回读", async () => {
+    const sse = sseResp([
+      'id: 1\nevent: error\ndata: {"turn_id":"t1","seq":1,"code":"internal_error","message":"上游超时","hint":"请重试"}\n\n',
+    ]);
+    const { snapGets } = stubApiWithSnapshot(CREATED, sse, { body: SNAP });
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.send("调研大理"); await tick(); });
+
+    expect(snapGets).toHaveLength(0);
+    expect(useProjectStore.getState().refreshError).toBeNull();
   });
 });
 

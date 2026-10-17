@@ -1,6 +1,7 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -31,12 +32,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
     recorder = RecordingClient(flyai_client) if flyai_client is not None else None
-    dest_refs: dict[str, str] = {}
+    live_refs: dict[str, str] = {}
     snapshot_ids: list[str] = []
     drained = 0
     call_args_map: dict[str, dict] = {}
-    dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
-                                 llm, live_snapshot_refs=dest_refs)
+    dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client, llm)
     tools = build_tool_schemas()
     state_schemas, state_handlers = build_state_tools(repo, pid)
     tools = tools + state_schemas
@@ -142,10 +142,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                             f'（推荐时窗{("：" + reason) if reason else ""}）'
                         )
                         repo.update_research_context(pid, merged)
-            # 快照链（spec §5.1）：搜索即时落盘，下一轮工具调用（如 compose_itinerary）
-            # 经 dispatch 注入的 dest_refs 即可引用刚落盘的快照
+            # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
+            # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
-                                       dest_refs, drained)
+                                       live_refs, drained)
 
     except Exception as exc:
         tm.append_event(pid, turn_id, "error",
@@ -196,7 +196,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         if accumulated_reply:
             repo.append_message(pid, "assistant", accumulated_reply,
                                 {"tool_calls": total_calls})
-        _persist_tool_results(repo, pid, tm, turn_id, call_name_map)
+        _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
         _apply_extractions(repo, pid, user_text)
         transition = check_and_advance(repo, pid)
         if transition:
@@ -262,8 +262,42 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
     return (call_id, name, env)
 
 
-def _persist_tool_results(repo, pid, tm, turn_id, call_name_map):
-    """轮末把成功工具结果落盘。"""
+_LIVE_REF_RE = re.compile(r"@live:[A-Za-z_]+:[^\s（）()]+")
+
+
+def _live_key(method: str, kwargs: dict) -> str:
+    """从 recorder 捕获的调用参数生成规格键——与 kernel 侧 live_*_ref 逐字符一致。"""
+    if method in ("search_flights", "search_trains"):
+        origin = kwargs.get("origin") or ""
+        dest = kwargs.get("destination") or ""
+        dep = kwargs.get("dep_date") or ""
+        if not (origin and dest and dep):
+            return ""
+        return f"@live:{method}:{origin}>{dest}|{dep}"
+    if method == "search_hotels":
+        dest = kwargs.get("dest_name") or kwargs.get("city_name") or ""
+        if not dest:
+            return ""
+        ref = (f"@live:search_hotels:{dest}|{kwargs.get('check_in') or ''}"
+               f"|{kwargs.get('check_out') or ''}")
+        types = kwargs.get("hotel_types") or ""
+        return f"{ref}|{types}" if types else ref
+    return ""
+
+
+def _resolve_live_refs(obj, live_refs: dict[str, str]):
+    """递归把 obj 中的 @live: 规格键替换为真实快照引用（无匹配则原样保留）。"""
+    if isinstance(obj, dict):
+        return {k: _resolve_live_refs(v, live_refs) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_live_refs(v, live_refs) for v in obj]
+    if isinstance(obj, str):
+        return _LIVE_REF_RE.sub(lambda m: live_refs.get(m.group(0), m.group(0)), obj)
+    return obj
+
+
+def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
+    """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。"""
     events = tm.replay(pid, turn_id, after_seq=0)
     for ev in events:
         if ev.event != "tool_completed" or not ev.data.get("ok"):
@@ -275,6 +309,7 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map):
             continue
         data_dict = data if isinstance(data, dict) else (
             data.model_dump(mode="json") if hasattr(data, "model_dump") else {"value": data})
+        data_dict = _resolve_live_refs(data_dict, live_refs)
         if name == "profile_field_site":
             repo.save_field_site(pid, {"name": data_dict.get("location", ""),
                                        "confirmed": False, "profile": data_dict})
@@ -344,14 +379,16 @@ def _apply_extractions(repo, pid, user_text):
     repo.update_research_context(pid, merged)
 
 
-def _drain_snapshots(repo, pid, recorder, snapshot_ids, dest_refs, start: int) -> int:
-    """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（spec §5.1）。
+def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int) -> int:
+    """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（R08 §6）。
 
     返回新游标（幂等，同一调用不会重复落盘）。仅记录带目的地语义的调用
     （destination/dest_name/city_name 任一命中）；query 为可读的
     ``方法名 {参数 JSON}``；analyze_fieldwork_window 内部的多日期采样同样
-    经 recorder 被捕获——它们正是价格曲线的原始依据。同一目的地多次
-    命中取最新引用。recorder 为 None（宿主未注入 flyai）时原样返回游标。
+    经 recorder 被捕获——它们正是价格曲线的原始依据。每次落盘同时按
+    ``_live_key`` 归并 规格键→快照引用（后写覆盖：同一键多次命中取最新），
+    轮末 ``_persist_tool_results`` 据此替换聚合产出中的规格键。
+    recorder 为 None（宿主未注入 flyai）时原样返回游标。
     """
     if recorder is None:
         return start
@@ -369,5 +406,7 @@ def _drain_snapshots(repo, pid, recorder, snapshot_ids, dest_refs, start: int) -
             data = data.model_dump(mode="json")
         cid = repo.cache_search(pid, query, method, data)
         snapshot_ids.append(cid)
-        dest_refs[dest] = f"flyai 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+        key = _live_key(method, kwargs)
+        if key:
+            live_refs[key] = f"flyai 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
     return len(recorder.calls)

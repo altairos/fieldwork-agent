@@ -188,7 +188,7 @@ class RecommendedWindow(BaseModel):
     end: str = ""
     score: float = 0.0             # 0-100，确定性评分
     reasons: list[str] = Field(default_factory=list)   # 模板拼装理由链（含统计数字）
-    evidence: dict[str, Any] = Field(default_factory=dict)   # 七键评分明细：price_score/festival_score/budget_score/flight_min/hotel_min/estimate/festivals
+    evidence: dict[str, Any] = Field(default_factory=dict)   # 十键评分明细：price_score/festival_score/budget_score/flight_min/hotel_min/coverage/uncovered/estimate/estimate_known/festivals
 
 
 class WindowAnalysis(BaseModel):
@@ -197,7 +197,7 @@ class WindowAnalysis(BaseModel):
     windows: list[RecommendedWindow] = Field(default_factory=list)  # 按 score 降序，≤3
     price_curve: PriceCurve = PriceCurve()
     festivals: list[FestivalInfo] = Field(default_factory=list)     # 可为空（抽取降级）
-    budget_feasible: bool = False       # 最优窗口预算是否可行
+    budget_feasible: bool | None = None       # 最优窗口预算是否可行
     degraded: str | None = None         # 体验模式/节庆降级/部分采样失败说明
 
 

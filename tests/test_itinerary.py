@@ -2,7 +2,12 @@
 
 from fieldwork_agent.kernel import build_tool_schemas
 from fieldwork_agent.kernel.aggregation import itinerary as itinerary_module
-from fieldwork_agent.kernel.aggregation.itinerary import compose_itinerary
+from fieldwork_agent.kernel.aggregation.itinerary import (
+    compose_itinerary,
+    live_flight_ref,
+    live_hotel_ref,
+    live_train_ref,
+)
 from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
 
 
@@ -284,24 +289,33 @@ def test_generated_at_present():
 
 
 # ────────────────────────────────────────────────────────────────
-# M3 证据链（Task 11）：预算条目 source_ref 回链快照
+# R08 证据链：预算条目 source_ref 绑定实际选中报价的规格键
 # ────────────────────────────────────────────────────────────────
 
 
-def test_budget_source_ref_links_snapshot():
-    """注入 snapshot_refs 后，交通/住宿预算条目 source_ref 携带快照回链（M3 §5.1）。"""
-    refs = {"大理": "flyai 快照 srch_abc123（2026-10-16 查询）"}
-    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
-                            client=StubClient(), snapshot_refs=refs)
-    by_name = {i.name: i for i in env.data.budget.items}
-    assert "srch_abc123" in by_name["交通（昆明→大理）"].source_ref
-    assert "srch_abc123" in by_name["住宿（大理）"].source_ref
+def test_live_ref_key_formats():
+    """三个纯函数规格键格式（R08 §6）：只依赖入参，无宿主依赖。"""
+    assert live_flight_ref("昆明", "大理", "2026-11-01") == \
+        "@live:search_flights:昆明>大理|2026-11-01"
+    assert live_train_ref("大理", "昆明", "2026-11-06") == \
+        "@live:search_trains:大理>昆明|2026-11-06"
+    assert live_hotel_ref("大理", "2026-11-01", "2026-11-06") == \
+        "@live:search_hotels:大理|2026-11-01|2026-11-06"
+    assert live_hotel_ref("大理", "2026-11-01", "2026-11-06", "民宿,客栈") == \
+        "@live:search_hotels:大理|2026-11-01|2026-11-06|民宿,客栈"
 
 
-def test_budget_source_ref_falls_back_without_snapshot():
-    """未注入 snapshot_refs（MCP/CLI 宿主）：source_ref 退回实时报价口径，行为不变。"""
-    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, client=StubClient())
+def test_budget_source_ref_binds_selected_quote():
+    """金标准（6 天昆明→大理，StubClient）：source_ref 逐条携带选中报价的规格键。
+
+    StubClient 最低价交通为 G29（火车 350 元，mode="train"）；住宿两策略同价 150 元，
+    民宿策略候选 guesthouse=True 经 prefer_key 定序胜出 → 键带 民宿,客栈 尾段。
+    """
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000, client=StubClient())
     by_name = {i.name: i for i in env.data.budget.items}
-    # StubClient 交通最低价为 G29（350 元），住宿为民宿（150 元）
-    assert by_name["交通（昆明→大理）"].source_ref == "G29（flyai 实时报价）"
-    assert by_name["住宿（大理）"].source_ref == "民宿（flyai 实时报价）"
+    assert by_name["交通（昆明→大理）"].source_ref == \
+        "G29（@live:search_trains:昆明>大理|2026-11-01）"
+    assert by_name["交通（大理→昆明）"].source_ref == \
+        "G29（@live:search_trains:大理>昆明|2026-11-06）"
+    assert by_name["住宿（大理）"].source_ref == \
+        "民宿（@live:search_hotels:大理|2026-11-01|2026-11-06|民宿,客栈）"

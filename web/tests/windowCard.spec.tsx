@@ -29,7 +29,15 @@ describe("WindowCard", () => {
     // brief 修正：regex 与组件两处渲染（reasons li + festivals span）必然 multiple match，
     // 改精确字符串只命中 festivals 的 span（与 "30.0 分" 断言同风格，验证意图不变）
     expect(screen.getByText("彝族火把节")).toBeInTheDocument();
-    expect(screen.getByText(/预算可行/)).toBeInTheDocument();
+    expect(screen.getByText("预算内")).toBeInTheDocument();  // R07 三态（原 /预算可行/）
+  });
+  test("budget_feasible=null 渲染待核验文案（R07 三态）", () => {
+    render(<WindowCard data={{ ...GOLDEN, budget_feasible: null }} />);
+    expect(screen.getByText("待核验（仅已知小计）")).toBeInTheDocument();
+  });
+  test("budget_feasible=false 渲染超预算文案（R07 三态）", () => {
+    render(<WindowCard data={{ ...GOLDEN, budget_feasible: false }} />);
+    expect(screen.getByText("超预算")).toBeInTheDocument();
   });
   test("价格曲线含缺口点（null）不崩，仍渲染图", () => {
     render(<WindowCard data={{ ...GOLDEN,

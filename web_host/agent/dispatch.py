@@ -7,12 +7,9 @@ from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import capabilities, validate_tool_args
 
 
-def build_dispatch_fn(flyai_client: Any, llm: Any,
-                      live_snapshot_refs: dict[str, str] | None = None,
-                      ) -> Callable[[str, dict], Envelope]:
-    """live_snapshot_refs：目的地→快照引用串 的活字典（spec §5.1）；
-    目标 fn 声明 snapshot_refs 形参时注入其当前内容浅拷贝——同一回合内
-    先搜索后组合的调用链据此拿到刚落盘的快照引用。"""
+def build_dispatch_fn(flyai_client: Any, llm: Any) -> Callable[[str, dict], Envelope]:
+    """能力分派（R08 §6）：kernel 聚合产出携带规格键（``@live:工具:参数``），
+    宿主轮末统一替换为真实快照引用——dispatch 不再注入 snapshot_refs。"""
     metas = capabilities()
 
     def dispatch(name: str, args: dict) -> Envelope:
@@ -30,8 +27,6 @@ def build_dispatch_fn(flyai_client: Any, llm: Any,
             kwargs["client"] = flyai_client
         if "llm" in params:
             kwargs["llm"] = llm
-        if live_snapshot_refs is not None and "snapshot_refs" in params:
-            kwargs["snapshot_refs"] = dict(live_snapshot_refs)
         try:
             result = meta.fn(**kwargs)
         except Exception as exc:
