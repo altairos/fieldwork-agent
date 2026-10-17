@@ -64,7 +64,7 @@ function stubApiWithSnapshot(
   snap: { body: unknown; ok?: boolean; status?: number },
 ) {
   const snapGets: string[] = [];
-  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (url: string) => {
     const u = String(url);
     if (u.endsWith("/messages")) return jsonResp(post, true, 200);
     if (/\/projects\/[^/]+$/.test(u)) {
@@ -203,6 +203,8 @@ describe("useTurn — R06a · turn_done 后回读项目快照", () => {
                  informants: [], proposals: [], phase_history: [] };
 
   test("首见 turn_done → 恰好一次 GET /projects/p1，快照载入 store，refreshError 保持 null", async () => {
+    // 真实前置：进入项目页时快照已先载入 store（D1 守卫依赖 store.projectId 标识当前项目）
+    useProjectStore.getState().loadSnapshot(SNAP);
     const sse = sseResp([
       'id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"画像完成"}\n\n',
       'id: 2\nevent: turn_done\ndata: {"turn_id":"t1","seq":2,"reply_id":"t1","usage":{"total_tokens":8}}\n\n',
@@ -243,6 +245,46 @@ describe("useTurn — R06a · turn_done 后回读项目快照", () => {
 
     expect(snapGets).toHaveLength(0);
     expect(useProjectStore.getState().refreshError).toBeNull();
+  });
+
+  test("竞态：回读期间切换项目后旧快照不写入新 store", async () => {
+    const sse = sseResp([
+      'id: 1\nevent: turn_done\ndata: {"turn_id":"t1","seq":1,"reply_id":"t1","usage":{"total_tokens":8}}\n\n',
+    ]);
+    // GET /projects/p1 挂起（捕获 resolve 句柄）：手动控制慢回读的返回时刻，
+    // 模拟 await rest.getProject 期间用户已切换项目的竞态窗口
+    let resolveSnap!: (resp: unknown) => void;
+    const snapPending = new Promise((r) => { resolveSnap = r; });
+    const snapGets: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.endsWith("/messages")) return jsonResp(CREATED, true, 200);
+      if (/\/projects\/[^/]+$/.test(u)) {
+        snapGets.push(u);
+        return snapPending;
+      }
+      return sse.resp;
+    });
+    const SNAP_A = { project_id: "p1", phase: "informants", field_sites: [],
+                     informants: [], proposals: [], phase_history: [] };
+    // 真实前置：项目 A 快照已载入 store（D1 守卫依赖 store.projectId 标识当前项目）
+    useProjectStore.getState().loadSnapshot(SNAP_A);
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.send("调研大理"); await tick(); });
+
+    expect(snapGets).toHaveLength(1);                    // 回读已发起、仍挂起（竞态窗口内）
+    const SNAP_B = { project_id: "p2", phase: "preliminary_fieldwork", field_sites: [],
+                     informants: [], proposals: [], phase_history: [] };
+    useProjectStore.getState().reset();                  // 用户切换项目：store 先 reset
+    useProjectStore.getState().loadSnapshot(SNAP_B);     // 再载入项目 B 的快照
+    await act(async () => {                               // 项目 A 的慢回读此刻才返回
+      resolveSnap(jsonResp(SNAP_A, true, 200));
+      await tick(); await tick();
+    });
+
+    expect(useProjectStore.getState().projectId).toBe("p2");   // 旧项目快照被守卫弃置
+    expect(useProjectStore.getState().snapshot).toEqual(SNAP_B);
   });
 });
 

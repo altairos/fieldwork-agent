@@ -62,7 +62,9 @@ export function useTurn(projectId: string) {
     // 失败只置 refreshError 提示态，绝不向回合流抛错、不阻塞收尾。
     const refreshSnapshot = async () => {
       try {
-        useProjectStore.getState().loadSnapshot(await rest.getProject(projectId));
+        const snap = await rest.getProject(projectId);
+        if (useProjectStore.getState().projectId !== projectId) return; // 竞态守卫：已切换项目，弃置旧快照
+        useProjectStore.getState().loadSnapshot(snap);
         useProjectStore.getState().setRefreshError(null);
       } catch {
         useProjectStore.getState().setRefreshError("快照刷新失败，最新田野点/行程可能未显示");
