@@ -111,3 +111,24 @@ async def list_knowledge(project_id: str, repo=Depends(get_repo)):
         return repo.list_knowledge(project_id)
     except KeyError:
         raise HTTPException(404, f"项目不存在: {project_id}") from None
+
+
+class UpdateKnowledgeRequest(BaseModel):
+    title: str | None = None
+    content: str | None = None
+
+
+@router.put("/projects/{project_id}/knowledge/{entry_id}")
+async def update_knowledge(
+    project_id: str, entry_id: str, body: UpdateKnowledgeRequest, repo=Depends(get_repo)
+):
+    """用户编辑知识条目（P1 右栏折叠式编辑）：未提供字段不改，返回更新后条目。"""
+    checked_project_id(project_id, repo)
+    try:
+        return repo.update_knowledge(
+            project_id, entry_id, title=body.title, content=body.content)
+    except KeyError:
+        raise HTTPException(404, f"知识条目不存在: {entry_id}") from None
+    except ValueError:
+        # json 实现的 path_id_violation 守卫（同 delete 语义）→ 400
+        raise HTTPException(400, "entry_id 格式非法") from None

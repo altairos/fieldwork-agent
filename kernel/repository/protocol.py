@@ -134,6 +134,21 @@ class ProjectRepository(Protocol):
         """删除知识条目（不存在则不报错，保持幂等）。"""
         ...
 
+    def update_knowledge(
+        self,
+        pid: str,
+        entry_id: str,
+        title: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        """编辑知识条目的 title/content（``None`` = 不改），返回更新后的条目。
+
+        未知项目或条目 → ``KeyError``（编辑失败要让用户看见，web 层转 404，
+        与 delete 的幂等刻意不同）；id/source/tags/created_at 等落盘字段
+        原样保留；不推进 ``updated_at``（与 add/delete 平价）。
+        """
+        ...
+
     # ---------------------------------------------------------------- 提案文档
 
     def save_proposal(

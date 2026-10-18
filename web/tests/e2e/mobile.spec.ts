@@ -13,9 +13,9 @@ import { test, expect } from "@playwright/test";
  *     不传不渲染，故本 spec 提案段不断言汉堡钮）
  *   - 抽屉内容 = LeftRail 节标签「方案规划阶段」（lg- 收起态 wrapper 为 display:none，
  *     toBeHidden 可断言）；「A · 研究定位」是多源文案（LeftRail 阶段钮/
- *     PhaseBanner「阶段 A」/右栏状态投影/进度行），四源中仅阶段项为 button，
+ *     PhaseBanner「阶段 A」/右栏实时状态/进度行），四源中仅阶段项为 button，
  *     用 getByRole("button") 消歧
- *   - 把手 = App.tsx 右栏 button「上下文面板 · 状态投影」；RightDock 面板头有同文案
+ *   - 把手 = App.tsx 右栏 button「上下文面板 · 实时状态」；RightDock 面板头有同文案
  *     div，用 button role 消歧；展开断言用 Tabs 的 role=tab「访谈对象」
  *   - backdrop = aria-hidden 遮罩 div（无语义 role），用点击抽屉外区域（x=392 > 抽屉宽
  *     268px）命中验证关闭行为
@@ -47,7 +47,7 @@ test("移动端冒烟：单栏无横溢 + 汉堡抽屉开关 + 右栏折叠面�
   await expect(page.getByText("方案规划阶段")).toBeHidden();
 
   // ③ 右栏底部面板：把手展开 → RightDock Tabs 可见；再点收起
-  const handle = page.getByRole("button", { name: "上下文面板 · 状态投影" });
+  const handle = page.getByRole("button", { name: "上下文面板 · 实时状态" });
   await expect(handle).toBeVisible();
   await handle.click();
   await expect(page.getByRole("tab", { name: "访谈对象" })).toBeVisible();

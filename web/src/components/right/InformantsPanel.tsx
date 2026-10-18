@@ -9,7 +9,7 @@ import { useToolsStore, type ToolCall } from "../../stores/tools";
 import { rest } from "../../api/rest";
 
 /**
- * InformantsPanel — 右栏「访谈对象」面板（状态投影）。
+ * InformantsPanel — 右栏「访谈对象」面板（实时状态）。
  *
  * 设计板同源：右栏访谈对象面板 lines 638-645
  *   标题 line 639 `font-serif text-[15px] font-600 mb-3`「访谈对象 · 4」

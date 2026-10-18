@@ -547,6 +547,35 @@ class SqliteRepository:
             conn.execute(
                 "DELETE FROM knowledge WHERE project_id=? AND id=?", (pid, entry_id))
 
+    def update_knowledge(
+        self,
+        pid: str,
+        entry_id: str,
+        title: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        """对齐 json_repo：编辑不存在 → KeyError（UPDATE 0 行或读回无果同报）；
+        未指定字段不动；不推 updated_at。"""
+        with self._connect(immediate=True) as conn:
+            if title is not None or content is not None:
+                sets, params = [], []
+                if title is not None:
+                    sets.append("title=?")
+                    params.append(title)
+                if content is not None:
+                    sets.append("content=?")
+                    params.append(content)
+                cur = conn.execute(
+                    f"UPDATE knowledge SET {', '.join(sets)}"
+                    " WHERE project_id=? AND id=?",
+                    (*params, pid, entry_id))
+                if cur.rowcount == 0:
+                    raise KeyError(entry_id)
+            for entry in self._read_knowledge(conn, pid):
+                if entry["id"] == entry_id:
+                    return entry
+        raise KeyError(entry_id)
+
     # ------------------------------------------------------------------ 提案文档
 
     def save_proposal(

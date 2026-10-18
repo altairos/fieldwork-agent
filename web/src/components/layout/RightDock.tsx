@@ -9,13 +9,13 @@ import { Tabs, type TabItem } from "../ui/Tabs";
 import { IconSpark } from "../ui/icons";
 
 /**
- * RightDock — 右栏上下文面板容器（状态投影）。
+ * RightDock — 右栏上下文面板容器（实时状态）。
  * 设计板同源：workspace 右栏 lines 529-674：
  *   容器 `bg-paperdeep border-l border-hairline flex flex-col min-w-0 relative`（line 530）
  *   切换建议 toast（lines 532-538）：`absolute top-2 left-3 right-3 z-10 rounded-lg bg-card shadow-pop hairline p-3`
  *     + spark 朱砂图标 + 「查看/稍后」— 设计红线①：不自动强切 Tab，用户点「查看」(acceptSuggestion) 才切
  *     （ui store 的不变量：phase_transition 只置 pendingSuggestion，绝不改 activeTab）
- *   面板头（lines 540-548）：「上下文面板 · 状态投影」tracking 标签 + rp-tab 组（基本信息/田野点/访谈对象/预算/知识库）
+ *   面板头（lines 540-548）：「上下文面板 · 实时状态」tracking 标签 + rp-tab 组（基本信息/田野点/访谈对象/预算/知识库）
  *   内容区（line 551）：`flex-1 overflow-y-auto scroll p-4`，按 activeTab 渲染五面板（Task 7 接线）。
  *
  * Tab id 对齐（brief 红线）：TABS 的 id 与 PANELS 的键**一律取 ui store 的 RightTab 联合类型**
@@ -88,7 +88,7 @@ export function RightDock({
       )}
 
       <div className="px-4 pt-3 pb-2 border-b border-hairline">
-        <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 状态投影</div>
+        <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 实时状态</div>
         <Tabs tabs={TABS} active={tab} onChange={handleChange} />
       </div>
 

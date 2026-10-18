@@ -10,7 +10,7 @@ import { useToolsStore } from "../../stores/tools";
 import { rest } from "../../api/rest";
 
 /**
- * FieldSitesPanel — 右栏「田野点」面板（状态投影）。
+ * FieldSitesPanel — 右栏「田野点」面板（实时状态）。
  *
  * 设计板同源：右栏 SiteProfilePanel lines 552-616
  *   站点头 lines 554-560：`flex items-center justify-between mb-3` + 名 `font-serif text-[16px] font-600

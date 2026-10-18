@@ -33,7 +33,10 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
 )
-from fieldwork_agent.kernel.repository.guard import cache_id_violation
+from fieldwork_agent.kernel.repository.guard import (
+    cache_id_violation,
+    path_id_violation,
+)
 
 # 消息滚动窗口上限（state 内只留最近 N 条，全量在 jsonl）
 MESSAGE_WINDOW = 50
@@ -425,13 +428,40 @@ class JsonRepository:
         return matched
 
     def delete_knowledge(self, pid: str, entry_id: str) -> None:
-        # P2-2：entry_id 必须是单段文件名（拒绝 ../、分隔符、绝对路径），
-        # 防拼路径越 knowledge 目录删任意文件；合法 id 均为单段名
-        if entry_id != Path(entry_id).name:
-            raise ValueError(f"非法知识条目 id（含路径段）: {entry_id!r}")
+        # P2-2：entry_id 必须是单段文件名（拒绝 ../、\、绝对路径），
+        # 防拼路径越 knowledge 目录删任意文件。校验走 guard 单一来源：
+        # Path(entry_id).name 是平台语义，Linux 不把 \ 当分隔符，会放过
+        # Windows 风格穿越串（..\..\victim 等，CI ubuntu 红）。
+        violation = path_id_violation(entry_id, field="entry_id")
+        if violation:
+            raise ValueError(f"非法知识条目 id（{violation}）: {entry_id!r}")
         path = self._knowledge_dir(pid) / f"{entry_id}.json"
         if path.exists():
             path.unlink()
+
+    def update_knowledge(
+        self,
+        pid: str,
+        entry_id: str,
+        title: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        # P2-2 同源守卫（见 delete_knowledge 注释）：entry_id 单段文件名，
+        # 防拼路径越 knowledge 目录改写任意文件。
+        violation = path_id_violation(entry_id, field="entry_id")
+        if violation:
+            raise ValueError(f"非法知识条目 id（{violation}）: {entry_id!r}")
+        self._require(pid)
+        path = self._knowledge_dir(pid) / f"{entry_id}.json"
+        entry = self._read_json(path)
+        if entry is None:
+            raise KeyError(entry_id)
+        if title is not None:
+            entry["title"] = title
+        if content is not None:
+            entry["content"] = content
+        self._write_json(path, entry)
+        return entry
 
     # ------------------------------------------------------------------ 提案文档
 

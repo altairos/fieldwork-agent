@@ -1,7 +1,7 @@
 // web/tests/rest.spec.ts —— rest 六方法请求形状 + 快照新键类型（Task 6/7 端点的前端接线）
 import type { Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { ApiError, apiDetail, rest } from "../src/api/rest";
+import { ApiError, apiDetail, isAppTokenError, rest } from "../src/api/rest";
 import { startMockServer } from "../mock/sseServer";
 import type { ProjectSnapshot } from "../src/types/models";
 
@@ -27,6 +27,15 @@ describe("rest 状态修正/确认/by-id 方法", () => {
     expect(calls[0].init?.method).toBe("PUT");
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({ budget: "5万" });
     expect(r.phase_transition).toBeNull();
+  });
+
+  it("updateKnowledge 发 PUT 到条目端点并返回更新后条目（P1 右栏编辑）", async () => {
+    const calls = stubFetch([{ id: "k1", title: "新题", content: "新文\n第二行" }]);
+    const r = await rest.updateKnowledge("p1", "k1", { title: "新题", content: "新文\n第二行" });
+    expect(calls[0].url).toBe("/projects/p1/knowledge/k1");
+    expect(calls[0].init?.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ title: "新题", content: "新文\n第二行" });
+    expect(r.title).toBe("新题");
   });
 
   it("confirmFieldSite/confirmProposal 发 POST 到对应端点（R09：确认携 doc_id）", async () => {
@@ -73,6 +82,32 @@ describe("rest 状态修正/确认/by-id 方法", () => {
     const r = await rest.getMessages("p1");
     expect(calls[0].url).toBe("/projects/p1/messages");
     expect(r).toEqual([{ role: "user", content: "你好" }]);
+  });
+});
+
+describe("isAppTokenError — 401 后 code 复核（后续小任务 a）", () => {
+  const tokenBody = JSON.stringify({
+    code: "app_token_required",
+    message: "缺少或错误的 X-App-Token 请求头：请在首页「API 密钥」卡填写访问令牌",
+  });
+
+  it("401 + 响应体 code=app_token_required → true", () => {
+    expect(isAppTokenError(new ApiError(401, tokenBody))).toBe(true);
+  });
+
+  it("401 + JSON 体但 code 非 app_token_required → false（其他来源 401 不误判）", () => {
+    expect(isAppTokenError(new ApiError(401,
+      JSON.stringify({ code: "upstream_auth", message: "上游拒绝" })))).toBe(false);
+  });
+
+  it("401 + 非 JSON 体（网关纯文本）→ 保守放行 true（仍引导用户填令牌）", () => {
+    expect(isAppTokenError(new ApiError(401, "Unauthorized"))).toBe(true);
+  });
+
+  it("非 401 或非 ApiError → false（回归）", () => {
+    expect(isAppTokenError(new ApiError(403, tokenBody))).toBe(false);
+    expect(isAppTokenError(new Error("网络中断"))).toBe(false);
+    expect(isAppTokenError(null)).toBe(false);
   });
 });
 
