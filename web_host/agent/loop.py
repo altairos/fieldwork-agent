@@ -102,6 +102,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     drained = 0
     drained_amap = 0
     call_args_map: dict[str, dict] = {}
+    # N04：文档工具生成时的仓储依赖视图（ctx 路 provenance）——落盘指纹据此
+    # 而非保存时推测；正常轮与保存时仓储一致，仅并发外部修改时有别。
+    doc_ctx_provenance: dict[str, dict] = {}
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
                                  llm,
                                  amap_recorder if amap_recorder is not None
@@ -214,24 +217,42 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": False, "data": None,
                                  "degraded": None, "error": err})
-            coros = []
-            for call in executed:
+            # N04：同批工具按依赖顺序执行——状态写工具（update_research_context
+            # 等，name 在 state_handlers）先执行并 stage 进 buffer；随后才组装
+            # 其余工具（含文档工具）的入参并并发执行，使 merge_doc_args 读到
+            # 已 stage 的新 ctx（修复同批写→文档时文档拿到旧值、正文与依赖
+            # 指纹错配）。独立只读搜索与文档工具在第二阶段仍并发。
+            def _prepare(call):
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
                 # 终审 M1：文档工具入参合并读"仓储+暂存"合并视图——同轮先
                 # update_research_context 再调文档工具时立即看到新值（与
                 # get_project_brief 的 staged_view 语义一致）
-                args = merge_doc_args(repo, pid, name, args,
-                                      ctx_view=buffer.staged_view())
+                ctx_view = buffer.staged_view()
+                args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view)
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
+                # N04：compose_proposal 落盘指纹的 ctx 路依据＝生成时仓储依赖视图
+                # （非模型合并后的 ctx，也非保存时推测）
+                if name == "compose_proposal":
+                    doc_ctx_provenance[call_id] = dict(ctx_view)
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})
-                coros.append(_exec_tool(dispatch, name, args, call_id, state_handlers))
+                return _exec_tool(dispatch, name, args, call_id, state_handlers)
 
-            results = await asyncio.gather(*coros)
+            write_calls = [c for c in executed if c.get("name", "") in state_handlers]
+            rest_calls = [c for c in executed if c.get("name", "") not in state_handlers]
+            results = []
+            if write_calls:
+                # 第一阶段：依赖写/读状态工具先落地（stage 进 buffer）
+                results.extend(await asyncio.gather(
+                    *(_prepare(c) for c in write_calls)))
+            if rest_calls:
+                # 第二阶段：文档工具此刻组装入参已能读到新 ctx；与只读搜索并发
+                results.extend(await asyncio.gather(
+                    *(_prepare(c) for c in rest_calls)))
             total_calls += len(executed)
 
             for call_id, name, env in results:
@@ -394,7 +415,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                      **({"quick_replies": quick_replies}
                                         if quick_replies else {})})
             buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
-            _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
+            _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
+                                  doc_ctx_provenance)
             _apply_extractions(repo, pid, user_text)
             _maybe_autoname(repo, pid, llm)
             transition = check_and_advance(repo, pid)
@@ -558,8 +580,15 @@ def _resolve_live_refs(obj, live_refs: dict[str, str]):
     return obj
 
 
-def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
-    """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。"""
+def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
+                          doc_ctx_provenance=None):
+    """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。
+
+    N04：``doc_ctx_provenance``（call_id → 生成时仓储依赖视图）供 compose_proposal
+    落盘时作为 provenance_ctx 传给 save_proposal，使依赖指纹忠于生成时的
+    仓储依赖版本而非保存时推测（并发外部修改时能正确判失效）。
+    """
+    doc_ctx_provenance = doc_ctx_provenance or {}
     events = tm.replay(pid, turn_id, after_seq=0)
     for ev in events:
         if ev.event != "tool_completed" or not ev.data.get("ok"):
@@ -581,9 +610,12 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
         elif name == "compose_proposal":
             markdown = data_dict.get("markdown", "")
             if markdown:
-                repo.save_proposal(pid, markdown,
-                                   kind=data_dict.get("kind") or "proposal",
-                                   version=data_dict.get("version") or "draft")
+                # N04：用生成时仓储依赖视图作为指纹依据（provenance）
+                repo.save_proposal(
+                    pid, markdown,
+                    kind=data_dict.get("kind") or "proposal",
+                    version=data_dict.get("version") or "draft",
+                    provenance_ctx=doc_ctx_provenance.get(call_id))
         elif name == "compose_interview_guide":
             # guide 返回 {类型: 正文} → 拼单文档落盘
             parts = ["# 访谈提纲", ""]

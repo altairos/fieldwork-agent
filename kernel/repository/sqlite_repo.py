@@ -700,12 +700,14 @@ class SqliteRepository:
     # ------------------------------------------------------------------ 提案文档
 
     def save_proposal(
-        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft"
+        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
+        *, provenance_ctx: dict | None = None,
     ) -> str:
         """版本累积：每次 INSERT 新记录，绝不覆盖既有（契约要求）。
 
         对齐 json_repo：登记走 state["proposals"] + _save 落盘 → 同事务推进
         projects.updated_at；content 事实源存 DB（裁决4），不再落 .md 文件。
+        N04：provenance_ctx 非 None 时，依赖指纹的 ctx 路用生成时实际值。
         """
         self._require(pid)
         record_id = _new_id("prop")
@@ -713,7 +715,8 @@ class SqliteRepository:
         filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
         saved_at = _now()
         with self._connect(immediate=True) as conn:   # R04：指纹+存在性检查+seq 分配同锁
-            dep_hash = self._current_confirm_hash(pid, conn=conn)
+            dep_hash = self._current_confirm_hash(
+                pid, conn=conn, provenance_ctx=provenance_ctx)
             exists = conn.execute(
                 "SELECT 1 FROM proposals WHERE project_id=? AND filename=?",
                 (pid, filename)).fetchone()
@@ -763,14 +766,21 @@ class SqliteRepository:
                 return cached["id"]
         return ""
 
-    def _current_confirm_hash(self, pid: str, conn=None) -> str:
+    def _current_confirm_hash(self, pid: str, conn=None, *,
+                              provenance_ctx: dict | None = None) -> str:
         """五路依赖指纹（R09）。传 conn 时在该（写）事务内现读——确认校验/
-        存档指纹与写入同锁原子（审计 R04：写锁覆盖状态 API）。"""
+        存档指纹与写入同锁原子（审计 R04：写锁覆盖状态 API）。
+
+        N04：``provenance_ctx`` 非 None 时 ctx 路用生成时实际值（正文所本），
+        其余四路仍现读仓储——使指纹忠于正文实际依赖而非保存时推测。
+        """
         if conn is None:
             with self._connect() as ro:
-                return self._current_confirm_hash(pid, conn=ro)
+                return self._current_confirm_hash(
+                    pid, conn=ro, provenance_ctx=provenance_ctx)
         return compute_confirm_hash(
-            self._read_research_context(conn, pid),
+            provenance_ctx if provenance_ctx is not None
+            else self._read_research_context(conn, pid),
             self._read_field_sites(conn, pid),
             self._read_informants(conn, pid),
             self._read_knowledge(conn, pid),

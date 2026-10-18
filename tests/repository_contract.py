@@ -269,6 +269,26 @@ class TestContract:
         repo.save_proposal("p1", "# 方案 v2", version="final")
         assert repo.is_proposal_confirmation_stale("p1") is True
 
+    def test_save_proposal_provenance_ctx_drives_dep_hash(self, repo):
+        """N04：save_proposal 的 provenance_ctx 决定依赖指纹的 ctx 路——
+        与当前仓储 ctx 一致时确认成功；不一致（正文所本是另一套 ctx）
+        时确认拒绝 dep_hash_mismatch，而非按保存时仓储状态推测。双后端一致。"""
+        from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+        repo.update_research_context("p1", {"topic": "当前主题", "budget": "2万"})
+        base = repo.get_research_context("p1")
+        # provenance 与当前一致 → 确认成功、不失效
+        did_ok = repo.save_proposal("p1", "# 方案A", version="final",
+                                    provenance_ctx=dict(base))
+        repo.confirm_proposal("p1", did_ok)
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        # provenance 与当前不一致 → 指纹来自生成时实际 ctx，确认拒绝
+        diverged = {**base, "topic": "生成时主题"}
+        did_bad = repo.save_proposal("p1", "# 方案B", version="final",
+                                     provenance_ctx=diverged)
+        with pytest.raises(ProposalConfirmError) as ei:
+            repo.confirm_proposal("p1", did_bad)
+        assert ei.value.code == "dep_hash_mismatch"
+
     def test_confirm_without_doc_id_picks_latest_proposal_kind(self, repo):
         """P2-1：空 doc_id 取“最新一份 proposal”，跳过 interview_guide 等其他 kind。
 

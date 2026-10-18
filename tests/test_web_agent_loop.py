@@ -1326,6 +1326,55 @@ def test_doc_tool_sees_same_turn_staged_patch(env):
     assert repo.get_research_context("p1")["topic"] == "本轮新主题"
 
 
+# N04：同一 tool_calls 批次内写→文档的时序与正文/指纹一致性
+_PROPOSAL_ARGS_EMPTY_CTX = {
+    "ctx": {},   # 模型给空 ctx，由 merge_doc_args 从 staged_view 补齐
+    "sites": [{"name": "大理", "confirmed": True, "profile": {"location": "大理"}}],
+    "itinerary": {"legs": []},
+    "informants": [{"code": "INF-01", "type": "宗族长老",
+                    "relation": "同乡会引荐", "contact": "", "notes": ""}],
+}
+
+
+def test_n04_same_batch_write_then_proposal_uses_new_ctx(env):
+    """N04：同批先 update_research_context 再 compose_proposal(ctx={})，
+    文档正文必须用本轮新值（旧实现拿到轮前旧值），且落盘指纹与正文一致可确认。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "OLD_TOPIC", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理", "purpose": "global", "research_questions": "RQ_OLD"})
+    llm = ChatFakeLLM([
+        # 单帧双工具调用（同批）：先写主题，再出方案（ctx 空 → 由 staged_view 补）
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c1", "name": "update_research_context",
+              "arguments": {"patch": {"topic": "NEW_TOPIC",
+                                      "research_questions": "RQ_NEW"},
+                            "reason": "用户确认"}},
+             {"id": "c2", "name": "compose_proposal",
+              "arguments": _PROPOSAL_ARGS_EMPTY_CTX}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "改主题并出方案", tm, llm, FakeFlyAI()))
+
+    # 回合后项目主题为新值
+    assert repo.get_research_context("p1")["topic"] == "NEW_TOPIC"
+    # 落盘正文用新值（旧实现会含 OLD_TOPIC）
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    doc = repo.get_proposal_by_id("p1", docs[0]["id"])
+    assert "NEW_TOPIC" in doc["content"]
+    assert "OLD_TOPIC" not in doc["content"]
+    # 依赖指纹与正文一致 → 确认可成功（正文旧/指纹新的错配已消除）
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
 # ------------------------------- F05 取消保护 / F06 最终回答收敛 / F07 批前截断
 # （任务4：TurnPatchBuffer 回合级暂存 + has_final_answer 收敛 + 批量额度截断）
 
