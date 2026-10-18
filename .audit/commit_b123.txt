@@ -1,0 +1,16 @@
+前端三修复：快捷选项按钮样式 / loose list 空行 / 全角引号渲染（问题1/2/3前端）
+
+- B1 QuickReplies：选项按钮升级朱砂主色明显按钮（浅洗底+主色描边，
+  hover 实心，与 Button primary 同语言），「自定义」保持 hairline 次级；
+  两类均补 cursor-pointer 与 px-3 py-1.5 增强可点击暗示
+- B2 空行：react-markdown v10 把 loose item 块级子元素（p/嵌套列表）间
+  换行保留为 text 节点，li 容器 whitespace-pre-wrap 将其渲染成真实空行；
+  去掉容器 pre-wrap（块间空白按 inter-element whitespace 折叠），段落内
+  软换行仍由 p 的 pre-wrap 保留。诊断实录 field_20261018_202833
+- B3 全角引号：新增 lib/cjkQuotes（规则与后端 _normalize_cjk_quotes
+  严格对齐：成对同行、内容含 CJK 才转全角、代码块内不动），接入
+  AssistantStream 流式缓冲与 MessageBubble 存量历史两处渲染点；
+  user 输入不归一
+
+测试：chat.spec.tsx +2（B2 结构断言 / B3 渲染级）、cjkQuotes.spec.ts
+新增 6 例；全量 vitest 27 文件 308 用例 GREEN，tsc --noEmit 通过

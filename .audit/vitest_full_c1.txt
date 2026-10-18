@@ -1,0 +1,194 @@
+
+> fieldwork-web@0.1.0 test
+> vitest run --run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.4 [39m[90mF:/Agents_dev/Fieldwork_Agent/web[39m
+
+ [32m✓[39m tests/rest.spec.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 83[2mms[22m[39m
+ [32m✓[39m tests/ui.spec.tsx [2m([22m[2m6 tests[22m[2m)[22m[32m 83[2mms[22m[39m
+ [32m✓[39m tests/types.spec.ts [2m([22m[2m14 tests[22m[2m)[22m[33m 864[2mms[22m[39m
+   [32m✓[39m mock sse server smoke [2m(7)[22m
+     [33m[2m✓[22m[39m replay is idempotent after script finished[33m 511[2mms[22m[39m
+ [32m✓[39m tests/amapMapPanel.spec.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 362[2mms[22m[39m
+ [32m✓[39m tests/windowCard.spec.tsx [2m([22m[2m5 tests[22m[2m)[22m[32m 287[2mms[22m[39m
+stderr | tests/snapshotDisclosure.spec.tsx > SnapshotDisclosure 懒加载披露 > 渲染不发请求；点击后拉快照并展示条目
+An update to SnapshotDisclosure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | tests/snapshotDisclosure.spec.tsx > SnapshotDisclosure 懒加载披露 > 无 cid 或无 projectId 时整体不渲染
+An update to SnapshotDisclosure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/exportFormatChips.spec.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 312[2mms[22m[39m
+stderr | tests/snapshotDisclosure.spec.tsx > SnapshotDisclosure 懒加载披露 > 404 → 错误文案，不抛错（红线：卡片永不抛错）
+An update to SnapshotDisclosure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | tests/snapshotDisclosure.spec.tsx > SnapshotDisclosure 懒加载披露 > BudgetCard 明细内接线（集成）
+An update to SnapshotDisclosure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+stderr | tests/snapshotDisclosure.spec.tsx > SnapshotDisclosure 懒加载披露 > BudgetCard 明细内接线（集成）
+An update to SnapshotDisclosure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/snapshotDisclosure.spec.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 385[2mms[22m[39m
+ [32m✓[39m tests/useTurn.spec.tsx [2m([22m[2m16 tests[22m[2m)[22m[33m 380[2mms[22m[39m
+ [32m✓[39m tests/theme.spec.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 516[2mms[22m[39m
+ [32m✓[39m tests/header.spec.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 534[2mms[22m[39m
+ [32m✓[39m tests/apiKeyCard.spec.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 651[2mms[22m[39m
+stderr | tests/toolCards.spec.tsx > ItineraryCard 时间线与预算 > N2 接驳行：有 options 显示 公交×N段/¥x/约y分钟（ItemPage.cheapest）
+An update to AmapMapStage inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+Not implemented: navigation to another Document
+Not implemented: navigation to another Document
+stderr | tests/toolCards.spec.tsx > ProposalCard 下载入口（终审#1） > 偏好 docx 时：链接文案与 href 追加 ?format=docx
+An update to ProposalCard inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/toolCards.spec.tsx [2m([22m[2m27 tests[22m[2m)[22m[33m 1079[2mms[22m[39m
+ [32m✓[39m tests/sse.spec.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m tests/stores.spec.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m tests/keys.spec.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m tests/exportFormat.spec.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m tests/optionTags.spec.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m tests/cjkQuotes.spec.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m tests/smoke.spec.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m tests/session.spec.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m tests/interaction.spec.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 356[2mms[22m[39m
+stderr | tests/rightPanels.spec.tsx > KnowledgePanel 知识条目（审计三 Fix 1c + P1 折叠/编辑） > add_knowledge_entry 工具完成后重拉（回合内落盘立即可见）
+An update to KnowledgePanel inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/rightPanels.spec.tsx [2m([22m[2m17 tests[22m[2m)[22m[33m 511[2mms[22m[39m
+stderr | tests/chat.spec.tsx > Composer > quickReplies 为空或 busy 时不渲染 chips（渐进增强）
+An update to Composer inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/rightResize.spec.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 647[2mms[22m[39m
+Not implemented: navigation to another Document
+ [32m✓[39m tests/chat.spec.tsx [2m([22m[2m45 tests[22m[2m)[22m[33m 755[2mms[22m[39m
+ [32m✓[39m tests/proposalView.spec.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 852[2mms[22m[39m
+Not implemented: navigation to another Document
+stderr | tests/routes.spec.tsx > ProposalView 下载（终审#1） > 偏好 docx 时：按钮文案 .docx，by-id fetch 追加 ?format=docx
+An update to ExportFormatChips inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to ProposalView inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/routes.spec.tsx [2m([22m[2m15 tests[22m[2m)[22m[33m 1074[2mms[22m[39m
+stderr | tests/workspace.spec.tsx > Workspace 无 key 拦截（可浏览不可发） > P5：bfcache 恢复（pageshow persisted）重查本地 key：他处保存的 key 即刻解锁
+An update to Workspace inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m tests/workspace.spec.tsx [2m([22m[2m14 tests[22m[2m)[22m[33m 1438[2mms[22m[39m
+   [32m✓[39m Workspace 接线（App.tsx） [2m(3)[22m
+     [33m[2m✓[22m[39m 挂载即拉取项目快照，中栏对话流与右栏面板就位[33m 369[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m27 passed[39m[22m[90m (27)[39m
+[2m      Tests [22m [1m[32m308 passed[39m[22m[90m (308)[39m
+[2m   Start at [22m 23:01:36
+[2m   Duration [22m 45.81s[2m (environment 73%, setup 17%, import 7%, tests 1%, transform 1%)[22m
+
+[2mEnvironment [22m [33mjsdom was created 27 times[39m[2m · 563.44s total, 73% of tracked time[22m
+[2m            [22m [2mcreate it once per worker with [22m[33mpool: 'vmThreads'[39m[2m (keeps per-file isolation) or [22m[33misolate: false[39m[2m (shares it across files)[22m
+[2m            [22m [2mlearn more: https://vitest.dev/guide/improving-performance#test-environments[22m
+

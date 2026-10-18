@@ -1,0 +1,12 @@
+任务3(F03): 推荐时窗与用户约束分离
+
+analyze 推荐时窗改写 ResearchContext.candidate_windows 候选槽位
+（新槽位 + context_patch 白名单/形状校验 + web loop 回写块替换），
+time_window 只保留用户确认值，不再被推荐文案覆盖。
+
+- spec §5.3 未检索到原文（docs/ 为空），按审阅文档 F03 执行
+- registry description 未提"回写 time_window"，window.py 未改动
+- 并行代理改动一并入库：context.py/loop.py 的截断续写防御与
+  options 每轮提醒（含 test_web_agent_loop.py 尾部 8 项测试）——
+  与 F03 交织于同文件，为保证提交点全绿随本提交入库
+  （888 passed, 3 skipped）
