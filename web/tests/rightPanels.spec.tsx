@@ -1,9 +1,10 @@
 // web/tests/rightPanels.spec.tsx —— 右栏确认/采纳/研究信息编辑（Task 9）
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { InformantCard } from "../src/components/cards/InformantCard";
 import { InformantsPanel } from "../src/components/right/InformantsPanel";
 import { FieldSitesPanel } from "../src/components/right/FieldSitesPanel";
+import { KnowledgePanel } from "../src/components/right/KnowledgePanel";
 import { ProgressPanel } from "../src/components/right/ProgressPanel";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
@@ -179,5 +180,49 @@ describe("FieldSitesPanel — R06b 回读失败提示与重试", () => {
     fireEvent.click(screen.getByText("重试"));                    // 重试入口可点
     await waitFor(() => expect(calls[0]?.url).toBe("/projects/p1"));
     await waitFor(() => expect(useProjectStore.getState().refreshError).toBeNull());
+  });
+});
+
+describe("KnowledgePanel 知识条目（审计三 Fix 1c）", () => {
+  test("挂载即 GET /knowledge 并渲染 agent 存入的条目", async () => {
+    const calls = stubFetch([
+      [{ id: "k1", title: "印度签证准入", content: "电子签 30 天", category: "general" },
+       { id: "k2", title: "节庆日历", content: "排灯节 11 月", category: "general" }],
+    ]);
+    render(<KnowledgePanel />);
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === "/projects/p1/knowledge")).toBe(true));
+    expect(await screen.findByText("印度签证准入")).toBeInTheDocument();
+    expect(screen.getByText("电子签 30 天")).toBeInTheDocument();
+    expect(screen.getByText("节庆日历")).toBeInTheDocument();
+  });
+
+  test("空知识库 → 如实提示无条目，不伪造", async () => {
+    stubFetch([[]]);
+    render(<KnowledgePanel />);
+    expect(await screen.findByText(/尚未存入知识条目/)).toBeInTheDocument();
+  });
+
+  test("端点失败 → 如实提示加载失败，不崩", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      ({ ok: false, status: 500, text: async () => "boom" } as unknown as Response)));
+    render(<KnowledgePanel />);
+    expect(await screen.findByText(/知识条目加载失败/)).toBeInTheDocument();
+  });
+
+  test("add_knowledge_entry 工具完成后重拉（回合内落盘立即可见）", async () => {
+    const calls = stubFetch([
+      [],
+      [{ id: "k9", title: "新条目", content: "正文", category: "general" }],
+    ]);
+    render(<KnowledgePanel />);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    useToolsStore.setState({
+      byCallId: { c9: { call_id: "c9", tool: "add_knowledge_entry", purpose: "", status: "done",
+                        args: {}, ok: true, data: { id: "k9" }, degraded: null } },
+      order: ["c9"],
+    });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(await screen.findByText("新条目")).toBeInTheDocument();
   });
 });

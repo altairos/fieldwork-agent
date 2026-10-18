@@ -123,3 +123,40 @@ async def test_r01_cross_project_cid_404(client, app):
     r = await client.get(f"/projects/p1/cached-searches/{cid}")
     assert r.status_code == 404
     assert "secret-query" not in r.text
+
+
+# ────────────────────────────────────────────────────────────────
+# 知识库可见面（audit3 Fix 1b）：agent add_knowledge_entry 落盘材料 → REST 可读
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_list_knowledge_returns_entries_with_content(client, app):
+    """200 + 按创建顺序返回条目（含正文）——「存了看不见」症状的服务端兑底。"""
+    await client.post("/projects", json={"project_id": "p1"})
+    repo = app.state.repo
+    k1 = repo.add_knowledge("p1", "印度签证准入", "电子签 30 天…", tags=["签证"])
+    k2 = repo.add_knowledge("p1", "节庆日历", "排灯节 11 月…", category="general")
+    r = await client.get("/projects/p1/knowledge")
+    assert r.status_code == 200
+    entries = r.json()
+    assert [e["id"] for e in entries] == [k1, k2]
+    assert entries[0]["title"] == "印度签证准入"
+    assert "电子签" in entries[0]["content"]
+
+
+async def test_list_knowledge_empty_project(client):
+    await client.post("/projects", json={"project_id": "p1"})
+    r = await client.get("/projects/p1/knowledge")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+async def test_list_knowledge_unknown_project_404(client):
+    r = await client.get("/projects/ghost/knowledge")
+    assert r.status_code == 404
+
+
+async def test_list_knowledge_invalid_pid_400(client):
+    # 穿越形态用 %5C（反斜杠）编码，同 R01 先例（httpx 会规范化 ../ 段）
+    r = await client.get("/projects/..%5C..%5Csecret/knowledge")
+    assert r.status_code == 400

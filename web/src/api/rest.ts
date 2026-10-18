@@ -58,6 +58,17 @@ export interface CachedSearchRecord {
   result: { items?: { name?: string; price?: number | null }[] } | null;
 }
 
+/** 知识条目（GET /projects/{id}/knowledge，web_host/api/projects.py::list_knowledge，审计三 Fix 1b）。 */
+export interface KnowledgeEntry {
+  id: string;
+  title: string;
+  content: string;
+  source?: string;
+  tags?: string[];
+  category?: string;
+  created_at?: string;
+}
+
 /** 状态修正/确认端点共同返回的阶段推进结果；null = 本次未发生推进。 */
 export interface PhaseTransition {
   from?: string;
@@ -86,6 +97,8 @@ export const rest = {
       : `/projects/${id}/proposal/download`,
   getCachedSearch: (id: string, cid: string) =>
     req<CachedSearchRecord>(`/projects/${id}/cached-searches/${cid}`),
+  // 审计三 Fix 1c：agent add_knowledge_entry 落盘条目的可见面（按创建顺序，含正文）
+  listKnowledge: (id: string) => req<KnowledgeEntry[]>(`/projects/${id}/knowledge`),
   // ---- 状态修正与确认（web_host/api/state.py，审计 F03/F04 修正入口）----
   updateResearchContext: (id: string, patch: Record<string, string | boolean>) =>
     req<{ research_context: Partial<ResearchContext>; phase_transition: PhaseTransition | null }>(

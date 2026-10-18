@@ -1,8 +1,11 @@
+import { useEffect, useState } from "react";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { IconBook, IconCompass } from "../ui/icons";
 import { asRecord, strOf } from "../cards/data";
+import { rest, type KnowledgeEntry } from "../../api/rest";
 import { useProjectStore } from "../../stores/project";
+import { useToolsStore } from "../../stores/tools";
 
 /**
  * KnowledgePanel — 右栏「知识库」面板（研究定位投影 + 学科纵深静态说明）。
@@ -17,10 +20,12 @@ import { useProjectStore } from "../../stores/project";
  *     text-[12px] text-inkfaint`
  *
  * 同源红线②：只读 `snapshot.research_context`（REST 初始快照 = 内核 ResearchContext 槽位），
- * 面板 0 处 fetch、不改写字段值（原样呈现内核抽取结果）；未填槽位如实计入「已填 N / 总数」，
+ * 不改写字段值（原样呈现内核抽取结果）；未填槽位如实计入「已填 N / 总数」，
  * 不猜、不补默认值。
- * 说明：web_host 当前**无知识库/资料端点**（`GET /projects/{id}` 只回项目快照），故本面板不做
- * 设计板 line 668 的「添加自有资料」入口（避免死按钮），底部改为如实说明面板的投影性质。
+ * 审计三 Fix 1c：槽位投影之外新增「已存条目」区——agent add_knowledge_entry 落盘材料经
+ * `GET /projects/{id}/knowledge` 独立端点拉取（快照不含 knowledge，避免膨胀）；刷新时机 =
+ * 挂载 + snapshot 引用变化 + add_knowledge_entry 工具完成（turn_done 不重拉快照，
+ * 以工具完成信号兑底回合内新鲜度）。条目原样呈现，不加工、不裁剪。
  */
 
 /** 槽位 → 中文行标（阶段 A 清单语汇取设计板 lines 622-627；轮 2 方案 B 加深挖槽）。 */
@@ -55,9 +60,42 @@ export const DEPTH_TEXT =
   "内置 10+ 类访谈对象类型库（村落长老/宗族头人/宗教人士/基层干部/返乡务工者/非遗传承人…），每类含接近策略、注意事项、建议提问域与伦理提示，可据此起草半结构式访谈提纲，供方案的方法与伦理章节引用。";
 
 export function KnowledgePanel() {
+  const projectId = useProjectStore((s) => s.projectId);
   const snapshot = useProjectStore((s) => s.snapshot);
   const ctx = asRecord(snapshot?.research_context);
   const hasContext = snapshot !== null && Object.keys(ctx).length > 0;
+
+  // 回合内新鲜度：add_knowledge_entry 落盘完成（done/failed）的调用序列变化即重拉；
+  // running 不算（落盘未完成拉了也白拉）。字符串 stamp 保证 zustand selector 稳定引用。
+  const knowledgeStamp = useToolsStore((s) =>
+    s.order
+      .filter((cid) => {
+        const c = s.byCallId[cid];
+        return c?.tool === "add_knowledge_entry" && c.status !== "running";
+      })
+      .map((cid) => `${cid}:${s.byCallId[cid]?.status}`)
+      .join(","));
+  const [entries, setEntries] = useState<KnowledgeEntry[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    rest
+      .listKnowledge(projectId)
+      .then((items) => {
+        if (alive) {
+          setEntries(items);
+          setLoadError(false);
+        }
+      })
+      .catch(() => {
+        if (alive) setLoadError(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, snapshot, knowledgeStamp]);
 
   const slots = SLOTS.map((slot) => {
     const raw = strOf(ctx[slot.key]);
@@ -109,6 +147,28 @@ export function KnowledgePanel() {
       )}
 
       <div className="rule my-4" />
+
+      {/* 已存条目（审计三 Fix 1c）：agent add_knowledge_entry 落盘材料，原样投影 */}
+      <div className="mb-4">
+        <div className="num text-[11px] text-inkfaint mb-2">
+          {`已存条目 · ${entries?.length ?? "…"}`}
+        </div>
+        {loadError ? (
+          <div className="text-[12px] text-inkfaint">知识条目加载失败，稍后重试</div>
+        ) : entries === null ? null : entries.length === 0 ? (
+          <div className="text-[12px] text-inkfaint">尚未存入知识条目（agent 对话中存入的材料会出现在这里）</div>
+        ) : (
+          <div className="space-y-2">
+            {entries.map((e) => (
+              <div key={e.id} className="hairline rounded-lg bg-card p-3">
+                <div className="text-[12.5px] font-medium text-ink break-words">{e.title}</div>
+                <div className="text-[11px] text-inksoft mt-1 leading-relaxed break-words">{e.content}</div>
+                <div className="text-[11px] text-inkfaint mt-1">{e.category ?? "general"}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* 学术纵深（设计板 lines 379-382 静态说明，非工具数据，不与同源红线冲突） */}
       <div className="hairline rounded-lg bg-card p-4">

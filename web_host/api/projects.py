@@ -83,3 +83,17 @@ async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo)):
     if record is None:
         raise HTTPException(404, f"快照不存在: {cid}")
     return record
+
+
+@router.get("/projects/{project_id}/knowledge")
+async def list_knowledge(project_id: str, repo=Depends(get_repo)):
+    """项目知识条目（按创建顺序，含正文）。
+
+    审计三 Fix 1b：agent add_knowledge_entry 落盘材料的 REST 可见面——
+    症状「声称已存入知识库但 Web 上看不到」的服务端兑底。
+    """
+    checked_project_id(project_id, repo)
+    try:
+        return repo.list_knowledge(project_id)
+    except KeyError:
+        raise HTTPException(404, f"项目不存在: {project_id}") from None
