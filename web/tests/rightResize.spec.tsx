@@ -91,6 +91,21 @@ describe("右栏拖拽调宽（P3）", () => {
     await waitFor(() => expect(rightW(container)).toBe("280px"));
   });
 
+  test("pointerdown 即 preventDefault：拖拽途中不触发浏览器原生文本选择", async () => {
+    // 把手贴右栏左边缘，拖拽必经中栏正文：不 preventDefault 时按住鼠标横拖
+    // 会选中文本（蓝底反白，评审 M2）。fireEvent 返回 !defaultPrevented。
+    render(<App />);
+    const handle = await screen.findByRole("separator", { name: "调整右栏宽度" });
+
+    const notPrevented = fireEvent.pointerDown(handle, { clientX: 1000 });
+    expect(notPrevented).toBe(false); // 即 defaultPrevented === true
+
+    // preventDefault 只阻默认行为，不影响拖拽本身：宽度照常跟随
+    fireEvent.pointerMove(window, { clientX: 950 });
+    await waitFor(() => expect(document.querySelector<HTMLElement>('[style*="--right-w"]')!.style.getPropertyValue("--right-w")).toBe("390px"));
+    fireEvent.pointerUp(window);
+  });
+
   test("拖拽结果写 localStorage，重挂载恢复上次宽度", async () => {
     const first = render(<App />);
     const handle = await screen.findByRole("separator", { name: "调整右栏宽度" });

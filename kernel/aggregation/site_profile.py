@@ -187,8 +187,16 @@ def profile_field_site(location: str, budget_per_night: float = 200,
             if any_around_ok:  # 全部 around 失败 → 缺段 None（区分于空页）
                 facilities = _build_page(fac_items, max_items_per_section)
     else:
-        degraded = ("高德地理底座未建立（地名未收录或服务不可用），"
-                    "geo/facilities 段缺省，画像回退飞猪数据源")
+        # 无 Key 单独点名（默认无 Key 部署的第一路径，指对排查方向：配 Key，
+        # 而非误导为地名未收录/服务不可用）；其余失败（含海外 amap_no_result）
+        # 维持双源回退口径。
+        err_code = geo_env.error.code if geo_env.error is not None else ""
+        if err_code == "amap_invalid_key":
+            degraded = ("高德地理底座未建立（未配置高德 API Key），"
+                        "geo/facilities 段缺省，画像回退飞猪数据源")
+        else:
+            degraded = ("高德地理底座未建立（地名未收录或服务不可用），"
+                        "geo/facilities 段缺省，画像回退飞猪数据源")
 
     # 全部源失败（含仅 ok=False / 仅异常；geocode 亦无结果）→ 整体失败包络
     if succeeded == 0:

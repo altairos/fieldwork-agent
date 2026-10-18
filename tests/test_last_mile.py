@@ -117,6 +117,51 @@ def test_geocode_exception_folds_to_amap_no_result():
     assert [c[0] for c in geo.calls] == ["geocode", "geocode"]
 
 
+# ---------------------------------------------------------------- 无 Key 透传
+
+
+_KEY_ERR = ToolError(
+    code="amap_invalid_key",
+    message="未配置高德 API Key（AMAP_API_KEY / amap_api_key）",
+    hint="请到 https://console.amap.com 申请『Web 服务』类型 Key，"
+         "配置 AMAP_API_KEY 环境变量或 config.json 的 amap_api_key")
+
+
+def test_invalid_key_passthrough_not_no_result():
+    """无 Key（amap_invalid_key）原样透传配 Key 指引，不折 amap_no_result。
+
+    默认无 AMAP_API_KEY 的部署下这是确定性首路径：折成 no_result 会让 LLM
+    按"换标准地名"hint 空转重试（评审 M1）。
+    """
+    class NoKeyClient(StubTransitClient):
+        def geocode(self, address: str, city: str = "") -> Envelope:
+            self.calls.append(("geocode", {"address": address}))
+            return Envelope(ok=False, error=_KEY_ERR)
+
+    geo = NoKeyClient()
+    env = plan_last_mile("昆明", "喜洲", amap_client=geo)
+    assert env.ok is False
+    assert env.error is not None and env.error.code == "amap_invalid_key"
+    assert env.error == _KEY_ERR                    # 原样透传（message/hint 不折算）
+    assert [c[0] for c in geo.calls] == ["geocode"]  # 失败即止不发 transit
+
+
+def test_site_end_invalid_key_also_passthrough():
+    """site 端 geocode 无 Key 同样透传（两端分支对称）。"""
+    class SiteNoKeyClient(StubTransitClient):
+        def geocode(self, address: str, city: str = "") -> Envelope:
+            if address == "喜洲":
+                self.calls.append(("geocode", {"address": address}))
+                return Envelope(ok=False, error=_KEY_ERR)
+            return super().geocode(address, city)
+
+    geo = SiteNoKeyClient()
+    env = plan_last_mile("昆明", "喜洲", amap_client=geo)
+    assert env.ok is False
+    assert env.error is not None and env.error == _KEY_ERR
+    assert [c[0] for c in geo.calls] == ["geocode", "geocode"]
+
+
 # ---------------------------------------------------------------- transit 失败降级
 
 

@@ -300,6 +300,25 @@ def test_geo_failure_degrades_not_fails():
     assert env.degraded and "高德" in env.degraded        # 隐式双源回退说明
 
 
+def test_geo_invalid_key_degraded_names_missing_key():
+    """无 Key（amap_invalid_key）的 degraded 文案点名「未配置高德 API Key」，
+    不再混入「地名未收录或服务不可用」——默认无 Key 部署的第一路径要指对
+    排查方向（配 Key），而非误导换标准地名（评审 M1）。"""
+    class GeoNoKey(StubGeoClient):
+        def geocode(self, address: str, city: str = ""):
+            self.calls.append(("geocode", {"address": address}))
+            return Envelope(ok=False, error=ToolError(
+                code="amap_invalid_key", message="未配置高德 API Key"))
+
+    geo = GeoNoKey()
+    env = profile_field_site("大理", client=StubClient(), amap_client=geo)
+    assert env.ok is True                         # 逐段失败隔离不变
+    assert env.data.geo is None and env.data.facilities is None
+    assert env.degraded and "未配置高德 API Key" in env.degraded
+    assert "地名未收录" not in env.degraded
+    assert [m for m, _ in geo.calls] == ["geocode"]  # 无 Key 不跟发 around
+
+
 def test_geo_exception_is_isolated():
     """geo_client 抛异常与返回失败包络同权：geo/facilities=None 且整体 ok=True。"""
     class GeoBoom(StubGeoClient):

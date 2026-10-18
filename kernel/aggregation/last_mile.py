@@ -6,7 +6,8 @@
 - 严格无状态：``amap_client`` keyword-only 注入，默认 None 时自建；
 - 任一端 geocode 失败（含海外地名 ``amap_no_result`` 或调用异常）→ 统一
   ``amap_no_result`` 失败包络（message 指明哪一端，hint 引导标准地名），
-  失败即止不发 transit；
+  失败即止不发 transit；无 Key（``amap_invalid_key``）例外：原样透传
+  配 Key 指引，不折 no_result（防默认无 Key 部署下 LLM 按换地名 hint 空转）；
 - transit 失败（无方案/服务不可用）不算整体失败：``ok=True`` + 空 ``options``
   + ``degraded`` 附言（末端接驳查不到 ≠ 出行不可行，建议班车/包车等公路方式）；
 - ``date_hint`` 占位入参：M4 不透传 v3 ``date``（班次日期过滤留给 PoC2）；
@@ -45,6 +46,8 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
     except Exception as exc:
         return _no_result(f"枢纽地名解析异常：{hub}（{exc}）")
     if not (hub_env.ok and isinstance(hub_env.data, GeoLocation)):
+        if hub_env.error is not None and hub_env.error.code == "amap_invalid_key":
+            return Envelope(ok=False, error=hub_env.error)  # 无 Key 原样透传
         return _no_result(f"枢纽地名未能解析：{hub}")
 
     try:
@@ -52,6 +55,8 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
     except Exception as exc:
         return _no_result(f"田野点地名解析异常：{site}（{exc}）")
     if not (site_env.ok and isinstance(site_env.data, GeoLocation)):
+        if site_env.error is not None and site_env.error.code == "amap_invalid_key":
+            return Envelope(ok=False, error=site_env.error)  # 无 Key 原样透传
         return _no_result(f"田野点地名未能解析：{site}")
 
     hub_geo, site_geo = hub_env.data, site_env.data
@@ -74,7 +79,8 @@ register(CapabilityMeta(
     description="聚合末端接驳：两次地理编码正算枢纽城市与田野点坐标，再查跨城公交方案"
                 "（city=出发市/cityd=到达市），返回两端正算结果（五级行政区划+坐标）与"
                 "接驳方案页（线路拼接/票价/耗时）；任一端地名未收录返回 amap_no_result"
-                "（hint 引导标准地名）；接驳查不到不判失败（degraded 建议公路方式）。",
+                "（hint 引导标准地名），未配高德 Key 则透传 amap_invalid_key 配 Key 指引；"
+                "接驳查不到不判失败（degraded 建议公路方式）。",
     fn=plan_last_mile,
     args_model=PlanLastMileArgs,
     read_only=True, open_world=True))

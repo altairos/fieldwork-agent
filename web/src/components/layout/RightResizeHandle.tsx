@@ -58,6 +58,7 @@ export function RightResizeHandle({
       aria-orientation="vertical"
       title="拖拽调整右栏宽度"
       onPointerDown={(e) => {
+        e.preventDefault(); // 阻止原生文本选择：拖拽必经中栏正文，不 preventDefault 会选中滑过文本
         startRef.current = { startX: e.clientX, startW: width };
         setDragging(true);
       }}

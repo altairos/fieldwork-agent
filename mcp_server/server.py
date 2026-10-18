@@ -71,7 +71,7 @@ def _text_payload(payload: dict) -> CallToolResult:
 
 def create_server(config: "Config | None" = None,
                   repo: "ProjectRepository | None" = None) -> LowLevelServer:
-    """组装低层 MCP Server：29 tools（20 能力 + 9 状态）+ 资源面 + 2 prompts。
+    """组装低层 MCP Server：30 tools（21 能力 + 9 状态）+ 资源面 + 2 prompts。
 
     - ``config=None``：无 LLM（文档能力自然模板降级）、FlyAIClient 默认实例
       （无 CLI/key 时搜索走 flyai_unavailable 体验降级）——L3 契约测试即此路径；
@@ -139,7 +139,7 @@ def create_server(config: "Config | None" = None,
             dispatch._CLIENTLESS_SINGLETONS[cap_name] = functools.partial(meta.fn, client=client)
 
     handlers = state_tools.build_handlers(repo)
-    tools = capability_tools() + state_tools.STATE_TOOLS   # 20 + 9 = 29（单一来源，不手抄）
+    tools = capability_tools() + state_tools.STATE_TOOLS   # 21 + 9 = 30（单一来源，不手抄）
 
     srv = LowLevelServer(SERVER_NAME, version=SERVER_VERSION)
 
