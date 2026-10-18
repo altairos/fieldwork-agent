@@ -29,6 +29,9 @@
   `x-flyai-key`（调用方的）→ env `FLYAI_API_KEY`（服务器兜底）。
 - **公网令牌**：公网部署建议设置 `FIELDWORK_APP_TOKEN` 访问令牌（所有 `/projects`、`/settings`
   接口要求 `X-App-Token` 请求头匹配）——说明见 `deploy/aliyun/fieldwork-web.env.example` 注释段。
+  部署脚本已内置自动检查：未配置时警告提示（留空=开放是设计决定，公网部署须显式决策）；
+  配置后自动验证鉴权生效（`/health` 报 `auth_required:true` 且无 token 访问 `/projects` 返回
+  401），配置了却未生效即报错退出。
 
 ---
 
@@ -74,7 +77,8 @@ sudo bash deploy/aliyun/deploy.sh
 ```
 
 脚本会：装系统依赖 → 建 `.venv` → `pip install -e .` → 检测/安装 flyai CLI → 生成 env 模板 →
-按实际路径安装 systemd 单元 → 启动 → 本地 `/health` + `/ready` 冒烟（失败即报错退出）。
+App Token 纪律检查（未配置则警告，见第 0 节）→ 按实际路径安装 systemd 单元 → 启动 →
+本地 `/health` + `/ready` 冒烟 + App Token 生效性验证（失败即报错退出）。
 看到 `/health ok` 与 `/ready ok` 即部署成功。
 
 ---

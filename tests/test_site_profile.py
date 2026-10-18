@@ -2,7 +2,13 @@
 from fieldwork_agent.kernel import build_tool_schemas
 from fieldwork_agent.kernel.aggregation import site_profile as site_profile_module
 from fieldwork_agent.kernel.aggregation.site_profile import profile_field_site
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
+from fieldwork_agent.kernel.models import (
+    Envelope,
+    GeoLocation,
+    ItemPage,
+    SearchItem,
+    ToolError,
+)
 
 
 class StubClient:
@@ -115,6 +121,7 @@ def test_registered_in_build_tool_schemas():
     props = tool[0]["function"]["parameters"]["properties"]
     assert "location" in props
     assert "client" not in props  # 注入参数不进 schema
+    assert "amap_client" not in props  # M3：高德注入参数同样不进 schema（注入缝约定）
     assert props["budget_per_night"]["default"] == 200
     assert props["max_items_per_section"]["default"] == 5
 
@@ -213,3 +220,126 @@ def test_no_supply_remote_hint():
     env = profile_field_site("芒特哈根", client=NoSupplyClient())
     assert env.ok
     assert "枢纽" in env.data.summary.hints.get("accommodation", "")
+
+
+# ────────────────────────────────────────────────────────────────
+# M3（高德 PoC 设计 §5.1）：geo/facilities 段 — 注入/落位/隔离/预算
+# 注入参数名 amap_client（非设计稿字面 geo_client）：与 M2 确立的三宿主
+# 高德注入键统一（RESERVED_KEYS/host_ctx/inject 标记），MCP/Web 注入缝零改动。
+# ────────────────────────────────────────────────────────────────
+
+
+class StubGeoClient:
+    """AMapClient 替身：geocode 固定喜洲坐标；around 每词两条设施。
+
+    calls 记录 (method, kwargs) 供预算（§5.1 ≤6 次高德请求）与锚点断言。
+    """
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def geocode(self, address: str, city: str = ""):
+        self.calls.append(("geocode", {"address": address, "city": city}))
+        return Envelope(ok=True, data=GeoLocation(
+            location="100.196,25.047", province="云南省",
+            city="大理白族自治州", district="大理市", adcode="532901"))
+
+    def around_search(self, keywords: str, location: str, radius: int = 5000):
+        self.calls.append(("around_search", {"keywords": keywords,
+                                             "location": location, "radius": radius}))
+        # "银行"与"快递"命中同名条目，钉跨关键词合并去重；其余按词命名
+        name = "喜洲邮政所" if keywords in ("银行", "快递") else f"{keywords}点"
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name=name), SearchItem(name=f"{keywords}·备")], total=2))
+
+
+def test_geo_and_facilities_sections_populated():
+    """成功路径：geo 落 GeoLocation，五关键词 around 合并去重为 facilities，
+    section_counts 增 geo/facilities；高德请求预算恰 6 次（1 geocode + 5 around）。"""
+    geo = StubGeoClient()
+    env = profile_field_site("喜洲", client=StubClient(), amap_client=geo)
+    assert env.ok
+    p = env.data
+    assert p.geo is not None and p.geo.adcode == "532901"
+    assert p.geo.province == "云南省"
+    assert p.facilities is not None
+    names = [i.name for i in p.facilities.items]
+    assert names.count("喜洲邮政所") == 1        # 跨关键词去重（银行/快递同点只留一份）
+    assert p.facilities.total == 9              # 截断前：5 词 × 2 条 − 1 重复
+    assert len(p.facilities.items) == 5         # 每段截断 max_items_per_section
+    assert p.summary.section_counts["geo"] == 1
+    assert p.summary.section_counts["facilities"] == len(p.facilities.items)
+    # 预算钉子：§5.1 单次画像 ≤6 次高德请求
+    methods = [m for m, _ in geo.calls]
+    assert len(geo.calls) == 6
+    assert methods.count("geocode") == 1 and methods.count("around_search") == 5
+    # around 以 geocode 坐标为锚点、默认半径 5km、覆盖五类设施关键词
+    around_kwargs = [kw for m, kw in geo.calls if m == "around_search"]
+    assert {kw["keywords"] for kw in around_kwargs} == {
+        "卫生院 诊所", "派出所", "银行", "快递", "集贸市场"}
+    assert all(kw["location"] == "100.196,25.047" and kw["radius"] == 5000
+               for kw in around_kwargs)
+
+
+def test_geo_failure_degrades_not_fails():
+    """geocode 失败（海外地名 amap_no_result 为典型）→ geo/facilities=None、
+    不发任何 around 请求、整体 ok=True 不受影响、degraded 附双源回退说明。"""
+    class GeoNoResult(StubGeoClient):
+        def geocode(self, address: str, city: str = ""):
+            self.calls.append(("geocode", {"address": address}))
+            return Envelope(ok=False, error=ToolError(
+                code="amap_no_result", message="高德未收录该地名"))
+    geo = GeoNoResult()
+    env = profile_field_site("Chiang Mai", client=StubClient(), amap_client=geo)
+    assert env.ok is True                       # 逐段失败隔离：geo 段失败不拖垮画像
+    assert env.data.geo is None and env.data.facilities is None
+    assert env.data.summary.section_counts["geo"] == 0
+    assert env.data.summary.section_counts["facilities"] == 0
+    assert env.data.accommodation.items[0].name == "M"   # flyai 段照常
+    assert [m for m, _ in geo.calls] == ["geocode"]      # 无锚点不跟发 around
+    assert env.degraded and "高德" in env.degraded        # 隐式双源回退说明
+
+
+def test_geo_invalid_key_degraded_names_missing_key():
+    """无 Key（amap_invalid_key）的 degraded 文案点名「未配置高德 API Key」，
+    不再混入「地名未收录或服务不可用」——默认无 Key 部署的第一路径要指对
+    排查方向（配 Key），而非误导换标准地名（评审 M1）。"""
+    class GeoNoKey(StubGeoClient):
+        def geocode(self, address: str, city: str = ""):
+            self.calls.append(("geocode", {"address": address}))
+            return Envelope(ok=False, error=ToolError(
+                code="amap_invalid_key", message="未配置高德 API Key"))
+
+    geo = GeoNoKey()
+    env = profile_field_site("大理", client=StubClient(), amap_client=geo)
+    assert env.ok is True                         # 逐段失败隔离不变
+    assert env.data.geo is None and env.data.facilities is None
+    assert env.degraded and "未配置高德 API Key" in env.degraded
+    assert "地名未收录" not in env.degraded
+    assert [m for m, _ in geo.calls] == ["geocode"]  # 无 Key 不跟发 around
+
+
+def test_geo_exception_is_isolated():
+    """geo_client 抛异常与返回失败包络同权：geo/facilities=None 且整体 ok=True。"""
+    class GeoBoom(StubGeoClient):
+        def geocode(self, address: str, city: str = ""):
+            raise RuntimeError("amap subprocess boom")
+    env = profile_field_site("大理", client=StubClient(), amap_client=GeoBoom())
+    assert env.ok is True
+    assert env.data.geo is None and env.data.facilities is None
+
+
+def test_around_all_fail_yields_facilities_none():
+    """geocode 成功但五关键词 around 全失败 → facilities=None（缺段语义，
+    区分于合并后为空的 ItemPage）；geo 段不受连坐、不算整体降级。"""
+    class AroundFail(StubGeoClient):
+        def around_search(self, keywords: str, location: str, radius: int = 5000):
+            self.calls.append(("around_search", {"keywords": keywords}))
+            return Envelope(ok=False)
+    geo = AroundFail()
+    env = profile_field_site("大理", client=StubClient(), amap_client=geo)
+    assert env.ok is True
+    assert env.data.geo is not None             # geo 段独立成功
+    assert env.data.facilities is None
+    assert env.degraded is None                 # geocode 成功不算降级
+    assert len(geo.calls) == 6                  # 预算照常花满：1 geocode + 5 around

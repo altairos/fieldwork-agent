@@ -75,6 +75,15 @@ if [ ! -f "$ENV_EXAMPLE" ]; then
 fi
 chmod 600 "$ENV_EXAMPLE"
 
+# 5.5) App Token 部署纪律检查（审计 F02：留空=开放是设计决定，公网部署须显式决策）
+if grep -qE '^FIELDWORK_APP_TOKEN=.+' "$ENV_EXAMPLE" 2>/dev/null; then
+  echo "==> App Token 已配置（/projects、/settings、/mcp 将要求 X-App-Token）"
+else
+  echo "!! FIELDWORK_APP_TOKEN 未配置——API 完全开放（本地开发可接受，公网部署有风险）" >&2
+  echo "   公网对外前请配置：vi $ENV_EXAMPLE 取消 FIELDWORK_APP_TOKEN= 行注释并填入长随机串，" >&2
+  echo "   然后 systemctl restart $SVC（步骤 7.5 会自动验证鉴权生效）" >&2
+fi
+
 # 6) 安装 systemd 单元（按实际 APP_DIR 重写路径，兼容非 /opt 部署）
 echo "==> 安装 systemd 单元 $SVC"
 sed "s#/opt/fieldwork-agent#$APP_DIR#g" "$UNIT_SRC" > "/etc/systemd/system/$SVC"
@@ -107,6 +116,27 @@ else
   exit 1
 fi
 
+# 7.5) App Token 生效性验证（审计 F02）：env 配了 token，服务必须真的拦——
+#      /health 的 auth_required 与不带 token 访问 /projects 双重核验；
+#      两处 curl 带 || true 防 set -e 下 curl 失败（超时/拒连）静默退出脚本，
+#      空响应/HTTP 000 自然落入下方报错分支
+if grep -qE '^FIELDWORK_APP_TOKEN=.+' "$ENV_EXAMPLE" 2>/dev/null; then
+  HEALTH_JSON="$(curl -s -m 5 "http://127.0.0.1:$PORT/health" || true)"
+  if [ "$(printf '%s' "$HEALTH_JSON" | grep -c '"auth_required":true')" -ge 1 ]; then
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$PORT/projects" || true)"
+    if [ "$CODE" = "401" ]; then
+      echo "    App Token 鉴权生效（无 token 访问 /projects → 401）"
+    else
+      echo "!! 鉴权异常：auth_required=true 但 /projects 无 token 返回 HTTP $CODE（期望 401）" >&2
+      exit 1
+    fi
+  else
+    echo "!! FIELDWORK_APP_TOKEN 已在 env 配置，但服务未加载（/health 报 auth_required=false）" >&2
+    echo "   排查：确认 $ENV_EXAMPLE 与 systemd 单元 EnvironmentFile 一致后 systemctl restart $SVC" >&2
+    exit 1
+  fi
+fi
+
 cat <<EOF
 
 ============================================================
@@ -115,6 +145,9 @@ cat <<EOF
  2) 放行端口：  阿里云控制台 → 轻量应用服务器 → 防火墙 → 添加规则
                 协议 TCP、端口 $PORT、来源 0.0.0.0/0（或限你自己的 IP 更安全）
  3) 浏览器访问：http://<服务器公网IP>:$PORT/
- 4) 看日志：    journalctl -u $SVC -f
+ 4) 公网加固：  未配置 FIELDWORK_APP_TOKEN 时 /projects、/settings、/mcp
+                对公网完全开放；对外服务前务必配置（vi $ENV_EXAMPLE 后
+                systemctl restart $SVC，重跑本脚本会自动验证鉴权生效）
+ 5) 看日志：    journalctl -u $SVC -f
 ============================================================
 EOF

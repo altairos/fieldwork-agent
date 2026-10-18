@@ -366,6 +366,39 @@ describe("useTurn — adopt（领养首页创建的首轮回合，轮 4）", () 
   });
 });
 
+describe("useTurn — POST 401（App Token 守卫）人话降级（后续小任务 b）", () => {
+  test("401 → 人话横幅（不透传后端 JSON）+ onAuthError 回调触发 + 不订阅 SSE", async () => {
+    const { fetchMock } = stubApi(
+      { code: "app_token_required", message: "缺少或错误的 X-App-Token 请求头" },
+      false, 401, { resp: {} });
+    const onAuthError = vi.fn();
+    const { result } = renderHook(() => useTurn("p1", { onAuthError }));
+    await act(async () => { await result.current.send("帮我排行程"); });
+
+    const banner = useUiStore.getState().degradedBanner;
+    expect(banner?.code).toBe("send_failed");
+    expect(banner?.message).toBe("访问令牌缺失或已失效，发送被拒绝");
+    expect(banner?.message).not.toContain("{");            // 不透传后端 JSON 响应体
+    expect(banner?.hint).toContain("访问令牌");
+    expect(onAuthError).toHaveBeenCalledTimes(1);           // 调用方就地弹密钥层
+    expect(result.current.busy).toBe(false);
+    expect(useConversationStore.getState().messages).toEqual([]);   // 乐观 UI 已回滚
+    expect(useConversationStore.getState().turnRunning).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);             // 第二步 SSE 未发起
+  });
+
+  test("401 + 其他 code（非守卫来源）→ 走通用 send_failed（String(err)）不触发回调", async () => {
+    stubApi({ code: "upstream_auth" }, false, 401, { resp: {} });
+    const onAuthError = vi.fn();
+    const { result } = renderHook(() => useTurn("p1", { onAuthError }));
+    await act(async () => { await result.current.send("帮我排行程"); });
+
+    expect(onAuthError).not.toHaveBeenCalled();
+    expect(useUiStore.getState().degradedBanner?.code).toBe("send_failed");
+    expect(result.current.busy).toBe(false);
+  });
+});
+
 describe("useTurn — cancel 复位 conversation store（P2-9）", () => {
   test("流中取消：turnRunning/streamBuffer 复位、残缺回复不入史、user 消息保留、后端已通知", async () => {
     const cancels: string[] = [];

@@ -5,7 +5,7 @@ import { asArray, asRecord, strOf } from "../cards/data";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
 
 /**
- * BudgetPanel — 右栏「预算」面板（状态投影）。
+ * BudgetPanel — 右栏「预算」面板（实时状态）。
  *
  * 设计板同源：右栏预算面板 lines 648-659
  *   标题 line 650 `font-serif text-[15px] font-600 mb-3`「预算累计」

@@ -1,12 +1,17 @@
 """田野点画像聚合 — ``profile_field_site`` 能力。
 
 用 ``concurrent.futures.ThreadPoolExecutor`` 并行调用 flyai 原子原语
-（住宿/交通/文化/活动），组合为 ``FieldSiteProfile``。约定：
+（住宿/交通/文化/活动），叠加高德地理底座（geo）与周边设施盘点
+（facilities）两段，组合为 ``FieldSiteProfile``。约定：
 
-- 严格无状态：``client`` 经 keyword-only 参数注入，默认 None 时自建
-  ``FlyAIClient()``；不读写任何项目状态；
+- 严格无状态：``client`` / ``amap_client`` 经 keyword-only 参数注入，
+  默认 None 时各自自建；不读写任何项目状态；
 - 逐原语失败隔离：单段失败（ok=False 或抛异常）置 None/[]，不影响整体
-  ``ok=True``；全部源失败才返回 ``Envelope(ok=False, code="all_sources_failed")``；
+  ``ok=True``；flyai 各段与高德 geocode 全部失败才返回
+  ``Envelope(ok=False, code="all_sources_failed")``；geocode 失败（含海外
+  地名 ``amap_no_result``）时 geo/facilities 缺省并在 ``degraded`` 附
+  双源回退说明——画像回退纯 flyai 链路；
+- 高德调用预算：单次画像 ≤6 次请求（1 geocode + 5 around，PoC §5.1）；
 - 住宿预算本地筛选为内核新增策略：条目价格不得超过上浮线
   ``budget_per_night * 1.5``、无价格条目原样保留（旧住宿段
   ``tools/flyai_tools.py`` ``find_accommodation_for_field_work`` 不做本地筛选、
@@ -23,17 +28,26 @@ from typing import Any
 from fieldwork_agent.kernel.models import (
     Envelope,
     FieldSiteProfile,
+    GeoLocation,
     ItemPage,
     SearchItem,
     SummaryHints,
     ToolError,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from pydantic import BaseModel
 
 # 默认文化兴趣（search_pois 的 category 值），每项发起一次 POI 搜索
 DEFAULT_INTERESTS: list[str] = ["人文古迹", "宗教场所", "古镇古村", "博物馆"]
+
+# 周边设施盘点关键词（around_search 的 keywords 值），每项发起一次周边搜索；
+# 医疗/警务/金融/物流/集市五类驻村保障（PoC §5.1，与预算 5 次 around 对应）
+DEFAULT_FACILITY_KEYWORDS: list[str] = ["卫生院 诊所", "派出所", "银行", "快递", "集贸市场"]
+
+# 周边搜索半径（米）：村级田野点的设施覆盖圈
+FACILITY_RADIUS = 5000
 
 # 住宿预算上浮系数（内核新增：本地按 budget*1.5 剔除超价条目）
 BUDGET_MARKUP = 1.5
@@ -90,10 +104,17 @@ def profile_field_site(location: str, budget_per_night: float = 200,
                        interests: list[str] | None = None,
                        departure_city: str = "", travel_date: str = "",
                        max_items_per_section: int = 5, *,
-                       client: FlyAIClient | None = None) -> Envelope:
-    """聚合目的地田野点画像：住宿/交通/文化/活动四段，失败隔离。"""
+                       client: FlyAIClient | None = None,
+                       amap_client: AMapClient | None = None) -> Envelope:
+    """聚合目的地田野点画像：住宿/交通/文化/活动四段 + 高德 geo/facilities 段。
+
+    高德注入参数名 ``amap_client``（非设计稿字面 geo_client）：与三宿主统一
+    高德注入键对齐（MCP RESERVED_KEYS / orchestrator inject 标记）。
+    """
     if client is None:
         client = FlyAIClient()
+    if amap_client is None:
+        amap_client = AMapClient()
     if interests is None:
         interests = DEFAULT_INTERESTS
 
@@ -136,7 +157,48 @@ def profile_field_site(location: str, budget_per_night: float = 200,
                 succeeded += 1
                 by_tag[tag].append((meta, env.data))
 
-    # 全部源失败（含仅 ok=False / 仅异常）→ 整体失败包络
+    # ── 高德 geo/facilities 段（PoC §5.1；预算 1 geocode + 5 around ≤6 次）──
+    # geocode 先行（around 需要坐标锚点）；失败（含海外 amap_no_result）→
+    # geo/facilities=None 且不发 around，degraded 附说明，不拖累整体 ok。
+    geo: GeoLocation | None = None
+    facilities: ItemPage | None = None
+    degraded: str | None = None
+    geo_env = _safe_call(amap_client.geocode, address=location)
+    if geo_env.ok and isinstance(geo_env.data, GeoLocation):
+        geo = geo_env.data
+        succeeded += 1  # 高德也算源：flyai 全挂但 geocode 成功仍可出 geo-only 画像
+        if geo.location:
+            geo_tasks = [lambda kw=kw: _safe_call(
+                amap_client.around_search, keywords=kw,
+                location=geo.location, radius=FACILITY_RADIUS)
+                for kw in DEFAULT_FACILITY_KEYWORDS]
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                fac_envs = [fut.result() for fut in [pool.submit(t) for t in geo_tasks]]
+            fac_items: list[SearchItem] = []
+            seen_names: set[str] = set()
+            any_around_ok = False
+            for fac_env in fac_envs:
+                if fac_env.ok and isinstance(fac_env.data, ItemPage):
+                    any_around_ok = True
+                    for item in fac_env.data.items:  # 跨关键词同名去重，首见保留
+                        if item.name not in seen_names:
+                            seen_names.add(item.name)
+                            fac_items.append(item)
+            if any_around_ok:  # 全部 around 失败 → 缺段 None（区分于空页）
+                facilities = _build_page(fac_items, max_items_per_section)
+    else:
+        # 无 Key 单独点名（默认无 Key 部署的第一路径，指对排查方向：配 Key，
+        # 而非误导为地名未收录/服务不可用）；其余失败（含海外 amap_no_result）
+        # 维持双源回退口径。
+        err_code = geo_env.error.code if geo_env.error is not None else ""
+        if err_code == "amap_invalid_key":
+            degraded = ("高德地理底座未建立（未配置高德 API Key），"
+                        "geo/facilities 段缺省，画像回退飞猪数据源")
+        else:
+            degraded = ("高德地理底座未建立（地名未收录或服务不可用），"
+                        "geo/facilities 段缺省，画像回退飞猪数据源")
+
+    # 全部源失败（含仅 ok=False / 仅异常；geocode 亦无结果）→ 整体失败包络
     if succeeded == 0:
         return Envelope(ok=False, error=ToolError(
             code="all_sources_failed",
@@ -186,7 +248,9 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     summary = SummaryHints(
         section_counts={
             tag: len(items) for tag, items in final_items.items()
-        } | {"culture": len(culture)},
+        } | {"culture": len(culture),
+             "geo": 1 if geo is not None else 0,
+             "facilities": len(facilities.items) if facilities else 0},
         accommodation_nightly_min=_min_price(final_items["accommodation"]),
         transport_min=_min_price(final_items["transport"]),
         hints=hints,
@@ -198,17 +262,21 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         accommodation=accommodation,
         culture=culture,
         amenities=amenities,
+        geo=geo,
+        facilities=facilities,
         summary=summary,
         generated_at=datetime.now().isoformat(),
     )
-    return Envelope(ok=True, data=profile)
+    return Envelope(ok=True, data=profile, degraded=degraded)
 
 
 register(CapabilityMeta(
     name="profile_field_site",
     description="聚合目的地田野点画像：住宿（内核新增本地预算上浮1.5筛选）/大交通/"
                 "文化兴趣点/当地活动，并行调用数据源并逐段失败隔离；单段失败不影响整体；"
-                "住宿零供给时 summary.hints 给出枢纽+学术接待二段式建议。",
+                "住宿零供给时 summary.hints 给出枢纽+学术接待二段式建议；"
+                "高德可用时叠加地理底座（五级行政区划+坐标）与周边设施盘点"
+                "（医疗/警务/金融/物流/集市，半径 5km），海外地名自动回退纯飞猪链路。",
     fn=profile_field_site,
     args_model=ProfileFieldSiteArgs,
 ))

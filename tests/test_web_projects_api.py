@@ -167,6 +167,45 @@ async def test_list_knowledge_invalid_pid_400(client):
 
 
 # ────────────────────────────────────────────────────────────────
+# PUT /projects/{id}/knowledge/{entry_id}：右栏知识条目编辑（P1）
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_update_knowledge_roundtrip(client, app):
+    """200 + 返回更新后的条目；落盘可读（PUT 后 GET 读回新值）。"""
+    await client.post("/projects", json={"project_id": "p1"})
+    kid = app.state.repo.add_knowledge("p1", "印度签证准入", "电子签 30 天")
+    r = await client.put(f"/projects/p1/knowledge/{kid}",
+                         json={"title": "签证材料", "content": "**加粗**\n第二行"})
+    assert r.status_code == 200
+    assert r.json()["title"] == "签证材料"
+    assert r.json()["content"] == "**加粗**\n第二行"
+    entries = (await client.get("/projects/p1/knowledge")).json()
+    assert entries[0]["title"] == "签证材料"
+    assert entries[0]["id"] == kid
+
+
+async def test_update_knowledge_partial_omits_absent_fields(client, app):
+    """部分更新：未提供的字段不下行（None = 不改）。"""
+    await client.post("/projects", json={"project_id": "p1"})
+    kid = app.state.repo.add_knowledge("p1", "提纲", "问题1")
+    r = await client.put(f"/projects/p1/knowledge/{kid}", json={"content": "问题2"})
+    assert r.status_code == 200
+    assert r.json()["title"] == "提纲"
+
+
+async def test_update_knowledge_unknown_entry_404(client):
+    await client.post("/projects", json={"project_id": "p1"})
+    r = await client.put("/projects/p1/knowledge/know_ghost", json={"content": "x"})
+    assert r.status_code == 404
+
+
+async def test_update_knowledge_unknown_project_404(client):
+    r = await client.put("/projects/ghost/knowledge/know_1", json={"content": "x"})
+    assert r.status_code == 404
+
+
+# ────────────────────────────────────────────────────────────────
 # DELETE /projects/{id}：删除即整域清除（项目删除按钮的服务端面）
 # ────────────────────────────────────────────────────────────────
 

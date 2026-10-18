@@ -27,6 +27,7 @@ _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降
 
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
+                   amap_client: Any = None,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
@@ -35,7 +36,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     snapshot_ids: list[str] = []
     drained = 0
     call_args_map: dict[str, dict] = {}
-    dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client, llm)
+    dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
+                                 llm, amap_client)
     tools = build_tool_schemas()
     state_schemas, state_handlers = build_state_tools(repo, pid)
     tools = tools + state_schemas

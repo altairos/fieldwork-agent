@@ -9,6 +9,7 @@
 
 - **引导式访谈**：五阶段推进（研究定位 → 田野点画像 → 行程规划 → 方案生成 → 已完成），推进判定为确定性纯函数，不由 LLM 宣布。
 - **真实数据检索**：深度集成飞猪 FlyAI 全部 8 个搜索工具（航班/火车/酒店/POI/关键词/AI 语义/万豪酒店/万豪套餐），行程、预算、文化场所均基于实时搜索数据并标注来源。
+- **地理空间底座**：接入高德开放平台 Web 服务 API（地理编码/逆编码/周边检索/关键词搜索/跨城公交/天气共 6 个原语）——田野点画像的地理定位与周边设施段、"枢纽 → 田野点"末端接驳规划（`plan_last_mile`）基于真实地理数据，覆盖境内。
 - **方案产出**：生成结构完整的研究方案 Markdown 草稿（当前为英美式八章体例，适用海外/港澳申请与课程场景；高校开题、国家社科活页体例在规划中）。
 - **三种宿主形态**：交互式 CLI、FastAPI Web 宿主（REST + SSE 实时事件流 + React 前端）、标准 MCP Server。
 
@@ -50,6 +51,7 @@ npm install
 |------|---------|-----------|
 | LLM 对话 | 随 pip 依赖安装（dashscope），需配置密钥 | 降级为规则回复 |
 | 旅行搜索 | `npm i -g @fly-ai/flyai-cli` | 跳过旅行搜索，纯文本方案 |
+| 地理底座 | 无需安装（HTTP API），配置 `AMAP_API_KEY` | 高德原语返回 `amap_invalid_key`，画像/接驳自动降级，其余功能不受影响 |
 
 ## 运行方式
 
@@ -120,7 +122,7 @@ python -m fieldwork_agent.mcp_server               # 等价（stdio）
 .venv/Scripts/python.exe demo_mcp_client.py        # 演示客户端（手动运行，不进 CI）
 ```
 
-MCP 能力面：23 个工具（14 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
+MCP 能力面：30 个工具（21 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
 
 部署形态下 Web 进程同时暴露 Streamable HTTP 端点 `/mcp`（与页面同端口），可直接注册到
 阿里百炼等 MCP 客户端；多租户 key 归属（`x-flyai-key` / `x-dashscope-key` 动态 Header
@@ -200,6 +202,7 @@ curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 |------|------|------|
 | `DASHSCOPE_API_KEY` | 是（LLM 功能） | 阿里云百炼/通义千问密钥，缺失时降级为规则回复 |
 | `FLYAI_API_KEY` | 否 | 飞猪 FlyAI 密钥；未设置时自动回退读取 `~/.flyai/config.json` 的 `key` 字段 |
+| `AMAP_API_KEY` | 否 | 高德开放平台 Web 服务 Key（[console.amap.com](https://console.amap.com) 申请）；也可写入 `~/.fieldwork_agent/config.json` 的 `amap_api_key`。缺失时高德原语统一返回 `amap_invalid_key`，其余功能不受影响 |
 | `FIELDWORK_APP_TOKEN` | 否 | Web 宿主访问令牌；非空时所有 `/projects`、`/settings` 接口要求 `X-App-Token` 请求头匹配（仅环境变量，不落盘） |
 | `FA_INTERVIEW_MODEL` | 否 | 对话推进模型，默认 `qwen3.8-flash` |
 | `FA_PROPOSAL_MODEL` | 否 | 长文方案模型，默认 `qwen-max` |
@@ -210,7 +213,7 @@ curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 ### 配置优先级（`core/config.py`）
 
 1. 环境变量初始化；
-2. 若存在 `~/.fieldwork_agent/config.json` 则**覆盖**环境变量（密钥、三槽模型、钉钉配置）；
+2. 若存在 `~/.fieldwork_agent/config.json` 则**覆盖**环境变量（DashScope/FlyAI/高德密钥、三槽模型、钉钉配置；高德键为 `amap_api_key`）；
 3. FlyAI 密钥：环境变量 `FLYAI_API_KEY` 优先，为空时回退 `~/.flyai/config.json`。
 
 设置 FlyAI 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：
@@ -247,7 +250,7 @@ flyai config set key <YOUR_API_KEY>     # 写入 ~/.flyai/config.json
 
 ## 已知限制
 
-1. **搜索覆盖范围**：机票支持国内+国际；酒店/POI/语义搜索覆盖海外主流目的地与港澳台；**火车限境内 + 港澳直通**（如香港西九龙）。海外偏远田野点（如村级）无住宿供给时，Agent 会如实声明并给出"枢纽城市 + 当地学术接待"二段式方案，不虚构供给。
+1. **搜索覆盖范围**：机票支持国内+国际；酒店/POI/语义搜索覆盖海外主流目的地与港澳台；**火车限境内 + 港澳直通**（如香港西九龙）。海外偏远田野点（如村级）无住宿供给时，Agent 会如实声明并给出"枢纽城市 + 当地学术接待"二段式方案，不虚构供给。地理底座（高德）仅覆盖境内，境外田野点的定位/周边/接驳段落自动降级跳过。
 2. **FlyAI 体验模式**：无正式 Key 时可正常搜索但价格脱敏（如 ¥5x）、结果受限。
 3. **方案体例**：当前输出为英美式八章体例；高校开题、国家社科活页体例尚未支持（规划中）。方案为草稿，投稿/开题前须人工核校——缺数据处如实标记"待核验"，不虚构参考文献。
 4. **Tier S 资产默认不在部署包内**：线上默认使用内置 Tier P 公开简版提示词/访谈库，功能完整但提示词为简版。

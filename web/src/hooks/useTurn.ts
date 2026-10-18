@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { rest, ApiError } from "../api/rest";
+import { rest, ApiError, isAppTokenError } from "../api/rest";
 import { streamTurnEvents } from "../api/sse";
 import { dispatchEvent } from "../lib/dispatch";
 import { useConversationStore } from "../stores/conversation";
@@ -14,13 +14,17 @@ import type { EventEnvelope } from "../types/events";
  * 生命周期：组件卸载或 projectId 变化时中止进行中的流——否则旧项目的 SSE 回调会继续把事件
  * 写进（已被跨项目 reset 清空的）全局 store，造成状态串台，并泄漏一条常驻连接。
  */
-export function useTurn(projectId: string) {
+export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [keyMissing, setKeyMissing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const turnIdRef = useRef<string | null>(null);
   const seenRef = useRef<Set<number>>(new Set());
+  // 守卫 401 回调经 ref 中转：send 不因此重造（依赖数组不抖），调用方换弹层状态不重启回合句柄。
+  // 无依赖 effect 每次 render 同步最新引用（opts 可能是内联对象）。
+  const onAuthErrorRef = useRef(opts?.onAuthError);
+  useEffect(() => { onAuthErrorRef.current = opts?.onAuthError; });
 
   // 卸载 / projectId 变化 → abort 旧流（cleanup 先于新 effect 执行，符合"换项目先断旧流"语义）
   useEffect(() => {
@@ -40,7 +44,8 @@ export function useTurn(projectId: string) {
     // 失败 → failTurn 回滚乐观 UI：移除刚 push 的用户消息 + turnRunning=false + 清 buffer，
     // 否则打字光标永久脉冲且对话流留下后端未接受的消息。
     // 409（已有回合在执行）与 403（llm_key_required，服务端无 key 且请求头未带）
-    // 各自进专属提示态，不走通用 error 事件。
+    // 各自进专属提示态；守卫 401（App Token）给人话横幅不透传后端 JSON，
+    // 并回调调用方就地弹密钥层（App 注入 openKeyDialog）；其余如实上屏。
     let turnId: string;
     try {
       turnId = (await rest.createTurn(projectId, text)).turn_id;
@@ -49,6 +54,15 @@ export function useTurn(projectId: string) {
       useConversationStore.getState().failTurn();
       if (err instanceof ApiError && err.status === 409) setConflict(true);
       else if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
+      else if (isAppTokenError(err)) {
+        useUiStore.getState().applyEvent({
+          event: "error",
+          code: "send_failed",
+          message: "访问令牌缺失或已失效，发送被拒绝",
+          hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+        });
+        onAuthErrorRef.current?.();
+      }
       else useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
       return;
     }

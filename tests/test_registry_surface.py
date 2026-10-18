@@ -22,6 +22,10 @@ _AGG_DOC_TOOLS = {
     "profile_field_site", "compose_itinerary", "compose_proposal",
     "compose_interview_guide", "suggest_informants", "analyze_fieldwork_window",
 }
+_AMAP_TOOLS = {
+    "amap_geocode", "amap_regeocode", "amap_text_search",
+    "amap_around_search", "amap_direction_transit", "amap_weather",
+}
 
 _FULL_ARGS = {
     "ctx": {"discipline": "社会学", "topic": "宗族变迁", "target_location": "喜洲"},
@@ -50,6 +54,17 @@ def test_bare_import_sees_eight_search_and_six_aggregation_document():
     names = _names()
     assert len(_SEARCH_TOOLS & names) == 8
     assert len(_AGG_DOC_TOOLS & names) == 6
+
+
+def test_bare_import_sees_six_amap_primitives():
+    """高德六原语同样靠聚合导入注册（kernel/__init__ 漏 import sources.amap 会在此暴露）。"""
+    assert _AMAP_TOOLS <= _names()
+
+
+def test_bare_import_sees_plan_last_mile():
+    """M4 聚合能力 plan_last_mile 同靠聚合导入注册（kernel/__init__ 漏 import
+    aggregation.last_mile 会在此暴露）。"""
+    assert "plan_last_mile" in _names()
 
 
 def test_capabilities_and_schemas_share_one_source():

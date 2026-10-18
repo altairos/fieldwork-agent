@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.aggregation.itinerary import compose_itinerary
+from fieldwork_agent.kernel.aggregation.last_mile import plan_last_mile
 from fieldwork_agent.kernel.aggregation.site_profile import profile_field_site
 from fieldwork_agent.kernel.aggregation.window import analyze_fieldwork_window
 from fieldwork_agent.kernel.documents.informants import suggest_informants
@@ -48,6 +49,15 @@ from fieldwork_agent.kernel.registry import (
     validate_tool_args,
 )
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+from fieldwork_agent.kernel.sources.amap import (
+    AMapClient,
+    amap_around_search,
+    amap_direction_transit,
+    amap_geocode,
+    amap_regeocode,
+    amap_text_search,
+    amap_weather,
+)
 from fieldwork_agent.kernel.sources.flyai import (
     FlyAIClient,
     search_ai,
@@ -64,13 +74,15 @@ from fieldwork_agent.runtime.loop import run_tool_loop
 from .config import Config
 
 # registry 全局表只供 schema 与 args_model，不经由它裸调：宿主用下表把能力名绑到
-# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"llm" → 注入 self.llm；
-# 亦可为 tuple 组合（如 ("client", "llm") 双注入，analyze_fieldwork_window 用）。
-# 8 搜索原语的 fn 即 flyai 模块级注入式包装（与 profile/compose 同一 client 注入模式）。
+# 真实实现与注入方式。inject: "client" → 注入 self.flyai；"amap_client" → 注入
+# self.amap（与 client 分道防串味）；"llm" → 注入 self.llm；亦可为 tuple 组合
+# （如 ("client", "llm") 双注入，analyze_fieldwork_window 用）。8 搜索原语与
+# amap 六原语的 fn 即各源模块级注入式包装（与 profile/compose 同一 client 注入模式）。
 # 文档能力的入参含 JSON 形状的 ``ctx``，故绑到 registry 侧 handler（负责 model_validate
 # 与统一包络，spec §2.4）；``generate_proposal`` 这类命令式直调才用底层 compose_proposal。
 _CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str | tuple[str, ...]]] = {
-    "profile_field_site": (profile_field_site, "client"),
+    "profile_field_site": (profile_field_site, ("client", "amap_client")),
+    "plan_last_mile": (plan_last_mile, "amap_client"),
     "compose_itinerary": (compose_itinerary, "client"),
     "analyze_fieldwork_window": (analyze_fieldwork_window, ("client", "llm")),
     "compose_proposal": (proposal_handler, "llm"),
@@ -84,6 +96,12 @@ _CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str | tuple[str, ...]]
     "search_pois": (search_pois, "client"),
     "search_keyword": (search_keyword, "client"),
     "search_ai": (search_ai, "client"),
+    "amap_geocode": (amap_geocode, "amap_client"),
+    "amap_regeocode": (amap_regeocode, "amap_client"),
+    "amap_text_search": (amap_text_search, "amap_client"),
+    "amap_around_search": (amap_around_search, "amap_client"),
+    "amap_direction_transit": (amap_direction_transit, "amap_client"),
+    "amap_weather": (amap_weather, "amap_client"),
 }
 
 # 搜索原语名集：轮末落盘分类用（成功→cache_search）；dispatch 已并入 _CAPABILITY_DISPATCH
@@ -96,7 +114,10 @@ _SEARCH_METHODS: frozenset[str] = frozenset({
 _TOOL_GUIDANCE = (
     "工具使用指引：需要真实交通/住宿/景点/文化活动数据时，调用飞猪搜索工具"
     "（search_flights/search_trains/search_hotels/search_pois/search_keyword/search_ai 等）"
-    "或聚合能力（profile_field_site 生成田野点画像、compose_itinerary 组合行程）。"
+    "或聚合能力（profile_field_site 生成田野点画像、plan_last_mile 查枢纽→田野点末端接驳、compose_itinerary 组合行程）。"
+    "国内地理信息（地名定位/行政区划/周边保障设施/公交接驳/天气）调用高德地理工具"
+    "（amap_geocode/amap_around_search/amap_direction_transit/amap_weather 等）；"
+    "高德未收录（amap_no_result，常见于海外地名）时改用搜索工具。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案、"
     "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。"
 )
@@ -124,6 +145,7 @@ class FieldAgent:
         self.config = config or Config()
         self.repo = JsonRepository(self.config.projects_dir)
         self.flyai = FlyAIClient(self.config.flyai_api_key)
+        self.amap = AMapClient(getattr(self.config, "amap_api_key", ""))
         self.llm: LLMClient | None = None
         if getattr(self.config, "dashscope_available", False):
             try:
@@ -185,6 +207,7 @@ class FieldAgent:
                 validated = dict(args)
             injects = inject if isinstance(inject, tuple) else (inject,)
             kw = {**({"client": self.flyai} if "client" in injects else {}),
+                  **({"amap_client": self.amap} if "amap_client" in injects else {}),
                   **({"llm": self.llm} if "llm" in injects else {})}
             try:
                 result = impl(**validated, **kw)
@@ -309,6 +332,13 @@ class FieldAgent:
                    for c in self.repo.list_cached_searches(pid))
 
     # ─── 确定性推进 ──────────────────────────────
+
+    def advance_phase(self) -> dict[str, str] | None:
+        """公开推进入口（F04）：确认等写操作后由宿主显式调用，
+        对齐 Web 宿主的 ``check_and_advance`` 用法。无活跃项目返回 None。"""
+        if not self.project_id:
+            return None
+        return self._advance(self.project_id)
 
     def _advance(self, pid: str) -> dict[str, str] | None:
         """轮末用 check_advance 确定性判定；可推进则落 phase，返回 {from,to}，否则 None。"""

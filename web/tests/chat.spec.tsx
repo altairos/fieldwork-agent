@@ -216,7 +216,7 @@ describe("PhaseBanner", () => {
   test("pendingSuggestion 原文出现在横幅，且不自动切 Tab", () => {
     useUiStore.getState().applyEvent({ event: "phase_transition", from: "field_site_profiles", to: "itinerary_planning" });
     render(<PhaseBanner />);
-    expect(screen.getByText(/已进入itinerary_planning阶段/)).toBeInTheDocument();
+    expect(screen.getByText(/已进入「行程规划」阶段/)).toBeInTheDocument();
     expect(useUiStore.getState().activeTab).toBe("basic-info");
   });
   test("降级横幅如实转述 code/message/hint，可关闭", () => {
@@ -296,7 +296,7 @@ describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () 
     expect(screen.getByText(/宗族头人/)).toBeInTheDocument();
     expect(screen.getByText(/祭祖仪式/)).toBeInTheDocument();
   });
-  test("KnowledgePanel 研究定位槽位 + 学术纵深静态说明", () => {
+  test("KnowledgePanel 研究定位槽位投影", () => {  // 2026-10-18 精简：标题/学术纵深卡已删，只断槽位内容
     useProjectStore.getState().loadSnapshot(snapshot({
       research_context: { discipline: "社会学", topic: "白族村落宗族组织变迁", scale: "单人", budget: "¥20,000", purpose: "kaiti" },
     }));
@@ -304,7 +304,6 @@ describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () 
     expect(screen.getByText(/社会学/)).toBeInTheDocument();
     expect(screen.getByText(/白族村落宗族组织变迁/)).toBeInTheDocument();
     expect(screen.getByText(/开题报告/)).toBeInTheDocument();
-    expect(screen.getByText(/学术纵深/)).toBeInTheDocument();
   });
   test("KnowledgePanel 无快照时如实说明未取得", () => {
     render(<KnowledgePanel />);

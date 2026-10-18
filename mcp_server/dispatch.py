@@ -21,9 +21,12 @@ INVALID_ARGS = "invalid_args"
 INTERNAL = "internal_error"
 
 # 保留键：不来自 MCP 客户端参数，只能由宿主 ctx 注入。
-# - ``llm``   ：文档能力的生成器（kernel/documents），不注入即模板降级；
-# - ``client``：搜索/聚合能力共享的 FlyAIClient（kernel/sources/flyai），不注入即自建。
-RESERVED_KEYS: tuple[str, ...] = ("llm", "client")
+# - ``llm``        ：文档能力的生成器（kernel/documents），不注入即模板降级；
+# - ``client``     ：搜索/聚合能力共享的 FlyAIClient（kernel/sources/flyai），不注入即自建；
+# - ``amap_client``：地理六原语共享的 AMapClient（kernel/sources/amap）。
+#   与 ``client`` 分道：无差别注入会把 FlyAIClient 塞给 amap 原语（AttributeError
+#   → 假 internal_error），两种 client 类型不能共用一个通道。
+RESERVED_KEYS: tuple[str, ...] = ("llm", "client", "amap_client")
 
 # 分派表在模块级构建，测试可 monkeypatch 替换为替身（表内一律存 callable handler）
 _CAPABILITY_FNS = {name: meta.fn for name, meta in capabilities().items()}

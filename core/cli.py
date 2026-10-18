@@ -17,6 +17,7 @@ from fieldwork_agent.kernel.guidance.phases import (
     PHASE_PROPOSAL_GENERATION,
     PHASE_RESEARCH_POSITIONING,
 )
+from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 
@@ -54,6 +55,13 @@ def _ensure_utf8_stdio():
             pass
 
 
+def _print_phase_transition(transition: dict | None):
+    if transition:
+        old_cn = _PHASE_CN.get(transition["from"], transition["from"])
+        new_cn = _PHASE_CN.get(transition["to"], transition["to"])
+        print(f"\n🔄 阶段转换: {old_cn} → {new_cn}")
+
+
 def _print_reply(reply_data: dict):
     print()
     print(reply_data.get("reply", ""))
@@ -61,11 +69,7 @@ def _print_reply(reply_data: dict):
     if events:
         print(f"\n🔍 本轮调用 {len(events)} 个工具: "
               + "、".join(str(e.get("tool", "")) for e in events))
-    transition = reply_data.get("phase_transition")
-    if transition:
-        old_cn = _PHASE_CN.get(transition["from"], transition["from"])
-        new_cn = _PHASE_CN.get(transition["to"], transition["to"])
-        print(f"\n🔄 阶段转换: {old_cn} → {new_cn}")
+    _print_phase_transition(reply_data.get("phase_transition"))
 
 
 def _run_migrate(args: list[str]) -> None:
@@ -106,6 +110,102 @@ def _run_migrate(args: list[str]) -> None:
         print(f"⚠️  已覆盖 {report['conflicts']} 个同名存量项目，"
               f"备份 {report['backups']} 份（{config.sqlite_path}.bak.1 最新）")
     print("   JSON 目录已原地保留：设 FA_STORAGE=sqlite 切换后端，不设即回 JSON（只读回退）。")
+
+
+def _run_confirm(agent: FieldAgent, args: str) -> None:
+    """F04：CLI 确认语义对齐 Web 侧（web_host/api/state.py 同款）。
+
+    - 无参数：确认概览——待确认田野点、可确认方案清单、stale 提示；
+    - ``site <site_id>``：repo.confirm_field_site + 确定性推进；
+    - ``proposal <doc_id>``：R09 显式 doc_id（不隐式确认最新一份）；
+      ProposalConfirmError 落地为中文错误；成功后推进（D→finished 可达）。
+    """
+    pid = agent.project_id
+    if not pid:
+        print("❌ 没有活跃项目。")
+        return
+    repo = agent.repo
+    parts = args.split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    proposals = [r for r in repo.list_proposals(pid)
+                 if r.get("kind", "proposal") == "proposal"]
+
+    if sub == "site":
+        site_id = parts[1].strip() if len(parts) > 1 else ""
+        if not site_id:
+            print("用法: confirm site <site_id>（不带参数运行 confirm 查看待确认清单）")
+            return
+        if not repo.confirm_field_site(pid, site_id):
+            print(f"❌ 田野点不存在: {site_id}")
+            return
+        print(f"✅ 田野点已确认: {site_id}")
+        _print_phase_transition(agent.advance_phase())
+
+    elif sub == "proposal":
+        doc_id = parts[1].strip() if len(parts) > 1 else ""
+        if not doc_id:
+            print("❌ 请指定文档 ID（R09：不隐式确认最新一份）。可确认的方案文档:")
+            for r in proposals:
+                print(f"  [{r['id']}] {r.get('version', 'draft')} — {r.get('saved_at', '')}")
+            if not proposals:
+                print("  （尚无方案文档，先运行 generate 生成）")
+            return
+        try:
+            repo.confirm_proposal(pid, doc_id)
+        except ProposalConfirmError as exc:
+            print(f"❌ 确认失败: {exc}")
+            return
+        print(f"✅ 方案已确认: {doc_id}")
+        _print_phase_transition(agent.advance_phase())
+
+    else:
+        pending = [s for s in repo.list_field_sites(pid) if not s.get("confirmed")]
+        print("📋 确认概览")
+        print("待确认田野点（confirm site <site_id>）:")
+        for s in pending:
+            print(f"  [{s['id']}] {s.get('name', '')}")
+        if not pending:
+            print("  （无）")
+        print("方案文档（confirm proposal <doc_id>）:")
+        for r in proposals:
+            print(f"  [{r['id']}] {r.get('version', 'draft')} — {r.get('saved_at', '')}")
+        if not proposals:
+            print("  （尚无方案文档，先运行 generate 生成）")
+        if repo.get_state(pid).get("proposal_confirmed"):
+            stale = repo.is_proposal_confirmation_stale(pid)
+            print("⚠️ 上次确认已过期（研究输入已变化或有新草稿），请重新确认"
+                  if stale else "当前确认有效")
+
+
+def _print_status(agent: FieldAgent) -> None:
+    """status 命令主体（F04：补方案确认状态行，stale 单列——D→finished
+    只认有效确认，与概览/推进判定同源）。"""
+    pid = agent.project_id
+    if not pid:
+        print("❌ 没有活跃项目。")
+        return
+    state = agent.repo.get_state(pid)
+    ctx = state.get("research_context") or {}
+    print(f"项目ID: {pid}")
+    print(f"阶段: {_phase_label(state['phase'])}")
+    print("研究者信息:")
+    for k, v in ctx.items():
+        if k != "extras" and str(v).strip():
+            print(f"  • {k}: {v}")
+    for k, v in (ctx.get("extras") or {}).items():
+        print(f"  • {k}: {v}")
+    print(f"知识库条目: {len(agent.repo.list_knowledge(pid))}")
+    print(f"搜索结果缓存: {len(agent.repo.list_cached_searches(pid))}")
+    sites = state.get("field_sites") or []
+    confirmed_n = sum(1 for s in sites if s.get("confirmed"))
+    print(f"候选田野点: {len(sites)}（已确认 {confirmed_n}）")
+    print(f"访谈对象: {len(state.get('informants') or [])}")
+    proposal = agent.repo.get_latest_proposal(pid)
+    print(f"最新方案: {'有' if proposal else '无'}")
+    if state.get("proposal_confirmed") and agent.repo.is_proposal_confirmation_stale(pid):
+        print("方案确认: 是（已过期，需重新确认）")
+    else:
+        print(f"方案确认: {'是' if state.get('proposal_confirmed') else '否'}")
 
 
 def main():
@@ -234,6 +334,9 @@ def main():
                 else:
                     print(f"❌ 方案生成失败：{result.get('error', '未知原因')}")
 
+            elif cmd == "confirm":
+                _run_confirm(agent, args)
+
             elif cmd == "knowledge":
                 if not agent.project_id:
                     print("❌ 请先创建一个项目: new")
@@ -260,26 +363,7 @@ def main():
                     print("用法: knowledge add/list")
 
             elif cmd == "status":
-                if not agent.project_id:
-                    print("❌ 没有活跃项目。")
-                    continue
-                pid = agent.project_id
-                state = agent.repo.get_state(pid)
-                ctx = state.get("research_context") or {}
-                print(f"项目ID: {pid}")
-                print(f"阶段: {_phase_label(state['phase'])}")
-                print("研究者信息:")
-                for k, v in ctx.items():
-                    if k != "extras" and str(v).strip():
-                        print(f"  • {k}: {v}")
-                for k, v in (ctx.get("extras") or {}).items():
-                    print(f"  • {k}: {v}")
-                print(f"知识库条目: {len(agent.repo.list_knowledge(pid))}")
-                print(f"搜索结果缓存: {len(agent.repo.list_cached_searches(pid))}")
-                print(f"候选田野点: {len(state.get('field_sites') or [])}")
-                print(f"访谈对象: {len(state.get('informants') or [])}")
-                proposal = agent.repo.get_latest_proposal(pid)
-                print(f"最新方案: {'有' if proposal else '无'}")
+                _print_status(agent)
 
             elif cmd == "sync":
                 if not agent.project_id:
@@ -339,6 +423,14 @@ def print_help():
 【方案生成】
   generate          基于当前所有信息生成研究方案草稿
                      输出为 Markdown 文件，投稿/开题前请人工核校补齐
+
+【确认与推进】
+  confirm            查看待确认清单（田野点 / 方案文档 / 确认状态）
+  confirm site <id>  确认田野点（B→C 推进条件之一）
+  confirm proposal <doc_id>
+                     确认指定方案文档（D→已完成须显式确认；不隐式
+                     确认最新一份；研究输入变化后旧确认过期，需重新
+                     生成并确认）
 
 【知识库】
   knowledge add     添加自有研究资料到本地知识库

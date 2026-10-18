@@ -127,6 +127,22 @@ describe("BasicInfoPanel 研究信息编辑", () => {
       expect(screen.getByText(/未填写任何要修正的字段/)).toBeInTheDocument());
     expect(calls).toHaveLength(0);
   });
+
+  test("P4：长文本字段用多行 textarea 完整呈现（换行保留，不再单行截断）", () => {
+    useProjectStore.getState().loadSnapshot({
+      ...SNAP,
+      research_context: { topic: "白族村落宗族组织变迁：\n以喜洲镇为例的宗族与祭祖仪式考察" },
+    });
+    render(<BasicInfoPanel />);
+    const topic = screen.getByLabelText("研究主题");
+    expect(topic.tagName).toBe("TEXTAREA"); // 单行 input → 多行 textarea
+    expect((topic as HTMLTextAreaElement).value).toBe(
+      "白族村落宗族组织变迁：\n以喜洲镇为例的宗族与祭祖仪式考察"); // input 的 value 会剥离换行
+
+    // 不适用原因同为面板输入，一并多行化（勾选后出现）
+    fireEvent.click(screen.getByText(/不适用访谈对象/));
+    expect(screen.getByLabelText("不适用原因").tagName).toBe("TEXTAREA");
+  });
 });
 
 describe("FieldSitesPanel — R06b 回读失败提示与重试", () => {
@@ -178,8 +194,8 @@ describe("FieldSitesPanel — R06b 回读失败提示与重试", () => {
   });
 });
 
-describe("KnowledgePanel 知识条目（审计三 Fix 1c）", () => {
-  test("挂载即 GET /knowledge 并渲染 agent 存入的条目", async () => {
+describe("KnowledgePanel 知识条目（审计三 Fix 1c + P1 折叠/编辑）", () => {
+  test("挂载即 GET /knowledge；条目默认折叠，点击标题才显示正文", async () => {
     const calls = stubFetch([
       [{ id: "k1", title: "印度签证准入", content: "电子签 30 天", category: "general" },
        { id: "k2", title: "节庆日历", content: "排灯节 11 月", category: "general" }],
@@ -188,8 +204,39 @@ describe("KnowledgePanel 知识条目（审计三 Fix 1c）", () => {
     await waitFor(() =>
       expect(calls.some((c) => c.url === "/projects/p1/knowledge")).toBe(true));
     expect(await screen.findByText("印度签证准入")).toBeInTheDocument();
-    expect(screen.getByText("电子签 30 天")).toBeInTheDocument();
+    expect(screen.queryByText("电子签 30 天")).not.toBeInTheDocument(); // 折叠：正文默认不可见
     expect(screen.getByText("节庆日历")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("印度签证准入"));                   // 点击标题展开
+    expect(await screen.findByText("电子签 30 天")).toBeInTheDocument();
+  });
+
+  test("展开后按 Markdown 渲染正文（加粗 strong + 单换行）", async () => {
+    stubFetch([
+      [{ id: "k1", title: "印度签证准入", content: "**电子签** 30 天\n需提前申请", category: "general" }],
+    ]);
+    const { container } = render(<KnowledgePanel />);
+    fireEvent.click(await screen.findByText("印度签证准入"));
+    await waitFor(() =>
+      expect(container.querySelector("strong")?.textContent).toBe("电子签"));
+    expect(container.querySelectorAll("br").length).toBeGreaterThanOrEqual(1); // 单换行不破段
+  });
+
+  test("展开后编辑并保存 → PUT 条目端点，界面同步新值", async () => {
+    const calls = stubFetch([
+      [{ id: "k1", title: "印度签证准入", content: "电子签 30 天", category: "general" }],
+      { id: "k1", title: "签证材料", content: "电子签 30 天\n加急 2 天", category: "general" },
+    ]);
+    render(<KnowledgePanel />);
+    fireEvent.click(await screen.findByText("印度签证准入"));
+    fireEvent.click(screen.getByText("编辑"));
+    fireEvent.change(screen.getByLabelText("标题"), { target: { value: "签证材料" } });
+    fireEvent.change(screen.getByLabelText("内容"), { target: { value: "电子签 30 天\n加急 2 天" } });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => expect(calls[1]?.url).toBe("/projects/p1/knowledge/k1"));
+    expect(calls[1]?.init?.method).toBe("PUT");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual(
+      { title: "签证材料", content: "电子签 30 天\n加急 2 天" });
+    expect(await screen.findByText("签证材料")).toBeInTheDocument(); // 保存后回到展示态且更新
   });
 
   test("空知识库 → 如实提示无条目，不伪造", async () => {

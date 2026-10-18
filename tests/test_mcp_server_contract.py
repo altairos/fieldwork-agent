@@ -19,7 +19,7 @@ from mcp import ClientSession
 from mcp.server.lowlevel import Server as LowLevelServer
 from mcp.shared.memory import create_client_server_memory_streams
 
-EXPECTED = 23
+EXPECTED = 30   # 21 kernel 能力（含 amap 六原语 + plan_last_mile 聚合）+ 9 状态工具
 
 
 @pytest.fixture
@@ -83,6 +83,19 @@ async def test_search_degrades_without_cli(server, monkeypatch):
     # 测试环境无 flyai CLI：必须走统一包络降级而非协议异常
     assert payload["ok"] is False
     assert payload["error"]["code"] in ("flyai_unavailable", "source_exception")
+
+
+async def test_amap_tool_degrades_without_key(server):
+    """amap 六原语进 MCP 面后必须可用：无 key 走 amap_invalid_key 包络降级。
+
+    反例即接线 bug：组装期把 FlyAIClient partial 绑进 amap 工具 →
+    AttributeError 被折成 internal_error，地理面全部不可用。
+    """
+    async with _session(server) as client:
+        res = await client.call_tool("amap_geocode", {"address": "喜洲镇"})
+        payload = json.loads(res.content[0].text)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "amap_invalid_key"
 
 
 async def test_resources_and_prompts_visible(server):

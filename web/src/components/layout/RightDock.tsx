@@ -6,17 +6,19 @@ import { FieldSitesPanel } from "../right/FieldSitesPanel";
 import { InformantsPanel } from "../right/InformantsPanel";
 import { KnowledgePanel } from "../right/KnowledgePanel";
 import { Tabs, type TabItem } from "../ui/Tabs";
-import { IconSpark } from "../ui/icons";
+import { IconCompass, IconSpark } from "../ui/icons";
 
 /**
- * RightDock — 右栏上下文面板容器（状态投影）。
+ * RightDock — 右栏上下文面板容器（实时状态）。
  * 设计板同源：workspace 右栏 lines 529-674：
  *   容器 `bg-paperdeep border-l border-hairline flex flex-col min-w-0 relative`（line 530）
  *   切换建议 toast（lines 532-538）：`absolute top-2 left-3 right-3 z-10 rounded-lg bg-card shadow-pop hairline p-3`
  *     + spark 朱砂图标 + 「查看/稍后」— 设计红线①：不自动强切 Tab，用户点「查看」(acceptSuggestion) 才切
  *     （ui store 的不变量：phase_transition 只置 pendingSuggestion，绝不改 activeTab）
- *   面板头（lines 540-548）：「上下文面板 · 状态投影」tracking 标签 + rp-tab 组（基本信息/田野点/访谈对象/预算/知识库）
+ *   面板头（lines 540-548）：「上下文面板 · 实时状态」tracking 标签 + rp-tab 组（基本信息/田野点/访谈对象/预算/知识库）
  *   内容区（line 551）：`flex-1 overflow-y-auto scroll p-4`，按 activeTab 渲染五面板（Task 7 接线）。
+ *   底部声明栏（2026-10-18）：五个 Tab 常驻一致——实时口径说明自 KnowledgePanel 内容流
+ *   上提为 dock 级 footer，任一面板都可见，文案一字不改。
  *
  * Tab id 对齐（brief 红线）：TABS 的 id 与 PANELS 的键**一律取 ui store 的 RightTab 联合类型**
  * （basic-info/sites/informants/budget/knowledge）；`Record<RightTab, …>` 是穷尽映射，
@@ -88,12 +90,18 @@ export function RightDock({
       )}
 
       <div className="px-4 pt-3 pb-2 border-b border-hairline">
-        <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 状态投影</div>
+        <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 实时状态</div>
         <Tabs tabs={TABS} active={tab} onChange={handleChange} />
       </div>
 
       {/* overscroll-contain（批次 C）：移动端底部面板内滚动不穿透到底层对话流 */}
       <div className="flex-1 overflow-y-auto scroll overscroll-contain p-4">{children ?? <Panel />}</div>
+
+      {/* 实时口径声明栏：五 Tab 常驻一致（不随面板滚动，对齐 dock 底缘） */}
+      <div className="border-t border-hairline px-4 py-2 flex items-center gap-2 text-[11px] leading-snug text-inkfaint">
+        <IconCompass className="w-3.5 h-3.5 shrink-0" />
+        本面板实时同步系统状态：数值与文本一律来自内核快照与工具返回，不经模型转述。
+      </div>
     </div>
   );
 }

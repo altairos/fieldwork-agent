@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type TextareaHTMLAttributes, useEffect, useRef, useState } from "react";
 import { useProjectStore } from "../../stores/project";
 import { rest } from "../../api/rest";
 import { strOf } from "../cards/data";
@@ -94,18 +94,20 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
           方案确认已因研究信息变更失效，请在「方案」页重新确认。
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2">
+      {/* 同行等高：label 纵向 flex + textarea grow——grid 行高取同行较高者，
+          AutoGrow 的内联 height 只撑不缩，矮侧由 flex 拉伸补齐到行底 */}
+      <div className="grid grid-cols-2 gap-2 items-start">
         {EDIT_FIELDS.map((f) => (
-          <label key={f.key} className="block min-w-0">
+          <label key={f.key} className="flex flex-col min-w-0">
             <span className="text-[10px] text-inkfaint">{f.label}</span>
-            <input
+            <AutoGrowTextarea
               aria-label={f.label}
               value={draft[f.key] ?? ""}
               onChange={(e) => {
                 setDraft({ ...draft, [f.key]: e.target.value });
                 setDirty(true);
               }}
-              className="w-full mt-0.5 text-[12px] bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar"
+              className="grow shrink-0 w-full mt-0.5 text-[12px] leading-relaxed bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar resize-none overflow-hidden"
             />
           </label>
         ))}
@@ -119,12 +121,12 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
         本研究不适用访谈对象（非访谈型研究）
       </label>
       {na && (
-        <input
+        <AutoGrowTextarea
           aria-label="不适用原因"
           placeholder="不适用原因（可选，呈现于访谈对象面板）"
           value={naReason}
           onChange={(e) => { setNaReason(e.target.value); setDirty(true); }}
-          className="w-full mt-1.5 text-[12px] bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar"
+          className="w-full mt-1.5 text-[12px] leading-relaxed bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar resize-none overflow-hidden"
         />
       )}
       <div className="flex items-center gap-2 mt-2">
@@ -141,4 +143,20 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
       </div>
     </div>
   );
+}
+
+/** P4 自动增高多行输入：单行 input 截断长文本（且 DOM value 会剥离换行），
+ *  改为 textarea 后内容随行数/软换行即时撑高，完整可见（无需手动拉把手）。
+ *  高度同步在浏览器读 scrollHeight；jsdom 无布局（scrollHeight 恒 0）时
+ *  高度退化无效，但 rows/换行行为不变，测试语义不受影响。 */
+function AutoGrowTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const { value, ...rest } = props;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return <textarea ref={ref} rows={1} value={value} {...rest} />;
 }

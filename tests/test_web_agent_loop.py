@@ -37,6 +37,16 @@ class ChatFakeLLM(FakeLLM):
         return {"content": ""}
 
 
+class FakeAMap:
+    """替身 AMapClient：记录方法调用，返回固定成功包络（N0 通道注入钉子）。"""
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def weather(self, **kw):
+        self.calls.append(("weather", kw))
+        return Envelope(ok=True, data={"city": kw.get("city", "")})
+
+
 # F04：compose_proposal 完整四硬渠道参数（独立于 Task 2 的 NA 豁免路径）
 _PROPOSAL_ARGS = {
     "ctx": {"discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
@@ -583,13 +593,49 @@ def test_analyze_window_writes_time_window_to_research_context(env):
     assert any(c["tool"] == "analyze_fieldwork_window" for c in cached)
 
 
+def test_dispatch_injects_amap_client():
+    """N0：amap 原语经 dispatch 收到宿主注入的 AMapClient 实例（非自建）——
+    web 宿主对齐 CLI orchestrator/MCP host_ctx 的三通道注入。"""
+    from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
+
+    fake = FakeAMap()
+    dispatch = build_dispatch_fn(None, None, amap_client=fake)
+    env = dispatch("amap_weather", {"city": "大理"})
+    assert env.ok is True
+    assert fake.calls and fake.calls[0][0] == "weather"
+    assert fake.calls[0][1].get("city") == "大理"
+
+
+def test_run_turn_passes_amap_client(env):
+    """N0：run_turn 的 amap_client 形参透传到 dispatch 注入链。"""
+    repo, tm = env
+    fake = FakeAMap()
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "amap_weather",
+                                          "arguments": {"city": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "ok"},
+         {"content": "ok", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "查天气", tm, llm, FakeFlyAI(),
+                         amap_client=fake))
+    assert fake.calls and fake.calls[0][1].get("city") == "大理"
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    completed = next(e for e in events if e.event == "tool_completed")
+    assert completed.data["ok"] is True
+
+
 def test_analyze_window_empty_windows_leaves_time_window_untouched(env, monkeypatch):
     """windows 为空/首窗缺日期时不回写：不抛错、time_window 保持原值。"""
     repo, tm = env
     repo.update_research_context("p1", {"time_window": "原有：7 月中旬"})
     from fieldwork_agent.web_host.agent import loop as agent_loop
 
-    def _fake_build_dispatch_fn(flyai_client, llm):
+    def _fake_build_dispatch_fn(flyai_client, llm, amap_client=None):
         def dispatch(name, args):
             return Envelope(ok=True, data={"windows": []})
         return dispatch

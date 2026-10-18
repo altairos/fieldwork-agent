@@ -159,6 +159,14 @@ def test_delete_knowledge_rejects_path_traversal(json_repo):
             json_repo.delete_knowledge("p1", evil)
 
 
+def test_update_knowledge_rejects_path_traversal(json_repo):
+    """P2-2 同源：update 与 delete 共用单段文件名守卫，防拼路径越
+    knowledge 目录改写任意文件。"""
+    for evil in ("../../victim", "..\\..\\victim", "/etc/passwd", "C:\\windows\\evil"):
+        with pytest.raises(ValueError):
+            json_repo.update_knowledge("p1", evil, content="x")
+
+
 # ---------------------------------------------------------------- 存量兼容（Step 5）
 
 

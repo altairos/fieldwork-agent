@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { DEFAULT_PHASES } from "../components/layout/LeftRail";
 import type { SseEvent } from "../types/events";
 import type { ErrorEvent } from "../types/events";
 
@@ -35,8 +36,10 @@ export const useUiStore = create<UiState>()((set, get) => ({
   applyEvent: (ev) => set(() => {
     if (ev.event === "phase_transition") {
       const tab = PHASE_TAB[ev.to];
+      // 阶段 id → 中文名（唯一来源 LeftRail 阶段配置；未知 id 回落原值）
+      const label = DEFAULT_PHASES.find((p) => p.id === ev.to)?.label ?? ev.to;
       // 关键不变量：不自动改 activeTab，只置建议
-      return tab ? { pendingSuggestion: { tab, reason: `已进入${ev.to}阶段` } } : {};
+      return tab ? { pendingSuggestion: { tab, reason: `已进入「${label}」阶段` } } : {};
     }
     if (ev.event === "error") {
       return { degradedBanner: { code: ev.code, message: ev.message, hint: ev.hint } };

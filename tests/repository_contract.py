@@ -175,6 +175,35 @@ class TestContract:
         repo.delete_knowledge("p1", kid)
         assert repo.list_knowledge("p1") == []
 
+    def test_update_knowledge(self, repo):
+        """P1 右栏编辑：改 title/content 后读回新值，id/source/tags/created_at
+        等落盘字段原样保留（编辑不是重建）。"""
+        kid = repo.add_knowledge("p1", "白族三月街", "集市访谈材料", tags=["田野"])
+        updated = repo.update_knowledge("p1", kid, title="三月街集市", content="**加粗**\n第二行")
+        assert updated["id"] == kid
+        assert updated["title"] == "三月街集市"
+        assert updated["content"] == "**加粗**\n第二行"
+        entry = repo.list_knowledge("p1")[0]
+        assert entry["title"] == "三月街集市"
+        assert entry["source"] == "user"
+        assert entry["tags"] == ["田野"]
+        assert entry["created_at"]
+
+    def test_update_knowledge_partial(self, repo):
+        """部分更新：未指定的字段不动（None = 不改，非 None 才写）。"""
+        kid = repo.add_knowledge("p1", "提纲", "问题1", category="methods")
+        repo.update_knowledge("p1", kid, content="问题2")
+        entry = repo.list_knowledge("p1")[0]
+        assert entry["title"] == "提纲"
+        assert entry["content"] == "问题2"
+        assert entry["category"] == "methods"
+
+    def test_update_unknown_knowledge_raises_keyerror(self, repo):
+        """编辑不存在的条目 → KeyError（与 delete 的幂等刻意不同：编辑失败
+        要让用户看见，web 层转 404）。"""
+        with pytest.raises(KeyError):
+            repo.update_knowledge("p1", "no_such_entry", content="x")
+
     # ---------------------------------------------------------------- 提案文档
 
     def test_proposal_versions(self, repo):

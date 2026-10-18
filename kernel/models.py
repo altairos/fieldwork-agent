@@ -58,6 +58,26 @@ class ItemPage(BaseModel):
     dearest: float | None = None
 
 
+# ---------------------------------------------------------------- 地理空间（高德底座）
+
+
+class GeoLocation(BaseModel):
+    """行政区划与坐标定位（高德 geocode/regeocode 归一化产物）。
+
+    ``location`` 恒为高德坐标串 ``"lng,lat"``；``adcode`` 是后续天气/周边搜索的
+    行政区锚点。海外地名高德不收录 → 走 ``amap_no_result`` 回退 FlyAI。
+    """
+
+    location: str = ""            # "lng,lat"
+    province: str = ""
+    city: str = ""
+    district: str = ""
+    township: str = ""
+    adcode: str = ""
+    formatted_address: str = ""
+    source: str = "amap"
+
+
 # ---------------------------------------------------------------- 田野点画像
 
 
@@ -79,6 +99,9 @@ class FieldSiteProfile(BaseModel):
     accommodation: ItemPage | None = None
     culture: list[dict[str, Any]] = Field(default_factory=list)
     amenities: ItemPage | None = None
+    # 高德 PoC M3（§3.4）：地理底座与周边设施，默认 None 旧数据反序列化兼容
+    geo: GeoLocation | None = None        # 行政区划底座；geocode 失败（含海外）为 None
+    facilities: ItemPage | None = None    # 周边设施盘点（医疗/警务/金融/物流/集市）
     summary: SummaryHints = Field(default_factory=SummaryHints)
     generated_at: str = ""
 

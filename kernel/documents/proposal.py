@@ -106,6 +106,52 @@ def _bullets_sites(sites: list[dict]) -> list[str]:
     return lines or ["- （无候选田野点）"]
 
 
+_DIRECTION_ZH = {"outbound": "去程", "inter": "站间", "return": "返程"}
+
+
+def _booking_suffix(chosen: dict) -> str:
+    """chosen 带飞猪 ``jump_url`` 时尾接 markdown 预订链接（A3/D11），否则空串。"""
+    jump = chosen.get("jump_url")
+    if not isinstance(jump, str) or not jump.startswith(("http://", "https://")):
+        return ""
+    return f" [预订]({jump})"
+
+
+def _fmt_price(value) -> str:
+    """价格 → ``¥350``（整数抹 .0）/ ``¥150.5`` 文本；非数字原样 str；大额不落科学计数法。"""
+    if isinstance(value, int):
+        return f"¥{value}"
+    if isinstance(value, float):
+        return f"¥{format(value, 'f').rstrip('0').rstrip('.')}"
+    return str(value)
+
+
+def _leg_line(leg: dict) -> str:
+    chosen = leg.get("chosen")
+    route = f"{leg.get('from', '?')} → {leg.get('to', '?')}"
+    date = leg.get("date", "?")
+    if not isinstance(chosen, dict):
+        return f"- 腿：{route}（{date}）：无可用价格，预算未计"
+    direction = _DIRECTION_ZH.get(str(leg.get("direction", "")))
+    head = f"- 腿：{route}（{date}，{direction}）" if direction else f"- 腿：{route}（{date}）"
+    n_alts = len(leg.get("alternatives") or [])
+    alts = f"，备选 {n_alts} 条" if n_alts else ""
+    return f"{head}：{chosen.get('name', '未命名')} {_fmt_price(chosen.get('price'))}{alts}{_booking_suffix(chosen)}"
+
+
+def _stay_line(stay: dict) -> str:
+    chosen = stay.get("chosen")
+    head = f"- 住宿（{stay.get('dest', '?')}）{stay.get('check_in', '?')} → {stay.get('check_out', '?')}"
+    nights = stay.get("nights")
+    if nights is not None:
+        head += f" · {nights} 晚"
+    if not isinstance(chosen, dict):
+        return f"{head}：无可用价格"
+    nightly = stay.get("nightly_price")
+    nightly_txt = f" {_fmt_price(nightly)}/晚" if isinstance(nightly, (int, float)) else ""
+    return f"{head}：{chosen.get('name', '未命名')}{nightly_txt}{_booking_suffix(chosen)}"
+
+
 def _bullets_itinerary(itinerary: dict | None) -> list[str]:
     if not itinerary:
         return ["- （暂无行程数据）"]
@@ -116,7 +162,13 @@ def _bullets_itinerary(itinerary: dict | None) -> list[str]:
             if not legs:
                 lines.append("- **legs**：[]")
             for leg in legs:
-                lines.append(f"- 腿：{leg}")
+                lines.append(_leg_line(leg if isinstance(leg, dict) else {}))
+        elif k == "stays":
+            stays = v if isinstance(v, list) else []
+            if not stays:
+                lines.append("- **stays**：[]")
+            for stay in stays:
+                lines.append(_stay_line(stay if isinstance(stay, dict) else {}))
         else:
             lines.append(f"- **{k}**：{v}")
     return lines

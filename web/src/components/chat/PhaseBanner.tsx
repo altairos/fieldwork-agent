@@ -17,8 +17,8 @@ import { useUiStore } from "../../stores/ui";
  * 降级横幅取设计板 ochre 家族（line 265 `bg-ochrewash text-ochre border-ochre/25` + line 132 alert 图标），
  *   承载 ui store 的 `degradedBanner`（error 事件）：如实转述 code/message/hint，用户可关闭。
  *
- * 红线①：横幅只**呈现**阶段与建议，不切 Tab、不改 activeTab；pendingSuggestion 原文来自
- * ui store（phase_transition 归约），此处不改写、不臆造中文映射；切换动作只在右栏 toast 的「查看」。
+ * 红线①：横幅只**呈现**阶段与建议，不切 Tab、不改 activeTab；pendingSuggestion 文案由
+ * ui store 归约（阶段 id → 中文名），此处不改写；切换动作只在右栏 toast 的「查看」。
  */
 export function PhaseBanner() {
   const phase = useProjectStore((s) => s.phase);

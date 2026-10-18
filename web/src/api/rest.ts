@@ -21,6 +21,23 @@ export function apiDetail(err: ApiError): string | null {
   }
 }
 
+/** App Token 守卫 401（web_host/app.py 审计 F02）：页面级 REST 的 401 唯一来源。
+ *  响应体是 `{"code","message"}` 形状（非 detail）：状态码之外复核 code，
+ *  区分守卫 401 与其他来源的 401；非 JSON 或无 code 键的未知形状保守放行
+ *  （仍引导用户填令牌，不因形状未知而漏拦）。 */
+export function isAppTokenError(err: unknown): err is ApiError {
+  if (!(err instanceof ApiError) || err.status !== 401) return false;
+  try {
+    const parsed = JSON.parse(err.message) as { code?: unknown } | null;
+    if (parsed && typeof parsed === "object" && "code" in parsed) {
+      return parsed.code === "app_token_required";
+    }
+  } catch {
+    // 非 JSON 体（网关纯文本 401）：无法复核，保守按令牌问题处理
+  }
+  return true;
+}
+
 /** GET /settings/status 的返回（web_host/api/settings.py，只回布尔不回明文）。 */
 export interface SettingsStatus {
   dashscope_configured: boolean;
@@ -102,6 +119,9 @@ export const rest = {
     req<CachedSearchRecord>(`/projects/${id}/cached-searches/${cid}`),
   // 审计三 Fix 1c：agent add_knowledge_entry 落盘条目的可见面（按创建顺序，含正文）
   listKnowledge: (id: string) => req<KnowledgeEntry[]>(`/projects/${id}/knowledge`),
+  // P1 右栏编辑：改 title/content（未提供的字段不改），返回更新后条目
+  updateKnowledge: (id: string, entryId: string, patch: { title?: string; content?: string }) =>
+    req<KnowledgeEntry>(`/projects/${id}/knowledge/${entryId}`, { method: "PUT", body: JSON.stringify(patch) }),
   // ---- 状态修正与确认（web_host/api/state.py，审计 F03/F04 修正入口）----
   updateResearchContext: (id: string, patch: Record<string, string | boolean>) =>
     req<{ research_context: Partial<ResearchContext>; phase_transition: PhaseTransition | null }>(
