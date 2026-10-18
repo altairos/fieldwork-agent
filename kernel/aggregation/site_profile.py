@@ -190,6 +190,9 @@ def profile_field_site(location: str, budget_per_night: float = 200,
                     for item in fac_env.data.items:  # 跨关键词同名去重，首见保留
                         if item.name not in seen_names:
                             seen_names.add(item.name)
+                            # N6 地图面板：附命中关键词（五类色分数据源，前端不猜
+                            # 语义）；extra.location 的 POI 坐标随条目透传。
+                            item.extra = {**item.extra, "facility_kind": fac_kw}
                             fac_items.append(item)
             if any_around_ok:  # 全部 around 失败 → 缺段 None（区分于空页）
                 facilities = _build_page(fac_items, max_items_per_section)

@@ -182,24 +182,30 @@ async def test_amap_missing_key_falls_back_to_singleton(app, monkeypatch):
 
 
 async def test_settings_status_reports_configured_flags(app):
-    """GET /settings/status 只回布尔状态（不回明文 key）。"""
+    """GET /settings/status 回布尔状态；JS Key 例外下发明文（地图面板前端必）。"""
     from types import SimpleNamespace
 
     app.state.llm = FakeLLM()  # 钉死，避免开发者本机 key 影响判定
-    app.state.config = SimpleNamespace(flyai_api_key="fk", amap_api_key="ak")
+    app.state.config = SimpleNamespace(
+        flyai_api_key="fk", amap_api_key="ak",
+        amap_js_key="jsk", amap_js_security="jsc")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/settings/status")
         assert r.status_code == 200
         assert r.json() == {"dashscope_configured": True, "flyai_configured": True,
-                            "amap_configured": True}
+                            "amap_configured": True, "amap_js_configured": True,
+                            "amap_js_key": "jsk", "amap_js_security": "jsc"}
 
     app.state.llm = None
-    app.state.config = SimpleNamespace(flyai_api_key="", amap_api_key="")
+    app.state.config = SimpleNamespace(
+        flyai_api_key="", amap_api_key="",
+        amap_js_key="", amap_js_security="")
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/settings/status")
         assert r.json() == {"dashscope_configured": False, "flyai_configured": False,
-                            "amap_configured": False}
+                            "amap_configured": False, "amap_js_configured": False,
+                            "amap_js_key": "", "amap_js_security": ""}
 
 
 async def test_cancel_turn(client):

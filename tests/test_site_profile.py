@@ -329,6 +329,25 @@ def test_geo_exception_is_isolated():
     assert env.data.geo is None and env.data.facilities is None
 
 
+def test_facilities_items_carry_kind_and_location():
+    """N6 地图面板数据源：合并时 extra 附 facility_kind（命中关键词，五类色分
+    用，前端不猜语义）；POI 坐标经 extra.location 透传（面板画 Marker 用）。"""
+    class GeoRich(StubGeoClient):
+        def around_search(self, keywords, location, radius=5000):
+            env = super().around_search(keywords, location, radius)
+            env.data.items[0].extra = {"location": "100.20,25.05", "address": "镇南路 1 号"}
+            return env
+
+    env = profile_field_site("喜洲", client=StubClient(), amap_client=GeoRich())
+    assert env.ok
+    items = env.data.facilities.items
+    # 截断后 5 条 = 卫生院×2 + 派出所×2 + 喜洲邮政所；kind 跟随命中关键词
+    assert items[0].extra.get("facility_kind") == "卫生院 诊所"
+    assert items[0].extra.get("location") == "100.20,25.05"
+    dup = next(i for i in items if i.name == "喜洲邮政所")
+    assert dup.extra.get("facility_kind") == "银行"   # 跨词去重首见保留，kind 归属首见词
+
+
 def test_around_all_fail_yields_facilities_none():
     """geocode 成功但五关键词 around 全失败 → facilities=None（缺段语义，
     区分于合并后为空的 ItemPage）；geo 段不受连坐、不算整体降级。"""

@@ -399,6 +399,8 @@ def check_dependencies(config):
         issues.append("DASHSCOPE_API_KEY 未设置 — LLM 对话将降级为规则回复")
     if not config.flyai_api_key:
         issues.append("FLYAI_API_KEY 未设置 — 旅行搜索功能不可用")
+    if not config.amap_js_key:
+        issues.append("AMAP_JS_KEY 未设置 — Web 地图面板将降级为文字卡片")
     if issues:
         print("⚠️  以下配置缺失:")
         for issue in issues:

@@ -15,6 +15,7 @@
     "mock": "tsx mock/sseServer.ts"
   },
   "dependencies": {
+    "@amap/amap-jsapi-loader": "^1.0.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",

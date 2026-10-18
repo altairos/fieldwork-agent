@@ -1,7 +1,11 @@
-"""设置路由：API key 配置状态查询（只回布尔，不回明文）。
+"""设置路由：API key 配置状态查询（布尔状态；JS Key 例外下发明文）。
 
 首页「API 密钥」卡据此显示「服务端已配」徽标；Workspace 据此判定
 「可浏览不可发」——服务端未配且浏览器未存 key 时禁用 Composer。
+
+例外：高德 JS API 2.0 机制要求前端持有 key + securityJsCode（N6 地图
+面板），故 amap_js_key/amap_js_security 下发明文——防滥用靠控制台域名
+白名单，而非服务端保密。
 """
 
 from fastapi import APIRouter, Request
@@ -17,4 +21,8 @@ async def settings_status(request: Request):
         "dashscope_configured": request.app.state.llm is not None,
         "flyai_configured": bool(getattr(cfg, "flyai_api_key", "")),
         "amap_configured": bool(getattr(cfg, "amap_api_key", "")),
+        # JS Key 例外下发明文（见模块 docstring）
+        "amap_js_configured": bool(getattr(cfg, "amap_js_key", "")),
+        "amap_js_key": getattr(cfg, "amap_js_key", "") or "",
+        "amap_js_security": getattr(cfg, "amap_js_security", "") or "",
     }

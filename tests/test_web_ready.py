@@ -60,6 +60,24 @@ async def test_ready_unwritable_projects_dir_503(client, monkeypatch):
     assert r.json()["checks"]["projects_dir_writable"] is False
 
 
+async def test_ready_amap_js_key_soft_check(app, monkeypatch):
+    """N6：amap_js_key_configured 软检查——缺失/在位均不进 blocking，status 恒 ready。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/flyai" if name == "flyai" else None)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        app.state.config = SimpleNamespace(flyai_api_key="", amap_js_key="")
+        r = await c.get("/ready")
+        assert r.status_code == 200                     # 缺 JS Key 不阻塞（地图面板降级卡片）
+        assert r.json()["checks"]["amap_js_key_configured"] is False
+
+        app.state.config = SimpleNamespace(flyai_api_key="", amap_js_key="jsk")
+        r = await c.get("/ready")
+        assert r.status_code == 200
+        assert r.json()["checks"]["amap_js_key_configured"] is True
+
+
 async def test_ready_probe_filename_unique_per_call(client, tmp_path, monkeypatch):
     """终审#2：并发 /ready 的 touch→unlink 互踩 → 假 503。
 

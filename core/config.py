@@ -38,6 +38,11 @@ class Config:
         # 高德开放平台 Web 服务 Key（amap PoC）：env → 自有 config.json 覆盖
         self.amap_api_key: str = os.getenv("AMAP_API_KEY", "")
 
+        # 高德 JS API Key + 安全密钥（PoC2 N6 Web 地图面板）：与 Web 服务 Key
+        # 分开申请（控制台「Web 端(JS API)」类型）；防滥用靠域名白名单。
+        self.amap_js_key: str = os.getenv("AMAP_JS_KEY", "")
+        self.amap_js_security: str = os.getenv("AMAP_JS_SECURITY", "")
+
         # 应用访问令牌（审计 F02）：非空时 Web 宿主中间件要求 X-App-Token 匹配。
         # 仅环境变量——不进 save()/_load_config（令牌属部署边界，非用户偏好，不落盘）。
         self.app_token: str = os.getenv("FIELDWORK_APP_TOKEN", "")
@@ -75,6 +80,8 @@ class Config:
                 self.dashscope_api_key = data.get("dashscope_api_key", self.dashscope_api_key)
                 self.flyai_api_key = data.get("flyai_api_key", self.flyai_api_key)
                 self.amap_api_key = data.get("amap_api_key", self.amap_api_key)
+                self.amap_js_key = data.get("amap_js_key", self.amap_js_key)
+                self.amap_js_security = data.get("amap_js_security", self.amap_js_security)
                 self.dingtalk_webhook = data.get("dingtalk_webhook", self.dingtalk_webhook)
                 self.dingtalk_enabled = data.get("dingtalk_enabled", self.dingtalk_enabled)
                 self.interview_model = data.get("interview_model", self.interview_model)
@@ -100,6 +107,8 @@ class Config:
             "dashscope_api_key": self.dashscope_api_key,
             "flyai_api_key": self.flyai_api_key,
             "amap_api_key": self.amap_api_key,
+            "amap_js_key": self.amap_js_key,
+            "amap_js_security": self.amap_js_security,
             "dingtalk_webhook": self.dingtalk_webhook,
             "dingtalk_enabled": self.dingtalk_enabled,
             "interview_model": self.interview_model,
@@ -129,6 +138,10 @@ class Config:
     @property
     def amap_available(self) -> bool:
         return bool(self.amap_api_key)
+
+    @property
+    def amap_js_available(self) -> bool:
+        return bool(self.amap_js_key)
 
     @property
     def dingtalk_available(self) -> bool:

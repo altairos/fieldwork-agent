@@ -5,6 +5,7 @@ import { Price } from "../ui/Price";
 import { IconBed, IconCaret, IconCompass, IconPlane, IconTrain } from "../ui/icons";
 import { BudgetBar, toBudget } from "./BudgetCard";
 import { CardShell, NoData } from "./CardShell";
+import { AmapMapPanel } from "./AmapMapPanel";
 import { asArray, asRecord, boolOf, extraLine, numOf, strOf } from "./data";
 import type { ToolCardProps } from "./types";
 
@@ -272,6 +273,30 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                       />
                     );
                   }
+                  // N6 接驳示意地图（PoC2 §5.2 嵌入点二）：hub/site 双坐标 → 两点连线；
+                  // 无 Key / loader 失败由 AmapMapPanel 降级链兑底（坐标文字仍可读）
+                  const lmHubLoc = strOf(asRecord(lm.hub_geo).location);
+                  const lmSiteLoc = strOf(asRecord(lm.site_geo).location);
+                  let lastMileMap: ReactNode = null;
+                  if (lmHubLoc && lmSiteLoc) {
+                    lastMileMap = (
+                      <AmapMapPanel
+                        center={lmHubLoc}
+                        line={[lmHubLoc, lmSiteLoc]}
+                        markers={[
+                          {
+                            location: lmHubLoc,
+                            title: strOf(asRecord(lm.hub_geo).city) || "枢纽",
+                          },
+                          {
+                            location: lmSiteLoc,
+                            title: strOf(asRecord(lm.site_geo).city) || "田野点",
+                          },
+                        ]}
+                        height={150}
+                      />
+                    );
+                  }
                   return (
                     <Fragment key={`leg-${i}`}>
                       <Row
@@ -288,6 +313,7 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                         }
                       />
                       {lastMileRow}
+                      {lastMileMap && <li className="list-none">{lastMileMap}</li>}
                     </Fragment>
                   );
                 })}

@@ -223,6 +223,16 @@ describe("ItineraryCard 时间线与预算", () => {
     render(<ItineraryCard data={PLAN} />);
     expect(screen.queryByText("末端接驳")).not.toBeInTheDocument();
   });
+  // N6 接驳示意地图（PoC2 §5.2 嵌入点二）：hub/site 双坐标 → 地图块；
+  // 无 Key 降级为坐标文字，不让接驳信息丢失。
+  test("N6 接驳地图：hub/site 双坐标 → 渲染接驳示意块（无 Key 降级）", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      ({ ok: true, json: async () => ({ amap_js_key: "", amap_js_security: "" }) } as unknown as Response)));
+    render(<ItineraryCard data={PLAN_LAST_MILE} />);
+    expect(await screen.findByText(/未配置高德 JS API Key/)).toBeInTheDocument();
+    expect(screen.getByText("100.1,25.6")).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("其余卡片", () => {
@@ -238,6 +248,36 @@ describe("其余卡片", () => {
     }} />);
     expect(screen.getByText("喜洲镇")).toBeInTheDocument();
     expect(screen.getByText(/平台未见住宿供给/)).toBeInTheDocument();
+  });
+  // N6 C4 双源标注（PoC2 §4.4）：geo 有值 → 「高德底座」徽标 + 周边设施地图块；
+  // facilities 带 facility_kind（kernel 附着）与 extra.location（POI 坐标）。
+  test("SiteProfileCard geo 有值 → C4 高德底座徽标 + 周边设施地图块", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      ({ ok: true, json: async () => ({ amap_js_key: "", amap_js_security: "" }) } as unknown as Response)));
+    render(<SiteProfileCard data={{
+      location: "喜洲镇",
+      geo: { location: "100.196,25.047", province: "云南省" },
+      facilities: { items: [
+        { name: "喜洲卫生院", extra: { location: "100.20,25.05", facility_kind: "卫生院 诊所" } },
+      ], total: 1 },
+      transport: null, accommodation: null, culture: [], amenities: null,
+      summary: { section_counts: {}, accommodation_nightly_min: null, transport_min: null, hints: {} },
+    }} />);
+    expect(screen.getByText("高德底座")).toBeInTheDocument();
+    expect(await screen.findByText(/未配置高德 JS API Key/)).toBeInTheDocument();  // 无 Key 降级卡片
+    expect(screen.getByText("喜洲卫生院")).toBeInTheDocument();                    // 设施清单仍可读
+    vi.unstubAllGlobals();
+  });
+  test("SiteProfileCard geo 缺段 → C4 文本回退徽标，无地图块", () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      ({ ok: true, json: async () => ({ amap_js_key: "", amap_js_security: "" }) } as unknown as Response)));
+    render(<SiteProfileCard data={{
+      location: "Chiang Mai", transport: null, accommodation: null, culture: [], amenities: null,
+      summary: { section_counts: {}, accommodation_nightly_min: null, transport_min: null, hints: {} },
+    }} />);
+    expect(screen.getByText("文本回退")).toBeInTheDocument();
+    expect(screen.queryByText(/未配置高德 JS API Key/)).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
   test("InformantCard 渲染候选类型与提问域", () => {
     render(<InformantCard data={[{

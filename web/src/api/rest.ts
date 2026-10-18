@@ -38,11 +38,16 @@ export function isAppTokenError(err: unknown): err is ApiError {
   return true;
 }
 
-/** GET /settings/status 的返回（web_host/api/settings.py，只回布尔不回明文）。 */
+/** GET /settings/status 的返回（web_host/api/settings.py）。
+ *  JS Key 两字段是文档化例外（settings.py docstring）：高德 JS API 2.0 要求
+ *  前端持有 key + securityJsCode，防滥用靠控制台域名白名单，非服务端代理可解。 */
 export interface SettingsStatus {
   dashscope_configured: boolean;
   flyai_configured: boolean;
   amap_configured: boolean;
+  amap_js_configured: boolean;
+  amap_js_key: string;
+  amap_js_security: string;
 }
 
 /** GET /health 的返回（web_host/app.py：auth_required 表示服务端启用了 App Token）。 */
