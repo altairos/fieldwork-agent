@@ -1,8 +1,13 @@
 """SqliteRepository 实现细节单测（契约平价由 repository_contract 双跑把关，这里测 sqlite 专属）。"""
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
+from fieldwork_agent.kernel.repository.confirm_hash import (
+    ProposalConfirmError,
+    compute_confirm_hash,
+)
 from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
 
 
@@ -16,7 +21,7 @@ def test_schema_created_with_user_version(tmp_path):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert version == 1
+    assert version == 2
     for t in ("projects", "research_context", "messages", "field_sites",
               "informants", "search_cache", "knowledge", "proposals",
               "confirmations", "schema_meta"):
@@ -209,17 +214,6 @@ def test_cache_truncated_64kb(tmp_path):
     assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
 
-def test_get_cached_search_scoped_to_project(tmp_path):
-    """R01：读取收窄项目域——p1 读不到 p2 的快照，未知项目返回 None。"""
-    repo = make_sqlite_repo(tmp_path)
-    repo.create("p1")
-    repo.create("p2")
-    cid = repo.cache_search("p2", "q", "search_ai", {"x": 1})
-    assert repo.get_cached_search("p2", cid)["result"] == {"x": 1}
-    assert repo.get_cached_search("p1", cid) is None
-    assert repo.get_cached_search("no_such_project", cid) is None
-
-
 def test_knowledge_roundtrip_and_search(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
@@ -287,3 +281,353 @@ def test_get_state_proposals_exclude_content(tmp_path):
     assert len(st["proposals"]) == 1
     assert "content" not in st["proposals"][0]
     assert st["proposals"][0]["filename"].endswith(".md")
+
+
+_V1_MIN = """
+CREATE TABLE projects (
+    project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    phase TEXT NOT NULL, phase_history TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE proposals (
+    id TEXT NOT NULL, project_id TEXT NOT NULL, kind TEXT NOT NULL, version TEXT NOT NULL,
+    filename TEXT NOT NULL, content TEXT NOT NULL, saved_at TEXT NOT NULL, seq INTEGER NOT NULL,
+    PRIMARY KEY (project_id, id));
+PRAGMA user_version=1;
+"""
+
+
+def test_schema_version_is_two(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    with sqlite3.connect(repo.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert "dep_hash" in {r[1] for r in conn.execute("PRAGMA table_info(proposals)")}
+        assert "proposal_confirmed" in {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "confirmations" in tables
+
+
+def test_v1_db_upgrades_to_v2_in_place(tmp_path):
+    """存量 v1 库：增量补列补表、版本推进、既有行原样保留（绝不 DROP 重建）。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(_V1_MIN)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','field_site_profiles','[]')")
+        conn.execute(
+            "INSERT INTO proposals(id,project_id,kind,version,filename,content,saved_at,seq)"
+            " VALUES('prop_1','p1','proposal','final','a.md','正文','2026-01-02',1)")
+    repo = SqliteRepository(db_path=db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        row = conn.execute(
+            "SELECT p.proposal_confirmed, q.dep_hash FROM projects p"
+            " JOIN proposals q ON q.project_id = p.project_id"
+            " WHERE p.project_id='p1'").fetchone()
+    assert row[0] == 0 and row[1] == ""      # 默认值补齐，不改语义
+    assert repo.get_phase("p1") == "field_site_profiles"
+    assert repo.list_proposals("p1")[0]["content"] == "正文"
+
+
+def test_half_migrated_v1_db_reopens(tmp_path):
+    """半迁移库恢复（终审 T2-M1）：两列已加、user_version 仍=1（迁移中途被杀的
+    等价终态）——打开必须成功并补齐版本，而非 duplicate column 锁死。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(_V1_MIN)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','field_site_profiles','[]')")
+        conn.execute("ALTER TABLE projects ADD COLUMN proposal_confirmed"
+                     " INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''")
+    repo = SqliteRepository(db_path=db)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert repo.get_phase("p1") == "field_site_profiles"
+
+
+def test_v1_to_v2_migration_atomic_on_failure(tmp_path, monkeypatch):
+    """增量迁移原子性（终审 T2-M1）：事务尾段失败 → 补列与版本推进一并不落盘。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(_V1_MIN)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','field_site_profiles','[]')")
+    from fieldwork_agent.kernel.repository import sqlite_repo as sr
+    poison = ("projects", "no_such_column", "SELECT boom")   # 同型三元组、语句必败
+    monkeypatch.setattr(sr, "_MIGRATE_V1_TO_V2_COLUMNS",
+                        sr._MIGRATE_V1_TO_V2_COLUMNS + (poison,))
+    with pytest.raises(sqlite3.OperationalError):
+        SqliteRepository(db_path=db)
+    with sqlite3.connect(db) as conn:
+        assert "dep_hash" not in {r[1] for r in conn.execute("PRAGMA table_info(proposals)")}
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    monkeypatch.undo()
+    assert SqliteRepository(db_path=db).get_phase("p1") == "field_site_profiles"
+
+
+def test_future_schema_version_rejected(tmp_path):
+    """高版本库不得被低版本代码降级打开（R02 版本纪律）。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE t(x)")
+        conn.execute("PRAGMA user_version=99")
+    with pytest.raises(RuntimeError, match="schema 版本"):
+        SqliteRepository(db_path=db)
+
+
+def test_save_proposal_records_dep_hash(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.update_research_context("p1", {"topic": "宗族"})
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    expected = compute_confirm_hash(
+        repo.get_research_context("p1"), repo.list_field_sites("p1"),
+        repo.list_informants("p1"), repo.list_knowledge("p1"), "")
+    with sqlite3.connect(repo.db_path) as conn:
+        stored = conn.execute(
+            "SELECT dep_hash FROM proposals WHERE id=?", (rid,)).fetchone()[0]
+    assert stored == expected and len(stored) == 40
+    assert repo.get_state("p1")["proposals"][0]["dep_hash"] == stored
+    assert repo.list_proposals("p1")[0]["dep_hash"] == stored
+
+
+def test_get_state_omits_empty_dep_hash(tmp_path):
+    """legacy 迁移行（dep_hash 空串）：state 侧省略该键，list_proposals 恒补空键。
+
+    json 侧两种读出形状不同：``get_state`` 回原始登记记录（R09 前的记录本就无
+    ``dep_hash`` 键），而 ``list_proposals`` 经 ``_proposal_doc`` 恒
+    ``setdefault("dep_hash", "")``（迁移 ``_verify`` 首条哈希比对依赖七键平价）。
+    """
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo._import_proposal("p1", {"id": "legacy_proposal_draft", "kind": "proposal",
+                                 "version": "draft", "filename": "l.md",
+                                 "content": "旧", "saved_at": "2026-01-01"})
+    assert "dep_hash" not in repo.get_state("p1")["proposals"][0]
+    assert repo.list_proposals("p1")[0]["dep_hash"] == ""
+
+
+def test_get_state_confirmation_defaults(tmp_path):
+    """空项目也要吐出确认两面（json `_load` 经 `_default_state` 补齐的等价物）。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    st = repo.get_state("p1")
+    assert st["confirmations"] == []
+    assert st["proposal_confirmed"] is False
+
+
+def test_latest_itinerary_cid_takes_last_saved(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.cache_search("p1", "q1", "search_hotel", {"a": 1})
+    repo.cache_search("p1", "q2", "compose_itinerary", {"b": 2})
+    repo.cache_search("p1", "q3", "search_pois", {"c": 3})
+    last = repo.cache_search("p1", "q4", "compose_itinerary", {"d": 4})
+    assert repo._latest_itinerary_cid("p1") == last
+    assert repo._current_confirm_hash("p1") == compute_confirm_hash(
+        {}, repo.list_field_sites("p1"), repo.list_informants("p1"),
+        repo.list_knowledge("p1"), last)
+
+
+# ------------------------------------------------------------------ R01：缓存读取收窄到项目域
+
+def test_get_cached_search_scoped_to_project(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.create("p2")
+    cid = repo.cache_search("p2", "秘密查询", "search_hotel", {"items": [1]})
+    assert repo.get_cached_search("p2", cid)["query"] == "秘密查询"
+    assert repo.get_cached_search("p1", cid) is None      # 跳项目 id 不可见
+
+
+def test_get_cached_search_bad_cid_returns_none(tmp_path):
+    """cid 先过白名单（guard.CACHE_ID_RE），不做任何文件系统/SQL 拼接。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    for bad in ("../escape", "", "a" * 65, "with space", "a\\b", None):
+        assert repo.get_cached_search("p1", bad) is None
+
+
+def test_root_is_db_file_parent(tmp_path):
+    """宿主探针（web_host/app.py 的 /ready 可写探测、guard 的 containment）
+    经 getattr(repo, "root", None) 取根；sqlite 侧给库文件父目录。"""
+    repo = make_sqlite_repo(tmp_path)
+    assert repo.root == tmp_path
+
+
+# ------------------------------------------------------------------ R09：确认与失效
+
+def test_confirm_field_site(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    sid = repo.save_field_site("p1", {"name": "喜洲", "confirmed": False})
+    saved_at = repo.list_field_sites("p1")[0]["saved_at"]
+    assert repo.confirm_field_site("p1", sid) is True
+    site = repo.list_field_sites("p1")[0]
+    assert site["confirmed"] is True
+    assert site["saved_at"] == saved_at            # 对齐 json：确认不改条目 saved_at
+    assert repo.confirm_field_site("p1", "nope") is False
+
+
+def test_confirm_proposal_four_rejections(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", "nope")
+    assert exc.value.code == "not_found"
+    gid = repo.save_proposal("p1", "# 提纲", kind="interview_guide", version="final")
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", gid)
+    assert exc.value.code == "wrong_kind"
+    repo._import_proposal("p1", {"id": "legacy_draft", "kind": "proposal",
+                                 "version": "draft", "filename": "l.md",
+                                 "content": "旧", "saved_at": "2026-01-01"})
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", "legacy_draft")
+    assert exc.value.code == "dep_hash_missing"
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    repo.update_research_context("p1", {"budget": "5万"})
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", rid)
+    assert exc.value.code == "dep_hash_mismatch"
+
+
+def test_confirm_proposal_success_writes_confirmation(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.update_research_context("p1", {"topic": "宗族"})
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    rec = repo.confirm_proposal("p1", rid)
+    assert rec["kind"] == "proposal" and rec["subject"] == rid
+    assert rec["inputs_hash"] == "" and len(rec["dep_hash"]) == 40
+    st = repo.get_state("p1")
+    assert st["proposal_confirmed"] is True
+    assert st["confirmations"] == [rec]          # 键集 == model_dump(mode="json")
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_confirm_proposal_defaults_to_latest_registered(tmp_path):
+    """doc_id 缺省取“最新一份 proposal”（P2-1），跳过 interview_guide 等其他 kind。
+
+    旧版取登记表尾条，后存访谈指南会让空参确认误报 wrong_kind（与 json 分歧）；
+    显式传入 guide 的 id 才应报 wrong_kind。
+    """
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    assert repo.confirm_proposal("p1")["subject"] == rid
+    gid = repo.save_proposal("p1", "# 提纲", kind="interview_guide", version="final")
+    assert repo.confirm_proposal("p1")["subject"] == rid   # 仍锁定 proposal，不回落 guide
+    with pytest.raises(ProposalConfirmError) as exc:
+        repo.confirm_proposal("p1", gid)
+    assert exc.value.code == "wrong_kind"
+
+
+def test_confirmation_stale_after_new_proposal(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    repo.confirm_proposal("p1", rid)
+    assert repo.is_proposal_confirmation_stale("p1") is False
+    repo.save_proposal("p1", "# 方案 v2", version="final")
+    assert repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_legacy_confirmation_without_dep_hash_is_stale(tmp_path):
+    """无指纹的旧确认记录：无法判定依赖，保守视失效。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo._import_confirmation("p1", {"kind": "proposal", "subject": "prop_x",
+                                     "confirmed_at": "2026-01-01",
+                                     "inputs_hash": "h" * 40})
+    assert repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_no_confirmation_is_not_stale(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    repo.save_proposal("p1", "# 方案", version="final")
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_get_proposal_by_id(tmp_path):
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    rid = repo.save_proposal("p1", "# 方案", version="final")
+    assert repo.get_proposal_by_id("p1", rid)["content"] == "# 方案"
+    assert repo.get_proposal_by_id("p1", "nope") is None
+    repo._import_proposal("p1", {"id": "legacy_proposal_draft", "kind": "proposal",
+                                 "version": "draft", "filename": "l.md",
+                                 "content": "旧", "saved_at": "2026-01-01"})
+    assert repo.get_proposal_by_id("p1", "legacy_proposal_draft")["content"] == "旧"
+
+
+# ------------------------------------------------------------------ R04：并发写不丢更新
+
+def _run_concurrently(n_threads, worker):
+    barrier = threading.Barrier(n_threads)
+
+    def gate(tid):
+        barrier.wait()
+        worker(tid)
+
+    threads = [threading.Thread(target=gate, args=(t,)) for t in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def test_concurrent_context_updates_no_lost_write(tmp_path):
+    """读-改-写（SELECT data → merge → REPLACE）必须串行，否则浅合并丢键。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    n_threads, n_writes = 4, 15
+
+    def worker(tid):
+        for i in range(n_writes):
+            repo.update_research_context("p1", {f"t{tid}_k{i}": f"v{i}"})
+
+    _run_concurrently(n_threads, worker)
+    ctx = repo.get_research_context("p1")
+    assert len(ctx) == n_threads * n_writes, f"丢写：{len(ctx)} != {n_threads * n_writes}"
+
+
+def test_concurrent_proposal_seq_unique(tmp_path):
+    """`_next_seq`（MAX(seq)+1）并发下不得撞 seq（撞号 = 保存序错乱）。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    n_threads, n_writes = 4, 10
+
+    def worker(tid):
+        for i in range(n_writes):
+            repo.save_proposal("p1", f"# 方案 {tid}-{i}", version="final")
+
+    _run_concurrently(n_threads, worker)
+    with sqlite3.connect(repo.db_path) as conn:
+        seqs = [r[0] for r in conn.execute(
+            "SELECT seq FROM proposals WHERE project_id='p1'")]
+    assert len(seqs) == n_threads * n_writes
+    assert len(set(seqs)) == n_threads * n_writes, f"seq 重复：{sorted(seqs)}"
+
+
+def test_concurrent_field_site_seq_unique(tmp_path):
+    """`_upsert_json_record` 的 insert 分支同走 `_next_seq`，新记录 seq 必须无重复。"""
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p1")
+    n_threads, n_writes = 4, 10
+
+    def worker(tid):
+        for i in range(n_writes):
+            repo.save_field_site("p1", {"name": f"{tid}-{i}"})
+
+    _run_concurrently(n_threads, worker)
+    with sqlite3.connect(repo.db_path) as conn:
+        seqs = [r[0] for r in conn.execute(
+            "SELECT seq FROM field_sites WHERE project_id='p1'")]
+    assert len(seqs) == n_threads * n_writes
+    assert len(set(seqs)) == n_threads * n_writes
+    assert len(repo.list_field_sites("p1")) == n_threads * n_writes
