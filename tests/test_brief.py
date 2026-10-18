@@ -19,7 +19,7 @@ def _state(**over):
 def test_brief_covers_sections_and_bounds():
     brief = build_project_brief(
         _state(cached_searches=[{"id": f"s{i}", "tool": "search_pois",
-                                 "query": f"q" * 80} for i in range(9)]))
+                                 "query": "q" * 80} for i in range(9)]))
     assert "宗族与乡村治理" in brief and "RQ1；RQ2" in brief
     assert "李村（已确认）" in brief
     assert "访谈对象 1 位" in brief

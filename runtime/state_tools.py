@@ -8,7 +8,10 @@ F05：注入 TurnPatchBuffer 时写操作进暂存区（轮末 commit/取消 dis
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from fieldwork_agent.runtime.turn_buffer import TurnPatchBuffer
 
 from fieldwork_agent.kernel.context_patch import (
     context_fields_hint,
@@ -55,7 +58,7 @@ _BRIEF_SCHEMA = {
 
 
 def build_project_state_tools(repo, pid: str, *,
-                              buffer: "TurnPatchBuffer | None" = None):
+                              buffer: TurnPatchBuffer | None = None):
     """构建绑定 pid 的受限状态写工具：返回 (schemas, handlers)。
 
     ``buffer``（F05）注入后写操作进回合级暂存区，轮末由宿主 commit/discard。

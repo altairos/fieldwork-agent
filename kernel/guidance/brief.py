@@ -5,10 +5,8 @@
 """
 from __future__ import annotations
 
-from typing import Any
-
+from fieldwork_agent.kernel.guidance.phases import PHASE_RESEARCH_POSITIONING, REQUIRED_FIELDS
 from fieldwork_agent.kernel.models import ResearchContext
-from fieldwork_agent.kernel.guidance.phases import REQUIRED_FIELDS, PHASE_RESEARCH_POSITIONING
 
 _BRIEF_SKIP_SLOTS = ("extras", "candidate_windows")
 

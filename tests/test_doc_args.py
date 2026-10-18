@@ -1,6 +1,5 @@
 """merge_doc_args：仓储研究上下文 → 文档工具入参合并语义（F01）。"""
 import pytest
-
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.runtime.doc_args import merge_doc_args
 
