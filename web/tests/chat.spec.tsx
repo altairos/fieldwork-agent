@@ -148,6 +148,42 @@ describe("MessageBubble / AssistantStream", () => {
     expect(screen.getByText(/先校准研究问题吗？/)).toBeInTheDocument();
     expect(screen.queryByText(/\[\[options/)).not.toBeInTheDocument();
   });
+  test("loose list 不产生空行：li 容器无 pre-wrap，段落内软换行保留（B2，生产实录 field_20261018_202833）", () => {
+    // react-markdown v10 会把 loose item 块级子元素（p/嵌套列表）之间的换行
+    // 保留为 text 节点；li 容器带 whitespace-pre-wrap 时它们渲染成真实空行。
+    // 修复：容器去 pre-wrap（块间空白按 inter-element whitespace 折叠），
+    // p 自身保留 pre-wrap（段落内软换行仍呈现）。
+    const { container } = render(<MessageBubble role="assistant" content={
+      "先锁定一下：\n\n1. **哪个支系？** 比如：\n   - 白族银器锻制\n   - 苗银\n   \n2. **为什么关注？"} />);
+    const liSpans = container.querySelectorAll("li > span.min-w-0.flex-1");
+    expect(liSpans.length).toBeGreaterThanOrEqual(4); // 2 父项 + 2 子项
+    for (const span of liSpans) {
+      expect(span.className).not.toContain("whitespace-pre-wrap");
+    }
+    // loose 项内的段落仍保留软换行能力
+    for (const p of container.querySelectorAll("li p")) {
+      expect(p.className).toContain("whitespace-pre-wrap");
+    }
+  });
+});
+
+describe("全角引号归一（问题3前端，lib/cjkQuotes）", () => {
+  test("assistant 含中文的半角引号对渲染为全角，西文对保持半角", () => {
+    render(<MessageBubble role="assistant" content={'他说的"银都"作坊集群，源自 "Silver Capital" 的译法'} />);
+    expect(screen.getByText(/他说的“银都”作坊集群/)).toBeInTheDocument();
+    expect(screen.getByText(/"Silver Capital"/)).toBeInTheDocument();
+  });
+  test("代码块内的半角引号不动；user 输入不归一", () => {
+    render(<MessageBubble role="assistant" content={'示例：\n```\nconst s = "银都"\n```'} />);
+    expect(screen.getByText(/const s = "银都"/)).toBeInTheDocument();
+    render(<MessageBubble role="user" content={'我要查"银都"的住宿'} />);
+    expect(screen.getByText(/我要查"银都"的住宿/)).toBeInTheDocument();
+  });
+  test("流式缓冲同样归一（AssistantStream）", () => {
+    act(() => useConversationStore.setState({ streamBuffer: '这就是"银都"的由来', turnRunning: true }));
+    render(<AssistantStream />);
+    expect(screen.getByText(/这就是“银都”的由来/)).toBeInTheDocument();
+  });
 });
 
 describe("ToolActivityStrip 细节", () => {
