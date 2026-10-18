@@ -156,10 +156,45 @@ describe("useTurn — SSE 阶段（消息已被接受，绝不回滚）", () => 
     await act(async () => { await result.current.send("帮我排行程"); });
 
     expect(useConversationStore.getState().messages).toEqual([{ role: "user", content: "帮我排行程" }]);
+    expect(useConversationStore.getState().turnRunning).toBe(false);   // N14：error 帧统一结束 conversation
     expect(useUiStore.getState().degradedBanner?.code).toBe("internal_error");
     expect(useUiStore.getState().degradedBanner?.message).toBe("上游超时");
     expect(result.current.busy).toBe(false);
     expect(sse.cancel).toHaveBeenCalledTimes(1);      // error 终止后同样释放连接（Fix #2）
+  });
+
+  test("N14：SSE 流在终态前反复截断（重连耗尽）→ onError 复位 conversation（turnRunning=false）", async () => {
+    // 回归点：旧实现非终态 EOF 走 onClose（只改 busy），conversation 永远 turnRunning=true。
+    // 修复后：流层失败（onError）主动 cancelTurn，与 error 帧终态一致。
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const fetchMock = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.endsWith("/messages")) return jsonResp(CREATED, true, 200);
+        // /events：每次都吐同一 seq 的 delta 后 EOF（服务端未按 Last-Event-ID 推进）→ 无新进展，重连耗尽
+        const queue = [encoder.encode('id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"半截"}\n\n')];
+        return { ok: true, status: 200, body: { getReader: () => ({
+          read: vi.fn(async () => queue.length
+            ? { value: queue.shift() as Uint8Array, done: false }
+            : { value: undefined, done: true }),
+          cancel: vi.fn(async () => {}),
+        }) } };
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(() => useTurn("p1"));
+      await act(async () => {
+        void result.current.send("帮我排行程");
+        await vi.advanceTimersByTimeAsync(60_000);   // 越过 5 次退避（2+4+8+8+8s）直至重连耗尽
+      });
+      expect(useConversationStore.getState().turnRunning).toBe(false);   // 不再永久脉冲
+      expect(useConversationStore.getState().streamBuffer).toBe("");     // 残缺丢弃
+      expect(useConversationStore.getState().messages).toEqual([{ role: "user", content: "帮我排行程" }]);
+      expect(useUiStore.getState().degradedBanner?.code).toBe("stream_error");
+      expect(result.current.busy).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("正常回合：delta 拼接 + turn_done 定格，busy 复位且连接释放", async () => {

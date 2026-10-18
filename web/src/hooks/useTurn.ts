@@ -93,7 +93,13 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
             setIncomplete(env.data.incomplete === true);
           }
         },
-        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
+        onError: () => {
+          // N14：SSE 层失败（重连耗尽/流在终态前截断）收不到任何终态帧，conversation 仍停在
+          // turnRunning——此处主动复位（残缺 buffer 丢弃、user 消息保留），与 error 帧终态一致；
+          // onClose 只改 busy，不能代替 conversation 终态。
+          useConversationStore.getState().cancelTurn();
+          useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" });
+        },
         onClose: () => { setBusy(false); },
       });
     } catch (err) {

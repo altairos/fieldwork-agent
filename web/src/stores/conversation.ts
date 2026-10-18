@@ -16,7 +16,7 @@ interface ConversationState {
   hydrate: (msgs: HydrateMessage[]) => void; // 刷新回填：拉 GET /messages 后覆盖式灌入
   beginTurn: () => void;                 // 回合开始：turnRunning=true, 清 buffer
   failTurn: () => void;                  // 回合创建被拒：回滚乐观 UI（见实现处注释）
-  cancelTurn: () => void;                // 用户取消：复位流式态，不动 messages（见实现处注释）
+  cancelTurn: () => void;                // 回合无终态收尾（用户取消 / SSE 流层失败）：复位流式态，不动 messages
   dropLastAssistant: () => void;         // 重新生成：后端已弹出，本地同步丢弃
   reset: () => void;
 }
@@ -42,6 +42,13 @@ export const useConversationStore = create<ConversationState>()((set) => ({
         }
       }
       return { messages: msgs, streamBuffer: "", turnRunning: false, lastUsage: ev.usage, quickReplies };
+    }
+    // N14：error 是回合的失败终态——复位 turnRunning（打字光标停止、发送按钮解禁），
+    // 残缺 streamBuffer 丢弃（对齐后端：出错回合的半截回复不入史；错误详情由 ui.degradedBanner
+    // 承载，刷新 hydrate 也不会带回这段残字，本地留存只会与后端史不一致）。
+    // messages 不动：user 消息已被后端接受（与 failTurn 的「回合被拒弹消息」语义相反）。
+    if (ev.event === "error") {
+      return { turnRunning: false, streamBuffer: "" };
     }
     return {};
   }),
@@ -71,8 +78,8 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     if (msgs.length && msgs[msgs.length - 1].role === "user") msgs.pop();
     return { messages: msgs, turnRunning: false, streamBuffer: "" };
   }),
-  // 用户取消（P2-9）：SSE 断开收不到终态事件，turnRunning/streamBuffer 须主动复位，
-  // 否则打字光标永久脉冲；残缺 streamBuffer 丢弃（对齐后端：取消的残缺回复不入史），
+  // 回合无终态收尾（P2-9 用户取消 / N14 SSE 流层失败）：收不到终态事件，turnRunning/streamBuffer
+  // 须主动复位，否则打字光标永久脉冲；残缺 streamBuffer 丢弃（对齐后端：未完成的残缺回复不入史），
   // messages 不动——user 消息已被后端接受，与 failTurn（回合被拒弹消息）语义相反。
   cancelTurn: () => set({ turnRunning: false, streamBuffer: "" }),
   // 重新生成前调用：后端已把末条 assistant 弹出并重放 user 消息，本地只丢这一条；
