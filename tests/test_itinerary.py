@@ -319,3 +319,32 @@ def test_budget_source_ref_binds_selected_quote():
         "G29（@live:search_trains:大理>昆明|2026-11-06）"
     assert by_name["住宿（大理）"].source_ref == \
         "民宿（@live:search_hotels:大理|2026-11-01|2026-11-06|民宿,客栈）"
+
+
+def test_candidates_passthrough_jump_and_pic_urls():
+    """A3：jump_url/pic_url 随候选 dict 透传到 chosen 与 alternatives；无链接源透 None 不炸。"""
+    class LinkedStub(StubClient):
+        def search_hotels(self, dest_name, **kw):
+            if "民宿" in kw.get("hotel_types", ""):
+                return Envelope(ok=True, data=ItemPage(items=[
+                    SearchItem(name="洱海边民宿", price=150.0,
+                               jump_url="https://hotel.example/minsu",
+                               pic_url="https://pic.example/minsu.jpg"),
+                ], total=1))
+            return Envelope(ok=True, data=ItemPage(items=[
+                SearchItem(name="古镇酒店", price=180.0,
+                           jump_url="https://hotel.example/hotel"),
+            ], total=1))
+
+    plan = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                             client=LinkedStub()).data
+    stay = plan.stays[0]
+    assert stay["chosen"]["name"] == "洱海边民宿"                  # 民宿 150 最低价当选
+    assert stay["chosen"]["jump_url"] == "https://hotel.example/minsu"
+    assert stay["chosen"]["pic_url"] == "https://pic.example/minsu.jpg"
+    alt = [c for c in stay["alternatives"] if c["name"] == "古镇酒店"][0]
+    assert alt["jump_url"] == "https://hotel.example/hotel"
+    assert alt["pic_url"] is None                                  # 缺 pic_url 透 None
+    leg = plan.legs[0]
+    assert leg["chosen"]["name"] == "G29"                          # 火车 350 < 机票 600
+    assert leg["chosen"]["jump_url"] is None                       # 交通源无链接（调研双证）→ 透 None

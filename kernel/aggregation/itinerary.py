@@ -164,9 +164,11 @@ def _page_items(env: Envelope | None) -> list[SearchItem]:
 
 def _candidates(items: list[SearchItem], mode: str, guesthouse: bool = False) -> list[dict]:
     """条目转候选 dict：保留名称/价格/方式标签，并透传 ``price_raw`` 与 ``extra``
-    （R2：原始报价与时长/换乘等来源信息不得在候选阶段丢失）。"""
+    （R2：原始报价与时长/换乘等来源信息不得在候选阶段丢失）；同时透传
+    ``jump_url``/``pic_url``（A3：预订链接与图片随 chosen/alternatives 进交付物）。"""
     return [{"name": i.name, "price": i.price, "mode": mode, "guesthouse": guesthouse,
-             "price_raw": i.price_raw, "extra": i.extra}
+             "price_raw": i.price_raw, "extra": i.extra,
+             "jump_url": i.jump_url, "pic_url": i.pic_url}
             for i in items]
 
 
