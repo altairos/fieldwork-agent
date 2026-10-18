@@ -44,7 +44,7 @@ describe("ProjectHub（极简首页）", () => {
     vi.mocked(rest.rest.listProjects).mockResolvedValue([] as any);
     renderHome();
     expect(await screen.findByRole("heading", { name: "田野罗盘" })).toBeInTheDocument();
-    expect(screen.getByText("描述你的田野调研想法")).toBeInTheDocument();
+    expect(screen.getByText("面向社科研究者的田野调查方案制订与筹备工具")).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/想研究什么/)).toBeInTheDocument();
     // 三个可点击示例 chips
     expect(screen.getByRole("button", { name: "村落宗族组织研究" })).toBeInTheDocument();

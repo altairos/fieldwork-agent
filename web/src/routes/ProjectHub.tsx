@@ -204,22 +204,16 @@ export function ProjectHub() {
           <div className="text-[11px] tracking-[.2em] text-cinnabar mb-2 num">FIELDWORK COMPASS</div>
           <div className="flex items-center justify-center gap-3">
             <img src="/fieldwork-logo-full.svg" alt="" aria-hidden="true" className="w-9 h-9 sm:w-10 sm:h-10" />
-            <h1 className="font-serif text-[30px] sm:text-[34px] font-semibold leading-tight">田野罗盘</h1>
+            <h1 className="font-serif text-[30px] sm:text-[34px] font-semibold leading-tight -translate-y-0.5">田野罗盘</h1>
           </div>
-          <p className="text-[13px] text-inksoft mt-2">描述你的田野调研想法</p>
+          <p className="text-[13px] text-inksoft mt-2">面向社科研究者的田野调查方案制订与筹备工具</p>
         </div>
 
-        {/* 一句话输入（焦点惯例同 Composer：外壳 hairline → focus-within 朱砂描边；
-            一行字高度；点击外壳空白处聚焦输入框） */}
-        <div
-          className="hairline rounded-lg bg-paper/60 p-2 flex items-end gap-3 focus-within:border-cinnabar/50 transition"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) inputRef.current?.focus();
-          }}
-        >
+        {/* 一句话输入（焦点惯例同 Composer：外壳 hairline → focus-within 朱砂描边） */}
+        <div className="hairline rounded-lg bg-paper/60 p-3.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
           <textarea
             ref={inputRef}
-            rows={1}
+            rows={3}
             value={purpose}
             aria-label="调研想法"
             onChange={(e) => setPurpose(e.target.value)}
