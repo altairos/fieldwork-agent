@@ -69,7 +69,9 @@ from fieldwork_agent.kernel.sources.flyai import (
     search_pois,
     search_trains,
 )
+from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import run_tool_loop
+from fieldwork_agent.runtime.state_tools import build_project_state_tools
 
 from .config import Config
 
@@ -246,8 +248,11 @@ class FieldAgent:
             messages += [{"role": m["role"], "content": m["content"]}
                          for m in history if m.get("role") in ("user", "assistant")]
             messages.append({"role": "user", "content": message})
-            tools = self._build_tools() if use_tools else []
-            loop = run_tool_loop(self.llm, messages, self.client_kernel_dispatch,
+            state_schemas, state_handlers = build_project_state_tools(
+                self.repo, pid)
+            tools = (self._build_tools() + state_schemas) if use_tools else []
+            loop = run_tool_loop(self.llm, messages,
+                                 self._wrap_state_dispatch(state_handlers),
                                  tools, slot="interview")
             reply = loop.reply
             tool_events = loop.tool_events
@@ -272,6 +277,28 @@ class FieldAgent:
     def _build_tools(self) -> list[dict]:
         """工具 schema 单一来源：registry 全部能力（含 8 搜索原语）经 build_tool_schemas 生成。"""
         return build_tool_schemas()
+
+    def _wrap_state_dispatch(self, state_handlers) -> Callable[[str, dict], Envelope]:
+        """状态工具经 handlers 分派（同步 Envelope，不进 RecordingClient 链）；
+        其余能力走 client_kernel_dispatch + F01 入参合并。"""
+        base = self.client_kernel_dispatch
+
+        def dispatch(name: str, args: dict) -> Envelope:
+            handler = state_handlers.get(name)
+            if handler is None:
+                merged = merge_doc_args(self.repo, self.project_id, name, args)
+                return base(name, merged)
+            try:
+                return handler(**args)
+            except TypeError as exc:
+                return Envelope(ok=False, error=ToolError(
+                    code="invalid_arguments", message=str(exc),
+                    hint="参数形状不符，见工具 schema"))
+            except Exception as exc:
+                return Envelope(ok=False, error=ToolError(
+                    code="internal_error", message=str(exc), hint=""))
+
+        return dispatch
 
     def _snapshot(self, pid: str) -> str:
         """repo 快照摘要：已采集上下文 + 各渠道计数，帮 LLM 掌握现状不重复问。"""
