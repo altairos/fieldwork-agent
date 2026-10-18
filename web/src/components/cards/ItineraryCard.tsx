@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Fragment } from "react";
 import { Chip } from "../ui/Chip";
 import { Price } from "../ui/Price";
 import { IconBed, IconCaret, IconCompass, IconPlane, IconTrain } from "../ui/icons";
@@ -27,6 +28,12 @@ import type { ToolCardProps } from "./types";
  * 未选候选来自实时搜索 → source="search"）；`nightly_price`/`chosen.price` 缺失 → "暂无报价"，
  * 绝不 ¥0；`long_stay_unverified` 如实挂 ochre「长住日价待核验」chip（itinerary.py L284-287）。
  * 红线：`coverage !== complete` 时头部只挂「预算不完整」，**不给**"预算内/超支"结论。
+ *
+ * N2 末端接驳（PoC2 §3.3）：每腿 Row 后接「末端接驳」行——有 options 显示
+ * "公交 × N 段 · 约 y 分钟"+ 最低价（`ItemPage.cheapest`，时长取首条
+ * `schedule.duration_minutes`）；无 options 如实转述内核 note 原文（灰字
+ * sub，与交通腿 ochre note 不同：接驳降级多为环境缺席非行动警示）；
+ * 无 `last_mile` 键的老 payload 不渲染该行。
  */
 
 /** 段色循环（设计板 lines 475/479/483）。 */
@@ -228,21 +235,60 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                       (acc, p, i) => (i === 0 ? p : <>{acc} · {p}</>),
                       "",
                     );
+                  // N2 末端接驳：options 非空 → 摘要 + 最低价；否则 note 原文（灰字）；
+                  // 无 last_mile 键（老 payload）两分支均空，自然不渲染。
+                  const lm = asRecord(leg.last_mile);
+                  const hasLmOptions = lm.options != null;
+                  const lmOptions = asRecord(lm.options);
+                  const lmNote = strOf(lm.note);
+                  let lastMileRow: ReactNode = null;
+                  if (hasLmOptions) {
+                    const lmItems = asArray(lmOptions.items);
+                    const lmTotal = numOf(lmOptions.total) ?? lmItems.length;
+                    const lmDuration = numOf(
+                      asRecord(asRecord(lmItems[0]).schedule).duration_minutes,
+                    );
+                    const lmSub = [
+                      `公交 × ${lmTotal} 段`,
+                      lmDuration !== null ? `约 ${lmDuration} 分钟` : "",
+                    ]
+                      .filter((s) => s !== "")
+                      .join(" · ");
+                    lastMileRow = (
+                      <Row
+                        icon={<IconCompass className="w-4 h-4" />}
+                        main="末端接驳"
+                        sub={lmSub}
+                        price={<Price value={numOf(lmOptions.cheapest)} source="cheapest" />}
+                      />
+                    );
+                  } else if (lmNote) {
+                    lastMileRow = (
+                      <Row
+                        icon={<IconCompass className="w-4 h-4" />}
+                        main="末端接驳"
+                        sub={lmNote}
+                        price={<Price value={null} />}
+                      />
+                    );
+                  }
                   return (
-                    <Row
-                      key={`leg-${i}`}
-                      icon={modeIcon(strOf(chosen.mode))}
-                      main={`${strOf(leg.from)} → ${strOf(leg.to)}`}
-                      sub={sub}
-                      note={strOf(leg.note) || undefined}
-                      price={
-                        <Price
-                          value={hasChosen ? numOf(chosen.price) : null}
-                          source={hasChosen ? "cheapest" : undefined}
-                          raw={hasChosen ? strOf(chosen.price_raw) || undefined : undefined}
-                        />
-                      }
-                    />
+                    <Fragment key={`leg-${i}`}>
+                      <Row
+                        icon={modeIcon(strOf(chosen.mode))}
+                        main={`${strOf(leg.from)} → ${strOf(leg.to)}`}
+                        sub={sub}
+                        note={strOf(leg.note) || undefined}
+                        price={
+                          <Price
+                            value={hasChosen ? numOf(chosen.price) : null}
+                            source={hasChosen ? "cheapest" : undefined}
+                            raw={hasChosen ? strOf(chosen.price_raw) || undefined : undefined}
+                          />
+                        }
+                      />
+                      {lastMileRow}
+                    </Fragment>
                   );
                 })}
               </ul>

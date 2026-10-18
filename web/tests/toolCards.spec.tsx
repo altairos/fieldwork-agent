@@ -183,6 +183,46 @@ describe("ItineraryCard 时间线与预算", () => {
     expect(screen.queryByText(/下单前请以飞猪页面为准/)).not.toBeInTheDocument();
     expect(screen.getByText("2026-10-15")).toBeInTheDocument();   // generated_at 截 yyyy-mm-dd
   });
+  // N2 末端接驳（PoC2 §3.3）：有 options 显示"公交 × N 段 / 最低价 ¥x / 约 y 分钟"，
+  // 无 options 显示内核 note 原文；无 last_mile 键的老数据不渲染接驳行。
+  const PLAN_LAST_MILE = {
+    ...PLAN,
+    legs: [{
+      ...PLAN.legs[0],
+      last_mile: {
+        hub_geo: { location: "100.1,25.6", city: "昆明" },
+        site_geo: { location: "100.5,25.9", city: "喜洲" },
+        options: {
+          items: [{ name: "8路", price: 8, schedule: { duration_minutes: 60 } }],
+          total: 2, cheapest: 8, dearest: 12,
+        },
+        note: "",
+      },
+    }],
+  };
+  test("N2 接驳行：有 options 显示 公交×N段/¥x/约y分钟（ItemPage.cheapest）", () => {
+    render(<ItineraryCard data={PLAN_LAST_MILE} />);
+    expect(screen.getByText("末端接驳")).toBeInTheDocument();
+    expect(screen.getByText(/公交 × 2 段/)).toBeInTheDocument();
+    expect(screen.getByText(/约 60 分钟/)).toBeInTheDocument();
+    expect(screen.getByText("¥8")).toBeInTheDocument();
+  });
+  test("N2 接驳行：无 options 如实转述内核 note 原文（灰字，不 ¥0）", () => {
+    render(<ItineraryCard data={{
+      ...PLAN,
+      legs: [{
+        ...PLAN.legs[0],
+        last_mile: { hub_geo: null, site_geo: null, options: null,
+                     note: "未配置高德 API Key，接驳查询已停用" },
+      }],
+    }} />);
+    expect(screen.getByText(/未配置高德 API Key，接驳查询已停用/)).toBeInTheDocument();
+    expect(screen.queryByText(/公交 × /)).not.toBeInTheDocument();
+  });
+  test("N2 接驳行：无 last_mile 键的老数据不渲染接驳行", () => {
+    render(<ItineraryCard data={PLAN} />);
+    expect(screen.queryByText("末端接驳")).not.toBeInTheDocument();
+  });
 });
 
 describe("其余卡片", () => {

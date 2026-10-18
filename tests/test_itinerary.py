@@ -8,7 +8,13 @@ from fieldwork_agent.kernel.aggregation.itinerary import (
     live_hotel_ref,
     live_train_ref,
 )
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
+from fieldwork_agent.kernel.models import (
+    Envelope,
+    GeoLocation,
+    ItemPage,
+    SearchItem,
+    ToolError,
+)
 
 
 def _ok(pairs):
@@ -266,6 +272,7 @@ def test_registered_in_build_tool_schemas():
     assert {"departure", "destinations", "start_date", "duration_days", "budget_total"} \
         <= set(props)
     assert "client" not in props  # 注入参数不进 schema
+    assert "amap_client" not in props  # N2 接驳注入参数同样不进 schema
     assert props["researcher_count"]["default"] == 1
 
 
@@ -348,3 +355,118 @@ def test_candidates_passthrough_jump_and_pic_urls():
     leg = plan.legs[0]
     assert leg["chosen"]["name"] == "G29"                          # 火车 350 < 机票 600
     assert leg["chosen"]["jump_url"] is None                       # 交通源无链接（调研双证）→ 透 None
+
+
+# ────────────────────────────────────────────────────────────────
+# N2 接驳腿（PoC2 §3.2）：amap_client 注入 + 无 Key 短路 + 预算联动
+# ────────────────────────────────────────────────────────────────
+
+
+class StubAmap:
+    """N2 接驳替身：geocode/direction_transit 记录调用，可注入三态
+    （成功 / 无 Key 短路 / 未收录 / 抛异常）。"""
+
+    def __init__(self, no_key=False, fail_geocode=False, raise_geocode=False,
+                 transit_cheapest=8.0):
+        self.no_key = no_key
+        self.fail_geocode = fail_geocode
+        self.raise_geocode = raise_geocode
+        self.transit_cheapest = transit_cheapest
+        self.geocode_calls: list[str] = []
+        self.transit_calls: list[dict] = []
+
+    def geocode(self, address, city=""):
+        self.geocode_calls.append(address)
+        if self.no_key:
+            return Envelope(ok=False, error=ToolError(
+                code="amap_invalid_key", message="未配置高德 API Key", hint=""))
+        if self.raise_geocode:
+            raise RuntimeError("amap subprocess boom")
+        if self.fail_geocode:
+            return Envelope(ok=False, error=ToolError(
+                code="amap_no_result", message="高德未收录该地点", hint=""))
+        return Envelope(ok=True, data=GeoLocation(
+            location=f"100.{len(address)},25.6", city=address))
+
+    def direction_transit(self, origin, destination, city="", cityd="", date=""):
+        self.transit_calls.append({"origin": origin, "destination": destination,
+                                   "city": city, "cityd": cityd, "date": date})
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name="8路", price=self.transit_cheapest)],
+            total=2, cheapest=self.transit_cheapest, dearest=self.transit_cheapest))
+
+
+def test_last_mile_options_enter_leg_and_budget():
+    """有 Key 有方案：last_mile 进腿、transit 跨城参数正确、预算联动 cheapest×人数。"""
+    amap = StubAmap()
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000, 3,
+                            client=StubClient(), amap_client=amap)
+    assert env.ok is True
+    lm = env.data.legs[0]["last_mile"]
+    assert lm["hub_geo"] is not None and lm["site_geo"] is not None
+    assert lm["options"] is not None and lm["options"].cheapest == 8.0
+    t = amap.transit_calls[0]  # v3 跨城语义平移：city=出发市、cityd=到达市
+    assert t["origin"] == lm["hub_geo"].location
+    assert t["destination"] == lm["site_geo"].location
+    assert t["city"] == "昆明" and t["cityd"] == "大理"
+    by_name = {i.name: i for i in env.data.budget.items}
+    ji = by_name["接驳（昆明→大理）"]  # 预算联动：cheapest×人数，口径标注高德来源
+    assert ji.amount == 8.0 * 3 and ji.source == "cheapest" and ji.people == 3
+    assert "高德" in ji.unit and ji.priced_at
+
+
+def test_last_mile_no_key_short_circuits_all_legs():
+    """无 Key：首次 amap_invalid_key 后全程短路；接驳缺席不进 uncovered（不影响主链路）。"""
+    amap = StubAmap(no_key=True)
+    env = compose_itinerary("昆明", ["大理", "丽江"], "2026-11-01", 10, 20000,
+                            client=StubClient(), amap_client=amap)
+    assert env.ok is True
+    assert len(amap.geocode_calls) == 1 and amap.transit_calls == []  # 三腿只首调一次
+    for leg in env.data.legs:
+        lm = leg["last_mile"]
+        assert lm["hub_geo"] is None and lm["site_geo"] is None and lm["options"] is None
+        assert "Key" in lm["note"]
+    assert all("接驳" not in u for u in env.data.budget.uncovered)
+    assert env.data.budget.coverage == "complete"  # 核心口径不因增强缺席降级
+
+
+def test_last_mile_failure_enters_uncovered_not_error():
+    """有 Key 但地名未收录：note 落腿、接驳进 uncovered、coverage=partial、ok=True。"""
+    amap = StubAmap(fail_geocode=True)
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                            client=StubClient(), amap_client=amap)
+    assert env.ok is True
+    lm = env.data.legs[0]["last_mile"]
+    assert lm["hub_geo"] is None and lm["options"] is None and lm["note"]
+    assert any("接驳" in u for u in env.data.budget.uncovered)  # 查过无价与单腿交通同口径
+    assert env.data.budget.coverage == "partial"
+    assert all(not i.name.startswith("接驳") for i in env.data.budget.items)
+
+
+def test_last_mile_exception_never_escapes():
+    """amap 抛异常折 note 不逃逸（对照 source_exception 隔离惯例），主链路照常。"""
+    amap = StubAmap(raise_geocode=True)
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                            client=StubClient(), amap_client=amap)
+    assert env.ok is True
+    assert env.data.legs[0]["last_mile"]["note"]
+    assert env.data.stays[0]["nights"] == 5  # 住宿主链路不受影响
+
+
+def test_last_mile_geocode_memo_reuses_places():
+    """地名级 memo：同地名跨腿复用正算结果——三地名三腿只打 3 次 geocode（非 6 次）。"""
+    amap = StubAmap()
+    compose_itinerary("昆明", ["大理", "丽江"], "2026-11-01", 10, 20000,
+                      client=StubClient(), amap_client=amap)
+    assert sorted(amap.geocode_calls) == sorted(["昆明", "大理", "丽江"])
+    assert len(amap.geocode_calls) == 3  # 每地名恰一次（去重后）
+    assert len(amap.transit_calls) == 3  # 每腿一次 transit 不受 memo 影响
+
+
+def test_inputs_hash_independent_of_last_mile():
+    """接驳是增强非方案输入：inputs_hash 只由六键决定，与 amap 可用性无关。"""
+    a = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                          client=StubClient(), amap_client=StubAmap()).data
+    b = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                          client=StubClient(), amap_client=StubAmap(no_key=True)).data
+    assert a.inputs_hash == b.inputs_hash
