@@ -518,14 +518,15 @@ def test_create_invalid_owner_raises_valueerror(json_repo):
 
 def test_list_projects_owner_three_states(tmp_path):
     """三态清单从空仓库起算：json_repo 夹具预建无主 p1，会混进全量与 None 两路。"""
-    repo = JsonRepository(projects_dir=tmp_path / "projects")
-    repo.create("p_mine", owner="anon:me")
-    repo.create("p_other", owner="anon:other")
-    repo.create("p_free")
-    assert [p["project_id"] for p in repo.list_projects()] == [
+    # 局部仓库实例改名 plain_repo：避免遮蔽 L16 为契约收集而导入的 repo fixture（F811）
+    plain_repo = JsonRepository(projects_dir=tmp_path / "projects")
+    plain_repo.create("p_mine", owner="anon:me")
+    plain_repo.create("p_other", owner="anon:other")
+    plain_repo.create("p_free")
+    assert [p["project_id"] for p in plain_repo.list_projects()] == [
         "p_free", "p_mine", "p_other"]   # 缺省全量，排序不变
-    assert [p["project_id"] for p in repo.list_projects(owner="anon:me")] == ["p_mine"]
-    assert [p["project_id"] for p in repo.list_projects(owner=None)] == ["p_free"]
+    assert [p["project_id"] for p in plain_repo.list_projects(owner="anon:me")] == ["p_mine"]
+    assert [p["project_id"] for p in plain_repo.list_projects(owner=None)] == ["p_free"]
 
 
 def test_set_owner_claims_and_releases(json_repo):
