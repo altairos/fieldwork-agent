@@ -195,6 +195,27 @@ def test_orchestrator_chat_persists_context_and_no_premature_advance(fake_config
     assert out["tool_events"] == []
 
 
+def test_orchestrator_advance_finished_requires_confirmed_proposal(fake_config):
+    """P2-6：CLI 轮末推进 D→finished 须传 proposal_confirmed，与 web 宿主对齐。
+
+    仅有草稿未确认 → 不推进；确认后（proposal_confirmed 且非 stale）才推进。
+    """
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    agent.create_project("p_conf")
+    repo = agent.repo
+    repo.set_phase("p_conf", "proposal_generation")
+
+    # 仅有草稿、未确认 → 不推进（missing proposal_confirmation）
+    repo.save_proposal("p_conf", "# 方案", kind="proposal", version="final")
+    assert agent._advance("p_conf") is None
+
+    # 确认后（dep_hash 一致非 stale）→ 推进 finished
+    repo.confirm_proposal("p_conf")
+    assert agent._advance("p_conf") == {"from": "proposal_generation", "to": "finished"}
+
+
 def test_orchestrator_dispatch_unknown_and_invalid(fake_config):
     """dispatch 统一兜底：未知工具→unknown_tool；参数校验失败→invalid_arguments。"""
     from fieldwork_agent.core.orchestrator import FieldAgent

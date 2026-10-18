@@ -316,10 +316,15 @@ class FieldAgent:
         ctx = ResearchContext.model_validate(state.get("research_context") or {})
         sites = [FieldSiteRecord.model_validate(s) for s in state.get("field_sites") or []]
         informants = [InformantRecord.model_validate(i) for i in state.get("informants") or []]
+        # P2-6：D→finished 须显式传确认态（草稿存在≠用户认可），与 web 宿主对齐；
+        # stale 确认（依赖已变/有新草稿）不算已确认
+        confirmed = (bool(state.get("proposal_confirmed"))
+                     and not self.repo.is_proposal_confirmation_stale(pid))
         result = phases.check_advance(
             state["phase"], ctx, sites, informants,
             has_itinerary=self._has_itinerary(state, pid),
             has_proposal=self.repo.get_latest_proposal(pid) is not None,
+            proposal_confirmed=confirmed,
         )
         if result.can_advance and result.to_phase:
             self.repo.set_phase(pid, result.to_phase)
