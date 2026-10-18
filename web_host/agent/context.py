@@ -19,7 +19,9 @@ _TOOL_GUIDANCE = (
 def build_snapshot(repo: ProjectRepository, pid: str) -> str:
     state = repo.get_state(pid)
     ctx = state.get("research_context") or {}
-    filled = [f"{k}={v}" for k, v in ctx.items() if k != "extras" and str(v).strip()]
+    # title 是项目显示名（任务1）非研究槽位，不进「已采集」行
+    filled = [f"{k}={v}" for k, v in ctx.items()
+              if k not in ("extras", "title") and str(v).strip()]
     extras = ctx.get("extras") or {}
     filled += [f"{k}={v}" for k, v in extras.items()]
     n_sites = len(state.get("field_sites") or [])

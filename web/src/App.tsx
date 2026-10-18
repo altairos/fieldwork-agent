@@ -49,7 +49,11 @@ function Workspace() {
   const projectId = id ?? "";
   const navigate = useNavigate();
   const phase = useProjectStore((s) => s.phase);
-  const topic = useProjectStore((s) => s.snapshot?.research_context?.topic);
+  // 项目显示名（任务1）：title（用户改名 / agent 自动命名）优先，未命名回退 topic；
+  // 两者皆空由 Header 调用处兑底「未命名项目」——绝不回退 project_id（字母+数字不面向用户）。
+  const projectName = useProjectStore(
+    (s) => s.snapshot?.research_context?.title || s.snapshot?.research_context?.topic || "",
+  );
   const loadSnapshot = useProjectStore((s) => s.loadSnapshot);
   const leftCollapsed = useUiStore((s) => s.leftCollapsed);
   const rightCollapsed = useUiStore((s) => s.rightCollapsed);
@@ -208,10 +212,22 @@ function Workspace() {
   return (
     <div className="h-full flex flex-col">
       <Header
-        projectName={topic || "未命名项目"}
+        projectName={projectName || "未命名项目"}
         phase={phase}
         view="workspace"
         onMenu={toggleLeft}
+        onRename={(name) => {
+          // 任务1：Header 改名 → PUT title → 重拉快照（Header 经 store 回读新名）
+          void (async () => {
+            try {
+              await rest.updateResearchContext(projectId, { title: name });
+              loadSnapshot(await rest.getProject(projectId));
+            } catch (e) {
+              // 改名失败保持原名（无全局 toast 通道；用户重试即可）
+              console.warn("rename failed:", e);
+            }
+          })();
+        }}
         onNavigate={(v) => {
           if (v === "proposal") navigate(`/p/${id}/proposal`);
         }}

@@ -201,7 +201,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             tm.append_event(pid, turn_id, "message_delta", {"text": fallback})
             accumulated_reply = fallback
 
-    # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 阶段推进
+    # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 自动命名（任务1）+ 阶段推进
     # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
     # P1-4：取消即中止本轮全部状态变更——残缺回复/工具产物/抽取/阶段推进
     # 均不落地，直接走 cancelled 终态（轮末块同步无 await，取消不会中途插入）
@@ -216,6 +216,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                     {"tool_calls": total_calls})
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
             _apply_extractions(repo, pid, user_text)
+            _maybe_autoname(repo, pid, llm)
             transition = check_and_advance(repo, pid)
             if transition:
                 tm.append_event(pid, turn_id, "phase_transition", transition)
@@ -399,6 +400,49 @@ def _apply_extractions(repo, pid, user_text):
     if extras:
         merged["extras"] = extras
     repo.update_research_context(pid, merged)
+
+
+def _maybe_autoname(repo, pid, llm):
+    """任务1：agent 自动命名（best-effort）——用户未手动命名（title 空）时，
+    依最近对话生成 ≤30 字中文项目名；LLM 不可用走 topic/首条消息兑底。
+
+    任一步失败（含 LLM 返回空）静默返回，下回合再试；title 已非空直接返回
+    （用户手动命名后永不覆盖）。写入走 update_research_context 浅合并，
+    仅覆盖 title 键。
+    """
+    try:
+        ctx = repo.get_research_context(pid)
+        if str(ctx.get("title") or "").strip():
+            return
+        history = repo.get_messages(pid, limit=10)
+        convo = [m for m in history if m.get("role") in ("user", "assistant")]
+        if llm is None:
+            # 降级模式兑底：topic 前 30 字，否则首条 user 消息（去换行）前 30 字
+            topic = str(ctx.get("topic") or "").strip()
+            if topic:
+                name = topic[:30]
+            else:
+                first_user = next((str(m.get("content") or "") for m in convo
+                                   if m.get("role") == "user"), "")
+                name = first_user.replace("\n", " ").strip()[:30]
+        else:
+            excerpt = "\n".join(
+                f"{m['role']}: {str(m.get('content') or '')[:200]}" for m in convo)
+            if not excerpt.strip():
+                return
+            resp = llm.chat(
+                [{"role": "system",
+                  "content": "为一项田野调研项目起一个简短中文名（不超过30字，"
+                             "不用引号、书名号或任何前后缀），只输出名字本身。"},
+                 {"role": "user", "content": excerpt}],
+                tools=None, slot="extract")
+            lines = str((resp or {}).get("content") or "").splitlines()
+            name = lines[0].strip().strip('"“”‘’《》').strip()[:30] if lines else ""
+        if not name.strip():
+            return
+        repo.update_research_context(pid, {"title": name})
+    except Exception:
+        return   # best-effort：失败不影响回合流程，下回合再试
 
 
 def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int) -> int:

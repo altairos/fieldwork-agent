@@ -1,55 +1,27 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Chip } from "../ui/Chip";
-import { EmptyState } from "../ui/EmptyState";
-import { IconCompass } from "../ui/icons";
-import { asRecord, strOf } from "../cards/data";
 import { rest, type KnowledgeEntry } from "../../api/rest";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
 
 /**
- * KnowledgePanel — 右栏「知识库」面板（研究定位投影 + 已存条目）。
+ * KnowledgePanel — 右栏「知识库」面板（已存条目）。
  *
  * 设计板同源：右栏知识库面板 lines 661-669
  *   条目卡 line 665 `hairline rounded-lg bg-card p-3` + 主行 `text-[12.5px] font-medium`
- *     + 副行 `text-[11px] text-inkfaint mt-1`（此处主行 = 槽位值，副行 = 槽位名，不臆造资料标题）
  *   （2026-10-18 精简：删去面板标题「研究定位 · 知识库」与「学术纵深」静态卡——
  *     Tab 已标知识库、面板无重复标题的必要；实时口径声明栏上提为 RightDock 常驻 footer，
  *     五个 Tab 一致呈现。）
  *
- * 同源红线②：只读 `snapshot.research_context`（REST 初始快照 = 内核 ResearchContext 槽位），
- * 不改写字段值（原样呈现内核抽取结果）；未填槽位如实计入「已填 N / 总数」，
- * 不猜、不补默认值。
- * 审计三 Fix 1c：槽位投影之外新增「已存条目」区——agent add_knowledge_entry 落盘材料经
+ * （2026-10-18 槽位投影整体删除：槽位卡 / 「已填 N / 11 槽位」计数 / extras chips 移除——
+ *   槽位编辑入口收敛到「基本信息」面板（随时可改），知识库只呈现 agent 存入的材料条目，
+ *   不再重复投影研究定位。）
+ * 审计三 Fix 1c：「已存条目」区——agent add_knowledge_entry 落盘材料经
  * `GET /projects/{id}/knowledge` 独立端点拉取（快照不含 knowledge，避免膨胀）；刷新时机 =
  * 挂载 + snapshot 引用变化 + add_knowledge_entry 工具完成（turn_done 不重拉快照，
  * 以工具完成信号兑底回合内新鲜度）。条目原样呈现，不加工、不裁剪。
  */
-
-/** 槽位 → 中文行标（阶段 A 清单语汇取设计板 lines 622-627；轮 2 方案 B 加深挖槽）。 */
-const SLOTS: { key: string; label: string }[] = [
-  { key: "discipline", label: "学科背景" },
-  { key: "topic", label: "研究主题" },
-  { key: "research_questions", label: "研究问题" },
-  { key: "site_status", label: "田野点确定度" },
-  { key: "scale", label: "调研规模" },
-  { key: "budget", label: "经费" },
-  { key: "time_window", label: "时间窗口" },
-  { key: "departure_city", label: "出发城市" },
-  { key: "target_location", label: "目标地点" },
-  { key: "travel_date", label: "出行日期" },
-  { key: "purpose", label: "输出用途" },
-];
-
-/** purpose 枚举 → 中文（判词依据 kernel/guidance/extract.py L127-136）；未知值原样呈现。 */
-const PURPOSE_LABEL: Record<string, string> = {
-  kaiti: "开题报告",
-  grant: "基金申报",
-  course: "课程作业",
-  global: "海外/留学申请",
-};
 
 /** 条目正文的 Markdown 排版（P1）：面板小字号版，先例 ProposalViewer.COMPONENTS。
  *  单换行 → 硬换行用 content.split("\n").join("  \n") 预处理（无新依赖）。 */
@@ -169,8 +141,6 @@ function KnowledgeItem({
 export function KnowledgePanel() {
   const projectId = useProjectStore((s) => s.projectId);
   const snapshot = useProjectStore((s) => s.snapshot);
-  const ctx = asRecord(snapshot?.research_context);
-  const hasContext = snapshot !== null && Object.keys(ctx).length > 0;
 
   // 回合内新鲜度：add_knowledge_entry 落盘完成（done/failed）的调用序列变化即重拉；
   // running 不算（落盘未完成拉了也白拉）。字符串 stamp 保证 zustand selector 稳定引用。
@@ -204,55 +174,8 @@ export function KnowledgePanel() {
     };
   }, [projectId, snapshot, knowledgeStamp]);
 
-  const slots = SLOTS.map((slot) => {
-    const raw = strOf(ctx[slot.key]);
-    const value = slot.key === "purpose" && raw ? (PURPOSE_LABEL[raw] ?? raw) : raw;
-    return { ...slot, value };
-  });
-  const filledCount = slots.filter((s) => s.value !== "").length;
-  // 野生字段（内核 extras 收口）：只呈现标量，原样文本，不解释、不加工
-  const extras = Object.entries(asRecord(ctx.extras)).filter(
-    ([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
-  );
-
   return (
     <div>
-      {!hasContext || filledCount === 0 ? (
-        <EmptyState
-          icon={<IconCompass className="w-4 h-4" />}
-          title="尚未取得研究定位"
-          hint="阶段 A 的访谈会逐槽位补齐（学科·问题·规模·经费·时间窗）；本面板只做投影，不改写内核字段"
-        />
-      ) : (
-        <>
-          <div className="space-y-2">
-            {slots.map((s) =>
-              s.value === "" ? null : (
-                <div key={s.key} className="hairline rounded-lg bg-card p-3">
-                  <div className="text-[12.5px] font-medium text-ink break-words">{s.value}</div>
-                  <div className="text-[11px] text-inkfaint mt-1">{s.label}</div>
-                </div>
-              ),
-            )}
-          </div>
-          <div className="num text-[11px] text-inkfaint mt-2">
-            {`已填 ${filledCount} / ${SLOTS.length} 槽位`}
-          </div>
-
-          {extras.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-3">
-              {extras.map(([key, value]) => (
-                <Chip key={key} tone="neutral">
-                  {`${key} ${String(value)}`}
-                </Chip>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      <div className="rule my-4" />
-
       {/* 已存条目（审计三 Fix 1c + P1）：默认折叠，展开看 Markdown 正文，可就地编辑 */}
       <div className="mb-4">
         <div className="num text-[11px] text-inkfaint mb-2">

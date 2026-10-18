@@ -742,3 +742,84 @@ def test_r05_finalize_failure_sets_failed(env, monkeypatch):
     assert errs and errs[-1].data["code"] == "internal_error"
     assert "轮末持久化失败" in errs[-1].data["message"]
     assert tm.get_turn("p1", turn.turn_id).status == "failed"
+
+
+# ------------------------------------------- 自动命名（任务1：title 槽位）
+
+
+class AutonameLLM:
+    """非流式 chat 桩（自动命名专用）：记录调用，返回脚本化名字或抛错。"""
+
+    def __init__(self, content="", error=None):
+        self.content, self.error = content, error
+        self.calls = []
+
+    def chat(self, messages, **kw):
+        self.calls.append((list(messages), kw))
+        if self.error:
+            raise self.error
+        return {"content": self.content}
+
+
+def test_autoname_llm_writes_stripped_short_title(env):
+    """任务1：title 空且 llm 返回名 → 首行去引号写入（≤30 字，extract 槽无工具）。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "我想去大理研究宗族变迁")
+    llm = AutonameLLM(content='"大理宗族变迁调研”')
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", llm)
+    title = repo.get_research_context("p1").get("title")
+    assert title == "大理宗族变迁调研"
+    assert len(title) <= 30
+    assert llm.calls and llm.calls[0][1].get("slot") == "extract"
+    assert llm.calls[0][1].get("tools") is None
+
+
+def test_autoname_long_output_truncated_to_30(env):
+    """任务1：LLM 名字超长 → 截断 30 字。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "hi")
+    llm = AutonameLLM(content="超" * 50)
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", llm)
+    assert repo.get_research_context("p1").get("title") == "超" * 30
+
+
+def test_autoname_existing_title_never_overwritten(env):
+    """任务1：用户已手动命名 → agent 永不覆盖（llm 根本不被调用）。"""
+    repo, tm = env
+    repo.update_research_context("p1", {"title": "我的手动名字"})
+    llm = AutonameLLM(content="自动名")
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", llm)
+    assert repo.get_research_context("p1").get("title") == "我的手动名字"
+    assert llm.calls == []
+
+
+def test_autoname_llm_none_falls_back_to_topic(env):
+    """任务1：降级模式（llm=None）→ topic 前 30 字兑底。"""
+    repo, tm = env
+    repo.update_research_context("p1", {"topic": "宗族变迁"})
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", None)
+    assert repo.get_research_context("p1").get("title") == "宗族变迁"
+
+
+def test_autoname_llm_none_falls_back_to_first_user_message(env):
+    """任务1：降级且无 topic → 首条 user 消息去换行后前 30 字。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "第一行\n第二行用户消息")
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", None)
+    assert repo.get_research_context("p1").get("title") == "第一行 第二行用户消息"
+
+
+def test_autoname_llm_error_or_blank_silent_no_write(env):
+    """任务1：LLM 报错/返回空白 → 静默返回不写不抛（best-effort，下回合再试）。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "hi")
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", AutonameLLM(error=RuntimeError("boom")))
+    assert not repo.get_research_context("p1").get("title")
+    _maybe_autoname(repo, "p1", AutonameLLM(content="\n\n"))  # 全空白
+    assert not repo.get_research_context("p1").get("title")

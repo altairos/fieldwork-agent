@@ -130,6 +130,22 @@ describe("ProjectHub（极简首页）", () => {
     expect(await screen.findByTestId("workspace")).toBeInTheDocument();
   });
 
+  // ── 任务1b：项目卡显示链 title || topic || 未命名项目（projectId 永不作显示名） ──
+  test("项目卡显示链：title 优先 / 回退 topic / 兑底未命名项目", async () => {
+    vi.mocked(rest.rest.listProjects).mockResolvedValue([
+      { project_id: "p1", phase: "itinerary_planning", research_context: { topic: "宗族变迁", title: "宗族调研手记" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      { project_id: "p2", phase: "research_positioning", research_context: { topic: "非遗传承" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      { project_id: "p3", phase: "research_positioning", research_context: {}, counts: { sites: 0, informants: 0, proposals: 0 } },
+    ] as any);
+    renderHome();
+    fireEvent.click(await screen.findByRole("button", { name: /继续上次 · 我的项目（3）/ }));
+    expect(await screen.findByText("宗族调研手记")).toBeInTheDocument(); // title 优先
+    expect(screen.getByText("非遗传承")).toBeInTheDocument();           // 无 title 回退 topic
+    expect(screen.getByText("未命名项目")).toBeInTheDocument();          // 皆空兑底
+    // 字母+数字的 project_id 不作为显示名出现
+    expect(screen.queryByText(/p[123]/)).toBeNull();
+  });
+
   test("项目列表加载失败：如实提示且输入区可用", async () => {
     vi.mocked(rest.rest.listProjects).mockRejectedValue(new Error("network down"));
     renderHome();

@@ -264,6 +264,9 @@ describe("Composer", () => {
 
 describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () => {
   beforeEach(() => { useUiStore.getState().reset(); });
+  // 任务2 后 KnowledgePanel 挂载即 GET /knowledge（loadSnapshot 已设 projectId），
+  // 相关测试需 stub fetch；此 describe 统一清理，不影响文件内其余测试
+  afterEach(() => { vi.unstubAllGlobals(); });
   test("BasicInfoPanel 编辑器回显快照 research_context 字段（阶段流转史已删）", () => {
     useProjectStore.getState().loadSnapshot(snapshot({
       phase: "itinerary_planning",
@@ -274,6 +277,22 @@ describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () 
     expect((screen.getByLabelText("学科背景") as HTMLInputElement).value).toBe("社会学");
     expect((screen.getByLabelText("预算") as HTMLInputElement).value).toBe("2万");
     expect(screen.queryByText(/阶段流转/)).not.toBeInTheDocument();
+  });
+  test("BasicInfoPanel 单栏布局（任务3）：grid-cols-1 + AutoGrowTextarea", () => {
+    useProjectStore.getState().loadSnapshot(snapshot({
+      research_context: { research_questions: "一、宗族组织如何维系\n二、仪式角色的分工\n三、外迁人群的认同" },
+    }));
+    const { container } = render(<BasicInfoPanel />);
+    // 双栏改单栏：槽位编辑区一格一行（拖宽右栏时长文本不再被压成半宽）
+    const grid = container.querySelector<HTMLElement>(".grid");
+    expect(grid).not.toBeNull();
+    expect(grid!.className).toContain("grid-cols-1");
+    expect(grid!.className).not.toContain("grid-cols-2");
+    // AutoGrowTextarea：rows=1 起步 + 禁用手把（高度由 value 变化/宽度重算撑起；
+    // jsdom 无布局与 ResizeObserver，守卫跳过，断言只覆盖静态属性）
+    const ta = screen.getByLabelText("研究问题") as HTMLTextAreaElement;
+    expect(ta.rows).toBe(1);
+    expect(ta.className).toContain("resize-none");
   });
   test("InformantsPanel 无报道人显示空状态", () => {
     render(<InformantsPanel />);
@@ -296,18 +315,32 @@ describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () 
     expect(screen.getByText(/宗族头人/)).toBeInTheDocument();
     expect(screen.getByText(/祭祖仪式/)).toBeInTheDocument();
   });
-  test("KnowledgePanel 研究定位槽位投影", () => {  // 2026-10-18 精简：标题/学术纵深卡已删，只断槽位内容
+  test("KnowledgePanel 槽位投影已删——只留已存条目区（任务2）", async () => {
+    // 2026-10-18 槽位投影整体删除：槽位卡/「已填 N / 11 槽位」计数/extras chips/
+    // 「尚未取得研究定位」空态移除，编辑入口收敛到基本信息面板；知识库只呈现
+    // agent 存入的材料条目。挂载即 GET /knowledge（projectId 已设）：stub 空列表。
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      ({ ok: true, status: 200, json: async () => [], text: async () => "[]" } as unknown as Response)));
     useProjectStore.getState().loadSnapshot(snapshot({
       research_context: { discipline: "社会学", topic: "白族村落宗族组织变迁", scale: "单人", budget: "¥20,000", purpose: "kaiti" },
     }));
     render(<KnowledgePanel />);
-    expect(screen.getByText(/社会学/)).toBeInTheDocument();
-    expect(screen.getByText(/白族村落宗族组织变迁/)).toBeInTheDocument();
-    expect(screen.getByText(/开题报告/)).toBeInTheDocument();
+    // research_context 槽位值不再投影到知识库
+    expect(screen.queryByText(/社会学/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/白族村落宗族组织变迁/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/开题报告/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已填/)).not.toBeInTheDocument();
+    // 已存条目区保留：空列表 → 计数 0 + 空态文案
+    expect(await screen.findByText(/已存条目 · 0/)).toBeInTheDocument();
+    expect(screen.getByText(/尚未存入知识条目/)).toBeInTheDocument();
   });
-  test("KnowledgePanel 无快照时如实说明未取得", () => {
+  test("KnowledgePanel 无项目时不发知识请求（条目区呈占位计数）", () => {
+    // store reset 后 projectId=null：不拉取（不发无意义请求），计数呈占位「…」
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
     render(<KnowledgePanel />);
-    expect(screen.getByText(/尚未取得研究定位/)).toBeInTheDocument();
+    expect(screen.getByText(/已存条目 · …/)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
   test("BudgetPanel 与中栏 ItineraryCard 同源（compose_itinerary.budget）", () => {
     const s = useToolsStore.getState();
@@ -336,7 +369,11 @@ describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () 
 
 describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
   beforeEach(() => { useUiStore.getState().reset(); });
-  test("默认基本信息面板；点 Tab 渲染对应面板", () => {
+  // 任务2 后切知识库 Tab 即挂载 KnowledgePanel → GET /knowledge（loadSnapshot 已设 projectId），相关测试需 stub；统一清理
+  afterEach(() => { vi.unstubAllGlobals(); });
+  test("默认基本信息面板；点 Tab 渲染对应面板", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      ({ ok: true, status: 200, json: async () => [], text: async () => "[]" } as unknown as Response)));
     useProjectStore.getState().loadSnapshot(snapshot({
       phase: "itinerary_planning",
       research_context: { discipline: "社会学" },
@@ -351,7 +388,9 @@ describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
     fireEvent.click(screen.getByRole("tab", { name: "访谈对象" }));
     expect(screen.getByText(/尚无访谈对象/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "知识库" }));
-    expect(screen.getByText(/社会学/)).toBeInTheDocument();
+    // 任务2：槽位投影已删——知识库面板只剩已存条目区，discipline 不再渲染
+    expect(await screen.findByText(/已存条目 · 0/)).toBeInTheDocument();
+    expect(screen.queryByText(/社会学/)).not.toBeInTheDocument();
   });
   test("切换建议：稍后=不切 Tab；查看=acceptSuggestion 才切（设计红线）", () => {
     useProjectStore.getState().loadSnapshot(snapshot({ phase: "field_site_profiles" }));

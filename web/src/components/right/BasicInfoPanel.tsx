@@ -94,9 +94,9 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
           方案确认已因研究信息变更失效，请在「方案」页重新确认。
         </div>
       )}
-      {/* 同行等高：label 纵向 flex + textarea grow——grid 行高取同行较高者，
-          AutoGrow 的内联 height 只撑不缩，矮侧由 flex 拉伸补齐到行底 */}
-      <div className="grid grid-cols-2 gap-2 items-start">
+      {/* 单栏（2026-10-18）：双栏改单栏，每槽位占整行；textarea 高度随文本
+          与面板宽度自适应（AutoGrowTextarea 监听 value 变化 + ResizeObserver） */}
+      <div className="grid grid-cols-1 gap-2">
         {EDIT_FIELDS.map((f) => (
           <label key={f.key} className="flex flex-col min-w-0">
             <span className="text-[10px] text-inkfaint">{f.label}</span>
@@ -147,16 +147,26 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
 
 /** P4 自动增高多行输入：单行 input 截断长文本（且 DOM value 会剥离换行），
  *  改为 textarea 后内容随行数/软换行即时撑高，完整可见（无需手动拉把手）。
- *  高度同步在浏览器读 scrollHeight；jsdom 无布局（scrollHeight 恒 0）时
+ *  高度同步在浏览器读 scrollHeight；除 [value] 外，宽度变化（右栏拖宽/
+ *  收窄 → 软换行重排）经 ResizeObserver 重算，面板背景随之自适应。
+ *  jsdom 无布局（scrollHeight 恒 0）也无 ResizeObserver，守卫跳过，
  *  高度退化无效，但 rows/换行行为不变，测试语义不受影响。 */
 function AutoGrowTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const { value, ...rest } = props;
-  useEffect(() => {
+  const resize = () => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
+  };
+  useEffect(resize, [value]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(resize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return <textarea ref={ref} rows={1} value={value} {...rest} />;
 }
