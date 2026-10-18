@@ -6,6 +6,7 @@ from fieldwork_agent.kernel import build_tool_schemas
 from fieldwork_agent.kernel.documents.informants import suggest_informants
 from fieldwork_agent.kernel.documents.proposal import (
     PROPOSAL_SECTIONS,
+    _bullets_itinerary,
     build_context_block,
     compose_interview_guide,
     compose_proposal,
@@ -324,3 +325,34 @@ def test_degrade_na_exempts_informant_section():
     doc = compose_proposal(NA_CTX, SITES, {"legs": []}, [], [], llm=None)
     assert len(doc.sections) == 8  # 八章降级版照常产出
     assert "不适用访谈方法" in doc.markdown
+
+
+def test_bullets_itinerary_structured_with_booking_links():
+    """D11：legs/stays 结构化渲染替代 dict repr；chosen 带 jump_url 时尾接 [预订](url)。"""
+    itinerary = {
+        "legs": [
+            {"from": "昆明", "to": "大理", "date": "2026-11-01", "direction": "outbound",
+             "chosen": {"name": "G29", "price": 350.0, "mode": "train", "jump_url": None},
+             "alternatives": [{"name": "MU", "price": 600.0, "mode": "flight"}]},
+            {"from": "大理", "to": "昆明", "date": "2026-11-10", "direction": "return",
+             "chosen": None, "alternatives": []},
+        ],
+        "stays": [
+            {"dest": "大理", "check_in": "2026-11-01", "check_out": "2026-11-10",
+             "nights": 9, "nightly_price": 150.0,
+             "chosen": {"name": "洱海边民宿", "price": 150.0, "mode": "民宿",
+                        "jump_url": "https://hotel.example/minsu"},
+             "alternatives": []},
+        ],
+        "generated_at": "2026-10-18T08:00:00",
+    }
+    lines = _bullets_itinerary(itinerary)
+    assert lines[0] == "- 腿：昆明 → 大理（2026-11-01，去程）：G29 ¥350，备选 1 条"   # 无链接不加 [预订]
+    assert lines[1] == "- 腿：大理 → 昆明（2026-11-10）：无可用价格，预算未计"        # 无 chosen 如实
+    assert lines[2] == ("- 住宿（大理）2026-11-01 → 2026-11-10 · 9 晚："
+                        "洱海边民宿 ¥150/晚 [预订](https://hotel.example/minsu)")
+    assert lines[3] == "- **generated_at**：2026-10-18T08:00:00"                       # 其余键通用分支不动
+    # 防御：空 legs/stays 与 None itinerary 的既有占位不回归（空 dict 也是 falsy → 同占位）
+    assert _bullets_itinerary({}) == ["- （暂无行程数据）"]
+    assert _bullets_itinerary(None) == ["- （暂无行程数据）"]
+    assert _bullets_itinerary({"legs": [], "stays": []}) == ["- **legs**：[]", "- **stays**：[]"]
