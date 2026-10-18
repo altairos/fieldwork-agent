@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { rest } from "../api/rest";
 import { DEFAULT_PHASES } from "../components/layout/LeftRail";
 import { KeyDialog } from "../components/settings/KeyDialog";
-import { IconCaret, IconClock, IconLock, IconSend } from "../components/ui/icons";
+import { IconCaret, IconClock, IconLock, IconSend, IconTrash } from "../components/ui/icons";
 import type { ProjectSummary } from "../types/models";
 
 /**
@@ -52,25 +52,74 @@ function fmtRelative(iso?: string): string {
   return new Date(t).toLocaleDateString("zh-CN");
 }
 
-/** 折叠列表内的项目行：阶段点 + topic + 阶段名 + 相对时间，点击进入项目 */
-function ProjectRow({ p, onOpen }: { p: ProjectSummary; onOpen: () => void }) {
+/** 折叠列表内的项目行：阶段点 + topic + 阶段名 + 相对时间，点击主区域进入项目；
+ *  尾部删除钮（行内二次确认：首次点击亮出红色「确认删除」，约 4 秒不确认自动还原）。 */
+function ProjectRow({ p, onOpen, onDelete }: { p: ProjectSummary; onOpen: () => void; onDelete: () => void | Promise<void> }) {
   const meta = DEFAULT_PHASES.find((x) => x.id === p.phase);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  // 卸载时清计时器（确认态未兑现就离开行）
+  useEffect(() => () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+  }, []);
+
+  const armConfirm = () => {
+    setConfirming(true);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => setConfirming(false), 4000);
+  };
+
+  const doDelete = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      await onDelete();
+    } finally {
+      setDeleting(false);
+      setConfirming(false);
+    }
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="hairline rounded-lg bg-card w-full flex items-center gap-3 px-4 h-11 text-left hover:border-cinnabar/40 hover:bg-cardsunk transition cursor-pointer"
-    >
-      <span className={`dot shrink-0 ${DOT_BG[p.phase] ?? "bg-inkfaint"}`} aria-hidden="true" />
-      <span className="text-[13px] text-ink truncate min-w-0 flex-1">
-        {p.research_context?.topic || p.project_id}
-      </span>
-      {meta && <span className="text-[11.5px] text-inksoft shrink-0">{meta.label}</span>}
-      <span className="flex items-center gap-1 text-[11px] text-inkfaint shrink-0">
-        <IconClock className="w-3.5 h-3.5" />
-        {fmtRelative(p.updated_at ?? p.created_at)}
-      </span>
-    </button>
+    <div className="hairline rounded-lg bg-card w-full flex items-center gap-1 pr-2 h-11 text-left hover:border-cinnabar/40 hover:bg-cardsunk transition">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex items-center gap-3 flex-1 min-w-0 h-full pl-4 text-left cursor-pointer"
+      >
+        <span className={`dot shrink-0 ${DOT_BG[p.phase] ?? "bg-inkfaint"}`} aria-hidden="true" />
+        <span className="text-[13px] text-ink truncate min-w-0 flex-1">
+          {p.research_context?.topic || p.project_id}
+        </span>
+        {meta && <span className="text-[11.5px] text-inksoft shrink-0">{meta.label}</span>}
+        <span className="flex items-center gap-1 text-[11px] text-inkfaint shrink-0">
+          <IconClock className="w-3.5 h-3.5" />
+          {fmtRelative(p.updated_at ?? p.created_at)}
+        </span>
+      </button>
+      {confirming ? (
+        <button
+          type="button"
+          disabled={deleting}
+          onClick={() => void doDelete()}
+          className="shrink-0 h-7 px-2 rounded-md text-[11.5px] text-cinnabar border border-cinnabar/40 hover:bg-cinnabarwash/50 transition disabled:opacity-50 cursor-pointer"
+        >
+          {deleting ? "删除中…" : "确认删除"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-label={`删除项目 ${p.research_context?.topic || p.project_id}`}
+          title="删除项目"
+          onClick={armConfirm}
+          className="shrink-0 w-7 h-7 grid place-items-center rounded-md text-inkfaint hover:text-cinnabar hover:bg-cinnabarwash/50 transition cursor-pointer"
+        >
+          <IconTrash className="w-4 h-4" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -84,6 +133,7 @@ export function ProjectHub() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [keyOpen, setKeyOpen] = useState(false);
   const [listOpen, setListOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -99,6 +149,17 @@ export function ProjectHub() {
       alive = false;
     };
   }, []);
+
+  /** 删除即整域清除：后端先取消活动回合再删数据；成功后从列表移除，失败如实提示。 */
+  async function removeProject(id: string) {
+    try {
+      await rest.deleteProject(id);
+      setProjects((cur) => (cur === null ? cur : cur.filter((x) => x.project_id !== id)));
+      setDeleteError(null);
+    } catch (err: unknown) {
+      setDeleteError(`项目删除失败：${String(err)}`);
+    }
+  }
 
   async function create() {
     const text = purpose.trim();
@@ -141,15 +202,24 @@ export function ProjectHub() {
       <div className="flex-1 w-full max-w-[640px] mx-auto px-4 flex flex-col justify-center pb-16">
         <div className="text-center mb-7">
           <div className="text-[11px] tracking-[.2em] text-cinnabar mb-2 num">FIELDWORK COMPASS</div>
-          <h1 className="font-serif text-[30px] sm:text-[34px] font-semibold leading-tight">田野罗盘</h1>
+          <div className="flex items-center justify-center gap-3">
+            <img src="/fieldwork-logo-full.svg" alt="" aria-hidden="true" className="w-9 h-9 sm:w-10 sm:h-10" />
+            <h1 className="font-serif text-[30px] sm:text-[34px] font-semibold leading-tight">田野罗盘</h1>
+          </div>
           <p className="text-[13px] text-inksoft mt-2">描述你的田野调研想法</p>
         </div>
 
-        {/* 一句话输入（焦点惯例同 Composer：外壳 hairline → focus-within 朱砂描边） */}
-        <div className="hairline rounded-lg bg-paper/60 p-3.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
+        {/* 一句话输入（焦点惯例同 Composer：外壳 hairline → focus-within 朱砂描边；
+            一行字高度；点击外壳空白处聚焦输入框） */}
+        <div
+          className="hairline rounded-lg bg-paper/60 p-2 flex items-end gap-3 focus-within:border-cinnabar/50 transition"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) inputRef.current?.focus();
+          }}
+        >
           <textarea
             ref={inputRef}
-            rows={3}
+            rows={1}
             value={purpose}
             aria-label="调研想法"
             onChange={(e) => setPurpose(e.target.value)}
@@ -212,8 +282,14 @@ export function ProjectHub() {
             {listOpen && (
               <div className="mt-3 space-y-2">
                 {projects.map((p) => (
-                  <ProjectRow key={p.project_id} p={p} onOpen={() => navigate(`/p/${p.project_id}`)} />
+                  <ProjectRow
+                    key={p.project_id}
+                    p={p}
+                    onOpen={() => navigate(`/p/${p.project_id}`)}
+                    onDelete={() => removeProject(p.project_id)}
+                  />
                 ))}
+                {deleteError && <div className="text-[12px] text-cinnabar leading-snug">{deleteError}</div>}
               </div>
             )}
           </div>

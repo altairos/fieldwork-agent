@@ -25,7 +25,7 @@ export function MessageBubble({ role, content }: { role: "user" | "assistant"; c
   }
   return (
     <div className="flex gap-3">
-      <img src="/miovelle-mark-cinnabar.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
+      <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         <MarkdownBody text={content} />
       </div>

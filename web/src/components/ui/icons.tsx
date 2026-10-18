@@ -212,3 +212,15 @@ export function IconUser(props: IconProps) {
     </Line>
   );
 }
+
+// ── 项目删除（行内二次确认）追加 ──
+
+/** 垃圾桶（项目删除） · 无设计板 symbol，按同一线形语言补画 */
+export function IconTrash(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="M4 7h16M9.5 7V5A1.5 1.5 0 0 1 11 3.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12" />
+      <path d="M10 11v6M14 11v6" />
+    </Line>
+  );
+}

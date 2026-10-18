@@ -114,7 +114,7 @@ export function Composer({
           onClick={submit}
           className="w-9 px-0 shrink-0"
         >
-          <IconSend className="w-4 h-4" />
+          <IconSend className="w-5 h-5" />
         </Button>
       </div>
 

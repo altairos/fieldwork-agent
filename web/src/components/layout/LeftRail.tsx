@@ -4,7 +4,7 @@ import { IconCheck, IconCompass, IconLock } from "../ui/icons";
  * LeftRail — 左栏阶段导航（PhaseRail）。
  * 设计板同源：workspace 左栏 lines 392-423：
  *   容器 `bg-paperdeep border-r border-hairline flex flex-col`（line 393）
- *   节标签「访谈阶段」`px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint`（line 401）
+ *   节标签「方案规划阶段」`px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint`（line 401）
  *   条目基座 `flex items-start gap-2.5 p-2.5 rounded-md`（lines 403-418）：
  *     已完成 → 竹青圆标+check，文字 text-inksoft，hover:bg-card/70（line 403-406）
  *     进行中 → `bg-card border border-cinnabar/30 shadow-card` + 朱砂圆标 num 字母（line 411-413）
@@ -50,7 +50,7 @@ export function LeftRail({
   const current = phases.findIndex((p) => p.id === phase);
   return (
     <div className="bg-paperdeep border-r border-hairline flex flex-col min-h-0">
-      <div className="px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint">访谈阶段</div>
+      <div className="px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint">方案规划阶段</div>
       {/* overscroll-contain（批次 C）：抽屉/内嵌滚动到边界不把滚动链传导给底层页面 */}
       <nav className="px-3 space-y-1 flex-1 overflow-y-auto scroll overscroll-contain">
         {phases.map((p, i) => {

@@ -125,7 +125,8 @@ describe("ProjectHub（极简首页）", () => {
     const toggle = await screen.findByRole("button", { name: /继续上次 · 我的项目（1）/ });
     expect(screen.queryByText(/宗族变迁/)).toBeNull();
     fireEvent.click(toggle);
-    fireEvent.click(await screen.findByRole("button", { name: /宗族变迁/ }));
+    // 锚定开头：删除钮 aria-label 含“删除项目 宗族变迁”，会与纯正则多匹配
+    fireEvent.click(await screen.findByRole("button", { name: /^宗族变迁/ }));
     expect(await screen.findByTestId("workspace")).toBeInTheDocument();
   });
 

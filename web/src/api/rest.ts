@@ -82,6 +82,8 @@ export const rest = {
     req<{ project_id: string; phase: string }>("/projects", { method: "POST", body: JSON.stringify(body) }),
   listProjects: () => req<ProjectSummary[]>("/projects"),
   getProject: (id: string) => req<ProjectSnapshot>(`/projects/${id}`),
+  // 删除即整域清除（后端先取消活动回合再删数据；204 无 body）
+  deleteProject: (id: string) => req<void>(`/projects/${id}`, { method: "DELETE" }),
   getMessages: (id: string) =>
     req<{ role: "user" | "assistant"; content: string }[]>(`/projects/${id}/messages`),
   createTurn: (id: string, text: string, idempotencyKey?: string) =>

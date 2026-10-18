@@ -8,7 +8,7 @@ import { useConversationStore } from "../../stores/conversation";
  * （同一套 markdown 渲染口径，避免中栏出现两种正文样式；不新增 brief 文件清单外的第 7 个文件）。
  *
  * 设计板同源：中栏助手 markdown 流 lines 450-462
- *   头像位 line 452 `w-6 h-6 shrink-0 mt-0.5`（品牌标记 `/miovelle-mark-cinnabar.svg`，public 根目录）
+ *   头像位 line 452 `w-6 h-6 shrink-0 mt-0.5`（品牌标记 `/fieldwork-logo-full.svg`，public 根目录）
  *   外层 line 451 `flex gap-3` + line 453 `min-w-0 flex-1`
  *   正文 line 454 `font-serif text-[14.5px] leading-[1.85] text-ink space-y-2.5`
  *   列表 line 456 `space-y-1 text-[13.5px] text-inksoft list-none` +
@@ -82,7 +82,7 @@ export function AssistantStream() {
   if (!buffer && !running) return null;
   return (
     <div className="flex gap-3">
-      <img src="/miovelle-mark-cinnabar.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
+      <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         {buffer ? (
           <MarkdownBody text={buffer} />
