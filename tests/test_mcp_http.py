@@ -6,8 +6,8 @@ ClientSession），覆盖：
 
 - 改造1：stateless + json_response 全链路（initialize / tools/list 23 项 /
   tools/call 状态工具往返），无需会话粘性；
-- 改造3：动态 Header ``X-Flyai-Key`` / ``X-Dashscope-Key`` 逐请求注入请求级
-  宿主对象（contextvar → host_ctx 重建），无 Header 时回落组装期 env 兜底；
+- 改造3：动态 Header ``X-Flyai-Key`` / ``X-Dashscope-Key``（N4 增 ``X-Amap-Key``）
+  逐请求注入请求级宿主对象（contextvar → host_ctx 重建），无 Header 时回落组装期 env 兜底；
 - 改造2：web_host ``/mcp`` 挂载并入 X-App-Token 守卫（401/200）。
 """
 import json
@@ -181,6 +181,61 @@ async def test_dashscope_key_header_is_per_request(service, fake_config, monkeyp
         llm_none, cons_none = await _call(None)
         assert llm_none is None              # 组装期 host_ctx["llm"]（fake_config 无 key）
         assert cons_none == []               # 无 Header 不构造新 LLMClient
+
+
+async def test_amap_key_header_is_per_request(service, fake_config, monkeypatch):
+    """X-Amap-Key 逐请求生效（PoC2 §4.2）：key-a / key-b / 无 Header 回落组装期 env 值。"""
+    captured: dict = {}
+
+    def fake_geocode(*, amap_client, **kwargs):
+        captured["client"] = amap_client
+        return {"stub": True}
+
+    # 单例表钉空，强制走 _CAPABILITY_FNS 注入路径（与 X-Flyai-Key 用例同构）
+    monkeypatch.setitem(dispatch._CLIENTLESS_SINGLETONS, "amap_geocode", None)
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "amap_geocode", fake_geocode)
+
+    async with _client(service) as client:
+        async def _call(amap_key: str | None):
+            headers = dict(HEADERS)
+            if amap_key:
+                headers["X-Amap-Key"] = amap_key
+            resp = await client.post("/", json=_rpc("tools/call", {
+                "name": "amap_geocode", "arguments": {"address": "喜洲镇"},
+            }), headers=headers)
+            assert _envelope(resp)["ok"] is True
+            return captured.pop("client")
+
+        assert (await _call("key-a")).api_key == "key-a"
+        assert (await _call("key-b")).api_key == "key-b"      # 请求间互不串
+        assert (await _call(None)).api_key == fake_config.amap_api_key   # env 兜底
+
+
+async def test_amap_key_header_bypasses_amap_singleton(service, monkeypatch):
+    """单例绕过语义平移：带 X-Amap-Key 绕过绑死组装期实例的 amap partial；
+    无 Header 仍走 partial（真 fn 无 Key 短路 amap_invalid_key，不出网）。"""
+    calls: list = []
+
+    def fake_geocode(*, amap_client, **kwargs):
+        calls.append(amap_client)
+        return {"stub": True}
+
+    # 不钉空单例表：_CLIENTLESS_SINGLETONS["amap_geocode"] 保持组装期 partial
+    monkeypatch.setitem(dispatch._CAPABILITY_FNS, "amap_geocode", fake_geocode)
+
+    async with _client(service) as client:
+        no_header = _envelope(await client.post("/", json=_rpc("tools/call", {
+            "name": "amap_geocode", "arguments": {"address": "喜洲镇"},
+        }), headers=HEADERS))
+        assert no_header["ok"] is False
+        assert no_header["error"]["code"] == "amap_invalid_key"   # partial 真 fn 短路
+        assert calls == []                                        # fake 未被触碰
+
+        with_header = _envelope(await client.post("/", json=_rpc("tools/call", {
+            "name": "amap_geocode", "arguments": {"address": "喜洲镇"},
+        }), headers={**HEADERS, "X-Amap-Key": "key-x"}))
+        assert with_header["ok"] is True
+        assert calls and calls[0].api_key == "key-x"              # 绕过 partial 注入新实例
 
 
 # ---------------------------------------------------------------- 改造2：web_host /mcp 挂载 + 守卫

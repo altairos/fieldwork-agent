@@ -35,6 +35,9 @@ _CLIENTLESS_SINGLETONS: dict[str, Any] = {}
 # 组装期绑进单例 partial 的那个 client（server 写入，改造3）：请求级 ctx 携带
 # 不同 client（动态 Header 重建）时须绕过单例，否则旧闭包吞掉新 key
 _SINGLETON_CLIENT: Any = None
+# 同款语义的 amap 标记（N4）：请求级 X-Amap-Key 重建新 AMapClient 时，绕过
+# 绑死组装期实例的 amap 系单例 partial
+_SINGLETON_AMAP: Any = None
 
 _Parameters = Mapping[str, inspect.Parameter]
 
@@ -67,11 +70,17 @@ def _resolve(name: str, ctx: dict | None = None) -> Any:
 
     改造3：单例 partial 绑死了组装期 client；请求级 ctx 携带**不同** client
     （动态 Header 重建）时跳过单例，回落 ``_CAPABILITY_FNS`` 走 ctx 注入路径。
+    N4：同款语义平移到 amap_client（X-Amap-Key）。两个 bypass 合成总开关——
+    绕过是表级而非系级：带任一动态 Key 时 flyai/amap 系都跳过 partial，
+    非覆盖系回落 ctx 注入拿组装期同实例，行为等价，无串味面。
     """
     req_client = (ctx or {}).get("client")
-    bypass = (_SINGLETON_CLIENT is not None and req_client is not None
-              and req_client is not _SINGLETON_CLIENT)
-    fn = None if bypass else _CLIENTLESS_SINGLETONS.get(name)
+    bypass_client = (_SINGLETON_CLIENT is not None and req_client is not None
+                     and req_client is not _SINGLETON_CLIENT)
+    req_amap = (ctx or {}).get("amap_client")
+    bypass_amap = (_SINGLETON_AMAP is not None and req_amap is not None
+                   and req_amap is not _SINGLETON_AMAP)
+    fn = None if (bypass_client or bypass_amap) else _CLIENTLESS_SINGLETONS.get(name)
     if fn is None:
         fn = _CAPABILITY_FNS.get(name)
     if fn is not None:

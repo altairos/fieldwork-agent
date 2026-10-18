@@ -25,6 +25,7 @@ class HeaderOverridesMiddleware:
     _WANTED = {
         request_ctx.DASHSCOPE_KEY_HEADER: "dashscope_api_key",
         request_ctx.FLYAI_KEY_HEADER: "flyai_api_key",
+        request_ctx.AMAP_KEY_HEADER: "amap_api_key",
     }
 
     def __init__(self, app: Any):

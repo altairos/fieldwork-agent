@@ -98,6 +98,8 @@ def create_server(config: "Config | None" = None,
     # 改造3：登记组装期 client。请求级动态 Header 覆盖会重建新 client，dispatch
     # 据此识别并绕过绑死旧 client 的单例 partial（详见 dispatch._resolve）
     dispatch._SINGLETON_CLIENT = client
+    # N4 同款登记 amap 组装期实例：X-Amap-Key 覆盖重建新实例时绕过 amap partial
+    dispatch._SINGLETON_AMAP = amap_client
     # 请求级 LLMClient 重建沿用组装期模型三槽；cfg 为 None 时退 env 默认
     if cfg is not None:
         models_map = cfg.llm_models
@@ -125,6 +127,9 @@ def create_server(config: "Config | None" = None,
                 pass   # 组装期 llm 兜底（可能 None → 文档能力模板降级）
         if ov.get("flyai_api_key"):
             ctx["client"] = FlyAIClient(api_key=ov["flyai_api_key"])
+        if ov.get("amap_api_key"):
+            # N4：与 flyai 同款——纯 key 构造无失败面，不走 try/except
+            ctx["amap_client"] = AMapClient(api_key=ov["amap_api_key"])
         return ctx
 
     # Task 2 设计：fn 签名显式声明注入键的能力填入共享 client 版分派表——
