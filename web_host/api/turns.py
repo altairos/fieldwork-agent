@@ -108,11 +108,12 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
 async def _execute_turn(app, pid, tid, text, llm, flyai):
     """后台任务：获取写锁 → 执行 agent loop → 释放。"""
     from fieldwork_agent.web_host.agent.loop import run_turn
-    from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
+    from fieldwork_agent.web_host.deps import get_amap_raw, get_repo_raw, get_tm_raw
     repo = get_repo_raw(app)
     tm = get_tm_raw(app)
+    amap = get_amap_raw(app)
     async with tm.acquire_write_lock(pid):
-        await run_turn(repo, pid, tid, text, tm, llm, flyai)
+        await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap)
 
 
 async def _event_stream(tm, project_id: str, turn_id: str, last_id: int, handle):

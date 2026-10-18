@@ -6,6 +6,7 @@ from fastapi import Request
 def init_deps(app, *, config=None, repo=None) -> None:
     from fieldwork_agent.core.config import Config
     from fieldwork_agent.kernel.repository.factory import make_repository
+    from fieldwork_agent.kernel.sources.amap import AMapClient
     from fieldwork_agent.kernel.sources.flyai import FlyAIClient
     from fieldwork_agent.web_host.turn_manager import TurnManager
 
@@ -15,6 +16,9 @@ def init_deps(app, *, config=None, repo=None) -> None:
     app.state.config = cfg
     app.state.repo = repo
     app.state.flyai = FlyAIClient(getattr(cfg, "flyai_api_key", ""))
+    # AMapClient 同款单例：无 key 也构建（原语走 amap_invalid_key 体验降级不出网，
+    # 与 MCP 组装期同款惯例）；N0 起 agent loop 经此通道注入 amap 原语
+    app.state.amap = AMapClient(getattr(cfg, "amap_api_key", ""))
     app.state.turn_manager = TurnManager(root=cfg.projects_dir)
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
@@ -58,3 +62,7 @@ def get_tm_raw(app):
 
 def get_flyai_raw(app):
     return app.state.flyai
+
+
+def get_amap_raw(app):
+    return app.state.amap

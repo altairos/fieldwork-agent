@@ -287,3 +287,28 @@ def test_init_deps_singleton_uses_config_plan(tmp_path, monkeypatch):
         "api_key": "sk-sp-x", "models": {"interview": "q"},
         "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     }
+
+
+def test_init_deps_builds_amap_singleton(tmp_path, monkeypatch):
+    """N0：init_deps 挂 app.state.amap（AMapClient 启动单例，无 key 也构建，
+    走 amap_invalid_key 体验降级——与 MCP 组装期同款惯例）。"""
+    from types import SimpleNamespace
+
+    import fieldwork_agent.kernel.sources.amap as amap_mod
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.web_host.deps import init_deps
+
+    created: list[str] = []
+
+    class FakeAMapClient:
+        def __init__(self, api_key=""):
+            created.append(api_key)
+
+    monkeypatch.setattr(amap_mod, "AMapClient", FakeAMapClient)
+    cfg = SimpleNamespace(projects_dir=tmp_path, flyai_api_key="",
+                          dashscope_available=False, amap_api_key="ak-n0")
+    app = SimpleNamespace(state=SimpleNamespace())
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    init_deps(app, config=cfg, repo=repo)
+    assert created == ["ak-n0"]
+    assert isinstance(app.state.amap, FakeAMapClient)
