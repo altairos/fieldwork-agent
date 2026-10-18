@@ -152,9 +152,21 @@ describe("rest.proposalDownloadUrl", () => {
 
 describe("mock 服务器 download 三格式", () => {
   let server: Server;
+  const OWNER = { "X-Owner-Token": "vitest-owner" };
 
   beforeAll(async () => {
     server = await startMockServer(0, 5);
+    const addr0 = server.address();
+    if (addr0 === null || typeof addr0 === "string") {
+      throw new Error("临时端口未就绪");
+    }
+    // 归属化后先建项目：pc1 属于 vitest-owner（download 端点 404 守卫的前提）
+    const created = await fetch(`http://127.0.0.1:${addr0.port}/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...OWNER },
+      body: JSON.stringify({ project_id: "pc1" }),
+    });
+    expect(created.status).toBe(201);
   });
 
   afterAll(() => {
@@ -170,7 +182,7 @@ describe("mock 服务器 download 三格式", () => {
   }
 
   it("默认 md：text/markdown + proposal.md + 正文含 #", async () => {
-    const res = await fetch(`${base()}/projects/pc1/proposal/download`);
+    const res = await fetch(`${base()}/projects/pc1/proposal/download`, { headers: OWNER });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/markdown");
     expect(res.headers.get("content-disposition")).toContain('proposal.md');
@@ -179,7 +191,7 @@ describe("mock 服务器 download 三格式", () => {
   });
 
   it("txt：text/plain + proposal.txt + 正文无 #", async () => {
-    const res = await fetch(`${base()}/projects/pc1/proposal/download?format=txt`);
+    const res = await fetch(`${base()}/projects/pc1/proposal/download?format=txt`, { headers: OWNER });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/plain");
     expect(res.headers.get("content-disposition")).toContain('proposal.txt');
@@ -189,7 +201,7 @@ describe("mock 服务器 download 三格式", () => {
   });
 
   it("docx：wordprocessingml + proposal.docx + PK 魔数", async () => {
-    const res = await fetch(`${base()}/projects/pc1/proposal/download?format=docx`);
+    const res = await fetch(`${base()}/projects/pc1/proposal/download?format=docx`, { headers: OWNER });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain(
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -200,7 +212,7 @@ describe("mock 服务器 download 三格式", () => {
   });
 
   it("by-id 默认 md：text/markdown + attachment", async () => {
-    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download`);
+    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download`, { headers: OWNER });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/markdown");
     expect(res.headers.get("content-disposition")).toContain("attachment");
@@ -209,7 +221,7 @@ describe("mock 服务器 download 三格式", () => {
   });
 
   it("by-id docx：wordprocessingml + PK 魔数", async () => {
-    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download?format=docx`);
+    const res = await fetch(`${base()}/projects/pc1/proposals/doc_1/download?format=docx`, { headers: OWNER });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain(
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
