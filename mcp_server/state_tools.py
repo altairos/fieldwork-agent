@@ -188,11 +188,15 @@ STATE_TOOLS: list[Tool] = [
                       "required": ["project_id"]},
          annotations=_annotations()),
     Tool(name="update_research_context",
-         description="按 patch 浅合并更新研究上下文（只覆盖 patch 中出现的键），返回更新后的完整上下文。",
+         description="按 patch 浅合并更新研究上下文（只覆盖 patch 中出现的键），返回更新后的完整上下文。"
+                     "用户已明确陈述的研究事实（目的地/时长/日期等）应在本轮立即写入持久化，"
+                     "不要只在回复中口头复述。",
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "patch": {"type": "object",
-                                               "description": "要合并的键值对（如 discipline/topic/scale/budget）；任一字段非法则整次拒绝"}},
+                                               "description": "要合并的键值对，仅限白名单字段："
+                                                               + context_fields_hint()
+                                                               + "；任一字段非法则整次拒绝（原子语义，绝不部分写入）"}},
                       "required": ["project_id", "patch"]},
          annotations=_annotations()),
     Tool(name="save_field_site",

@@ -9,6 +9,7 @@ handler 调用风格按控制者裁决 1 统一为 kwargs 具名参数（server 
 包络，且 projects 根之外不得出现任何新目录。
 """
 import pytest
+from fieldwork_agent.kernel.context_patch import ALLOWED_CONTEXT_FIELDS
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.mcp_server.state_tools import STATE_TOOLS, build_handlers
 from mcp.types import Tool
@@ -188,3 +189,19 @@ def test_r09_stale_confirmation_blocks_advance(tmp_path):
     assert r2["ok"]
     assert r2["data"]["can_advance"] is False
     assert "proposal_confirmation" in r2["data"]["missing_fields"]
+
+
+def test_update_context_tool_description_lists_full_whitelist():
+    """审计三 Fix 3：update_research_context 的 description/patch 描述列全白名单 + 持久化纪律。
+
+    动机：症状①——用户已明确目的地/时长，agent 只在回复中口头复述、不落盘，
+    后续轮次重复追问。description 是百炼编排端规划调用的主要信号源，
+    字段举例不全（旧文只列 4 个）+ 无持久化纪律 → 模型漏写。
+    字段列表单一来源：ALLOWED_CONTEXT_FIELDS（context_fields_hint 拼装）。
+    """
+    tool = next(t for t in STATE_TOOLS if t.name == "update_research_context")
+    desc = tool.description or ""
+    patch_desc = tool.input_schema["properties"]["patch"]["description"]
+    for field in ALLOWED_CONTEXT_FIELDS:
+        assert field in patch_desc, f"patch 描述缺字段：{field}"
+    assert "持久化" in desc, "description 缺持久化纪律文案"
