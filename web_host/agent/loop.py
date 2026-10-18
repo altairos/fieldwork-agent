@@ -92,6 +92,14 @@ def _normalize_cjk_quotes(text: str) -> str:
     return "".join(out)
 
 
+def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
+    """N13：取消已置位或超过 wall 截止 → 应停止。每次消费流帧后、启动工具前统一
+    检查，尽早「停止副作用」（不再启动新工具/不再消费后续流帧）。已启动的线程
+    调用不可撤回，故本检查只保证不再发起新动作、不承诺硬截止；handle 由调用方保证非 None。
+    """
+    return handle.cancel_event.is_set() or (time.monotonic() - start) > max_wall_seconds
+
+
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
                    amap_client: Any = None,
@@ -172,6 +180,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             async for chunk in _async_iter(stream):
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：停止消费已无消费者的流
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：消费中取消/超时 → 停止消费，不再处理后续帧（含终帧工具调用）
                 if "delta" in chunk and chunk["delta"]:
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})
@@ -212,6 +222,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     has_final_answer = True
                 break
 
+            # N13：启动工具前检查取消与 deadline——即便终帧已带 tool_calls，此刻已
+            # 取消/超时也不再启动新工具（不发 tool_started、不产生副作用），转轮末终态
+            if _stop_requested(handle, start, max_wall_seconds):
+                break
             # 并行工具执行（F07：批前截断——越过额度的调用不执行，直接回填
             # budget_exceeded 的 role=tool 消息与事件，协议上每个 id 均有回填）
             messages.append(_assistant_message(final_resp))
@@ -334,6 +348,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             async for chunk in _async_iter(stream):
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：同主流，停止消费与发射
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：续写流消费中取消/超时 → 停止，已流出增量仍拼入
                 if "delta" in chunk and chunk["delta"]:
                     cont_deltas += chunk["delta"]
                     tm.append_event(pid, turn_id, "message_delta",
@@ -378,6 +394,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             async for chunk in _async_iter(stream):
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：同主流，停止消费与发射
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：收敛流消费中取消/超时 → 停止，走轮末终态
                 if "delta" in chunk and chunk["delta"]:
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})

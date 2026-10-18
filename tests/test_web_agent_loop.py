@@ -299,6 +299,71 @@ def test_cancel_skips_end_of_turn_side_effects(env):
     assert not repo.get_research_context("p1").get("topic")
 
 
+class CancelThenToolCallLLM:
+    """N13：首帧 delta 流出后取消，随后终帧携带 tool_calls——取消后不得再启动工具。"""
+    def __init__(self, tm, pid, tid):
+        self._tm, self._pid, self._tid = tm, pid, tid
+        self.calls = []
+
+    def chat_stream(self, messages, **kw):
+        self.calls.append((list(messages), kw))
+        def _gen():
+            yield {"delta": "部分"}
+            self._tm.cancel(self._pid, self._tid)   # 消费中途取消
+            yield {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                                  "arguments": {"dest_name": "大理"}}],
+                   "finish_reason": "tool_calls", "usage": {}}
+        return _gen()
+
+
+def test_cancel_mid_stream_prevents_tool_start(env):
+    """N13：慢流首帧后 cancel、终帧携带 tool_calls → 不再出现新的 tool_started，
+    终态 cancelled（旧实现取消后仍会启动工具、发 tool_started）。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = CancelThenToolCallLLM(tm, "p1", turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "tool_started" not in types
+    assert "tool_completed" not in types
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+
+
+def test_deadline_during_stream_stops_before_tools(env):
+    """N13：wall 截止在终帧到达前已过 → 启动工具前不再发起工具副作用。
+
+    复现审计场景（wall=20ms、单帧同步 sleep）：已开始的阻塞 sleep 不可撤回
+    （无硬截止），但越过截止后绝不再启动新工具（无 tool_started）。"""
+    import time
+    repo, tm = env
+
+    class SlowThenToolCallLLM:
+        def __init__(self):
+            self.calls = []
+
+        def chat_stream(self, messages, **kw):
+            self.calls.append((list(messages), kw))
+            def _gen():
+                yield {"delta": "思考中"}
+                time.sleep(0.08)   # 慢流：终帧迟迟才到，其间越过 wall 截止
+                yield {"content": "",
+                       "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                       "arguments": {"dest_name": "大理"}}],
+                       "finish_reason": "tool_calls", "usage": {}}
+            return _gen()
+
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm,
+                         SlowThenToolCallLLM(), FakeFlyAI(), max_wall_seconds=0.02))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "tool_started" not in types      # 越过 wall 截止后不启动工具
+    assert "tool_completed" not in types
+
+
 class DeleteProjectMidStreamLLM:
     """流式中途删除项目（审查 1.2 竞态）：首帧 delta 后执行 DELETE 路由三步
     （cancel_all → repo.delete_project → tm.purge_project），随后按 trailing_deltas
