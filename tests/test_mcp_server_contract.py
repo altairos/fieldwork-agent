@@ -6,6 +6,7 @@
 ``mcp/client/_memory.py`` 的 InMemoryTransport）。
 """
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -112,3 +113,38 @@ async def test_compose_proposal_degraded_visible_without_key(server):
         payload = json.loads(res.content[0].text)
     assert payload["ok"] is True, payload.get("error")
     assert payload.get("degraded"), "无 key 时 degraded 必须机器可见（验收③）"
+
+
+async def test_tools_call_info_log(server, caplog):
+    """审计三 Fix 2：tools/call 落 INFO 级日志（工具名/project_id/结果状态）。
+
+    动机：百炼 Managed Agents 编排端对话服务端不可见，症状①那类
+    「agent 到底调没调工具」只能靠服务端工具级日志裁定。
+    红线：日志不记参数与正文（隐私/日志体积），只记四元组。
+    """
+    with caplog.at_level(logging.INFO, logger="fieldwork_agent.mcp_server.server"):
+        async with _session(server) as client:
+            await client.call_tool("create_project", {"project_id": "p1"})
+            res = await client.call_tool(
+                "add_knowledge_entry",
+                {"project_id": "p1", "title": "内部标题", "content": "秘密正文"})
+            payload = json.loads(res.content[0].text)
+        assert payload["ok"], payload
+    infos = [r.getMessage() for r in caplog.records
+             if r.name == "fieldwork_agent.mcp_server.server"
+             and r.levelno == logging.INFO]
+    assert any("add_knowledge_entry" in m and "p1" in m and "ok=True" in m
+               for m in infos), infos
+    assert not any(("秘密正文" in m) or ("内部标题" in m) for m in infos)
+
+
+def test_tools_call_logger_has_stderr_sink():
+    """审计三 Fix 2 生产补丁：模块 logger 自带 stderr handler + INFO 级。
+
+    动机：uvicorn 只配置 uvicorn.* 层级日志、root 无 handler，不自配出口的
+    话 INFO 四元组会被 lastResort(WARNING+) 静默丢弃（ECS journalctl 实测
+    0 命中）。caplog 走传播捕获，propagate 保持 True 不受影响。
+    """
+    lg = logging.getLogger("fieldwork_agent.mcp_server.server")
+    assert lg.getEffectiveLevel() <= logging.INFO
+    assert any(isinstance(h, logging.StreamHandler) for h in lg.handlers)

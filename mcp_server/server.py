@@ -10,6 +10,7 @@ SDK 2.3.0 低层接线（实测形状，1.x 的 ``@srv.list_tools()`` 装饰器�
 import functools
 import inspect
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -45,6 +46,20 @@ if TYPE_CHECKING:
 
 SERVER_NAME = "fieldwork-agent"
 SERVER_VERSION = "0.1.0"
+
+# 审计三 Fix 2：tools/call 工具级日志——百炼编排端对话不可见，服务端日志是
+# 「agent 到底调没调工具」的唯一裁定证据。只记四元组不记正文；logging 默认
+# 走 stderr，不污染 stdio 传输的 stdout 协议通道。
+logger = logging.getLogger(__name__)
+# 生产出口自配：uvicorn 只配置 uvicorn.* 层级、root 无 handler，不自配的话
+# INFO 会被 lastResort(WARNING+) 静默丢弃（ECS journalctl 实测 0 命中）。
+# propagate 保持 True：pytest caplog 经 root 传播照常捕获；stderr 出口对
+# stdio 传输也安全（协议在 stdout）。
+if not logger.handlers:
+    _sink = logging.StreamHandler()
+    _sink.setFormatter(logging.Formatter("%(name)s %(levelname)s %(message)s"))
+    logger.addHandler(_sink)
+    logger.setLevel(logging.INFO)
 
 
 def _text_payload(payload: dict) -> CallToolResult:
@@ -142,6 +157,9 @@ def create_server(config: "Config | None" = None,
             # call_capability 自带包络兜底，不重复包
             payload = await anyio.to_thread.run_sync(
                 lambda: dispatch.call_capability(name, arguments, _effective_host_ctx()))
+        logger.info("mcp tools/call name=%s project_id=%s ok=%s degraded=%s",
+                    name, arguments.get("project_id") or "-",
+                    payload.get("ok"), bool(payload.get("degraded")))
         return _text_payload(payload)
 
     async def _list_resources(ctx: ServerRequestContext,
