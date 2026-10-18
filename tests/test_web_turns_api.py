@@ -293,3 +293,25 @@ def test_init_deps_singleton_uses_config_plan(tmp_path, monkeypatch):
         "api_key": "sk-sp-x", "models": {"interview": "q"},
         "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     }
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：回合四端点对非 owner 一律 404
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_turn_endpoints_hidden_from_other_owner(app, client):
+    from conftest import OTHER_TOKEN, make_client
+
+    r = await client.post("/projects/p1/messages", json={"text": "hi"})
+    assert r.status_code == 201
+    tid = r.json()["turn_id"]
+    await asyncio.sleep(0.3)
+    async with make_client(app, owner_token=OTHER_TOKEN) as other:
+        assert (await other.post("/projects/p1/messages",
+                                 json={"text": "hi"})).status_code == 404
+        assert (await other.get(
+            f"/projects/p1/turns/{tid}/events")).status_code == 404
+        assert (await other.post(
+            f"/projects/p1/turns/{tid}/cancel")).status_code == 404
+        assert (await other.get("/projects/p1/messages")).status_code == 404

@@ -174,3 +174,22 @@ async def test_list_created_at_uses_saved_at(client):
     items = r.json()
     assert any(i.get("id", "").startswith("prop_") and i.get("created_at")
                for i in items), f"prop_ 记录的 created_at 应来自 saved_at: {items}"
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：导出端点对非 owner 一律 404
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_exports_hidden_from_other_owner(app, client):
+    from conftest import OTHER_TOKEN, make_client
+
+    async with make_client(app, owner_token=OTHER_TOKEN) as other:
+        for path in ("/projects/p1/proposal",
+                     "/projects/p1/proposal/download",
+                     "/projects/p1/proposals",
+                     "/projects/p1/proposals/doc1",
+                     "/projects/p1/proposals/doc1/download"):
+            r = await other.get(path)
+            assert r.status_code == 404, path
+            assert r.json()["detail"] == "项目不存在: p1"

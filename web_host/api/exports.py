@@ -4,7 +4,8 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse, Response
-from fieldwork_agent.web_host.api.guard import checked_project_id
+from fieldwork_agent.web_host.api.guard import checked_owned_project
+from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_repo
 from fieldwork_agent.web_host.export_formats import filename_for, to_docx_bytes, to_text
 
@@ -43,12 +44,9 @@ def _format_proposal_response(content: str, format: str, filename: str) -> Respo
 
 
 @router.get("/projects/{project_id}/proposal")
-async def get_proposal(project_id: str, repo=Depends(get_repo)):
-    checked_project_id(project_id, repo)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+async def get_proposal(project_id: str, repo=Depends(get_repo),
+                       owner: str | None = Depends(owner_from_request)):
+    checked_owned_project(project_id, repo, owner)
     doc = repo.get_latest_proposal(project_id)
     if doc is None:
         raise HTTPException(404, "尚无提案文档")
@@ -61,12 +59,9 @@ async def download_proposal(
     # 参数名沿用 spec：format（ruff 未启用 A 系列，遮蔽内置不触发，不加 noqa）
     format: Literal["md", "docx", "txt"] = "md",
     repo=Depends(get_repo),
+    owner: str | None = Depends(owner_from_request),
 ):
-    checked_project_id(project_id, repo)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    checked_owned_project(project_id, repo, owner)
     doc = repo.get_latest_proposal(project_id)
     if doc is None:
         raise HTTPException(404, "尚无提案文档")
@@ -76,12 +71,9 @@ async def download_proposal(
 
 
 @router.get("/projects/{project_id}/proposals/{doc_id}")
-async def get_proposal_by_id(project_id: str, doc_id: str, repo=Depends(get_repo)):
-    checked_project_id(project_id, repo)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+async def get_proposal_by_id(project_id: str, doc_id: str, repo=Depends(get_repo),
+                             owner: str | None = Depends(owner_from_request)):
+    checked_owned_project(project_id, repo, owner)
     doc = repo.get_proposal_by_id(project_id, doc_id)
     if doc is None:
         raise HTTPException(404, f"文档不存在: {doc_id}")
@@ -95,12 +87,9 @@ async def download_proposal_by_id(
     # 参数名沿用 spec：format（ruff 未启用 A 系列，遮蔽内置不触发，不加 noqa）
     format: Literal["md", "docx", "txt"] = "md",
     repo=Depends(get_repo),
+    owner: str | None = Depends(owner_from_request),
 ):
-    checked_project_id(project_id, repo)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    checked_owned_project(project_id, repo, owner)
     doc = repo.get_proposal_by_id(project_id, doc_id)
     if doc is None:
         raise HTTPException(404, f"文档不存在: {doc_id}")
@@ -109,11 +98,8 @@ async def download_proposal_by_id(
 
 
 @router.get("/projects/{project_id}/proposals")
-async def list_proposals(project_id: str, repo=Depends(get_repo)):
-    checked_project_id(project_id, repo)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+async def list_proposals(project_id: str, repo=Depends(get_repo),
+                         owner: str | None = Depends(owner_from_request)):
+    checked_owned_project(project_id, repo, owner)
     return [{"id": p["id"], "kind": p.get("kind"), "version": p.get("version"),
              "created_at": p.get("saved_at")} for p in repo.list_proposals(project_id)]

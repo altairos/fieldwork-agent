@@ -1,9 +1,10 @@
 """回合路由（R4）：创建/SSE 订阅/取消。"""
 import asyncio
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
-from fieldwork_agent.web_host.api.guard import checked_project_id, checked_turn_id
+from fieldwork_agent.web_host.api.guard import checked_owned_project, checked_turn_id
+from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_flyai_raw, get_llm, get_repo, get_turn_manager
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
@@ -71,31 +72,26 @@ def _resolve_clients(request: Request):
 
 
 @router.get("/projects/{project_id}/messages")
-async def list_messages(project_id: str, request: Request):
+async def list_messages(project_id: str, request: Request,
+                        owner: str | None = Depends(owner_from_request)):
     """消息史恢复（刷新回填）：按时间序回 role/content 全量史。
 
     只回 role/content（ts/metadata 是内核内部细节，不进 API 面）；
     ``limit=0`` 走 repo 语义取全量。
     """
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
-    try:
-        messages = repo.get_messages(project_id, limit=0)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    checked_owned_project(project_id, repo, owner)
+    messages = repo.get_messages(project_id, limit=0)
     return [{"role": m["role"], "content": m["content"]} for m in messages]
 
 
 @router.post("/projects/{project_id}/messages", status_code=201)
 async def create_turn(project_id: str, body: CreateTurnRequest,
-                      request: Request, background: BackgroundTasks):
+                      request: Request, background: BackgroundTasks,
+                      owner: str | None = Depends(owner_from_request)):
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     tm = get_turn_manager(request)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
     llm, flyai = _resolve_clients(request)
@@ -157,9 +153,10 @@ async def _event_stream(tm, project_id: str, turn_id: str, last_id: int, handle)
 
 
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
-async def stream_events(project_id: str, turn_id: str, request: Request):
+async def stream_events(project_id: str, turn_id: str, request: Request,
+                        owner: str | None = Depends(owner_from_request)):
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
@@ -170,9 +167,10 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
 
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
-async def cancel_turn(project_id: str, turn_id: str, request: Request):
+async def cancel_turn(project_id: str, turn_id: str, request: Request,
+                      owner: str | None = Depends(owner_from_request)):
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)

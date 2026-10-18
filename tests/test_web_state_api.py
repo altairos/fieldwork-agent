@@ -145,3 +145,19 @@ async def test_r09_confirm_dep_hash_mismatch_409(client, app):
     r = await client.post("/projects/p1/proposal/confirm", json={"doc_id": did})
     assert r.status_code == 409
     assert "重新生成" in r.text
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：写端点对非 owner 一律 404
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_state_writes_hidden_from_other_owner(app, client):
+    from conftest import OTHER_TOKEN, make_client
+
+    async with make_client(app, owner_token=OTHER_TOKEN) as other:
+        r = await other.put("/projects/p1/research-context", json={"budget": "1万"})
+        assert r.status_code == 404
+        assert r.json()["detail"] == "项目不存在: p1"
+        r2 = await other.post("/projects/p1/proposal/confirm", json={"doc_id": "d1"})
+        assert r2.status_code == 404

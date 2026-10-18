@@ -8,7 +8,8 @@ from fieldwork_agent.kernel.documents.informants import candidate_to_record
 from fieldwork_agent.kernel.models import InformantCandidate
 from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
 from fieldwork_agent.web_host.agent.loop import check_and_advance
-from fieldwork_agent.web_host.api.guard import checked_project_id
+from fieldwork_agent.web_host.api.guard import checked_owned_project
+from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_repo
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -44,12 +45,8 @@ class ConfirmProposalRequest(BaseModel):
     doc_id: str
 
 
-def _guarded_state(repo, project_id: str) -> None:
-    checked_project_id(project_id, repo)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+def _guarded_state(repo, project_id: str, owner: str | None) -> None:
+    checked_owned_project(project_id, repo, owner)
 
 
 def _transition(repo, project_id: str):
@@ -59,8 +56,9 @@ def _transition(repo, project_id: str):
 
 @router.put("/projects/{project_id}/research-context")
 async def update_research_context(project_id: str, body: ContextPatch,
-                                  repo=Depends(get_repo)):
-    _guarded_state(repo, project_id)
+                                  repo=Depends(get_repo),
+                                  owner: str | None = Depends(owner_from_request)):
+    _guarded_state(repo, project_id, owner)
     try:
         # 审计二 R05：与工具入口同一校验来源；repo 层浅合并，只传净化后 patch
         clean = sanitize_context_patch(
@@ -74,8 +72,9 @@ async def update_research_context(project_id: str, body: ContextPatch,
 
 
 @router.post("/projects/{project_id}/field-sites/{site_id}/confirm")
-async def confirm_field_site(project_id: str, site_id: str, repo=Depends(get_repo)):
-    _guarded_state(repo, project_id)
+async def confirm_field_site(project_id: str, site_id: str, repo=Depends(get_repo),
+                             owner: str | None = Depends(owner_from_request)):
+    _guarded_state(repo, project_id, owner)
     if not repo.confirm_field_site(project_id, site_id):
         raise HTTPException(404, f"田野点不存在: {site_id}")
     record = next((s for s in repo.list_field_sites(project_id)
@@ -86,8 +85,9 @@ async def confirm_field_site(project_id: str, site_id: str, repo=Depends(get_rep
 
 @router.post("/projects/{project_id}/informants", status_code=201)
 async def adopt_informant(project_id: str, body: AdoptInformantRequest,
-                          repo=Depends(get_repo)):
-    _guarded_state(repo, project_id)
+                          repo=Depends(get_repo),
+                          owner: str | None = Depends(owner_from_request)):
+    _guarded_state(repo, project_id, owner)
     try:
         candidate = InformantCandidate.model_validate(body.candidate)
     except ValidationError as exc:
@@ -101,8 +101,9 @@ async def adopt_informant(project_id: str, body: AdoptInformantRequest,
 
 @router.post("/projects/{project_id}/proposal/confirm")
 async def confirm_proposal(project_id: str, body: ConfirmProposalRequest,
-                           repo=Depends(get_repo)):
-    _guarded_state(repo, project_id)
+                           repo=Depends(get_repo),
+                           owner: str | None = Depends(owner_from_request)):
+    _guarded_state(repo, project_id, owner)
     try:
         # 审计二 R09：四重校验在 kernel（Task 8）；此处只做 code→HTTP 映射
         confirmation = repo.confirm_proposal(project_id, body.doc_id)
