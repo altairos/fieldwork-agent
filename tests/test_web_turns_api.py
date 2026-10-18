@@ -159,6 +159,35 @@ async def test_unknown_turn_404(client):
     assert r.status_code == 404
 
 
+async def test_sse_replay_race_still_delivers_terminal_event(app):
+    """P1-1：回放期间回合完成的竞态下，流仍须送出 turn_done。
+
+    场景：订阅方已收到首个回放帧（generator 挂起在回放 yield，竞态窗口
+    打开），此刻后台回合完成（turn_done 落盘 + finish 广播）。修复前
+    generator 恢复后见终态直接 return，turn_done 永不送达；修复后先订阅
+    再回放，窗口内事件经队列补送。
+    """
+    from fieldwork_agent.web_host.api.turns import _event_stream
+    from fieldwork_agent.web_host.deps import get_tm_raw
+
+    tm = get_tm_raw(app)
+    t = tm.create_turn("p1")
+    tm.append_event("p1", t.turn_id, "message_delta", {"text": "a"})
+
+    stream = _event_stream(tm, "p1", t.turn_id, 0, t)
+    first = await stream.__anext__()  # 回放帧；generator 挂起在此（窗口打开）
+    assert "message_delta" in first
+
+    # 窗口内：后台回合完成（新事件落盘 + 终态广播）
+    tm.append_event("p1", t.turn_id, "turn_done", {"status": "completed"})
+    tm.finish("p1", t.turn_id, "completed")
+
+    second = await stream.__anext__()  # 必须送出 turn_done，而非直接断流
+    assert "turn_done" in second
+    with pytest.raises(StopAsyncIteration):
+        await stream.__anext__()  # 哨兵到后干净关流
+
+
 # ------------------------------------------------ 消息史恢复（刷新回填）
 
 

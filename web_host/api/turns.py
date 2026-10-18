@@ -115,6 +115,47 @@ async def _execute_turn(app, pid, tid, text, llm, flyai):
         await run_turn(repo, pid, tid, text, tm, llm, flyai)
 
 
+async def _event_stream(tm, project_id: str, turn_id: str, last_id: int, handle):
+    """SSE 事件流：回放已有事件 + 实时订阅新事件。
+
+    先订阅再回放：消除「回放快照之后、订阅建立之前」窗口内落盘事件的
+    丢失（回合恰在该窗口完成时 turn_done 会永久丢掉）；订阅早于回放
+    会造成重叠，用回放末尾 seq 去重。
+    """
+    queue = tm.subscribe(project_id, turn_id)
+    try:
+        max_seq = last_id
+        # 回放已有事件
+        for env in tm.replay(project_id, turn_id, after_seq=last_id):
+            yield encode_event(env)
+            max_seq = max(max_seq, env.seq)
+        # 回放后已终态：排空队列（窗口内落盘的事件 + 哨兵）再关闭；
+        # 重连已完成回合时队列为空，同样立即关流
+        if handle.status in TERMINAL_STATUSES:
+            while not queue.empty():
+                item = queue.get_nowait()
+                if item is None:
+                    return
+                if item.seq > max_seq:
+                    yield encode_event(item)
+            return
+        # 实时订阅新事件
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(),
+                                              timeout=HEARTBEAT_INTERVAL)
+            except asyncio.TimeoutError:
+                yield encode_heartbeat()
+                continue
+            if item is None:
+                break
+            if item.seq <= max_seq:
+                continue  # 订阅早于回放快照的重叠事件，去重
+            yield encode_event(item)
+    finally:
+        tm.unsubscribe(project_id, turn_id, queue)
+
+
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
 async def stream_events(project_id: str, turn_id: str, request: Request):
     repo = get_repo(request)
@@ -125,31 +166,7 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
     if handle is None:
         raise HTTPException(404, "回合不存在")
     last_id = parse_last_event_id(dict(request.headers))
-
-    async def generator():
-        # 回放已有事件
-        for env in tm.replay(project_id, turn_id, after_seq=last_id):
-            yield encode_event(env)
-        # 已结束 → 直接关闭
-        if handle.status in TERMINAL_STATUSES:
-            return
-        # 实时订阅
-        queue = tm.subscribe(project_id, turn_id)
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(),
-                                                  timeout=HEARTBEAT_INTERVAL)
-                except asyncio.TimeoutError:
-                    yield encode_heartbeat()
-                    continue
-                if item is None:
-                    break
-                yield encode_event(item)
-        finally:
-            tm.unsubscribe(project_id, turn_id, queue)
-
-    return sse_response(generator())
+    return sse_response(_event_stream(tm, project_id, turn_id, last_id, handle))
 
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
