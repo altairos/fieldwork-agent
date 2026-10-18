@@ -1120,3 +1120,130 @@ def test_doc_tool_receives_repo_research_questions(env):
     assert "研究主题：宗族与乡村治理" in joined
     assert "RQ1 宗族结构" in joined
     assert "学科取向：社会学" in joined
+
+
+# ------------------------------- F05 取消保护 / F06 最终回答收敛 / F07 批前截断
+# （任务4：TurnPatchBuffer 回合级暂存 + has_final_answer 收敛 + 批量额度截断）
+
+
+class CancelFirstChunkLLM(FakeLLM):
+    """首终帧产出后置 cancel_event：模拟用户在首轮工具执行前后取消。"""
+
+    def __init__(self, script, tm, pid, turn_id):
+        super().__init__(script)
+        self._tm, self._pid, self._turn = tm, pid, turn_id
+
+    def chat_stream(self, messages, **kw):
+        first = True
+        for chunk in super().chat_stream(messages, **kw):
+            yield chunk
+            if first and chunk.get("tool_calls") is not None:
+                first = False
+                self._tm.get_turn(self._pid, self._turn).cancel_event.set()
+
+
+_STATE_TOOL_FRAME = [{"delta": ""},
+                     {"content": "", "tool_calls": [
+                         {"id": "c1", "name": "update_research_context",
+                          "arguments": {"patch": {"topic": "宗族与乡村治理"},
+                                        "reason": "用户确认主题"}}],
+                      "finish_reason": "tool_calls", "usage": {}}]
+_STOP_FRAME = [{"delta": "已记录"},
+               {"content": "已记录", "tool_calls": None, "finish_reason": "stop",
+                "usage": {"total_tokens": 5}}]
+
+
+def test_f05_cancel_discards_staged_patch(env):
+    """F05：回合中途取消——状态工具写入只进暂存区，本轮不落盘，终态 cancelled。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = CancelFirstChunkLLM([_STATE_TOOL_FRAME, _STOP_FRAME], tm, "p1", turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "主题定为宗族与乡村治理",
+                         tm, llm, FakeFlyAI()))
+    assert repo.get_research_context("p1").get("topic", "") == ""   # 未提交不落盘
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+
+
+def test_f05_normal_turn_commits_staged_patch(env):
+    """F05：正常完成轮末 commit 落盘（对照组），终态 completed。"""
+    repo, tm = env
+    llm = FakeLLM([_STATE_TOOL_FRAME, _STOP_FRAME])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "主题定为宗族与乡村治理",
+                         tm, llm, FakeFlyAI()))
+    assert repo.get_research_context("p1").get("topic") == "宗族与乡村治理"
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+def test_f06_preamble_budget_hit_converges_to_final_answer(env):
+    """F06：前导语（"我先查一下"）+ 工具轮触顶退出——旧条件 accumulated_reply
+    非空会短路收敛块；新条件 not has_final_answer 必须触发，收敛帧覆盖前导语。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查一下"},
+         {"content": "我先查一下", "tool_calls": [
+             {"id": "c1", "name": "search_pois", "arguments": {"city_name": "大理", "keyword": "宗祠"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "综合来看，大理有 3 处。"},
+         {"content": "综合来看，大理有 3 处。", "tool_calls": None,
+          "finish_reason": "stop", "usage": {"total_tokens": 9}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "大理有哪些宗祠", tm, llm,
+                         FakeFlyAI(), max_tool_calls=1))
+    assistant = [m for m in repo.get_messages("p1") if m["role"] == "assistant"]
+    assert assistant[-1]["content"] == "综合来看，大理有 3 处。"   # 覆盖前导语
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+def test_f06_convergence_empty_keeps_preamble_with_note(env):
+    """F06：收敛帧仍空 → 不清前导语，走三分支的"过程说明+上限提示"分支。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查一下"},
+         {"content": "我先查一下", "tool_calls": [
+             {"id": "c1", "name": "search_pois", "arguments": {"city_name": "大理", "keyword": "宗祠"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "大理有哪些宗祠", tm, llm,
+                         FakeFlyAI(), max_tool_calls=1))
+    assistant = [m for m in repo.get_messages("p1") if m["role"] == "assistant"]
+    assert assistant[-1]["content"].startswith("我先查一下")   # 空正文不清前导语
+    assert "已达本回合处理上限" in assistant[-1]["content"]
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+def test_f07_web_batch_truncated_before_dispatch(env):
+    """F07：一批 2 调用只剩 1 额度 → 只执行第 1 个；第 2 个不再启动、直接回填
+    budget_exceeded（两条 tool_call_id 均有 tool_completed，无悬空 id），回合 completed。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c1", "name": "search_pois", "arguments": {"city_name": "大理", "keyword": "宗祠"}},
+             {"id": "c2", "name": "search_pois", "arguments": {"city_name": "大理", "keyword": "民居"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "基于已有材料的结论。"},
+         {"content": "基于已有材料的结论。", "tool_calls": None,
+          "finish_reason": "stop", "usage": {"total_tokens": 7}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "查两地", tm, llm,
+                         FakeFlyAI(), max_tool_calls=1))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    completed = {e.data["call_id"]: e.data for e in events
+                 if e.event == "tool_completed"}
+    assert set(completed) == {"c1", "c2"}                 # 两条 id 均有回填（C3）
+    assert completed["c1"]["ok"] is True
+    assert completed["c2"]["ok"] is False
+    assert completed["c2"]["error"]["code"] == "budget_exceeded"
+    started = [e.data["call_id"] for e in events if e.event == "tool_started"]
+    assert started == ["c1"]                              # 被截断者不再启动
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"

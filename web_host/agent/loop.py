@@ -13,10 +13,12 @@ from fieldwork_agent.kernel.sources.flyai import RecordingClient
 from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
+    _budget_skip_content,
     _coerce_args,
     _error_dict,
     _tool_content,
 )
+from fieldwork_agent.runtime.turn_buffer import TurnPatchBuffer
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
 from fieldwork_agent.web_host.agent.state_tools import build_state_tools
@@ -85,7 +87,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                  amap_recorder if amap_recorder is not None
                                  else amap_client)
     tools = build_tool_schemas()
-    state_schemas, state_handlers = build_state_tools(repo, pid)
+    # F05：回合级 patch 暂存——状态工具与时窗回写先进 buffer，轮末正常结束
+    # commit 落盘、取消 discard，项目状态不受残缺回合影响
+    buffer = TurnPatchBuffer(repo, pid)
+    state_schemas, state_handlers = build_state_tools(repo, pid, buffer=buffer)
     tools = tools + state_schemas
     phase = repo.get_phase(pid)
 
@@ -98,6 +103,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     total_calls = 0
     start = time.monotonic()
     accumulated_reply = ""
+    has_final_answer = False
     finish_reason = ""
     usage_total: dict = {}
     call_name_map: dict[str, str] = {}
@@ -152,13 +158,30 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             usage_total = final_resp.get("usage", {}) or usage_total
             tool_calls = final_resp.get("tool_calls")
             if not tool_calls:
+                # F06：有正文且无后续工具调用的帧才算最终回答（前导语+触顶
+                # 退出的场景 accumulated_reply 非空但不是答案，收敛块须接管）
+                if (final_resp.get("content") or "").strip():
+                    has_final_answer = True
                 finish_reason = str(final_resp.get("finish_reason") or "")
                 break
 
-            # 并行工具执行
+            # 并行工具执行（F07：批前截断——越过额度的调用不执行，直接回填
+            # budget_exceeded 的 role=tool 消息与事件，协议上每个 id 均有回填）
             messages.append(_assistant_message(final_resp))
+            remaining = max_tool_calls - total_calls
+            executed, skipped = tool_calls[:remaining], tool_calls[remaining:]
+            for call in skipped:
+                call_id = call.get("id", "")
+                name = call.get("name", "")
+                err = {"code": "budget_exceeded",
+                       "message": "本回合工具调用额度已用尽，该调用未执行"}
+                messages.append({"role": "tool", "tool_call_id": call_id,
+                                 "content": _budget_skip_content()})
+                tm.append_event(pid, turn_id, "tool_completed",
+                                {"call_id": call_id, "ok": False, "data": None,
+                                 "degraded": None, "error": err})
             coros = []
-            for call in tool_calls:
+            for call in executed:
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
@@ -171,7 +194,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 coros.append(_exec_tool(dispatch, name, args, call_id, state_handlers))
 
             results = await asyncio.gather(*coros)
-            total_calls += len(results)
+            total_calls += len(executed)
 
             for call_id, name, env in results:
                 data = env.data
@@ -198,8 +221,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                              "reason": (w.get("reasons") or [""])[0]}
                             for w in wins
                         ]
-                        repo.update_research_context(
-                            pid, {"candidate_windows": payload})
+                        # F05：经回合级暂存，取消回合不落残缺候选
+                        buffer.stage({"candidate_windows": payload})
             # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
             # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
@@ -254,15 +277,15 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         except Exception:
             pass  # 续写失败保留原文，不丢已流出的内容
 
-    # 空回复收敛（对齐 CLI runtime/loop.py 的触顶收敛）：主循环退出但零正文时
-    # 不让回合静默结束——追加 system 收敛指令再取一次最终回答（不带工具，
-    # 防继续调用）；仍空则发兑底文案。覆盖两类场景：预算触顶裸退出，及
-    # 思考模型最终轮「只想不写」（思考流在 reasoning_content、正文为空，
-    # 回合无回复即 completed）。cancel 已取消的回合不做兑底（终态 cancelled）。
+    # 最终回答收敛（对齐 CLI runtime/loop.py 的触顶收敛；F06 收敛条件整体
+    # 替换为 not has_final_answer）：主循环退出但没拿到最终回答（预算触顶
+    # 裸退出、思考模型「只想不写」、或只输出了前导语就触顶）时不让回合静默
+    # 结束——追加 system 收敛指令再取一次最终回答（不带工具，防继续调用）；
+    # 仍空则按空/非空走三分支兜底。cancel 已取消的回合不做兜底（终态 cancelled）。
     handle = tm.get_turn(pid, turn_id)
     if handle is None:
         return  # 项目删除竞态：收敛与轮末的写入目标均已消失
-    if (llm is not None and not accumulated_reply
+    if (llm is not None and not has_final_answer
             and not handle.cancel_event.is_set()):
         limit_hit = (iterations >= max_iters or total_calls >= max_tool_calls
                      or time.monotonic() - start > max_wall_seconds)
@@ -284,7 +307,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 elif "content" in chunk:
                     final_resp = chunk
             if final_resp and not final_resp.get("error"):
-                accumulated_reply = final_resp.get("content", "") or ""
+                if (final_resp.get("content") or "").strip():
+                    accumulated_reply = final_resp["content"]
+                    has_final_answer = True  # 收敛成功即最终回答，三分支不再追加提示
                 usage_total = final_resp.get("usage", {}) or usage_total
         except Exception:
             accumulated_reply = ""  # 收敛重试失败不改变回合结果，走兑底文案
@@ -294,6 +319,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                         "（本次未生成文字回复；请继续提问或稍后重试。）")
             tm.append_event(pid, turn_id, "message_delta", {"text": fallback})
             accumulated_reply = fallback
+        elif not has_final_answer:
+            # 前导语 + 未获最终回答：保留过程说明，追加提示
+            note = ("\n\n（以上为过程说明；已达本回合处理上限，未能生成完整总结，"
+                    "请继续提问以接着现有材料推进。）" if limit_hit else
+                    "\n\n（以上为过程说明；本次未生成文字总结，请继续提问。）")
+            tm.append_event(pid, turn_id, "message_delta", {"text": note})
+            accumulated_reply = accumulated_reply + note
 
     # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 阶段推进
     # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
@@ -315,6 +347,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                      "finish_reason": finish_reason,
                                      **({"quick_replies": quick_replies}
                                         if quick_replies else {})})
+            buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
             _apply_extractions(repo, pid, user_text)
             transition = check_and_advance(repo, pid)
@@ -329,6 +362,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
 
     # 终态
     if cancelled:
+        buffer.discard()  # F05：取消丢弃本轮暂存
         tm.finish(pid, turn_id, "cancelled")
     else:
         tm.append_event(pid, turn_id, "turn_done",

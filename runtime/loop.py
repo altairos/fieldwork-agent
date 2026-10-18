@@ -12,6 +12,9 @@ kernel 只做无状态能力、禁止 LLM 编排；"发请求→执行 tool_call
 回合预算三重上限（R5）：迭代数 ``max_iters``（默认 8，spec §3.3）、累计工具调用数
 ``max_tool_calls``、墙钟总时长 ``max_wall_seconds``。任一命中即 ``stopped_by_limit=True``，
 追加一条 system 提示后再取**一次**最终回答返回（优雅收敛，绝不裸断在半截工具链上）。
+F07：一批 tool_calls 越过额度时**批前截断**——只执行剩余额度内的调用，被跳过者
+立即回填 ``role=tool`` 的 budget_exceeded 消息（OpenAI 协议：每个 tool_call_id
+必须有对应回填），不再整批全执行后才检查。
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from fieldwork_agent.kernel.models import Envelope
+from fieldwork_agent.kernel.models import Envelope, ToolError
 
 # 摘要序列化后进消息的字符安全上限（R5：结构化摘要仍须有界）
 TOOL_CONTENT_LIMIT = 2000
@@ -165,6 +168,13 @@ def _assistant_message(resp: dict) -> dict:
             "tool_calls": calls}
 
 
+def _budget_skip_content() -> str:
+    """被额度截断的 tool_call 的 role=tool 回填内容（C3：id 必须有对应消息）。"""
+    return json.dumps({"error": "budget_exceeded",
+                       "message": "本回合工具调用额度已用尽，该调用未执行"},
+                      ensure_ascii=False)
+
+
 def run_tool_loop(llm: Any, messages: list[dict],
                   dispatch: Callable[[str, dict], Envelope], tools: list[dict], *,
                   max_iters: int = 8, slot: str = "interview",
@@ -196,7 +206,23 @@ def run_tool_loop(llm: Any, messages: list[dict],
                               tool_events=tool_events, iterations=iterations,
                               stopped_by_limit=False)
         msgs.append(_assistant_message(resp))
-        for call in calls:
+        remaining = max_tool_calls - total_calls
+        executed, skipped = calls[:remaining], calls[remaining:]
+        for call in skipped:            # 先回填被跳过者（协议 C3），再执行
+            msgs.append({"role": "tool", "tool_call_id": call.get("id", ""),
+                         "content": _budget_skip_content()})
+            tool_events.append({"tool": call.get("name", ""),
+                                "call_id": call.get("id", ""), "ok": False,
+                                "data": None, "degraded": None,
+                                "arguments": _coerce_args(call.get("arguments")),
+                                "error": ToolError(code="budget_exceeded",
+                                                   message="本回合工具调用额度已用尽，该调用未执行")})
+            if on_event:
+                on_event("tool_completed", {"call_id": call.get("id", ""), "ok": False,
+                                            "data": None, "degraded": None,
+                                            "error": {"code": "budget_exceeded",
+                                                      "message": "本回合工具调用额度已用尽，该调用未执行"}})
+        for call in executed:
             name = call.get("name", "")
             call_id = call.get("id", "")
             args = _coerce_args(call.get("arguments"))
@@ -214,6 +240,9 @@ def run_tool_loop(llm: Any, messages: list[dict],
                 on_event("tool_completed", {"call_id": call_id, "ok": env.ok,
                                             "data": env.data, "degraded": env.degraded,
                                             "error": _error_dict(env)})
+        if skipped:
+            limit_reason = "工具调用次数已达上限，请基于已有信息回答"
+            break
         if time.monotonic() - start > max_wall_seconds:
             limit_reason = "回合时长已达上限，请基于已有信息回答"
             break
