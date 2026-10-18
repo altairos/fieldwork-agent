@@ -5,7 +5,7 @@
 @layer base {
   html, body, #root { height: 100%; }
   body {
-    /* 底色/文字随主题（themes.css 四套 CSS 变量） */
+    /* 底色/文字随主题（themes.css 六套 CSS 变量） */
     background-color: rgb(var(--fw-paper));
     color: rgb(var(--fw-ink));
     /* 全局宋体：单一衬线族贯穿标题/正文/UI */
@@ -69,7 +69,7 @@
 .scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* 键盘焦点全局基线（可点性四连之 focus-visible）：按钮/链接/交互 role 键盘聚焦时
-   给主题色描边（随 themes.css 四套皮肤切换）；输入框不入列——它们走各自外壳的
+   给主题色描边（随 themes.css 六套皮肤切换）；输入框不入列——它们走各自外壳的
    focus-within 惯例（如 Composer 输入壳 border-cinnabar/50）。
    :where 零特异性，组件可用 focus-visible: 工具类按需覆盖（如 ThemeSwitcher）。 */
 :where(button, a, summary, [role="tab"], [role="menuitemradio"]):focus-visible {

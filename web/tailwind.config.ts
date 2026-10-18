@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 /* 颜色一律 rgb(var(--fw-*) / <alpha-value>)：值来自 styles/themes.css 的
- * 四套 [data-theme] CSS 变量（RGB 三元组），支持 border-cinnabar/25 等
+ * 六套 [data-theme] CSS 变量（RGB 三元组），支持 border-cinnabar/25 等
  * 透明度修饰符。四个主色衍生 token（ontint/tintpress/onindigo/tintline）
  * 原为设计板 token 外用值，主题化时一并语义化。 */
 const c = (v: string) => `rgb(var(${v}) / <alpha-value>)`;

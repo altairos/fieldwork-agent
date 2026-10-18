@@ -17,8 +17,8 @@ beforeEach(() => {
 });
 
 describe("lib/theme 校验与读写", () => {
-  test("isThemeId：四套有效，其余无效", () => {
-    for (const id of ["cinnabar", "indigo", "bamboo", "wordblue"]) {
+  test("isThemeId：六套有效，其余无效", () => {
+    for (const id of ["cinnabar", "indigo", "bamboo", "wordblue", "obsidian", "vscode"]) {
       expect(isThemeId(id)).toBe(true);
     }
     expect(isThemeId("dark")).toBe(false);
@@ -49,7 +49,7 @@ describe("theme store 三处同步", () => {
 });
 
 describe("ThemeSwitcher 交互", () => {
-  test("展开弹层：四套主题按序展示，当前项 aria-checked", () => {
+  test("展开弹层：六套主题按序展示，当前项 aria-checked", () => {
     render(<ThemeSwitcher />);
     const trigger = screen.getByRole("button", { name: "切换界面配色" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
