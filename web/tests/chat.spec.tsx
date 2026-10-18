@@ -216,7 +216,7 @@ describe("PhaseBanner", () => {
   test("pendingSuggestion 原文出现在横幅，且不自动切 Tab", () => {
     useUiStore.getState().applyEvent({ event: "phase_transition", from: "field_site_profiles", to: "itinerary_planning" });
     render(<PhaseBanner />);
-    expect(screen.getByText(/已进入itinerary_planning阶段/)).toBeInTheDocument();
+    expect(screen.getByText(/已进入「行程规划」阶段/)).toBeInTheDocument();
     expect(useUiStore.getState().activeTab).toBe("basic-info");
   });
   test("降级横幅如实转述 code/message/hint，可关闭", () => {
