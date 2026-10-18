@@ -9,8 +9,10 @@ from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem, ToolEr
 from fieldwork_agent.kernel.registry import CapabilityMeta
 from fieldwork_agent.mcp_server import dispatch
 
-# 文档组：消费注入的 llm；其余（8 搜索 + 2 聚合）消费注入的 client
+# 文档组：消费注入的 llm；flyai 系（8 搜索 + 2 聚合）消费 client、
+# amap 系六原语消费 amap_client（两种 client 分道，防串味）
 DOCUMENT_TOOLS = {"compose_proposal", "compose_interview_guide", "suggest_informants"}
+AMAP_TOOLS_PREFIX = "amap_"
 
 # 终审③ 的替身：C 内建 ``time.time`` 无 __text_signature__，``inspect.signature`` 抛
 # ValueError（CPython 3.12 实测；``print`` 有 Argument Clinic 签名，取不到签名不成立）。
@@ -195,6 +197,34 @@ def test_client_injected_only_when_ctx_provides_it(monkeypatch):
     assert seen["client"] is None
 
 
+def test_amap_client_reserved_key_stripped_and_injected(monkeypatch):
+    """amap_client 与 client 分道：客户端塞值剥离，ctx 提供时只注入 fn 声明的键。
+
+    防两类串味：amap 工具收到 FlyAIClient（或反之）——server 组装会把两种
+    client 都放进 ctx，若 dispatch 无差别注入，下游 AttributeError 会被折成
+    假 internal_error，掩盖接线缺陷。
+    """
+    seen = {}
+
+    def fake_amap(*, amap_client=None, **kw):
+        seen["amap_client"] = amap_client
+        seen.update(kw)
+        return Envelope(ok=True, data={"echo": 1})
+
+    _patch_both_tables(monkeypatch, "amap_geocode", fake_amap)
+    flyai_sentinel, amap_sentinel = object(), object()
+
+    out = dispatch.call_capability(
+        "amap_geocode", {"address": "大理", "amap_client": "客户端伪装"},
+        ctx={"client": flyai_sentinel, "amap_client": amap_sentinel})
+
+    assert out["ok"] is True
+    # ctx 提供 → 注入 sentinel；客户端塞的字符串被剥离（不会出现在任何形参/kwargs）
+    assert seen["amap_client"] is amap_sentinel
+    # flyai 的 client 键不穿入 amap 工具：未被声明，不入参也不入 **kwargs
+    assert "client" not in seen
+
+
 def test_internal_error_keeps_exception_message(monkeypatch):
     """业务异常折进包络，禁止吞错：INTERNAL 必须保留异常消息。"""
 
@@ -286,10 +316,16 @@ def test_non_envelope_result_is_wrapped(monkeypatch):
 
 
 def test_registry_fns_expose_injection_seams():
-    """裸导入即注册：13 能力全进分派表；文档能力声明 llm、搜索/聚合声明 client（注入接缝，0c5b7bb 已落地）。"""
+    """裸导入即注册：21 能力全进分派表；文档能力声明 llm、flyai 系声明 client、
+    amap 系六原语与聚合能力 plan_last_mile 声明 amap_client（注入接缝分道，
+    0c5b7bb 已落地）。"""
     fns = dispatch._CAPABILITY_FNS
-    assert len(fns) == 14 and DOCUMENT_TOOLS <= set(fns)
+    assert len(fns) == 21 and DOCUMENT_TOOLS <= set(fns)
+    amap_tools = {n for n in fns if n.startswith(AMAP_TOOLS_PREFIX)} | {"plan_last_mile"}
+    assert len(amap_tools) == 7
     for name in DOCUMENT_TOOLS:
         assert "llm" in inspect.signature(fns[name]).parameters
-    for name in set(fns) - DOCUMENT_TOOLS:
+    for name in amap_tools:
+        assert "amap_client" in inspect.signature(fns[name]).parameters
+    for name in set(fns) - DOCUMENT_TOOLS - amap_tools:
         assert "client" in inspect.signature(fns[name]).parameters

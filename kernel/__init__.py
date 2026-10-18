@@ -8,11 +8,19 @@
 聚合落到**模块级**而非子包级：各子包 ``__init__.py`` 只有 docstring，import 子包不会
 触发其内模块。guidance / repository 不注册能力，不在聚合之列。
 """
-from fieldwork_agent.kernel.aggregation import itinerary, site_profile, window  # noqa: F401
+from fieldwork_agent.kernel.aggregation import (  # noqa: F401
+    itinerary,
+    last_mile,
+    site_profile,
+    window,
+)
 from fieldwork_agent.kernel.documents import informants as documents_informants  # noqa: F401
 from fieldwork_agent.kernel.documents import proposal  # noqa: F401
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.registry import capabilities as CAPABILITIES
-from fieldwork_agent.kernel.sources import flyai  # noqa: F401
+from fieldwork_agent.kernel.sources import (
+    amap,  # noqa: F401
+    flyai,  # noqa: F401
+)
 
 __all__ = ["CAPABILITIES", "build_tool_schemas"]

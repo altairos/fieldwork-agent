@@ -20,7 +20,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config_mod, "PROJECTS_DIR", projects)
     monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
-    for var in ("DASHSCOPE_API_KEY", "FLYAI_API_KEY",
+    for var in ("DASHSCOPE_API_KEY", "FLYAI_API_KEY", "AMAP_API_KEY",
                 "FA_INTERVIEW_MODEL", "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
@@ -30,11 +30,13 @@ def test_defaults_isolated(isolated_home):
     cfg = Config()
     assert cfg.dashscope_api_key == ""
     assert cfg.flyai_api_key == ""
+    assert cfg.amap_api_key == ""
     assert cfg.interview_model == "qwen3.8-flash"
     assert cfg.proposal_model == "qwen-max"
     assert cfg.extract_model == "qwen3.8-flash"
     assert cfg.dashscope_available is False
     assert cfg.flyai_available is False
+    assert cfg.amap_available is False
     assert cfg.dingtalk_available is False
     assert cfg.projects_dir.exists()
 
@@ -77,6 +79,31 @@ def test_flyai_env_wins_over_file(isolated_home):
     (flyai_dir / "config.json").write_text(json.dumps({"key": "fk-file"}), encoding="utf-8")
     cfg = Config()
     assert cfg.flyai_api_key == "fk-env"
+
+
+# ── 高德 Key（amap PoC M2）：env → 自有 config.json 覆盖，与 DashScope 同一优先级 ──
+
+
+def test_amap_key_from_env(isolated_home):
+    os.environ["AMAP_API_KEY"] = "amap-env"
+    cfg = Config()
+    assert cfg.amap_api_key == "amap-env"
+    assert cfg.amap_available is True
+
+
+def test_amap_key_own_config_overrides_env(isolated_home):
+    os.environ["AMAP_API_KEY"] = "amap-env"
+    (isolated_home / "config.json").write_text(
+        json.dumps({"amap_api_key": "amap-file"}), encoding="utf-8")
+    cfg = Config()
+    assert cfg.amap_api_key == "amap-file"  # 自有配置文件优先于环境变量
+
+
+def test_amap_key_save_roundtrip(isolated_home):
+    cfg = Config()
+    cfg.amap_api_key = "amap-save"
+    cfg.save()
+    assert Config().amap_api_key == "amap-save"
 
 
 def test_save_roundtrip(isolated_home):

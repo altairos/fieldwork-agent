@@ -20,6 +20,7 @@ class FakeConfig:
         self.projects_dir.mkdir(parents=True, exist_ok=True)
         self.dashscope_api_key = ""
         self.flyai_api_key = ""
+        self.amap_api_key = ""   # 高德地理六原语（server/ orchestrator 组装直取）
         self.app_token = ""   # 审计 F02：App Token 守卫读取（空 = 不启用）
         self.dingtalk_webhook = ""
         self.dingtalk_enabled = False
