@@ -937,3 +937,40 @@ def test_cancelled_turn_never_extracts_quick_replies(env):
     assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
     types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
     assert "turn_done" not in types  # 无 payload 可携带选项
+
+
+
+class RecordingGuideLLM(FakeLLM):
+    """流式照脚本走；非流式 chat 记录收到的 messages 供断言。"""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.chat_messages = None
+
+    def chat(self, messages, **kw):
+        self.chat_messages = messages
+        return {"content": "guide"}
+
+
+def test_doc_tool_receives_repo_research_questions(env):
+    """F01 端到端：仓储 research_questions/discipline 经 merge_doc_args 进 guide prompt。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "topic": "宗族与乡村治理", "research_questions": "RQ1 宗族结构",
+        "discipline": "社会学"})
+    llm = RecordingGuideLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_interview_guide",
+                                         "arguments": {"topic": "",
+                                                       "informant_types": ["村干部"]}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    joined = "\n".join(m["content"] for m in llm.chat_messages)
+    assert "研究主题：宗族与乡村治理" in joined
+    assert "RQ1 宗族结构" in joined
+    assert "学科取向：社会学" in joined

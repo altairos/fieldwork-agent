@@ -10,6 +10,7 @@ from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.sources.flyai import RecordingClient
+from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
     _coerce_args,
@@ -142,6 +143,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
+                args = merge_doc_args(repo, pid, name, args)
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
                 tm.append_event(pid, turn_id, "tool_started",
