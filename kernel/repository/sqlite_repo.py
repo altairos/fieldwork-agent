@@ -187,6 +187,7 @@ class SqliteRepository:
 
     def __init__(self, db_path: Path | str):
         self._db_path = Path(db_path)
+        self._tx_conn: sqlite3.Connection | None = None   # N06：环境事务连接（见 transaction）
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
@@ -210,7 +211,14 @@ class SqliteRepository:
         并发写者在 busy_timeout 内排队等锁；读路径保持 deferred（WAL 下
         读不阻塞）。「_ensure_schema 不用 immediate：executescript 会隐式
         COMMIT 掉手动事务。」
+
+        N06：若已处于 ``transaction()`` 环境事务中（``_tx_conn`` 非空），复用同一
+        连接、不再单独 BEGIN/COMMIT/CLOSE——让一组写操作（迁移的清空+导入+
+        验证+标记）落在单事务里，任一步失败整体回滚到迁移前状态。
         """
+        if self._tx_conn is not None:
+            yield self._tx_conn
+            return
         conn = sqlite3.connect(self._db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -225,6 +233,37 @@ class SqliteRepository:
             conn.rollback()
             raise
         finally:
+            conn.close()
+
+    @contextmanager
+    def transaction(self):
+        """N06：把一组写操作包进「单连接单事务」（BEGIN IMMEDIATE … COMMIT/ROLLBACK）。
+
+        期间所有经 ``_connect`` 的读写都复用同一连接：写方法不再各自提交，读方法
+        （含 ``migrate._verify``）读到的是本事务未提交的中间态，可在 COMMIT 前校验。
+        任一步抛异常 → 整体 ROLLBACK，库回到进入前的状态（force 迁移「清空+导入」
+        的原子性即靠此保证）。不可重入：嵌套调用直接报错，避免半提交歧义。
+        """
+        if self._tx_conn is not None:
+            raise RuntimeError("已有进行中的 transaction()，不可重入")
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            self._tx_conn = conn
+            yield conn
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            self._tx_conn = None
             conn.close()
 
     def _ensure_schema(self) -> None:

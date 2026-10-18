@@ -241,6 +241,46 @@ def test_migrate_force_overwrites_with_backup(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
+def test_force_migration_failure_rolls_back(tmp_path, monkeypatch):
+    """N06：force 迁移中途失败 → 整项目回滚到原状态，绝不留空/半导入目标。
+
+    复现审计场景：目标原有 LIVE TARGET（原生存量、无迁移标记 = 冲突），force
+    清空后在 _import_message 注入异常。旧实现清空已提交、导入半途中止 → 目标
+    消息为 []；单事务后清空与导入同回滚 → LIVE TARGET 原样保留、标记未落。
+    """
+    json_repo, sqlite = _legacy(tmp_path)
+    pid = "legacy_project"
+    sqlite.create(pid)
+    sqlite.append_message(pid, "user", "LIVE TARGET")   # 原生存量（无迁移标记）= 冲突
+
+    def boom(*_a, **_k):
+        raise RuntimeError("injected import failure")
+    monkeypatch.setattr(sqlite, "_import_message", boom)
+
+    with pytest.raises(RuntimeError, match="injected"):
+        migrate_to_sqlite(json_repo, sqlite, force=True)
+
+    # 回滚：目标项目原样保留（未被清空、未半导入），迁移标记未落（可重迁自愈）
+    assert [m["content"] for m in sqlite.get_messages(pid, 0)] == ["LIVE TARGET"]
+    assert not migrate_mod._already_migrated(sqlite, pid)
+
+
+def test_fresh_migration_failure_leaves_no_partial_project(tmp_path, monkeypatch):
+    """N06：全新迁移（无冲突）中途失败 → 事务回滚，目标库不留半导入项目行。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    pid = "legacy_project"
+
+    def boom(*_a, **_k):
+        raise RuntimeError("injected")
+    monkeypatch.setattr(sqlite, "_import_knowledge", boom)   # 消息/田野点已入事务后才炸
+
+    with pytest.raises(RuntimeError, match="injected"):
+        migrate_to_sqlite(json_repo, sqlite)
+
+    assert not migrate_mod._project_exists(sqlite, pid)      # 整体回滚，无残留项目行
+    assert not migrate_mod._already_migrated(sqlite, pid)
+
+
 def test_backup_rolling_three(tmp_path):
     """滚动 3 份且方向正确：bak.1 最新（marker-1..3）、逐级后移、超出丢弃。
 
