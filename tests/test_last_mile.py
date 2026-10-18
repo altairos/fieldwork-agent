@@ -12,6 +12,11 @@ direction_transit 记录入参返回固定方案页。断言三组语义：
 """
 from datetime import date, timedelta
 
+from fieldwork_agent.kernel.aggregation.amap_refs import (
+    live_around_ref,
+    live_geocode_ref,
+    live_transit_ref,
+)
 from fieldwork_agent.kernel.aggregation.last_mile import plan_last_mile
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -235,3 +240,50 @@ def test_plan_last_mile_registered_in_schemas():
     # N1：date_hint 不再是占位——description 钉死格式与 3 天窗语义
     assert "YYYY-MM-DD" in props["date_hint"]["description"]
     assert "3 天" in props["date_hint"]["description"]
+
+
+# ---------------------------------------------------------------- N5 live ref
+#（PoC2 §4.3 C3）plan_last_mile 附 @live 规格键：只附实际成功的调用——
+# 失败调用宿主不登记快照，附了会残留原样永远替换不掉。
+
+
+def test_amap_live_ref_key_formats():
+    """三个纯函数规格键格式（N5 §4.3）：只依赖入参；radius/城市等副参不进键。"""
+    assert live_geocode_ref("喜洲") == "@live:amap_geocode:喜洲"
+    assert live_around_ref("卫生院 诊所", "100.196,25.047") == \
+        "@live:amap_around_search:卫生院 诊所|100.196,25.047"
+    assert live_transit_ref("102.7122,25.0389", "100.1963,25.0473") == \
+        "@live:amap_direction_transit:102.7122,25.0389>100.1963,25.0473|"
+    assert live_transit_ref("102.7122,25.0389", "100.1963,25.0473", "2026-11-02") == \
+        "@live:amap_direction_transit:102.7122,25.0389>100.1963,25.0473|2026-11-02"
+
+
+def test_success_data_carries_live_refs():
+    """成功路径 data.live_refs：geocode×2 恒附 + transit 键（无 date_hint → 空尾段）。"""
+    geo = StubTransitClient()
+    env = plan_last_mile("昆明", "喜洲", amap_client=geo)
+    assert env.ok is True
+    assert env.data["live_refs"] == [
+        "@live:amap_geocode:昆明",
+        "@live:amap_geocode:喜洲",
+        "@live:amap_direction_transit:102.7122,25.0389>100.1963,25.0473|",
+    ]
+
+
+def test_date_hint_in_transit_live_ref():
+    """date_hint 窗内 → transit 键尾带日期，与实际透传 v3 date 一致（宿主可对账）。"""
+    geo = StubTransitClient()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    env = plan_last_mile("昆明", "喜洲", date_hint=tomorrow, amap_client=geo)
+    assert env.ok is True
+    assert env.data["live_refs"][-1] == \
+        f"@live:amap_direction_transit:102.7122,25.0389>100.1963,25.0473|{tomorrow}"
+
+
+def test_transit_failure_live_refs_skip_transit_key():
+    """只附成功调用：transit 失败 → live_refs 只剩两个 geocode 键（失败键不附）。"""
+    geo = StubTransitClient(fail_transit=True)
+    env = plan_last_mile("昆明", "喜洲", amap_client=geo)
+    assert env.ok is True
+    assert env.data["live_refs"] == [
+        "@live:amap_geocode:昆明", "@live:amap_geocode:喜洲"]

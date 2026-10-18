@@ -470,3 +470,45 @@ def test_inputs_hash_independent_of_last_mile():
     b = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
                           client=StubClient(), amap_client=StubAmap(no_key=True)).data
     assert a.inputs_hash == b.inputs_hash
+
+
+# ────────────────────────────────────────────────────────────────
+# N5 live ref（PoC2 §4.3 C3）：接驳腿 last_mile 附规格键（只附成功调用）
+# ────────────────────────────────────────────────────────────────
+
+
+def test_last_mile_leg_carries_live_refs():
+    """成功路径：leg.last_mile.live_refs = geocode×2 + transit（行程接驳不传
+    date → 键尾恒空段）。StubAmap 坐标 = f"100.{len(地名)},25.6"（昆明/大理
+    同为双字 → 同坐标），替身怪癖不影响键格式断言。"""
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                            client=StubClient(), amap_client=StubAmap())
+    assert env.ok is True
+    assert env.data.legs[0]["last_mile"]["live_refs"] == [
+        "@live:amap_geocode:昆明",
+        "@live:amap_geocode:大理",
+        "@live:amap_direction_transit:100.2,25.6>100.2,25.6|",
+    ]
+
+
+def test_last_mile_partial_fail_keeps_successful_geocode_refs():
+    """只附成功调用：site 端未收录 → live_refs 只留已成功的 hub geocode 键。"""
+    class HalfFailAmap(StubAmap):
+        def geocode(self, address, city=""):
+            if address == "大理":
+                return Envelope(ok=False, error=ToolError(
+                    code="amap_no_result", message="高德未收录该地点", hint=""))
+            return super().geocode(address, city)
+
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 6, 20000,
+                            client=StubClient(), amap_client=HalfFailAmap())
+    assert env.ok is True
+    assert env.data.legs[0]["last_mile"]["live_refs"] == ["@live:amap_geocode:昆明"]
+
+
+def test_last_mile_no_key_legs_have_empty_live_refs():
+    """无 Key 短路：全程无成功 amap 调用 → 各腿 live_refs 恒空表。"""
+    env = compose_itinerary("昆明", ["大理", "丽江"], "2026-11-01", 10, 20000,
+                            client=StubClient(), amap_client=StubAmap(no_key=True))
+    assert env.ok is True
+    assert all(leg["last_mile"]["live_refs"] == [] for leg in env.data.legs)

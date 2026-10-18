@@ -42,6 +42,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
 
+from fieldwork_agent.kernel.aggregation.amap_refs import (
+    live_geocode_ref,
+    live_transit_ref,
+)
 from fieldwork_agent.kernel.models import (
     BudgetBreakdown,
     BudgetItem,
@@ -228,36 +232,50 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
 
     返回 ``(last_mile, queried, has_price, invalid_key)``；``invalid_key`` 由调用方
     据此全程停用后续接驳查询（无 Key 属环境缺席而非数据缺口，不进 uncovered）。
+    N5 §4.3 C3：``live_refs`` 只收集实际成功的高德调用规格键——geocode 成功
+    （含 memo 命中，轮内该地名必曾真实调用过）恒附，transit 键在调用 ok
+    时附（有无报价快照均真实，宿主登记所有 ok 调用）。
     """
+    refs: list[str] = []
     hub_geo, hub_err = _memo_geocode(amap_client, hop["from"], memo)
     if hub_err is not None and hub_err.code == "amap_invalid_key":
         return {"hub_geo": None, "site_geo": None, "options": None,
-                "note": "未配置高德 API Key，接驳查询已停用"}, True, False, True
+                "note": "未配置高德 API Key，接驳查询已停用",
+                "live_refs": refs}, True, False, True
     if hub_geo is None:
         return {"hub_geo": None, "site_geo": None, "options": None,
                 "note": f"接驳未纳入：{hop['from']} 地名解析失败（{hub_err.code}），"
-                        "预算未计该条"}, True, False, False
+                        "预算未计该条",
+                "live_refs": refs}, True, False, False
+    refs.append(live_geocode_ref(hop["from"]))
     site_geo, site_err = _memo_geocode(amap_client, hop["to"], memo)
     if site_err is not None and site_err.code == "amap_invalid_key":
         return {"hub_geo": None, "site_geo": None, "options": None,
-                "note": "未配置高德 API Key，接驳查询已停用"}, True, False, True
+                "note": "未配置高德 API Key，接驳查询已停用",
+                "live_refs": refs}, True, False, True
     if site_geo is None:
         return {"hub_geo": hub_geo, "site_geo": None, "options": None,
                 "note": f"接驳未纳入：{hop['to']} 地名解析失败（{site_err.code}），"
-                        "预算未计该条"}, True, False, False
+                        "预算未计该条",
+                "live_refs": refs}, True, False, False
+    refs.append(live_geocode_ref(hop["to"]))
     transit_env = _safe_call(
         amap_client.direction_transit, origin=hub_geo.location,
         destination=site_geo.location, city=hub_geo.city, cityd=site_geo.city)
     page = transit_env.data if transit_env.ok and isinstance(transit_env.data, ItemPage) else None
+    if page is not None:
+        refs.append(live_transit_ref(hub_geo.location, site_geo.location))
     if page is None:
         detail = transit_env.error.message if transit_env.error else "无公交方案"
         return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
-                "note": f"接驳公交查询失败：{detail}，预算未计该条"}, True, False, False
+                "note": f"接驳公交查询失败：{detail}，预算未计该条",
+                "live_refs": refs}, True, False, False
     if page.cheapest is None or page.cheapest <= 0:
         return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
-                "note": "接驳公交无可用报价，预算未计该条"}, True, False, False
+                "note": "接驳公交无可用报价，预算未计该条",
+                "live_refs": refs}, True, False, False
     return {"hub_geo": hub_geo, "site_geo": site_geo, "options": page,
-            "note": ""}, True, True, False
+            "note": "", "live_refs": refs}, True, True, False
 
 
 # ---------------------------------------------------------------- 能力实现
@@ -355,7 +373,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
             notes.append(f"交通（{hop['from']}→{hop['to']}）无可用价格，预算未计该条")
         if amap_disabled:
             last_mile = {"hub_geo": None, "site_geo": None, "options": None,
-                         "note": "未配置高德 API Key，接驳查询已停用"}
+                         "note": "未配置高德 API Key，接驳查询已停用",
+                         "live_refs": []}
             leg_queried = leg_priced = leg_no_key = False
         else:
             last_mile, leg_queried, leg_priced, leg_no_key = \

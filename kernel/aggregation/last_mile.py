@@ -17,6 +17,7 @@
 """
 from datetime import date, datetime, timedelta
 
+from fieldwork_agent.kernel.aggregation.amap_refs import live_geocode_ref, live_transit_ref
 from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.sources.amap import AMapClient
@@ -91,15 +92,20 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
     transit_env = amap_client.direction_transit(
         origin=hub_geo.location, destination=site_geo.location,
         city=hub_geo.city, cityd=site_geo.city, date=date_param)
+    # N5 §4.3 C3：geocode×2 走到此处必成功恒附；transit 键只在调用成功时附
+    live_refs = [live_geocode_ref(hub), live_geocode_ref(site)]
     if transit_env.ok and isinstance(transit_env.data, ItemPage):
         options, degraded = transit_env.data, None
+        live_refs.append(
+            live_transit_ref(hub_geo.location, site_geo.location, date_param))
     else:
         options = ItemPage(items=[], total=0)
         degraded = "末端公交接驳暂不可查（无方案或服务不可用），可考虑城际班车/包车等公路方式"
     if date_note:  # date 降级附言与 transit 失败附言同时发生时合并呈现
         degraded = date_note if degraded is None else f"{degraded}；{date_note}"
     return Envelope(ok=True,
-                    data={"hub": hub_geo, "site": site_geo, "options": options},
+                    data={"hub": hub_geo, "site": site_geo, "options": options,
+                          "live_refs": live_refs},
                     degraded=degraded)
 
 
