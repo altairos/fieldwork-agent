@@ -1,7 +1,7 @@
 # tests/test_web_exports_api.py
 import pytest
+from conftest import OWNER
 from fieldwork_agent.web_host.app import create_app
-from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
@@ -10,7 +10,7 @@ def app(tmp_path):
     from fieldwork_agent.web_host.deps import init_deps
 
     repo = JsonRepository(projects_dir=tmp_path / "projects")
-    repo.create("p1")
+    repo.create("p1", owner=OWNER)
     repo.save_proposal("p1", "# 标题\n\n## 一、背景\n\n内容",
                        kind="proposal", version="draft")
     _app = create_app(config=None, repo=repo)
@@ -21,8 +21,9 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    from conftest import make_client
+
+    async with make_client(app) as c:
         yield c
 
 

@@ -1,7 +1,6 @@
 # tests/test_web_projects_api.py
 import pytest
 from fieldwork_agent.web_host.app import create_app
-from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
@@ -21,8 +20,9 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    from conftest import make_client
+
+    async with make_client(app) as c:
         yield c
 
 
@@ -200,8 +200,9 @@ def iso_app(tmp_path):
 
 @pytest.fixture
 async def iso_client(iso_app):
-    transport = ASGITransport(app=iso_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    from conftest import make_client
+
+    async with make_client(iso_app) as c:
         yield c
 
 

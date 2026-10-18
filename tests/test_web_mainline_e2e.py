@@ -11,7 +11,7 @@ import pytest
 from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.web_host.app import create_app
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 
 
 class ScriptLLM:
@@ -71,8 +71,9 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    from conftest import make_client
+
+    async with make_client(app) as c:
         yield c
 
 

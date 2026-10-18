@@ -2,6 +2,7 @@
 import asyncio
 
 import pytest
+from conftest import OWNER, OWNER_TOKEN
 from fieldwork_agent.web_host.app import create_app
 from httpx import ASGITransport, AsyncClient
 
@@ -21,7 +22,7 @@ def app(tmp_path):
     from fieldwork_agent.web_host.deps import init_deps
 
     repo = JsonRepository(projects_dir=tmp_path / "projects")
-    repo.create("p1")
+    repo.create("p1", owner=OWNER)
     application = create_app(config=None, repo=repo)
     # ASGITransport 不触发 lifespan，手动初始化依赖
     init_deps(application, config=None, repo=repo)
@@ -30,9 +31,10 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
+    from conftest import make_client
+
     app.state.llm = FakeLLM()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with make_client(app) as c:
         yield c
 
 
@@ -74,7 +76,8 @@ async def test_no_llm_key_rejected_403(app):
     """
     app.state.llm = None
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "你好"})
         assert r.status_code == 403
         assert "turn_id" not in r.json()  # 未创建回合，未进入对话
@@ -106,7 +109,8 @@ async def test_create_turn_with_page_key_headers(app, monkeypatch):
     monkeypatch.setattr(turns_mod, "_build_llm", fake_build_llm)
     monkeypatch.setattr(turns_mod, "FlyAIClient", FakeFlyAIClient)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "hi"},
                          headers={"X-DashScope-Key": "sk-page",
                                   "X-FlyAI-Key": "fk-page"})
@@ -230,7 +234,8 @@ async def test_turn_dashscope_plan_header_selects_endpoint(app, monkeypatch):
     # turns._build_llm 延迟 import llm 模块属性，monkeypatch 模块级 LLMClient 即生效
     monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "hi"},
                          headers={"X-DashScope-Key": "sk-sp-x",
                                   "X-DashScope-Plan": "coding"})
@@ -252,7 +257,8 @@ async def test_turn_unknown_plan_rejected_to_default(app, monkeypatch):
 
     monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "hi"},
                          headers={"X-DashScope-Key": "sk-sp-x",
                                   "X-DashScope-Plan": "https://evil.example.com/v1"})
