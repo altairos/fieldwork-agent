@@ -11,7 +11,7 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
 )
-from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
+from fieldwork_agent.kernel.repository.sqlite_repo import SCHEMA_VERSION, SqliteRepository
 
 
 def make_sqlite_repo(tmp_path: Path) -> SqliteRepository:
@@ -24,7 +24,7 @@ def test_schema_created_with_user_version(tmp_path):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert version == 3
+    assert version == SCHEMA_VERSION
     for t in ("projects", "research_context", "messages", "field_sites",
               "informants", "search_cache", "knowledge", "proposals",
               "confirmations", "schema_meta"):
@@ -298,10 +298,10 @@ PRAGMA user_version=1;
 """
 
 
-def test_schema_version_is_three(tmp_path):
+def test_schema_version_is_current(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     with sqlite3.connect(repo.db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert "dep_hash" in {r[1] for r in conn.execute("PRAGMA table_info(proposals)")}
         assert "proposal_confirmed" in {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         assert "owner" in {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
@@ -310,10 +310,10 @@ def test_schema_version_is_three(tmp_path):
     assert "confirmations" in tables
 
 
-def test_v1_db_upgrades_to_v3_in_place(tmp_path):
+def test_v1_db_upgrades_to_current_in_place(tmp_path):
     """存量 v1 库：增量补列补表、版本推进、既有行原样保留（绝不 DROP 重建）。
 
-    v1 库重开直达 v3（v2 的 proposal_confirmed/dep_hash 与 v3 的 owner 一并补齐）。"""
+    v1 库重开直达当前版（v2 的 proposal_confirmed/dep_hash、v3 的 owner 一并补齐）。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(_V1_MIN)
@@ -325,7 +325,7 @@ def test_v1_db_upgrades_to_v3_in_place(tmp_path):
             " VALUES('prop_1','p1','proposal','final','a.md','正文','2026-01-02',1)")
     repo = SqliteRepository(db_path=db)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         row = conn.execute(
             "SELECT p.proposal_confirmed, q.dep_hash FROM projects p"
             " JOIN proposals q ON q.project_id = p.project_id"
@@ -350,11 +350,11 @@ def test_half_migrated_v1_db_reopens(tmp_path):
         conn.execute("ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''")
     repo = SqliteRepository(db_path=db)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert repo.get_phase("p1") == "field_site_profiles"
 
 
-def test_v1_to_v3_migration_atomic_on_failure(tmp_path, monkeypatch):
+def test_v1_to_current_migration_atomic_on_failure(tmp_path, monkeypatch):
     """增量迁移原子性（终审 T2-M1）：事务尾段失败 → 补列与版本推进一并不落盘。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
@@ -641,10 +641,10 @@ def test_concurrent_field_site_seq_unique(tmp_path):
     assert len(repo.list_field_sites("p1")) == n_threads * n_writes
 
 
-# ------------------------------------------------------------------ 归属隔离（v2→v3 升级）
+# ------------------------------------------------------------------ 归属隔离（v2→当前版升级）
 
-def test_v2_database_upgrades_to_v3(tmp_path):
-    """v2 旧库重开自动升 v3：projects.owner 补列，数据无损。"""
+def test_v2_database_upgrades_to_current(tmp_path):
+    """v2 旧库重开自动升至当前版：projects.owner 补列，数据无损。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
         conn.executescript("""
@@ -675,13 +675,79 @@ def test_v2_database_upgrades_to_v3(tmp_path):
             " phase_history, proposal_confirmed)"
             " VALUES('p_old','2026-01-01','2026-01-02',"
             "'research_positioning','[]',0)")
-    repo = SqliteRepository(db_path=db)   # 重开触发 v2→v3
+    repo = SqliteRepository(db_path=db)   # 重开触发 v2→当前版
     assert repo.get_state("p_old")["owner"] is None   # 旧项目无主
     repo.save_proposal("p_old", "# 旧库新提案")        # 升级后读写正常
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)").fetchall()}
     assert "owner" in cols
+
+
+# ------------------------------------------------------------------ 缓存复合主键（N07 v3→v4）
+
+def test_v3_db_upgrades_search_cache_to_composite_pk(tmp_path):
+    """N07（v3→v4）：旧库 search_cache 全局 id 主键整表重建为 (project_id, id)，
+    既有缓存行原样保留、版本号推进；升级后不同项目可合法共用同一 legacy cid。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript("""
+            CREATE TABLE projects (
+                project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, phase TEXT NOT NULL,
+                phase_history TEXT NOT NULL DEFAULT '[]',
+                proposal_confirmed INTEGER NOT NULL DEFAULT 0, owner TEXT);
+            CREATE TABLE search_cache (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, query TEXT NOT NULL,
+                tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE);
+            PRAGMA user_version=3;
+        """)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p_a','2026-01-01','2026-01-02','synthesis','[]')")
+        conn.execute(
+            "INSERT INTO search_cache(id,project_id,query,tool,result,cached_at)"
+            " VALUES(?,?,?,?,?,?)",
+            ("20260105100000_0", "p_a", "大理住宿", "search_hotel",
+             json.dumps({"hotel": ["A"]}, ensure_ascii=False), "2026-01-05T10:00:00"))
+    repo = SqliteRepository(db_path=db)   # 重开触发 v3→v4 整表重建
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        pk = {r[1]: r[5] for r in conn.execute("PRAGMA table_info(search_cache)")}
+    assert pk["project_id"] == 1 and pk["id"] == 2   # 复合主键 (project_id, id)
+    # 既有缓存行原样保留（重建非清空）
+    assert repo.get_cached_search("p_a", "20260105100000_0")["result"] == {"hotel": ["A"]}
+    # 升级后另一项目可合法共用同一 cid（旧全局主键下会 REPLACE 掉 p_a 的行）
+    repo.create("p_b")
+    repo._import_cache("p_b", {"id": "20260105100000_0", "query": "丽江住宿",
+                               "tool": "search_hotel", "result": {"hotel": ["B"]},
+                               "cached_at": "2026-01-05T10:00:00"})
+    assert repo.get_cached_search("p_a", "20260105100000_0")["result"] == {"hotel": ["A"]}
+    assert repo.get_cached_search("p_b", "20260105100000_0")["result"] == {"hotel": ["B"]}
+
+
+def test_import_cache_same_cid_across_projects_coexist(tmp_path):
+    """N07 契约：两个项目合法共用同一 legacy cid，各自快照独立、互不覆盖。
+
+    旧全局 id 主键下 _import_cache 的 INSERT OR REPLACE 会把 A 的行搬到 B；
+    复合主键 (project_id, id) 下两行并存，get_cached_search 各按项目域取回。
+    """
+    repo = make_sqlite_repo(tmp_path)
+    repo.create("p_a")
+    repo.create("p_b")
+    cid = "20260105100000_0"
+    repo._import_cache("p_a", {"id": cid, "query": "大理住宿", "tool": "search_hotel",
+                               "result": {"hotel": ["A"]}, "cached_at": "2026-01-05T10:00:00"})
+    repo._import_cache("p_b", {"id": cid, "query": "丽江住宿", "tool": "search_hotel",
+                               "result": {"hotel": ["B"]}, "cached_at": "2026-01-05T10:00:00"})
+    assert repo.get_cached_search("p_a", cid)["result"] == {"hotel": ["A"]}
+    assert repo.get_cached_search("p_b", cid)["result"] == {"hotel": ["B"]}
+    with sqlite3.connect(repo.db_path) as conn:
+        rows = conn.execute(
+            "SELECT project_id FROM search_cache WHERE id=? ORDER BY project_id",
+            (cid,)).fetchall()
+    assert [r[0] for r in rows] == ["p_a", "p_b"]   # 两行并存，非 REPLACE 移行
 
 
 # ── R04：写路径并发锁（BEGIN IMMEDIATE，双进程丢更新）──────────────────

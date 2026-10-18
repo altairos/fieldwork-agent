@@ -144,7 +144,9 @@ def test_migrate_two_legacy_projects_same_proposal_id(tmp_path):
 
     全局 id PRIMARY KEY 下第二个项目 INSERT OR REPLACE 会把行从 A 移到 B，
     _verify 行数不齐抛 RuntimeError 整库中止；复合主键 (project_id, id) 下
-    跨项目同 id 共存。同内容无 id 田野点（_legacy_id 内容哈希同值）同理。
+    跨项目同 id 共存。同内容无 id 田野点（_legacy_id 内容哈希同值）同理；
+    N07 后 search_cache 亦改复合主键（同 cid 共存另见
+    test_migrate_two_projects_same_cache_cid）。
     """
     projects = tmp_path / "projects"
     projects.mkdir()
@@ -152,14 +154,8 @@ def test_migrate_two_legacy_projects_same_proposal_id(tmp_path):
     shutil.copytree(FIXTURE, projects / "legacy_b")
     for pid in ("legacy_a", "legacy_b"):   # 目录名与 state 内 project_id 必须一致
         _rewrite_project_id(projects / pid, pid)
-    # search_cache 的 cid 是全局唯一（已批准裁决，不在本修复范围）：错开第二份
-    # 的缓存 id，避免同 cid REPLACE 移行成为本用例（proposal 冲突）的干扰源
-    cache_old = projects / "legacy_b" / "search_cache" / "20260105100000_0.json"
-    cached = json.loads(cache_old.read_text(encoding="utf-8"))
-    cached["id"] = "20260105100001_0"
-    cache_old.unlink()
-    cache_old.with_name("20260105100001_0.json").write_text(
-        json.dumps(cached, indent=2, ensure_ascii=False), encoding="utf-8")
+    # N07 后全部记录表（含 search_cache）均复合主键 (project_id, id)：两项目各
+    # 保留 fixture 原样（同 proposal id、同 legacy cid），迁移后须整体共存不移行。
 
     json_repo = JsonRepository(projects_dir=projects)
     sqlite = SqliteRepository(db_path=tmp_path / "fieldwork.db")
@@ -176,6 +172,40 @@ def test_migrate_two_legacy_projects_same_proposal_id(tmp_path):
             "SELECT project_id FROM proposals WHERE id='legacy_proposal_draft'"
             " ORDER BY project_id").fetchall()
     assert [r[0] for r in rows] == ["legacy_a", "legacy_b"]
+
+
+def test_migrate_two_projects_same_cache_cid(tmp_path):
+    """N07：两个合法 JSON 项目各有同名 legacy cid，迁移后各自缓存独立、互不覆盖。
+
+    全局 id 主键下迁移 B 会 REPLACE 掉 A 的缓存行，_verify 行数不齐抛
+    RuntimeError 整库中止；复合主键 (project_id, id) 下两行并存，
+    get_cached_search 各按项目域取回自己的快照。
+    """
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    shutil.copytree(FIXTURE, projects / "legacy_a")
+    shutil.copytree(FIXTURE, projects / "legacy_b")
+    for pid in ("legacy_a", "legacy_b"):   # 目录名与 state 内 project_id 必须一致
+        _rewrite_project_id(projects / pid, pid)
+    # 两项目保留同一 legacy cid（20260105100000_0），仅把 B 的内容改异以验各自取回
+    cache_b = projects / "legacy_b" / "search_cache" / "20260105100000_0.json"
+    cached = json.loads(cache_b.read_text(encoding="utf-8"))
+    cached["result"] = {"hotel": ["丽江古城客栈"]}   # id 不变，仅内容区分于 legacy_a
+    cache_b.write_text(json.dumps(cached, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    json_repo = JsonRepository(projects_dir=projects)
+    sqlite = SqliteRepository(db_path=tmp_path / "fieldwork.db")
+    report = migrate_to_sqlite(json_repo, sqlite)   # 复合 PK 下不抛 RuntimeError（即通过）
+    assert report["search_cache"] == 2
+
+    cid = "20260105100000_0"
+    assert sqlite.get_cached_search("legacy_a", cid)["result"] == {"hotel": ["大理古城客栈"]}
+    assert sqlite.get_cached_search("legacy_b", cid)["result"] == {"hotel": ["丽江古城客栈"]}
+    with sqlite3.connect(sqlite.db_path) as conn:
+        rows = conn.execute(
+            "SELECT project_id FROM search_cache WHERE id=? ORDER BY project_id",
+            (cid,)).fetchall()
+    assert [r[0] for r in rows] == ["legacy_a", "legacy_b"]   # 两行并存，非移行
 
 
 def _legacy(tmp_path):

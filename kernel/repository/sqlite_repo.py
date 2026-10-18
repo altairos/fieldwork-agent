@@ -25,7 +25,7 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
 from fieldwork_agent.kernel.repository.guard import cache_id_violation, owner_violation
 from fieldwork_agent.kernel.repository.protocol import _UNSET
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MESSAGE_WINDOW = 50
 CACHE_LIMIT_BYTES = 64 * 1024
 
@@ -78,12 +78,13 @@ CREATE TABLE IF NOT EXISTS informants (
 CREATE INDEX IF NOT EXISTS idx_informants_project ON informants(project_id, seq);
 
 CREATE TABLE IF NOT EXISTS search_cache (
-    id         TEXT PRIMARY KEY,                -- 全局唯一（裁决：cid 不带 pid）
+    id         TEXT NOT NULL,                   -- N07：项目内作用域（跨项目同 legacy cid 共存）
     project_id TEXT NOT NULL,
     query      TEXT NOT NULL,
     tool       TEXT NOT NULL,
     result     TEXT NOT NULL,                   -- JSON；写入前已应用 64KB 截断
     cached_at  TEXT NOT NULL,
+    PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_cache_project ON search_cache(project_id, cached_at);
@@ -140,6 +141,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # 跨版本增量列（存量行由 DEFAULT 值补齐，不改任何既有语义）：
 # - v1→v2（审计二 R02）：projects.proposal_confirmed、proposals.dep_hash
 # - v2→v3（归属隔离）：projects.owner
+# - v3→v4（N07）：search_cache 主键由全局 id 改为 (project_id, id)——SQLite
+#   不能 ALTER 主键，在 _ensure_schema 里检测旧形状则整表重建（见下）。
 # confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对旧库
 # 在版本分支之前即已建好）；执行见 _ensure_schema 的显式事务
 # （补列与 user_version 同生共死，防「列已加、版本未进」的半迁移库重开锁死）。
@@ -245,6 +248,7 @@ class SqliteRepository:
                             f"PRAGMA table_info({table})")}
                         if column not in cols:
                             conn.execute(stmt)
+                    self._rebuild_search_cache_pk(conn)   # N07：v3→v4 复合主键
                     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     conn.execute("COMMIT")
                 except Exception:
@@ -258,6 +262,33 @@ class SqliteRepository:
             # 直接报 no such column；放这里在补列之后幂等补建（新库/旧库殊途同归）。
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner)")
+
+    @staticmethod
+    def _rebuild_search_cache_pk(conn) -> None:
+        """N07（v3→v4）：search_cache 主键由全局 ``id`` 重建为 ``(project_id, id)``。
+
+        SQLite 不能 ALTER 主键，采标准建新表→搬数据→drop→rename 四步（均用
+        conn.execute 而非 executescript，后者会隐式 COMMIT 掉外层事务）。
+        幂等：已是复合主键（project_id 的 pk 序>0）则直接返回；无入向 FK
+        引用 search_cache，foreign_keys=ON 下 drop/rename 安全。
+        """
+        pk_ord = {r[1]: r[5] for r in conn.execute("PRAGMA table_info(search_cache)")}
+        if pk_ord.get("project_id", 0) > 0:
+            return   # 已是复合主键（新库/已重建），无需动作
+        conn.execute(
+            "CREATE TABLE search_cache_new ("
+            "id TEXT NOT NULL, project_id TEXT NOT NULL, query TEXT NOT NULL,"
+            " tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL,"
+            " PRIMARY KEY (project_id, id),"
+            " FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE)")
+        conn.execute(
+            "INSERT INTO search_cache_new(id, project_id, query, tool, result, cached_at)"
+            " SELECT id, project_id, query, tool, result, cached_at FROM search_cache")
+        conn.execute("DROP TABLE search_cache")
+        conn.execute("ALTER TABLE search_cache_new RENAME TO search_cache")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cache_project"
+            " ON search_cache(project_id, cached_at)")
 
     def _require(self, pid: str) -> None:
         with self._connect() as conn:
