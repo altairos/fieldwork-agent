@@ -308,3 +308,106 @@ def test_capability_fn_injects_client(monkeypatch):
              "adcode": "532901", "location": "1,2", "formatted_address": "云南省大理州大理市"}]})
     env = capabilities()["amap_geocode"].fn(address="大理", amap_client=client)
     assert env.ok and env.data.adcode == "532901"
+
+
+# ---------------------------------------------------------------- N3 实例级 TTL 读缓存
+
+
+def _geo_payload(addr: str, loc: str) -> dict:
+    return {"infocode": "10000", "count": "1", "geocodes": [{
+        "province": "云南省", "city": "昆明市", "district": "", "township": [],
+        "adcode": "530102", "location": loc, "formatted_address": addr}]}
+
+
+def test_cache_same_params_hit_once(monkeypatch):
+    """同参二连发只打一次 _get（geocode 与 weather 双验证），命中计数 cache_hit。"""
+    n = {"get": 0}
+
+    def fake_get(path, params):
+        n["get"] += 1
+        if "weather" in path:
+            return {"infocode": "10000", "forecasts": [
+                {"casts": [{"date": "2026-10-18", "dayweather": "晴"}]}]}
+        return _geo_payload(params["address"], "102.7,25.0")
+
+    client = AMapClient(api_key="k")
+    monkeypatch.setattr(client, "_get", fake_get)
+    e1 = client.geocode("昆明")
+    e2 = client.geocode("昆明")          # 同参二连发（city 默认值归一后同键）
+    assert n["get"] == 1
+    assert e1.ok and e2.ok and e2.data.location == "102.7,25.0"
+    assert client.stats["cache_hit"] == 1
+    w1 = client.weather("昆明")
+    w2 = client.weather("昆明")          # weather 也经同一缓存路径（六原语不偷懒）
+    assert n["get"] == 2
+    assert w1.ok and w2.ok
+    assert client.stats["cache_hit"] == 2
+
+
+def test_cache_expiry_refetches(monkeypatch):
+    """TTL 过期（expire_at 已过）重发真实请求，cache_hit 不虚增。"""
+    import time
+    n = {"get": 0}
+
+    def fake_get(path, params):
+        n["get"] += 1
+        return _geo_payload(params["address"], "102.7,25.0")
+
+    client = AMapClient(api_key="k")
+    monkeypatch.setattr(client, "_get", fake_get)
+    client.geocode("昆明")
+    assert n["get"] == 1
+    for key in client._cache:  # 白盒：把过期时间改到过去
+        expire_at, env = client._cache[key]
+        client._cache[key] = (time.monotonic() - 1, env)
+    e2 = client.geocode("昆明")
+    assert n["get"] == 2 and e2.ok      # 过期即重发，不足偶返回旧值
+    assert client.stats["cache_hit"] == 0
+
+
+def test_cache_param_diff_no_cross_talk(monkeypatch):
+    """参数差异不串味：不同地名各自缓存，重打前一地名命中不再出网。"""
+    n = {"get": 0}
+
+    def fake_get(path, params):
+        n["get"] += 1
+        return _geo_payload(params["address"], f"loc-{params['address']}")
+
+    client = AMapClient(api_key="k")
+    monkeypatch.setattr(client, "_get", fake_get)
+    e1 = client.geocode("昆明")
+    e2 = client.geocode("大理")
+    assert n["get"] == 2
+    assert e1.data.location == "loc-昆明" and e2.data.location == "loc-大理"
+    e3 = client.geocode("昆明")          # 重打昆明 → 命中，不串味成大理的值
+    assert n["get"] == 2 and e3.data.location == "loc-昆明"
+
+
+def test_cache_deep_copy_prevents_pollution(monkeypatch):
+    """深拷贝防污染：调用方改写返回包络不影响缓存，后续命中仍是原值。"""
+    client = AMapClient(api_key="k")
+    monkeypatch.setattr(client, "_get",
+                        lambda p, q: _geo_payload(q["address"], "102.7,25.0"))
+    e1 = client.geocode("昆明")
+    e1.data.location = "POLLUTED"        # 调用方改写不应回流缓存
+    e2 = client.geocode("昆明")          # 命中路径
+    assert e2.data.location == "102.7,25.0"
+    assert e1 is not e2                  # 两份独立对象（miss 命中同规矩）
+
+
+def test_cache_thread_safe_under_double_fire(monkeypatch):
+    """并发安全：线程池四发同参不抛异常；miss race 至多双发，后续全命中。"""
+    from concurrent.futures import ThreadPoolExecutor
+    n = {"get": 0}
+
+    def fake_get(path, params):
+        n["get"] += 1
+        return _geo_payload(params["address"], "102.7,25.0")
+
+    client = AMapClient(api_key="k")
+    monkeypatch.setattr(client, "_get", fake_get)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        envs = list(pool.map(lambda _: client.geocode("昆明"), range(4)))
+    assert all(e.ok and e.data.location == "102.7,25.0" for e in envs)
+    assert n["get"] <= 2                # 竞态窗口至多双发，稳定后全命中
+    assert client.stats["cache_hit"] >= 2
