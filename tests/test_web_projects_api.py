@@ -92,6 +92,7 @@ async def test_cached_searches_endpoints(client, app):
 
 
 async def test_r01_traversal_cid_rejected_400(client):
+    await client.post("/projects", json={"project_id": "p1"})
     # httpx 会规范化 URL 的 ../ 段，穿越形态用 %5C（反斜杠）编码
     r = await client.get("/projects/p1/cached-searches/..%5C..%5Csecret")
     assert r.status_code == 400
@@ -99,6 +100,7 @@ async def test_r01_traversal_cid_rejected_400(client):
 
 
 async def test_r01_wildcard_and_overlong_cid_400(client):
+    await client.post("/projects", json={"project_id": "p1"})
     r1 = await client.get("/projects/p1/cached-searches/*")
     assert r1.status_code == 400
     r2 = await client.get(f"/projects/p1/cached-searches/{'x' * 65}")
@@ -106,6 +108,7 @@ async def test_r01_wildcard_and_overlong_cid_400(client):
 
 
 async def test_r01_dotted_cid_400(client):
+    await client.post("/projects", json={"project_id": "p1"})
     r = await client.get("/projects/p1/cached-searches/spacer.cid")
     assert r.status_code == 400
 
@@ -117,6 +120,7 @@ async def test_r01_encoded_slash_cid_404(client):
 
 
 async def test_r01_cross_project_cid_404(client, app):
+    await client.post("/projects", json={"project_id": "p1"})
     await client.post("/projects", json={"project_id": "p2"})
     repo = app.state.repo
     cid = repo.cache_search("p2", "secret-query", "search_hotel", {"items": []})
@@ -217,3 +221,81 @@ async def test_delete_project_cancels_running_turn(iso_client, iso_app, tmp_path
     assert handle.cancel_event.is_set()
     assert not (tmp_path / "projects" / "p1").exists()
     assert tm.get_turn("p1", handle.turn_id) is None
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：创建需令牌、列表过滤、详情 404 不泄露
+# ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def client_anon(app):
+    from conftest import make_client
+
+    async with make_client(app, owner_token=None) as c:
+        yield c
+
+
+@pytest.fixture
+async def client_other(app):
+    from conftest import OTHER_TOKEN, make_client
+
+    async with make_client(app, owner_token=OTHER_TOKEN) as c:
+        yield c
+
+
+async def test_create_without_owner_token_400(client_anon):
+    r = await client_anon.post("/projects", json={"project_id": "p9"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == {"code": "owner_token_required",
+                                  "message": "创建项目需携带 X-Owner-Token 头"}
+
+
+async def test_list_without_owner_token_empty(client, client_anon):
+    await client.post("/projects", json={"project_id": "mine"})
+    r = await client_anon.get("/projects")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+async def test_list_isolated_between_owners(client, client_other):
+    await client.post("/projects", json={"project_id": "mine"})
+    r = await client_other.get("/projects")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+async def test_detail_hidden_from_other_owner(client, client_other):
+    await client.post("/projects", json={"project_id": "mine"})
+    r = await client_other.get("/projects/mine")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "项目不存在: mine"
+
+
+async def test_detail_without_token_404(client, client_anon):
+    await client.post("/projects", json={"project_id": "mine"})
+    r = await client_anon.get("/projects/mine")
+    assert r.status_code == 404
+
+
+async def test_invalid_owner_token_shape_400(client):
+    # httpx 头值须 ASCII 可编码，中文违规值发不出去——用等价 ASCII 违规形态
+    # （空格与 ! 均不在 ^[A-Za-z0-9_-]{1,128}$ 白名单）覆盖同一语义
+    r = await client.post("/projects", json={"project_id": "p9"},
+                          headers={"X-Owner-Token": "bad token!"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_owner_token"
+
+
+async def test_delete_hidden_from_other_owner(client, client_other):
+    await client.post("/projects", json={"project_id": "mine"})
+    r = await client_other.delete("/projects/mine")
+    assert r.status_code == 404
+    assert (await client.get("/projects/mine")).status_code == 200
+
+
+async def test_knowledge_hidden_from_other_owner(client, client_other):
+    await client.post("/projects", json={"project_id": "mine"})
+    r = await client_other.get("/projects/mine/knowledge")
+    assert r.status_code == 404
+    assert (await client.get("/projects/mine/knowledge")).status_code == 200

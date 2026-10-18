@@ -4,7 +4,8 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fieldwork_agent.kernel.repository.guard import cache_id_violation
-from fieldwork_agent.web_host.api.guard import checked_project_id
+from fieldwork_agent.web_host.api.guard import checked_owned_project, checked_project_id
+from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_repo, get_turn_manager
 from pydantic import BaseModel
 
@@ -19,10 +20,17 @@ class CreateProjectRequest(BaseModel):
 
 
 @router.post("/projects", status_code=201)
-async def create_project(body: CreateProjectRequest, repo=Depends(get_repo)):
+async def create_project(body: CreateProjectRequest, repo=Depends(get_repo),
+                         owner: str | None = Depends(owner_from_request)):
+    if owner is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "owner_token_required",
+                    "message": "创建项目需携带 X-Owner-Token 头"},
+        )
     pid = body.project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
     checked_project_id(pid, repo)   # 审计 F01：守卫先于一切副作用
-    repo.create(pid)
+    repo.create(pid, owner=owner)
     patch = {k: v for k, v in {"discipline": body.discipline,
                                 "topic": body.topic, "purpose": body.purpose}.items() if v}
     if patch:
@@ -31,9 +39,12 @@ async def create_project(body: CreateProjectRequest, repo=Depends(get_repo)):
 
 
 @router.get("/projects")
-async def list_projects(repo=Depends(get_repo)):
+async def list_projects(repo=Depends(get_repo),
+                        owner: str | None = Depends(owner_from_request)):
+    if owner is None:
+        return []
     results = []
-    for summary in repo.list_projects():
+    for summary in repo.list_projects(owner=owner):
         pid = summary["project_id"]
         ctx = repo.get_research_context(pid)
         results.append({**summary, "research_context": ctx,
@@ -44,12 +55,9 @@ async def list_projects(repo=Depends(get_repo)):
 
 
 @router.get("/projects/{project_id}")
-async def get_project(project_id: str, repo=Depends(get_repo)):
-    checked_project_id(project_id, repo)
-    try:
-        state = repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+async def get_project(project_id: str, repo=Depends(get_repo),
+                      owner: str | None = Depends(owner_from_request)):
+    state = checked_owned_project(project_id, repo, owner)
     return {"project_id": project_id, "phase": state["phase"],
             "research_context": repo.get_research_context(project_id),
             "field_sites": repo.list_field_sites(project_id),
@@ -64,33 +72,33 @@ async def get_project(project_id: str, repo=Depends(get_repo)):
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-async def delete_project(project_id: str, request: Request, repo=Depends(get_repo)):
+async def delete_project(project_id: str, request: Request, repo=Depends(get_repo),
+                         owner: str | None = Depends(owner_from_request)):
     """删除即整域清除：取消活动回合 → repo 数据 → turns 注册表与磁盘残留。"""
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     tm = get_turn_manager(request)
     tm.cancel_all(project_id)
-    try:
-        repo.delete_project(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    repo.delete_project(project_id)
     tm.purge_project(project_id)
     return Response(status_code=204)
 
 
 @router.get("/projects/{project_id}/cached-searches")
-async def list_cached_searches(project_id: str, repo=Depends(get_repo)):
+async def list_cached_searches(project_id: str, repo=Depends(get_repo),
+                               owner: str | None = Depends(owner_from_request)):
     """快照索引（spec §5.2）：[{id, query, tool, cached_at}]，不含 result 体。"""
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     return repo.list_cached_searches(project_id)
 
 
 @router.get("/projects/{project_id}/cached-searches/{cid}")
-async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo)):
+async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo),
+                            owner: str | None = Depends(owner_from_request)):
     """单条快照全量（含 result）。
 
     审计二 R01 分层：cid 白名单不过 → 400；合法但不在本项目 → 404。
     """
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     if cache_id_violation(cid):
         raise HTTPException(400, "cid 格式非法：1-64 位字母数字、下划线或连字符")
     record = repo.get_cached_search(project_id, cid)
@@ -100,14 +108,12 @@ async def get_cached_search(project_id: str, cid: str, repo=Depends(get_repo)):
 
 
 @router.get("/projects/{project_id}/knowledge")
-async def list_knowledge(project_id: str, repo=Depends(get_repo)):
+async def list_knowledge(project_id: str, repo=Depends(get_repo),
+                         owner: str | None = Depends(owner_from_request)):
     """项目知识条目（按创建顺序，含正文）。
 
     审计三 Fix 1b：agent add_knowledge_entry 落盘材料的 REST 可见面——
     症状「声称已存入知识库但 Web 上看不到」的服务端兑底。
     """
-    checked_project_id(project_id, repo)
-    try:
-        return repo.list_knowledge(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    checked_owned_project(project_id, repo, owner)
+    return repo.list_knowledge(project_id)
