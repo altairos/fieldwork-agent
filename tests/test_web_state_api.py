@@ -34,6 +34,48 @@ async def test_update_research_context(client):
     assert ctx["budget"] == "5万" and ctx["scale"] == "两人同行"
 
 
+# ---------------------------------------------------------------- N03：字段契约单一来源
+
+
+async def test_n03_research_questions_with_budget_accepted(client):
+    """N03 复现：研究问题 + 预算同单 PUT 不再 422（旧 ContextPatch 缺该字段）。"""
+    r = await client.put("/projects/p1/research-context",
+                         json={"research_questions": "NEW_RQ", "budget": "20000"})
+    assert r.status_code == 200, r.text
+    ctx = r.json()["research_context"]
+    assert ctx["research_questions"] == "NEW_RQ" and ctx["budget"] == "20000"
+
+
+async def test_n03_candidate_windows_accepted(client):
+    """N03：候选时窗（新增白名单字段）同样进入 REST 入口契约，不再 extra_forbidden。"""
+    r = await client.put("/projects/p1/research-context",
+                         json={"candidate_windows": [
+                             {"start": "2026-07-01", "end": "2026-07-10"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["research_context"]["candidate_windows"][0]["start"] == "2026-07-01"
+
+
+async def test_n03_revoke_na_with_false(client):
+    """N03 附带：发 interviews_not_applicable=False 能撤销已保存的 NA 状态。"""
+    r1 = await client.put("/projects/p1/research-context",
+                          json={"interviews_not_applicable": True,
+                                "interviews_na_reason": "纯档案研究"})
+    assert r1.status_code == 200
+    assert r1.json()["research_context"]["interviews_not_applicable"] is True
+    # 撤销：显式发 False（前端 if(na) 分支旧漏发，此处验证服务端支持）
+    r2 = await client.put("/projects/p1/research-context",
+                          json={"interviews_not_applicable": False})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["research_context"]["interviews_not_applicable"] is False
+
+
+def test_n03_context_patch_fields_match_whitelist():
+    """N03 契约守卫：ContextPatch 字段集恰等于 kernel 白名单（防未来再漏字段）。"""
+    from fieldwork_agent.kernel.context_patch import ALLOWED_CONTEXT_FIELDS
+    from fieldwork_agent.web_host.api.state import ContextPatch
+    assert set(ContextPatch.model_fields) == set(ALLOWED_CONTEXT_FIELDS)
+
+
 async def test_r05_empty_patch_422(client):
     """审计二 R05：空 patch → 422（统一错误语义，不再 400/422 混用）。"""
     r = await client.put("/projects/p1/research-context", json={})

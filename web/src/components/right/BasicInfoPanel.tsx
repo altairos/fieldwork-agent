@@ -36,6 +36,9 @@ const EDIT_FIELDS: { key: string; label: string }[] = [
 function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [na, setNa] = useState(false);
+  // N03：NA 基线（来自快照的已存值）——仅当用户改动勾选时才上行该键，
+  // 且取消勾选时明确发 false 以撤销已保存的 NA（旧 if(na) 分支漏发 false）。
+  const [naBaseline, setNaBaseline] = useState(false);
   const [naReason, setNaReason] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -49,7 +52,9 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
     const next: Record<string, string> = {};
     for (const f of EDIT_FIELDS) next[f.key] = strOf(ctx[f.key]);
     setDraft(next);
-    setNa(ctx.interviews_not_applicable === true);
+    const naNow = ctx.interviews_not_applicable === true;
+    setNa(naNow);
+    setNaBaseline(naNow);
     setNaReason(strOf(ctx.interviews_na_reason));
   }, [snapshot, dirty]);
 
@@ -61,10 +66,9 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
       const v = (draft[f.key] ?? "").trim();
       if (v !== "") patch[f.key] = v; // 空字段不上行（PUT 空白字段无意义且会被后端清空语义误读）
     }
-    if (na) {
-      patch.interviews_not_applicable = true;
-      if (naReason.trim() !== "") patch.interviews_na_reason = naReason.trim();
-    }
+    // N03：勾选状态变化时明确上行 true/false（含取消勾选发 false 撤销已存 NA）
+    if (na !== naBaseline) patch.interviews_not_applicable = na;
+    if (na && naReason.trim() !== "") patch.interviews_na_reason = naReason.trim();
     if (Object.keys(patch).length === 0) {
       setError("未填写任何要修正的字段（空字段不覆盖已有值）");
       return;
