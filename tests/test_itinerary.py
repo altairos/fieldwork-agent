@@ -184,6 +184,50 @@ def test_invalid_settlement_rejected():
     assert "settlement_type" in env.error.message
 
 
+def test_duration_days_upper_bound_aligned_with_living_cost():
+    """N08：行程天数上限与生活成本子能力对齐——365 天可算，366 天整体拒绝。
+
+    旧实现行程接受任意正天数，366 天时 living_cost 返回 ok=False、data 被吞成 {}，
+    餐饮/市内交通静默消失却仍标 coverage=complete；现统一 MAX_DAYS 后 366 天 bad_input。
+    """
+    ok = compose_itinerary("昆明", ["大理"], "2026-01-01", 365, 10_000_000,
+                           client=StubClient())
+    assert ok.ok is True
+    assert "餐饮（估算）" in {i.name for i in ok.data.budget.items}   # 边界内餐饮入预算
+    over = compose_itinerary("昆明", ["大理"], "2026-01-01", 366, 10_000_000,
+                             client=StubClient())
+    assert over.ok is False and over.error.code == "bad_input"
+    assert "duration_days" in over.error.message
+
+
+def test_researcher_count_upper_bound_aligned_with_living_cost():
+    """N08：人数上限与生活成本子能力对齐——20 人可算，21 人整体拒绝。"""
+    ok = compose_itinerary("昆明", ["大理"], "2026-01-01", 10, 10_000_000, 20,
+                           client=StubClient())
+    assert ok.ok is True
+    assert "餐饮（估算）" in {i.name for i in ok.data.budget.items}
+    over = compose_itinerary("昆明", ["大理"], "2026-01-01", 10, 10_000_000, 21,
+                             client=StubClient())
+    assert over.ok is False and over.error.code == "bad_input"
+    assert "researcher_count" in over.error.message
+
+
+def test_living_cost_failure_marks_budget_gap_not_zero(monkeypatch):
+    """N08 防御兜底：生活成本子能力失败 → 餐饮/市内交通显式进 uncovered、
+    coverage 降级、degraded 说明原因，绝不当零费用谎报 complete。"""
+    def _fail(**_kw):
+        return Envelope(ok=False, error=ToolError(
+            code="invalid_arguments", message="days 必须在 1-365 之间，收到 999", hint=""))
+    monkeypatch.setattr(itinerary_module, "estimate_living_cost", _fail)
+    env = compose_itinerary("昆明", ["大理"], "2026-01-01", 10, 20000, client=StubClient())
+    b = env.data.budget
+    assert "餐饮（估算）" in b.uncovered
+    assert "市内交通（估算）" in b.uncovered
+    assert b.coverage == "partial"          # 交通/住宿有价 → partial，而非 complete
+    assert b.over_budget is False           # partial 下不得宣布预算内/超支
+    assert env.degraded and "生活成本" in env.degraded
+
+
 def test_coverage_partial_when_transport_unpriced():
     """R2/R6：缺关键报价时只能给已知小计，不得宣布预算内/超支。"""
     class NoTransportPrice(StubClient):

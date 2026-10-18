@@ -16,6 +16,12 @@ from pydantic import BaseModel, Field
 SETTLEMENT_TYPES = ("village", "town", "county", "city")
 BOARD_MODES = ("self_cook", "shared_meal", "mixed", "eat_out")
 
+# 输入域上限（N08）：与调用方 compose_itinerary 共享同一常量，杜绝「行程接受
+# 任意正天数/人数、子能力却只收 1-365/1-20」的范围错配。餐饮/市内交通按
+# 人均日区间线性外推，上限仅为防御性护栏（非算法本质限制）。
+MAX_DAYS = 365
+MAX_PEOPLE = 20
+
 _SETTLEMENT_LABELS = {
     "village": "村内", "town": "镇上", "county": "县城", "city": "城市",
 }
@@ -63,8 +69,8 @@ class EstimateLivingCostArgs(BaseModel):
         default="mixed",
         description="就餐方式：self_cook 自炊 / shared_meal 搭伙 / mixed 混合 / eat_out 外食；"
                     "能做饭选 self_cook，与农户搭伙选 shared_meal")
-    days: int = Field(description="驻留天数（1-365）")
-    people: int = Field(default=1, description="人数（1-20）")
+    days: int = Field(description=f"驻留天数（1-{MAX_DAYS}）")
+    people: int = Field(default=1, description=f"人数（1-{MAX_PEOPLE}）")
     include_local_transport: bool = Field(
         default=True, description="是否同时估算市内交通（村内日常通勤/短途）")
 
@@ -74,7 +80,7 @@ def _invalid(message: str) -> Envelope:
         code="invalid_arguments", message=message,
         hint=("settlement_type 取 " + "/".join(SETTLEMENT_TYPES)
               + "；board_mode 取 " + "/".join(BOARD_MODES)
-              + "；days 取 1-365；people 取 1-20")))
+              + f"；days 取 1-{MAX_DAYS}；people 取 1-{MAX_PEOPLE}")))
 
 
 def estimate_living_cost(settlement_type: str = "village", board_mode: str = "mixed",
@@ -85,10 +91,10 @@ def estimate_living_cost(settlement_type: str = "village", board_mode: str = "mi
         return _invalid(f"未知聚落类型：{settlement_type}")
     if board_mode not in BOARD_MODES:
         return _invalid(f"未知就餐方式：{board_mode}")
-    if not 1 <= days <= 365:
-        return _invalid(f"days 必须在 1-365 之间，收到 {days}")
-    if not 1 <= people <= 20:
-        return _invalid(f"people 必须在 1-20 之间，收到 {people}")
+    if not 1 <= days <= MAX_DAYS:
+        return _invalid(f"days 必须在 1-{MAX_DAYS} 之间，收到 {days}")
+    if not 1 <= people <= MAX_PEOPLE:
+        return _invalid(f"people 必须在 1-{MAX_PEOPLE} 之间，收到 {people}")
 
     food_low, food_high = FOOD_RANGE[settlement_type][board_mode]
     items = [{
