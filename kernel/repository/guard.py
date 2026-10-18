@@ -71,3 +71,15 @@ def cache_id_violation(cache_id: Any) -> str:
     if not isinstance(cache_id, str) or not CACHE_ID_RE.fullmatch(cache_id):
         return "cid 须为 1-64 位字母数字、下划线或连字符"
     return ""
+
+OWNER_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}:[^\s:]{1,127}$")
+
+
+def owner_violation(owner: str | None) -> str:
+    """归属标识形状校验（只管形状不管语义）：``<命名空间>:<标识>``；None=无主合法。"""
+    if owner is None:
+        return ""
+    if OWNER_RE.fullmatch(owner):
+        return ""
+    return ("owner 须形如 <命名空间>:<标识>"
+            "（命名空间 ^[a-z][a-z0-9_]{0,31}$，标识非空且不含空白与冒号）")

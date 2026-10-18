@@ -35,8 +35,10 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
 )
 from fieldwork_agent.kernel.repository.guard import (
     cache_id_violation,
+    owner_violation,
     path_id_violation,
 )
+from fieldwork_agent.kernel.repository.protocol import _UNSET
 
 # 消息滚动窗口上限（state 内只留最近 N 条，全量在 jsonl）
 MESSAGE_WINDOW = 50
@@ -73,6 +75,7 @@ def _default_state(project_id: str) -> dict:
         "updated_at": _now(),
         "phase": PHASES[0],
         "phase_history": [],
+        "owner": None,   # 归属（anon:<token> 或未来账号命名空间；None=无主）
         # 新：研究上下文（旧 researcher_info 保留只读，由宿主决定是否搬迁）
         "research_context": {},
         "dialogue_context": [],
@@ -217,21 +220,30 @@ class JsonRepository:
 
     # ------------------------------------------------------------------ 项目与阶段
 
-    def create(self, project_id: str) -> None:
-        """幂等建项目：已存在则原样保留存量（顺带补齐消息史），不覆盖、不报错。"""
+    def create(self, project_id: str, owner: str | None = None) -> None:
+        """幂等建项目：已存在则原样保留存量（顺带补齐消息史），不覆盖、不报错。
+
+        owner 只在新项目时写入；对已存在项目（含无主存量）不覆盖——认领走 set_owner。
+        """
+        reason = owner_violation(owner)
+        if reason:
+            raise ValueError(f"非法 owner（{reason}）: {owner}")
         for sub in ("knowledge", "search_cache", "output"):
             self._project_dir(project_id).joinpath(sub).mkdir(parents=True, exist_ok=True)
         if self._state_file(project_id).exists():
             self._backfill_chat_log(project_id, self._load(project_id))
             return
-        self._save(project_id, _default_state(project_id))
+        state = _default_state(project_id)
+        state["owner"] = owner
+        self._save(project_id, state)
 
     def delete_project(self, pid: str) -> None:
         """删除即整域清除：整个项目目录（state/消息史/知识/缓存/文档）一并移除。"""
         self._require(pid)
         shutil.rmtree(self._project_dir(pid))
 
-    def list_projects(self) -> list[dict]:
+    def list_projects(self, owner=_UNSET) -> list[dict]:
+        """项目摘要列表：owner 三态（缺省全量 / None 仅无主 / str 仅该归属）。"""
         if not self._projects_dir.exists():
             return []
         summaries = []
@@ -239,6 +251,8 @@ class JsonRepository:
             if not (pdir / "state.json").exists():
                 continue
             state = self._load(pdir.name)
+            if owner is not _UNSET and state.get("owner") != owner:
+                continue
             summaries.append(
                 {
                     "project_id": state["project_id"],
@@ -248,6 +262,17 @@ class JsonRepository:
                 }
             )
         return summaries
+
+    def set_owner(self, pid: str, owner: str | None) -> None:
+        """改写归属（账号认领预留）；幂等（同值直接返回）；未知项目 KeyError。"""
+        reason = owner_violation(owner)
+        if reason:
+            raise ValueError(f"非法 owner（{reason}）: {owner}")
+        state = self._load(pid)
+        if state.get("owner") == owner:
+            return
+        state["owner"] = owner
+        self._save(pid, state)
 
     def get_state(self, pid: str) -> dict:
         return self._load(pid)

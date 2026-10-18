@@ -298,6 +298,7 @@ def test_geo_failure_degrades_not_fails():
     assert env.data.accommodation.items[0].name == "M"   # flyai 段照常
     assert [m for m, _ in geo.calls] == ["geocode"]      # 无锚点不跟发 around
     assert env.degraded and "高德" in env.degraded        # 隐式双源回退说明
+    assert "正在开发中" in env.degraded      # 境外功能缺口须明示，不静默跳过
 
 
 def test_geo_invalid_key_degraded_names_missing_key():
@@ -329,6 +330,25 @@ def test_geo_exception_is_isolated():
     assert env.data.geo is None and env.data.facilities is None
 
 
+def test_facilities_items_carry_kind_and_location():
+    """N6 地图面板数据源：合并时 extra 附 facility_kind（命中关键词，五类色分
+    用，前端不猜语义）；POI 坐标经 extra.location 透传（面板画 Marker 用）。"""
+    class GeoRich(StubGeoClient):
+        def around_search(self, keywords, location, radius=5000):
+            env = super().around_search(keywords, location, radius)
+            env.data.items[0].extra = {"location": "100.20,25.05", "address": "镇南路 1 号"}
+            return env
+
+    env = profile_field_site("喜洲", client=StubClient(), amap_client=GeoRich())
+    assert env.ok
+    items = env.data.facilities.items
+    # 截断后 5 条 = 卫生院×2 + 派出所×2 + 喜洲邮政所；kind 跟随命中关键词
+    assert items[0].extra.get("facility_kind") == "卫生院 诊所"
+    assert items[0].extra.get("location") == "100.20,25.05"
+    dup = next(i for i in items if i.name == "喜洲邮政所")
+    assert dup.extra.get("facility_kind") == "银行"   # 跨词去重首见保留，kind 归属首见词
+
+
 def test_around_all_fail_yields_facilities_none():
     """geocode 成功但五关键词 around 全失败 → facilities=None（缺段语义，
     区分于合并后为空的 ItemPage）；geo 段不受连坐、不算整体降级。"""
@@ -343,3 +363,68 @@ def test_around_all_fail_yields_facilities_none():
     assert env.data.facilities is None
     assert env.degraded is None                 # geocode 成功不算降级
     assert len(geo.calls) == 6                  # 预算照常花满：1 geocode + 5 around
+
+
+# ────────────────────────────────────────────────────────────────
+# N5（PoC2 §4.3 C3/§4.4 C4）：live_refs 附键（只附成功调用）+ degraded 规范文案
+# ────────────────────────────────────────────────────────────────
+
+
+def test_live_refs_on_geo_and_facilities_success():
+    """成功路径：live_refs = 1 个 geocode 键 + 5 个 around 键（radius 不进键）。"""
+    geo = StubGeoClient()
+    env = profile_field_site("喜洲", client=StubClient(), amap_client=geo)
+    assert env.ok
+    refs = env.data.live_refs
+    assert refs[0] == "@live:amap_geocode:喜洲"
+    assert set(refs[1:]) == {
+        "@live:amap_around_search:卫生院 诊所|100.196,25.047",
+        "@live:amap_around_search:派出所|100.196,25.047",
+        "@live:amap_around_search:银行|100.196,25.047",
+        "@live:amap_around_search:快递|100.196,25.047",
+        "@live:amap_around_search:集贸市场|100.196,25.047",
+    }
+
+
+def test_live_refs_geocode_only_when_around_all_fail():
+    """只附成功调用：五关键词 around 全失败 → live_refs 只剩 geocode 键。"""
+    class AroundFailRefs(StubGeoClient):
+        def around_search(self, keywords: str, location: str, radius: int = 5000):
+            self.calls.append(("around_search", {"keywords": keywords}))
+            return Envelope(ok=False)
+
+    env = profile_field_site("大理", client=StubClient(), amap_client=AroundFailRefs())
+    assert env.ok is True
+    assert env.data.live_refs == ["@live:amap_geocode:大理"]
+
+
+def test_geo_fail_degraded_canonical_wording():
+    """C4（§4.4）规范文案：失败分支统一为「地理底座：高德未收录（境外田野
+    点的定位/周边设施正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路」
+    （no_result 单列：境外缺口明示）；无任何成功 amap 调用 → live_refs 空表。"""
+    class GeoNoResultRefs(StubGeoClient):
+        def geocode(self, address: str, city: str = ""):
+            self.calls.append(("geocode", {"address": address}))
+            return Envelope(ok=False, error=ToolError(
+                code="amap_no_result", message="高德未收录该地名"))
+
+    env = profile_field_site("Chiang Mai", client=StubClient(),
+                             amap_client=GeoNoResultRefs())
+    assert env.ok is True
+    assert env.degraded == ("地理底座：高德未收录（境外田野点的定位/周边设施"
+                            "正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路")
+    assert env.data.live_refs == []
+
+
+def test_geo_invalid_key_degraded_unified_framework():
+    """C4 统一框架：无 Key 分支同款句式，点名「未配置高德 API Key」指对排查方向。"""
+    class GeoNoKeyRefs(StubGeoClient):
+        def geocode(self, address: str, city: str = ""):
+            self.calls.append(("geocode", {"address": address}))
+            return Envelope(ok=False, error=ToolError(
+                code="amap_invalid_key", message="未配置高德 API Key"))
+
+    env = profile_field_site("大理", client=StubClient(), amap_client=GeoNoKeyRefs())
+    assert env.ok is True
+    assert env.degraded == "地理底座：未配置高德 API Key，已回退纯 FlyAI 文本链路"
+    assert env.data.live_refs == []

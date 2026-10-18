@@ -127,6 +127,30 @@ def _public_assets(tmp_path, monkeypatch):
     assets.reload(empty)
 
 
+# ------------------------------------------------------- 归属令牌（ownership）
+# 裸令牌（X-Owner-Token 传输形态）与归一化归属值；OTHER_TOKEN 供“他人
+# 视角”用例（Task 7/8）。test_web_* 各文件经 make_client 默认携带 OWNER。
+OWNER_TOKEN = "e2e-owner-0000000000000000000000000000"
+OTHER_TOKEN = "e2e-other-00000000000000000000000000000"
+OWNER = f"anon:{OWNER_TOKEN}"
+
+
+def make_client(app, *, owner_token: str | None = OWNER_TOKEN,
+                headers: dict[str, str] | None = None):
+    """ASGI 测试客户端工厂：默认携带 X-Owner-Token（归属 = OWNER）。
+
+    owner_token=None → 无令牌客户端（POST /projects 400 / GET /projects
+    []）；headers 可叠加 X-App-Token 等，显式传入同名键可覆盖 owner 头。
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    merged = dict(headers or {})
+    if owner_token is not None:
+        merged.setdefault("X-Owner-Token", owner_token)
+    return AsyncClient(transport=ASGITransport(app=app),
+                       base_url="http://test", headers=merged)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_host_env(tmp_path, monkeypatch):
     """隔离部署边界环境：宿主侧变量不泄入任何测试，测试也不碰真实用户目录。

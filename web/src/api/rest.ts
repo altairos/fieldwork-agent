@@ -5,6 +5,7 @@ import type {
 } from "../types/models";
 import type { ExportFormat } from "../lib/exportFormat";
 import { authHeaders } from "../lib/keys";
+import { ownerHeaders } from "../lib/session";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -37,10 +38,16 @@ export function isAppTokenError(err: unknown): err is ApiError {
   return true;
 }
 
-/** GET /settings/status 的返回（web_host/api/settings.py，只回布尔不回明文）。 */
+/** GET /settings/status 的返回（web_host/api/settings.py）。
+ *  JS Key 两字段是文档化例外（settings.py docstring）：高德 JS API 2.0 要求
+ *  前端持有 key + securityJsCode，防滥用靠控制台域名白名单，非服务端代理可解。 */
 export interface SettingsStatus {
   dashscope_configured: boolean;
   flyai_configured: boolean;
+  amap_configured: boolean;
+  amap_js_configured: boolean;
+  amap_js_key: string;
+  amap_js_security: string;
 }
 
 /** GET /health 的返回（web_host/app.py：auth_required 表示服务端启用了 App Token）。 */
@@ -52,7 +59,7 @@ export interface HealthStatus {
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
     ...init,
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...init?.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...ownerHeaders(), ...init?.headers },
   });
   if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
@@ -101,8 +108,9 @@ export const rest = {
   getProject: (id: string) => req<ProjectSnapshot>(`/projects/${id}`),
   // 删除即整域清除（后端先取消活动回合再删数据；204 无 body）
   deleteProject: (id: string) => req<void>(`/projects/${id}`, { method: "DELETE" }),
+  // 元素可选携带 quick_replies（assistant 消息 meta 里的快捷作答选项，B 节；无则键缺省）
   getMessages: (id: string) =>
-    req<{ role: "user" | "assistant"; content: string }[]>(`/projects/${id}/messages`),
+    req<{ role: "user" | "assistant"; content: string; quick_replies?: string[] }[]>(`/projects/${id}/messages`),
   createTurn: (id: string, text: string, idempotencyKey?: string) =>
     req<CreateTurnResponse>(`/projects/${id}/messages`,
       { method: "POST", body: JSON.stringify({ text, idempotency_key: idempotencyKey }) }),

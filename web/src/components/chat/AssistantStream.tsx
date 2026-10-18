@@ -2,6 +2,7 @@ import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useConversationStore } from "../../stores/conversation";
+import { stripOptionTags } from "../../lib/optionTags";
 
 /**
  * AssistantStream — 助手流式正文（打字机）；同文件导出 MarkdownBody 供 MessageBubble 复用
@@ -18,7 +19,8 @@ import { useConversationStore } from "../../stores/conversation";
  *
  * 打字机效果 = streamBuffer 增量追加即重渲染（message_delta 由 conversation store 归约，Task 3）；
  * turnRunning 时尾部挂朱砂光标脉冲（animate-pulse，与 PulseDot 进行中态同一动效语义）。
- * 红线：只渲染内核下发的文本，不改写、不补数字。
+ * 红线：只渲染内核下发的文本，不改写、不补数字；[[options]] 标记（含半截流式）渲染前剥离，
+ * 防流式期间按钮标记闪烁（B 节问题 4；标记语义由 QuickReplies chips 承载）。
  */
 
 /** markdown 元素映射（设计板 lines 454-461 的宋体正文 + 朱砂点列表；表格/代码为 gfm 兜底样式）。 */
@@ -85,7 +87,7 @@ export function AssistantStream() {
       <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         {buffer ? (
-          <MarkdownBody text={buffer} />
+          <MarkdownBody text={stripOptionTags(buffer)} />
         ) : (
           <div className="text-[12.5px] text-inkfaint">助手正在组织回复…</div>
         )}

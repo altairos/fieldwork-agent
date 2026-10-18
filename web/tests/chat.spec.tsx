@@ -137,6 +137,17 @@ describe("MessageBubble / AssistantStream", () => {
     rerender(<AssistantStream />);
     expect(screen.getByText(/正在核对报价/)).toBeInTheDocument();
   });
+  test("AssistantStream 流式期间剥离 [[options]] 标记（含半截，防闪烁，B 节）", () => {
+    act(() => useConversationStore.setState({ streamBuffer: "正在提问[[options]]是|否", turnRunning: true }));
+    render(<AssistantStream />);
+    expect(screen.getByText(/正在提问/)).toBeInTheDocument();
+    expect(screen.queryByText(/\[\[options/)).not.toBeInTheDocument();
+  });
+  test("MessageBubble 渲染前剥离 [[options]] 标记（历史消息兜底，B 节）", () => {
+    render(<MessageBubble role="assistant" content="先校准研究问题吗？[[options]]是|否[[/options]]" />);
+    expect(screen.getByText(/先校准研究问题吗？/)).toBeInTheDocument();
+    expect(screen.queryByText(/\[\[options/)).not.toBeInTheDocument();
+  });
 });
 
 describe("ToolActivityStrip 细节", () => {
@@ -145,17 +156,33 @@ describe("ToolActivityStrip 细节", () => {
     render(<ToolActivityStrip />);
     expect(screen.queryByText(/AGENT 工具活动/)).not.toBeInTheDocument();
   });
-  test("按 order 稳定排序渲染每个调用", () => {
+  test("按 order 稳定排序渲染每个调用（保留态：running）", () => {
     const s = useToolsStore.getState();
     s.applyEvent({ event: "tool_started", call_id: "c1", tool: "compose_itinerary", args: { days: 90 }, purpose: "排行程" });
     s.applyEvent({ event: "tool_started", call_id: "c2", tool: "profile_field_site", args: { location: "喜洲镇" }, purpose: "" });
-    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: true, data: PLAN, degraded: null });
     render(<ToolActivityStrip />);
     const rows = screen.getAllByRole("listitem");
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain("compose_itinerary");
     expect(rows[1].textContent).toContain("profile_field_site");
     expect(rows[1].textContent).toContain("喜洲镇"); // purpose 为空时回落 args 摘要
+  });
+  test("成功且未降级的调用不进活动条（C 节精简：结果由 settled 区卡片承担）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "search_hotels", args: {}, purpose: "住宿" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: true, data: { items: [] }, degraded: null });
+    render(<ToolActivityStrip />);
+    expect(screen.queryByText(/AGENT 工具活动/)).not.toBeInTheDocument(); // 全部过滤 → 条整体不渲染（不留空壳）
+  });
+  test("update_research_context 不显示（内部状态写入噪音，含运行与失败）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "update_research_context", args: {}, purpose: "回写" });
+    s.applyEvent({ event: "tool_started", call_id: "c2", tool: "update_research_context", args: {}, purpose: "" });
+    s.applyEvent({ event: "tool_completed", call_id: "c2", ok: false, data: null, degraded: null,
+      error: { code: "internal_error", message: "boom", hint: "" } });
+    render(<ToolActivityStrip />);
+    expect(screen.queryByText(/update_research_context/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/AGENT 工具活动/)).not.toBeInTheDocument();
   });
   test("配额用尽：每个失败行标记，条下渲染一次性申请 Key 通知卡", () => {
     const s = useToolsStore.getState();
@@ -188,7 +215,7 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
     render(<Timeline />);
     expect(screen.getByText(/尚无对话/)).toBeInTheDocument();
   });
-  test("tool_completed 数据经 getToolCard 渲染为结果卡", () => {
+  test("collapsed 级工具（搜索原语）折叠为摘要条，点击展开原卡（C 节精简）", () => {
     const s = useToolsStore.getState();
     s.applyEvent({ event: "tool_started", call_id: "c1", tool: "search_hotels", args: {}, purpose: "住宿" });
     s.applyEvent({
@@ -196,8 +223,32 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
       data: { items: [{ name: "大理古城客栈", price: 180, price_raw: "¥180", jump_url: null, pic_url: null, extra: {} }], total: 1, cheapest: 180, dearest: 180 },
     });
     render(<Timeline />);
-    expect(screen.getByText("大理古城客栈")).toBeInTheDocument();
+    const bar = screen.getByTestId("collapsed-tool-card");
+    expect(bar.textContent).toContain("酒店搜索");        // 中文显示名（非原始工具名）
+    expect(bar.textContent).toContain("1 条 · ¥180–180"); // 摘要数字直出（ItemPage 形状）
+    expect(screen.queryByText("大理古城客栈")).not.toBeInTheDocument(); // 折叠态不露原始结果（15KB 刷屏的源头）
+    fireEvent.click(screen.getByRole("button", { name: /酒店搜索/ }));
+    expect(screen.getByText("大理古城客栈")).toBeInTheDocument();        // 展开渲染注册表原卡
     expect(screen.getByText("¥180")).toBeInTheDocument();
+  });
+  test("full 级工具原样整卡直渲（compose_itinerary 结果卡不折叠）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "compose_itinerary", args: {}, purpose: "排行程" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: true, data: PLAN, degraded: null });
+    render(<Timeline />);
+    expect(screen.queryByTestId("collapsed-tool-card")).not.toBeInTheDocument();
+    expect(screen.getByText(/昆明 → 喜洲镇/)).toBeInTheDocument(); // ItineraryCard 原卡路线
+  });
+  test("hidden 级（update_research_context）成功与失败均不进时间线", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "update_research_context", args: {}, purpose: "" });
+    s.applyEvent({ event: "tool_started", call_id: "c2", tool: "update_research_context", args: {}, purpose: "" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: true, data: null, degraded: null });
+    s.applyEvent({ event: "tool_completed", call_id: "c2", ok: false, data: null, degraded: null,
+      error: { code: "internal_error", message: "boom", hint: "" } });
+    render(<Timeline />);
+    expect(screen.queryByText(/update_research_context/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument(); // 失败也不显示（正文自会解释）
   });
   test("运行中的调用不提前渲染结果卡（不误报「未返回数据」）", () => {
     useToolsStore.getState().applyEvent({ event: "tool_started", call_id: "c1", tool: "search_flights", args: {}, purpose: "交通" });
@@ -259,6 +310,25 @@ describe("Composer", () => {
   test("底部注明阶段推进由可验证条件判定", () => {
     render(<Composer turn={turnHandle()} />);
     expect(screen.getByText(/阶段推进由可验证条件判定/)).toBeInTheDocument();
+  });
+  test("快捷作答 chips：点选即发送、自定义聚焦输入框（B 节）", () => {
+    const sent: string[] = [];
+    useConversationStore.setState({ quickReplies: ["是", "换个方向"] });
+    render(<Composer turn={turnHandle({ send: (t: string) => { sent.push(t); } })} />);
+    fireEvent.click(screen.getByRole("button", { name: "是" }));
+    expect(sent).toEqual(["是"]); // 直调 send，不经输入框
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "自定义" }));
+    expect(document.activeElement).toBe(screen.getByRole("textbox")); // 转入打字
+  });
+  test("quickReplies 为空或 busy 时不渲染 chips（渐进增强）", () => {
+    const { rerender } = render(<Composer turn={turnHandle()} />);
+    expect(screen.queryByTestId("quick-replies")).not.toBeInTheDocument(); // 无选项不出现
+    useConversationStore.setState({ quickReplies: ["是"] });
+    rerender(<Composer turn={turnHandle({ busy: true })} />);
+    expect(screen.queryByTestId("quick-replies")).not.toBeInTheDocument(); // 回合运行中退场
+    rerender(<Composer turn={turnHandle()} />);
+    expect(screen.getByTestId("quick-replies")).toBeInTheDocument();
   });
 });
 

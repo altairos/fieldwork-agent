@@ -69,7 +69,9 @@ from fieldwork_agent.kernel.sources.flyai import (
     search_pois,
     search_trains,
 )
+from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import run_tool_loop
+from fieldwork_agent.runtime.state_tools import build_project_state_tools
 
 from .config import Config
 
@@ -117,9 +119,14 @@ _TOOL_GUIDANCE = (
     "或聚合能力（profile_field_site 生成田野点画像、plan_last_mile 查枢纽→田野点末端接驳、compose_itinerary 组合行程）。"
     "国内地理信息（地名定位/行政区划/周边保障设施/公交接驳/天气）调用高德地理工具"
     "（amap_geocode/amap_around_search/amap_direction_transit/amap_weather 等）；"
-    "高德未收录（amap_no_result，常见于海外地名）时改用搜索工具。"
+    "高德仅覆盖境内：amap_no_result（常见于境外地名）时，明确告知用户"
+    "境外田野点的定位/周边/接驳功能正在开发中、后续版本将追加（不要静默跳过），"
+    "并改用搜索工具补位。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案、"
-    "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。"
+    "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。\n\n"
+    "职责边界：本助手只服务田野调查研究方案的设计与产出。输出用途（海外申请/"
+    "开题/申报等）仅用于校准方案体例与严谨度，不提供留学申请咨询：不问标化成绩、"
+    "GPA、写作样本、择校与申请策略；用户提起时温和拉回研究设计。"
 )
 
 
@@ -241,8 +248,11 @@ class FieldAgent:
             messages += [{"role": m["role"], "content": m["content"]}
                          for m in history if m.get("role") in ("user", "assistant")]
             messages.append({"role": "user", "content": message})
-            tools = self._build_tools() if use_tools else []
-            loop = run_tool_loop(self.llm, messages, self.client_kernel_dispatch,
+            state_schemas, state_handlers = build_project_state_tools(
+                self.repo, pid)
+            tools = (self._build_tools() + state_schemas) if use_tools else []
+            loop = run_tool_loop(self.llm, messages,
+                                 self._wrap_state_dispatch(state_handlers),
                                  tools, slot="interview")
             reply = loop.reply
             tool_events = loop.tool_events
@@ -267,6 +277,28 @@ class FieldAgent:
     def _build_tools(self) -> list[dict]:
         """工具 schema 单一来源：registry 全部能力（含 8 搜索原语）经 build_tool_schemas 生成。"""
         return build_tool_schemas()
+
+    def _wrap_state_dispatch(self, state_handlers) -> Callable[[str, dict], Envelope]:
+        """状态工具经 handlers 分派（同步 Envelope，不进 RecordingClient 链）；
+        其余能力走 client_kernel_dispatch + F01 入参合并。"""
+        base = self.client_kernel_dispatch
+
+        def dispatch(name: str, args: dict) -> Envelope:
+            handler = state_handlers.get(name)
+            if handler is None:
+                merged = merge_doc_args(self.repo, self.project_id, name, args)
+                return base(name, merged)
+            try:
+                return handler(**args)
+            except TypeError as exc:
+                return Envelope(ok=False, error=ToolError(
+                    code="invalid_arguments", message=str(exc),
+                    hint="参数形状不符，见工具 schema"))
+            except Exception as exc:
+                return Envelope(ok=False, error=ToolError(
+                    code="internal_error", message=str(exc), hint=""))
+
+        return dispatch
 
     def _snapshot(self, pid: str) -> str:
         """repo 快照摘要：已采集上下文 + 各渠道计数，帮 LLM 掌握现状不重复问。"""

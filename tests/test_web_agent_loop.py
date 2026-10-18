@@ -4,7 +4,7 @@ import json
 import re
 
 import pytest
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
+from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, SearchItem
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.web_host.turn_manager import TurnManager
 
@@ -514,6 +514,111 @@ def test_itinerary_quotes_bound_to_live_snapshots(env):
     assert old and all(c["id"] != stay_cid for c in old)
 
 
+# ---------------------------------------------------------------- N5 amap 快照链（宿主侧）
+
+
+class SnapshotAMap:
+    """N5 测试桩：全方法成功，data 与真实 AMapClient 同构
+    （geocode→GeoLocation、around→ItemPage、transit/weather→dict）。"""
+
+    def geocode(self, address="", city=""):
+        return Envelope(ok=True, data=GeoLocation(
+            location="100.196,25.047", city="大理白族自治州", adcode="532901"))
+
+    def around_search(self, keywords="", location="", radius=5000, page_size=10):
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name=f"{keywords}点", price=0.0)],
+            total=1, cheapest=0.0, dearest=0.0))
+
+    def direction_transit(self, origin="", destination="", city="", cityd="",
+                          date=""):
+        return Envelope(ok=True, data={"transits": []})
+
+    def weather(self, city="", extensions="all"):
+        return Envelope(ok=True, data={"city": city})
+
+
+def test_amap_live_key_matches_kernel_refs():
+    """N5 契约：宿主 _live_key amap 分支与 kernel amap_refs 纯函数逐字符一致
+    （radius/city 等副参不进键，date 缺省留空段）；非契约方法（weather）无键。"""
+    from fieldwork_agent.kernel.aggregation.amap_refs import (
+        live_around_ref,
+        live_geocode_ref,
+        live_transit_ref,
+    )
+    from fieldwork_agent.web_host.agent.loop import _live_key
+    assert _live_key("geocode", {"address": "喜洲", "city": "大理"}) == \
+        live_geocode_ref("喜洲")
+    assert _live_key("around_search", {"keywords": "卫生院 诊所",
+                                       "location": "100.196,25.047",
+                                       "radius": 5000}) == \
+        live_around_ref("卫生院 诊所", "100.196,25.047")
+    assert _live_key("direction_transit", {"origin": "102.71,25.03",
+                                           "destination": "100.19,25.04",
+                                           "date": "2026-11-02"}) == \
+        live_transit_ref("102.71,25.03", "100.19,25.04", "2026-11-02")
+    assert _live_key("direction_transit", {"origin": "102.71,25.03",
+                                           "destination": "100.19,25.04"}) == \
+        live_transit_ref("102.71,25.03", "100.19,25.04")
+    assert _live_key("weather", {"city": "大理"}) == ""
+
+
+def test_amap_drain_snapshots_position_args_and_label(env):
+    """N5：_drain_snapshots amap 分支——geocode 位置传参（last_mile 形态）与
+    around 关键字传参（site_profile 形态）都进快照；method 名带 amap_ 前缀；
+    live_refs 文案「amap 快照」；weather 无键但有快照；游标幂等。"""
+    from fieldwork_agent.kernel.sources.flyai import RecordingClient
+    from fieldwork_agent.web_host.agent.loop import _drain_snapshots
+    repo, _tm = env
+    rec = RecordingClient(SnapshotAMap())
+    rec.geocode("喜洲")  # 位置传参：RecordingClient 记 args=["喜洲"]、kwargs={}
+    rec.around_search(keywords="卫生院 诊所", location="100.196,25.047")
+    rec.weather(city="大理")
+    snapshot_ids, live_refs = [], {}
+    cursor = _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs,
+                              0, label="amap")
+    index = repo.list_cached_searches("p1")
+    assert {c["tool"] for c in index} == \
+        {"amap_geocode", "amap_around_search", "amap_weather"}
+    geo_row = next(c for c in index if c["tool"] == "amap_geocode")
+    assert "喜洲" in geo_row["query"]  # 位置参并入参数视图，query 可读
+    assert live_refs["@live:amap_geocode:喜洲"].startswith("amap 快照")
+    assert live_refs["@live:amap_around_search:卫生院 诊所|100.196,25.047"] \
+        .startswith("amap 快照")
+    assert not any(k.startswith("@live:amap_weather") for k in live_refs)
+    assert len(snapshot_ids) == 3 and cursor == len(rec.calls)
+    _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs, cursor, label="amap")
+    assert len(repo.list_cached_searches("p1")) == 3  # 幂等不重复落盘
+
+
+def test_amap_profile_live_refs_replaced_by_snapshots(env):
+    """N5 金标准：profile_field_site 附的 live_refs 规格键在轮末被替换为
+    「amap 快照 {cid}」真实引用，@live: 键零残留；快照与 snapshot_ids 均在。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "profile_field_site",
+                                          "arguments": {"location": "喜洲"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "画像喜洲", tm, llm,
+                         FakeFlyAI(), amap_client=SnapshotAMap()))
+    profile = repo.get_state("p1")["field_sites"][0]["profile"]
+    refs = profile["live_refs"]
+    assert refs and all(r.startswith("amap 快照 ") for r in refs)
+    tools = {c["tool"] for c in repo.list_cached_searches("p1")}
+    assert {"amap_geocode", "amap_around_search"} <= tools
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["snapshot_ids"]
+    assert "@live:" not in json.dumps(profile, ensure_ascii=False)
+
+
 
 # ------------------------------------------- D6 规格键字典精确匹配（audit3 终审）
 
@@ -823,3 +928,131 @@ def test_autoname_llm_error_or_blank_silent_no_write(env):
     assert not repo.get_research_context("p1").get("title")
     _maybe_autoname(repo, "p1", AutonameLLM(content="\n\n"))  # 全空白
     assert not repo.get_research_context("p1").get("title")
+
+# ------------------------------- 快捷选项标记（B 节：[[options]] 轮末抽取）
+
+
+def test_options_tag_stripped_meta_and_turn_done_carry_quick_replies(env):
+    """B 节：回复尾部 [[options]] 标记轮末剥离——干净正文入史、选项写入
+    消息 metadata.quick_replies 与 turn_done payload（前端据此渲染 chips）。"""
+    repo, tm = env
+    reply = ("你想先校准哪一项？\n\n"
+             "[[options]]研究问题|田野地点|时间窗[[/options]]")
+    llm = FakeLLM([[
+        {"delta": reply},
+        {"content": reply, "tool_calls": None, "finish_reason": "stop",
+         "usage": {"total_tokens": 5}},
+    ]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assistant = next(m for m in repo.get_messages("p1")
+                     if m["role"] == "assistant")
+    assert assistant["content"] == "你想先校准哪一项？"  # 标记与尾随空白已剥离
+    assert assistant["metadata"]["quick_replies"] == ["研究问题", "田野地点", "时间窗"]
+    assert assistant["metadata"]["tool_calls"] == 0
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["quick_replies"] == ["研究问题", "田野地点", "时间窗"]
+
+
+def test_no_options_tag_reply_intact_and_quick_replies_empty(env):
+    """无标记回合（渐进增强基准）：正文原样入史、metadata 无 quick_replies
+    键、turn_done payload 携带空表。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好的，已记录。"}, {"content": "好的，已记录。",
+                    "tool_calls": None, "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assistant = next(m for m in repo.get_messages("p1")
+                     if m["role"] == "assistant")
+    assert assistant["content"] == "好的，已记录。"
+    assert "quick_replies" not in (assistant.get("metadata") or {})
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["quick_replies"] == []
+
+
+def test_extract_quick_replies_bounds():
+    """抽取单元边界：最多 4 项、每项截 20 字；解析不出有效选项回落原文。"""
+    from fieldwork_agent.web_host.agent.loop import _extract_quick_replies
+    body, opts = _extract_quick_replies(
+        "正文\n[[options]]甲|乙|丙|丁|戊[[/options]]")
+    assert body == "正文"
+    assert opts == ["甲", "乙", "丙", "丁"]  # 第 5 项丢弃
+    long_opt = "长" * 30
+    _, opts2 = _extract_quick_replies(f"[[options]]{long_opt}|乙[[/options]]")
+    assert opts2 == ["长" * 20, "乙"]          # 单项截 20 字
+    body3, opts3 = _extract_quick_replies("纯正文，无标记")
+    assert body3 == "纯正文，无标记" and opts3 == []
+    empty_tag = "[[options]] | | [[/options]]"  # 全空选项：无按钮可渲染
+    body4, opts4 = _extract_quick_replies(empty_tag)
+    assert opts4 == [] and body4 == empty_tag
+
+
+class CancelMidStreamWithOptionsLLM:
+    """流式中途取消（P1-4 变体）：残缺终帧带 [[options]] 标记。"""
+    def __init__(self, tm, pid, tid):
+        self._tm, self._pid, self._tid = tm, pid, tid
+
+    def chat_stream(self, messages, **kw):
+        def _gen():
+            yield {"delta": "部分"}
+            self._tm.cancel(self._pid, self._tid)
+            yield {"content": "残缺[[options]]甲|乙[[/options]]",
+                   "tool_calls": None, "finish_reason": "stop", "usage": {}}
+        return _gen()
+
+
+def test_cancelled_turn_never_extracts_quick_replies(env):
+    """取消回合不做标记抽取：带标记的残缺回复不入史、不发 turn_done，
+    终态 cancelled（取消即中止本轮全部状态变更，含 quick_replies）。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = CancelMidStreamWithOptionsLLM(tm, "p1", turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
+    types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
+    assert "turn_done" not in types  # 无 payload 可携带选项
+
+
+
+class RecordingGuideLLM(FakeLLM):
+    """流式照脚本走；非流式 chat 记录收到的 messages 供断言。"""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.chat_messages = None
+
+    def chat(self, messages, **kw):
+        self.chat_messages = messages
+        return {"content": "guide"}
+
+
+def test_doc_tool_receives_repo_research_questions(env):
+    """F01 端到端：仓储 research_questions/discipline 经 merge_doc_args 进 guide prompt。
+    预设 title 隔离自动命名（任务1）——否则轮末 _maybe_autoname 会先占用
+    非流式 chat 通道，覆盖 RecordingGuideLLM.chat_messages。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "title": "已命名", "topic": "宗族与乡村治理",
+        "research_questions": "RQ1 宗族结构", "discipline": "社会学"})
+    llm = RecordingGuideLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_interview_guide",
+                                         "arguments": {"topic": "",
+                                                       "informant_types": ["村干部"]}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    joined = "\n".join(m["content"] for m in llm.chat_messages)
+    assert "研究主题：宗族与乡村治理" in joined
+    assert "RQ1 宗族结构" in joined
+    assert "学科取向：社会学" in joined

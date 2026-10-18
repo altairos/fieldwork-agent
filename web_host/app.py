@@ -113,6 +113,8 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
         cfg = getattr(request.app.state, "config", None)
         checks["dashscope_configured"] = getattr(request.app.state, "llm", None) is not None
         checks["flyai_key_configured"] = bool(getattr(cfg, "flyai_api_key", "") or "")
+        # N6 软检查：JS Key 缺失只降级地图面板（文字卡片），不算服务不可用
+        checks["amap_js_key_configured"] = bool(getattr(cfg, "amap_js_key", "") or "")
         blocking = ("flyai_cli", "projects_dir_writable")
         ok = all(checks[k] for k in blocking)
         return JSONResponse(

@@ -22,7 +22,8 @@ NA_CTX = ResearchContext(
     discipline="社会学", topic="历史文献研究", scale="单人调研",
     budget="2万", time_window="6-9月", target_location="喜洲",
     interviews_not_applicable=True,
-    interviews_na_reason="采用档案与文献分析法，不需访谈对象")
+    interviews_na_reason="采用档案与文献分析法，不需访谈对象",
+)
 
 
 class FakeLLM:
@@ -380,3 +381,26 @@ def test_fmt_price_never_scientific_notation():
     assert _fmt_price(150.5) == "¥150.5"
     assert _fmt_price(0.0) == "¥0"
     assert _fmt_price("¥350") == "¥350"   # 非数字原样
+
+
+def test_guide_prompt_carries_research_questions_and_discipline():
+    """F01：_guide_prompt 携带 research_questions/discipline，非空才出节。"""
+    from fieldwork_agent.kernel.documents.proposal import _guide_prompt
+    p = _guide_prompt("宗族与乡村治理", "村干部",
+                      research_questions="RQ1 宗族结构", discipline="社会学")
+    assert "研究主题：宗族与乡村治理" in p
+    assert "研究问题：RQ1 宗族结构" in p
+    assert "学科取向：社会学" in p
+    p2 = _guide_prompt("主题", "村干部")
+    assert "研究问题：" not in p2 and "学科取向：" not in p2
+
+
+def test_bullets_researcher_lists_rq_and_purpose():
+    """F01：研究者渠道含研究问题/输出用途；topic 标签改为研究主题。"""
+    from fieldwork_agent.kernel.documents.proposal import _bullets_researcher
+    from fieldwork_agent.kernel.models import ResearchContext
+    lines = _bullets_researcher(ResearchContext(
+        topic="宗族与乡村治理", research_questions="RQ1", purpose="硕士论文"))
+    assert "- **研究主题**：宗族与乡村治理" in lines
+    assert "- **研究问题**：RQ1" in lines
+    assert "- **输出用途**：硕士论文" in lines

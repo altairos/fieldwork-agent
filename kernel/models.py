@@ -102,6 +102,8 @@ class FieldSiteProfile(BaseModel):
     # 高德 PoC M3（§3.4）：地理底座与周边设施，默认 None 旧数据反序列化兼容
     geo: GeoLocation | None = None        # 行政区划底座；geocode 失败（含海外）为 None
     facilities: ItemPage | None = None    # 周边设施盘点（医疗/警务/金融/物流/集市）
+    # PoC2 N5（§4.3 C3）：实际成功的高德调用规格键（@live:amap_*，宿主轮末替换）
+    live_refs: list[str] = Field(default_factory=list)
     summary: SummaryHints = Field(default_factory=SummaryHints)
     generated_at: str = ""
 

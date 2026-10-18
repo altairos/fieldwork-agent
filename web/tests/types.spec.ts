@@ -90,11 +90,13 @@ function parseFrames(raw: string): ParsedFrame[] {
   });
 }
 
-/** 演示回合的 11 帧事件名序列（对齐 brief Step 3 脚本）。 */
+/** 演示回合的 15 帧事件名序列（N7 增补 c3 画像/c4 行程演示帧，PoC2 §5.2）。 */
 const EXPECTED_SEQUENCE = [
   "message_delta", "message_delta", "message_delta",
   "tool_started", "tool_completed",
   "tool_started", "tool_completed",
+  "tool_started", "tool_completed",   // c3 profile_field_site（C4 双源演示）
+  "tool_started", "tool_completed",   // c4 compose_itinerary（N2 last_mile 演示）
   "message_delta", "message_delta",
   "phase_transition", "turn_done",
 ];
@@ -103,9 +105,17 @@ describe("mock sse server smoke", () => {
   let server: Server;
   let port: number;
 
+  const OWNER = { "X-Owner-Token": "vitest-owner" };
+
   beforeAll(async () => {
     server = await startMockServer(0, 5); // 临时端口 + 5ms 帧间隔（测试快速跑完）
     port = (server.address() as AddressInfo).port;
+    // 归属化后先建项目：p1 属于 vitest-owner（后续所有端点 404 守卫的前提）
+    const created = await call(port, "POST", "/projects", {
+      headers: { "Content-Type": "application/json", ...OWNER },
+      body: JSON.stringify({ project_id: "p1" }),
+    });
+    expect(created.status).toBe(201);
   });
 
   afterAll(async () => {
@@ -114,7 +124,7 @@ describe("mock sse server smoke", () => {
 
   test("two-step flow: POST /messages then GET events replays full turn", async () => {
     const created = await call(port, "POST", "/projects/p1/messages", {
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...OWNER },
       body: JSON.stringify({ text: "帮我搜索大理住宿" }),
     });
     expect(created.status).toBe(201);
@@ -122,7 +132,8 @@ describe("mock sse server smoke", () => {
     expect(turn.turn_id).toMatch(/^turn_/);
     expect(turn.status).toBe("running");
 
-    const stream = await call(port, "GET", `/projects/p1/turns/${turn.turn_id}/events`);
+    const stream = await call(port, "GET", `/projects/p1/turns/${turn.turn_id}/events`,
+      { headers: { ...OWNER } });
     expect(stream.status).toBe(200);
     expect(stream.headers["content-type"]).toBe("text/event-stream");
 
@@ -133,7 +144,7 @@ describe("mock sse server smoke", () => {
     }
 
     const frames = parseFrames(stream.body);
-    expect(frames).toHaveLength(11);
+    expect(frames).toHaveLength(15);
     expect(frames.map((f) => f.event)).toEqual(EXPECTED_SEQUENCE);
     // seq 从 1 单调递增；data 内 turn_id/seq 平铺且与 id 行一致
     frames.forEach((f, i) => {
@@ -148,58 +159,99 @@ describe("mock sse server smoke", () => {
     expect(c1.ok).toBe(true);
     expect(c1.data.items[0]).toMatchObject({ name: "大理古城客栈", price: 180 });
     expect(frames[6].data).toMatchObject({ call_id: "c2", ok: false, data: null, degraded: "flyai_unavailable" });
-    expect(frames[9].data).toMatchObject({ from: "research_positioning", to: "field_site_profiles" });
-    expect(frames[10].data).toMatchObject({ reply_id: turn.turn_id, usage: { total_tokens: 42 } });
+    // N7 演示帧抽查：c3 画像带 geo/facilities（C4 地图块），c4 行程带 last_mile（N2 接驳）
+    expect(frames[7].data).toMatchObject({ call_id: "c3", tool: "profile_field_site", args: { location: "喜洲镇" } });
+    const c3 = frames[8].data as { ok: boolean; data: { geo: { location: string }; facilities: { total: number } } };
+    expect(c3.ok).toBe(true);
+    expect(c3.data.geo.location).toBe("100.1961,25.0473");
+    expect(c3.data.facilities.total).toBe(2);
+    expect(frames[9].data).toMatchObject({ call_id: "c4", tool: "compose_itinerary", args: { departure: "昆明", destinations: ["喜洲"] } });
+    const c4 = frames[10].data as { ok: boolean; data: { legs: { last_mile: { hub_geo: { city: string }; site_geo: { city: string } } }[]; budget: { total: number } } };
+    expect(c4.ok).toBe(true);
+    expect(c4.data.legs[0].last_mile.hub_geo.city).toBe("昆明");
+    expect(c4.data.legs[0].last_mile.site_geo.city).toBe("喜洲");
+    expect(c4.data.budget.total).toBe(14120);
+    expect(frames[13].data).toMatchObject({ from: "research_positioning", to: "field_site_profiles" });
+    expect(frames[14].data).toMatchObject({ reply_id: turn.turn_id, usage: { total_tokens: 42 } });
   });
 
   test("Last-Event-ID resumes from seq N+1", async () => {
-    const created = await call(port, "POST", "/projects/p1/messages", { body: "{}" });
+    const created = await call(port, "POST", "/projects/p1/messages",
+      { headers: { ...OWNER }, body: "{}" });
     const turn = JSON.parse(created.body) as CreateTurnResponse;
     const stream = await call(port, "GET", `/projects/p1/turns/${turn.turn_id}/events`, {
-      headers: { "Last-Event-ID": "9" },
+      headers: { "Last-Event-ID": "13", ...OWNER },
     });
     const frames = parseFrames(stream.body);
-    expect(frames.map((f) => f.id)).toEqual([10, 11]);
+    expect(frames.map((f) => f.id)).toEqual([14, 15]);
     expect(frames.map((f) => f.event)).toEqual(["phase_transition", "turn_done"]);
   });
 
   test("replay is idempotent after script finished", async () => {
-    const created = await call(port, "POST", "/projects/p1/messages", { body: "{}" });
+    const created = await call(port, "POST", "/projects/p1/messages",
+      { headers: { ...OWNER }, body: "{}" });
     const turn = JSON.parse(created.body) as CreateTurnResponse;
     const url = `/projects/p1/turns/${turn.turn_id}/events`;
-    const first = parseFrames((await call(port, "GET", url)).body);
-    const second = parseFrames((await call(port, "GET", url)).body);
+    const first = parseFrames((await call(port, "GET", url, { headers: { ...OWNER } })).body);
+    const second = parseFrames((await call(port, "GET", url, { headers: { ...OWNER } })).body);
     expect(second).toEqual(first);
   });
 
   test("cancel returns cancelled status", async () => {
-    const created = await call(port, "POST", "/projects/p1/messages", { body: "{}" });
+    const created = await call(port, "POST", "/projects/p1/messages",
+      { headers: { ...OWNER }, body: "{}" });
     const turn = JSON.parse(created.body) as CreateTurnResponse;
-    const cancelled = await call(port, "POST", `/projects/p1/turns/${turn.turn_id}/cancel`);
+    const cancelled = await call(port, "POST", `/projects/p1/turns/${turn.turn_id}/cancel`,
+      { headers: { ...OWNER } });
     expect(cancelled.status).toBe(200);
     expect(JSON.parse(cancelled.body)).toEqual({ turn_id: turn.turn_id, status: "cancelled" });
-    const missing = await call(port, "POST", "/projects/p1/turns/turn_nope/cancel");
+    const missing = await call(port, "POST", `/projects/p1/turns/turn_nope/cancel`,
+      { headers: { ...OWNER } });
     expect(missing.status).toBe(404);
   });
 
   test("project fixture routes", async () => {
-    const list = await call(port, "GET", "/projects");
+    // 归属化：列表只回本人项目（beforeAll 建的 p1）；新创建无 project_id 时默认 field_*
+    const list = await call(port, "GET", "/projects", { headers: { ...OWNER } });
     expect(list.status).toBe(200);
-    expect(JSON.parse(list.body)[0].project_id).toBe("field_20261015_demo");
+    expect(JSON.parse(list.body).map((p: { project_id: string }) => p.project_id)).toContain("p1");
 
     const created = await call(port, "POST", "/projects", {
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...OWNER },
       body: JSON.stringify({ discipline: "人类学" }),
     });
     expect(created.status).toBe(201);
     expect(JSON.parse(created.body)).toMatchObject({ phase: "research_positioning" });
 
-    const snapshot = await call(port, "GET", "/projects/p1");
+    const snapshot = await call(port, "GET", "/projects/p1", { headers: { ...OWNER } });
     expect(snapshot.status).toBe(200);
     expect(JSON.parse(snapshot.body)).toMatchObject({ project_id: "p1", phase: "research_positioning" });
 
-    const proposal = await call(port, "GET", "/projects/p1/proposal");
+    const proposal = await call(port, "GET", "/projects/p1/proposal", { headers: { ...OWNER } });
     expect(proposal.status).toBe(200);
     expect(JSON.parse(proposal.body)).toMatchObject({ kind: "proposal", mode: "global" });
+  });
+
+  test("ownership: 无令牌 GET /projects 返回 []；他人令牌详情 404 不泄露存在性", async () => {
+    const list = await call(port, "GET", "/projects");
+    expect(JSON.parse(list.body)).toEqual([]);
+    const other = await call(port, "GET", "/projects/p1",
+      { headers: { "X-Owner-Token": "someone-else" } });
+    expect(other.status).toBe(404);
+    expect(JSON.parse(other.body)).toEqual({ detail: "项目不存在: p1" });
+    // 无令牌的详情访问同样 404（不区分「无权」与「不存在」）
+    const noToken = await call(port, "GET", "/projects/p1");
+    expect(noToken.status).toBe(404);
+  });
+
+  test("ownership: 无令牌 POST /projects 400 owner_token_required", async () => {
+    const created = await call(port, "POST", "/projects", {
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(created.status).toBe(400);
+    expect(JSON.parse(created.body)).toEqual({
+      detail: { code: "owner_token_required", message: "创建项目需携带 X-Owner-Token 头" },
+    });
   });
 });

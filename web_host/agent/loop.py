@@ -1,6 +1,7 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -9,6 +10,7 @@ from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.sources.flyai import RecordingClient
+from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
     _coerce_args,
@@ -24,6 +26,26 @@ from fieldwork_agent.web_host.turn_manager import TurnManager
 _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
                   "以上为固定引导文案；配置后可启用智能对话。）")
 
+# 快捷选项标记：LLM 在枚举型提问末尾输出 [[options]]甲|乙|丙[[/options]]，
+# 轮末剥离标记、选项入消息 meta 与 turn_done payload（渐进增强：无标记则无选项）
+_OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
+
+
+def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
+    """剥离尾部 [[options]] 标记；返回 (干净正文, 选项列表)。
+
+    选项按 | 切分、strip、滤空，最多取 4 个，每项截断 20 字；
+    标记缺失或解析不出有效选项 → (原文, [])。
+    """
+    match = _OPTIONS_TAG_RE.search(reply)
+    if not match:
+        return reply, []
+    options = [opt.strip()[:20] for opt in match.group(1).split("|")]
+    options = [opt for opt in options if opt][:4]
+    if not options:
+        return reply, []
+    return reply[:match.start()].rstrip(), options
+
 
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
@@ -32,12 +54,19 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
     recorder = RecordingClient(flyai_client) if flyai_client is not None else None
+    # N5：amap 同款双包装（spec §5.1 快照链对高德原语同样成立）——聚合层
+    # 经 dispatch 拿到的是 recorder 透传视图，实际调用被逐次记录
+    amap_recorder = (RecordingClient(amap_client)
+                     if amap_client is not None else None)
     live_refs: dict[str, str] = {}
     snapshot_ids: list[str] = []
     drained = 0
+    drained_amap = 0
     call_args_map: dict[str, dict] = {}
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
-                                 llm, amap_client)
+                                 llm,
+                                 amap_recorder if amap_recorder is not None
+                                 else amap_client)
     tools = build_tool_schemas()
     state_schemas, state_handlers = build_state_tools(repo, pid)
     tools = tools + state_schemas
@@ -114,6 +143,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
+                args = merge_doc_args(repo, pid, name, args)
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
                 tm.append_event(pid, turn_id, "tool_started",
@@ -153,6 +183,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
                                        live_refs, drained)
+            # 双 recorder 各自游标（合并视图会错位）；snapshot_ids/live_refs
+            # 共享：turn_done 汇总全部快照，轮末替换按键前缀天然不冲突
+            drained_amap = _drain_snapshots(repo, pid, amap_recorder,
+                                            snapshot_ids, live_refs,
+                                            drained_amap, label="amap")
 
     except Exception as exc:
         tm.append_event(pid, turn_id, "error",
@@ -209,11 +244,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
     cancelled = handle.cancel_event.is_set()
+    quick_replies: list[str] = []
+    if not cancelled and accumulated_reply:
+        accumulated_reply, quick_replies = _extract_quick_replies(accumulated_reply)
     if not cancelled:
         try:
             if accumulated_reply:
                 repo.append_message(pid, "assistant", accumulated_reply,
-                                    {"tool_calls": total_calls})
+                                    {"tool_calls": total_calls,
+                                     **({"quick_replies": quick_replies}
+                                        if quick_replies else {})})
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
             _apply_extractions(repo, pid, user_text)
             _maybe_autoname(repo, pid, llm)
@@ -233,7 +273,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     else:
         tm.append_event(pid, turn_id, "turn_done",
                         {"reply_id": turn_id, "usage": usage_total,
-                         "snapshot_ids": snapshot_ids})
+                         "snapshot_ids": snapshot_ids,
+                         "quick_replies": quick_replies})
         tm.finish(pid, turn_id, "completed")
 
 
@@ -282,7 +323,11 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
 
 
 def _live_key(method: str, kwargs: dict) -> str:
-    """从 recorder 捕获的调用参数生成规格键——与 kernel 侧 live_*_ref 逐字符一致。"""
+    """从 recorder 捕获的调用参数生成规格键——与 kernel 侧 live_*_ref 逐字符一致。
+
+    amap 分支（N5，kernel/aggregation/amap_refs.py 契约）：副参不进键
+    （city/radius），date 缺省留空段；非契约方法（weather 等）无键。
+    """
     if method in ("search_flights", "search_trains"):
         origin = kwargs.get("origin") or ""
         dest = kwargs.get("destination") or ""
@@ -298,6 +343,21 @@ def _live_key(method: str, kwargs: dict) -> str:
                f"|{kwargs.get('check_out') or ''}")
         types = kwargs.get("hotel_types") or ""
         return f"{ref}|{types}" if types else ref
+    if method == "geocode":
+        address = kwargs.get("address") or ""
+        return f"@live:amap_geocode:{address}" if address else ""
+    if method == "around_search":
+        keywords = kwargs.get("keywords") or ""
+        location = kwargs.get("location") or ""
+        return (f"@live:amap_around_search:{keywords}|{location}"
+                if keywords and location else "")
+    if method == "direction_transit":
+        origin = kwargs.get("origin") or ""
+        dest = kwargs.get("destination") or ""
+        if not (origin and dest):
+            return ""
+        return (f"@live:amap_direction_transit:{origin}>{dest}"
+                f"|{kwargs.get('date') or ''}")
     return ""
 
 
@@ -445,34 +505,58 @@ def _maybe_autoname(repo, pid, llm):
         return   # best-effort：失败不影响回合流程，下回合再试
 
 
-def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int) -> int:
+# amap client 方法形参序（N5）：RecordingClient 记录的位置参数按此并入
+# 参数视图——geocode 在 last_mile 为位置传参、site_profile 为关键字传参，
+# 两种形态都归一到同名视图，供快照 query 与 _live_key 取参
+_AMAP_PARAMS = {
+    "geocode": ("address", "city"),
+    "regeocode": ("location",),
+    "text_search": ("keywords", "city", "page_size"),
+    "around_search": ("keywords", "location", "radius", "page_size"),
+    "direction_transit": ("origin", "destination", "city", "cityd", "date"),
+    "weather": ("city", "extensions"),
+}
+
+
+def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
+                      label: str = "flyai") -> int:
     """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（R08 §6）。
 
-    返回新游标（幂等，同一调用不会重复落盘）。仅记录带目的地语义的调用
-    （destination/dest_name/city_name 任一命中）；query 为可读的
-    ``方法名 {参数 JSON}``；analyze_fieldwork_window 内部的多日期采样同样
-    经 recorder 被捕获——它们正是价格曲线的原始依据。每次落盘同时按
-    ``_live_key`` 归并 规格键→快照引用（后写覆盖：同一键多次命中取最新），
-    轮末 ``_persist_tool_results`` 据此替换聚合产出中的规格键。
-    recorder 为 None（宿主未注入 flyai）时原样返回游标。
+    返回新游标（幂等，同一调用不会重复落盘）。flyai 路径仅记录带目的地
+    语义的调用（destination/dest_name/city_name 任一命中）；amap 路径
+    （label="amap"）六原语全为地理查询，全部落盘且快照 tool 名带
+    ``amap_`` 前缀区分来源，位置参数按 ``_AMAP_PARAMS`` 并入参数视图。
+    query 为可读的 ``工具名 {参数 JSON}``；analyze_fieldwork_window 内部的
+    多日期采样同样经 recorder 被捕获——它们正是价格曲线的原始依据。
+    每次落盘同时按 ``_live_key`` 归并 规格键→快照引用（后写覆盖：同一键
+    多次命中取最新），轮末 ``_persist_tool_results`` 据此替换聚合产出中
+    的规格键；文案前缀随 label（flyai/amap 快照）。
+    recorder 为 None（宿主未注入对应客户端）时原样返回游标。
     """
     if recorder is None:
         return start
     for method, sig, env in recorder.calls[start:]:
         if not getattr(env, "ok", False):
             continue
-        kwargs = sig.get("kwargs") or {}
-        dest = (kwargs.get("destination") or kwargs.get("dest_name")
-                or kwargs.get("city_name") or "")
-        if not dest:
-            continue
-        query = f"{method} {json.dumps(kwargs, ensure_ascii=False)}"
+        if label == "amap":
+            view = dict(zip(_AMAP_PARAMS.get(method, ()),
+                             sig.get("args") or [], strict=False))
+            view.update(sig.get("kwargs") or {})
+            tool = f"amap_{method}"
+        else:
+            view = sig.get("kwargs") or {}
+            dest = (view.get("destination") or view.get("dest_name")
+                    or view.get("city_name") or "")
+            if not dest:
+                continue
+            tool = method
+        query = f"{tool} {json.dumps(view, ensure_ascii=False)}"
         data = env.data
         if hasattr(data, "model_dump"):
             data = data.model_dump(mode="json")
-        cid = repo.cache_search(pid, query, method, data)
+        cid = repo.cache_search(pid, query, tool, data)
         snapshot_ids.append(cid)
-        key = _live_key(method, kwargs)
+        key = _live_key(method, view)
         if key:
-            live_refs[key] = f"flyai 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+            live_refs[key] = f"{label} 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
     return len(recorder.calls)

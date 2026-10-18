@@ -3,6 +3,7 @@ import { Chip } from "../ui/Chip";
 import { Price } from "../ui/Price";
 import { IconBed, IconPin, IconPlane, IconSpark, IconTemple } from "../ui/icons";
 import { CardShell, NoData, Notice } from "./CardShell";
+import { AmapMapPanel, type MapMarker } from "./AmapMapPanel";
 import { ItemList } from "./SearchResultCard";
 import { asArray, asRecord, numOf, strOf, toItemPage } from "./data";
 import type { ToolCardProps } from "./types";
@@ -71,6 +72,21 @@ export function SiteProfileCard({ data, degraded }: ToolCardProps) {
   const accommodation = toItemPage(rec.accommodation);
   const amenities = toItemPage(rec.amenities);
   const culture = asArray(rec.culture);
+  // N6 C4 双源标注（PoC2 §4.4）：geo 有值 → 高德底座；缺段 → 文本回退（不猜坐标）
+  const geo = asRecord(rec.geo);
+  const geoLoc = strOf(geo.location);
+  const facilities = toItemPage(rec.facilities);
+  // 周边设施点位：内核附着的 facility_kind + POI 坐标（extra.location）原样透传
+  const facMarkers = facilities.items
+    .map((raw): MapMarker | null => {
+      const f = asRecord(raw);
+      const extra = asRecord(f.extra);
+      const loc = strOf(extra.location);
+      const name = strOf(f.name);
+      const kind = strOf(extra.facility_kind);
+      return loc && name ? { location: loc, title: name, kind: kind || undefined } : null;
+    })
+    .filter((mk): mk is MapMarker => mk !== null);
   // summary 的最低价缺失时才回退到分段实价极值；显式 null 保留（内核明确"无报价"）
   const transportMin =
     summary.transport_min === undefined ? transport.cheapest : numOf(summary.transport_min);
@@ -108,7 +124,18 @@ export function SiteProfileCard({ data, degraded }: ToolCardProps) {
       subtitle={location || undefined}
       icon={<IconPin className="w-4 h-4" />}
       degraded={degraded}
-      statusChip={empty ? undefined : <Chip tone="bamboo">已生成</Chip>}
+      statusChip={
+        empty ? undefined : (
+          <>
+            {geoLoc ? (
+              <Chip tone="indigo">高德底座</Chip>
+            ) : (
+              <Chip tone="ochre">文本回退</Chip>
+            )}
+            <Chip tone="bamboo">已生成</Chip>
+          </>
+        )
+      }
     >
       {empty ? (
         <NoData hint="未取得田野点画像数据；可重试 profile_field_site 或先补充地点与出发城市。" />
@@ -136,6 +163,22 @@ export function SiteProfileCard({ data, degraded }: ToolCardProps) {
               {strOf(value)}
             </Notice>
           ))}
+
+          {/* N6 周边设施示意地图（PoC2 §5.2 嵌入点一）：geo 定位 + 设施点位；
+              无 JS Key / loader 失败由 AmapMapPanel 降级链兑底（坐标清单仍可读） */}
+          {(geoLoc || facMarkers.length > 0) && (
+            <Block
+              icon={<IconPin className="w-4 h-4 text-cinnabar" />}
+              title="周边设施示意"
+              meta={facMarkers.length > 0 ? `${facMarkers.length} 点位` : undefined}
+            >
+              <AmapMapPanel
+                center={geoLoc || facMarkers[0]?.location}
+                markers={facMarkers}
+                height={200}
+              />
+            </Block>
+          )}
 
           <Block
             icon={<IconPlane className="w-4 h-4 text-indigo" />}

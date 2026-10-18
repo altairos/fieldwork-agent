@@ -497,3 +497,68 @@ def test_latest_itinerary_cid_stable_within_same_wallclock_tick(json_repo, monke
     cid2 = json_repo.cache_search("p1", "行程", "compose_itinerary", {"day": 2})
     assert [c["id"] for c in json_repo.list_cached_searches("p1")] == [cid1, cid2]
     assert json_repo._latest_itinerary_cid("p1") == cid2
+
+
+# ---------------------------------------------------------------- owner 归属（归属隔离）
+
+def test_create_with_owner_persists(json_repo):
+    json_repo.create("p_owned", owner="anon:abc123")
+    assert json_repo.get_state("p_owned")["owner"] == "anon:abc123"
+
+
+def test_create_without_owner_is_unowned(json_repo):
+    json_repo.create("p_free")
+    assert json_repo.get_state("p_free")["owner"] is None
+
+
+def test_create_idempotent_keeps_existing_owner(json_repo):
+    json_repo.create("p_a", owner="anon:first")
+    json_repo.create("p_a", owner="anon:second")   # 幂等打开：不覆盖已有归属
+    assert json_repo.get_state("p_a")["owner"] == "anon:first"
+
+
+def test_create_invalid_owner_raises_valueerror(json_repo):
+    with pytest.raises(ValueError):
+        json_repo.create("p_bad", owner="anon:has space")
+    with pytest.raises(ValueError):
+        json_repo.create("p_bad", owner="no_namespace")
+
+
+def test_list_projects_owner_three_states(tmp_path):
+    """三态清单从空仓库起算：json_repo 夹具预建无主 p1，会混进全量与 None 两路。"""
+    # 局部仓库实例改名 plain_repo：避免遮蔽 L16 为契约收集而导入的 repo fixture（F811）
+    plain_repo = JsonRepository(projects_dir=tmp_path / "projects")
+    plain_repo.create("p_mine", owner="anon:me")
+    plain_repo.create("p_other", owner="anon:other")
+    plain_repo.create("p_free")
+    assert [p["project_id"] for p in plain_repo.list_projects()] == [
+        "p_free", "p_mine", "p_other"]   # 缺省全量，排序不变
+    assert [p["project_id"] for p in plain_repo.list_projects(owner="anon:me")] == ["p_mine"]
+    assert [p["project_id"] for p in plain_repo.list_projects(owner=None)] == ["p_free"]
+
+
+def test_set_owner_claims_and_releases(json_repo):
+    json_repo.create("p_claim")
+    json_repo.set_owner("p_claim", "anon:me")
+    assert json_repo.get_state("p_claim")["owner"] == "anon:me"
+    json_repo.set_owner("p_claim", "anon:me")   # 幂等：同值直接返回
+    json_repo.set_owner("p_claim", None)        # 退回无主
+    assert json_repo.get_state("p_claim")["owner"] is None
+
+
+def test_set_owner_unknown_pid_and_invalid_value(json_repo):
+    with pytest.raises(KeyError):
+        json_repo.set_owner("nope", "anon:me")
+    json_repo.create("p_x")
+    with pytest.raises(ValueError):
+        json_repo.set_owner("p_x", "Anon:UPPER")
+
+
+def test_owner_key_backfilled_on_legacy_project(json_repo):
+    """存量项目（无 owner 键）打开后 owner 为 None（_load setdefault 补键）。"""
+    json_repo.create("p_legacy")
+    state_file = json_repo.root / "p_legacy" / "state.json"
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    data.pop("owner")
+    state_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert json_repo.get_state("p_legacy")["owner"] is None

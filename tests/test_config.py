@@ -21,6 +21,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "PROJECTS_DIR", projects)
     monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
     for var in ("DASHSCOPE_API_KEY", "FLYAI_API_KEY", "AMAP_API_KEY",
+                "AMAP_JS_KEY", "AMAP_JS_SECURITY",
                 "FA_INTERVIEW_MODEL", "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL"):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
@@ -104,6 +105,39 @@ def test_amap_key_save_roundtrip(isolated_home):
     cfg.amap_api_key = "amap-save"
     cfg.save()
     assert Config().amap_api_key == "amap-save"
+
+
+# ── 高德 JS API Key（PoC2 N6）：Web 端地图面板用，与 Web 服务 Key 分开申请 ──
+
+
+def test_amap_js_keys_from_env(isolated_home):
+    os.environ["AMAP_JS_KEY"] = "jsk-env"
+    os.environ["AMAP_JS_SECURITY"] = "jsc-env"
+    cfg = Config()
+    assert cfg.amap_js_key == "jsk-env"
+    assert cfg.amap_js_security == "jsc-env"
+    assert cfg.amap_js_available is True
+
+
+def test_amap_js_keys_own_config_overrides_env(isolated_home):
+    os.environ["AMAP_JS_KEY"] = "jsk-env"
+    os.environ["AMAP_JS_SECURITY"] = "jsc-env"
+    (isolated_home / "config.json").write_text(
+        json.dumps({"amap_js_key": "jsk-file", "amap_js_security": "jsc-file"}),
+        encoding="utf-8")
+    cfg = Config()
+    assert cfg.amap_js_key == "jsk-file"    # 自有配置文件优先于环境变量
+    assert cfg.amap_js_security == "jsc-file"
+
+
+def test_amap_js_keys_save_roundtrip(isolated_home):
+    cfg = Config()
+    cfg.amap_js_key = "jsk-save"
+    cfg.amap_js_security = "jsc-save"
+    cfg.save()
+    reloaded = Config()
+    assert reloaded.amap_js_key == "jsk-save"
+    assert reloaded.amap_js_security == "jsc-save"
 
 
 def test_save_roundtrip(isolated_home):

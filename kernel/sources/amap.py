@@ -6,8 +6,16 @@
 
 传输层用 urllib（kernel 只依赖标准库 + pydantic 的约束不破）；出网前必检
 ``api_key``，无 Key 直接 ``amap_invalid_key`` 包络，不出网。
+
+读缓存（PoC2 §4.1 C1）：实例级 TTL 缓存六原语成功包络（行政区划 24h /
+天气 1h / 检索与公交 10min），键含方法名与排序参数；Envelope 不加缓存
+标注字段，新鲜度由 TTL 语义对调用方透明。
 """
+import functools
+import inspect
 import json
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +35,11 @@ from pydantic import BaseModel, Field
 BASE_URL = "https://restapi.amap.com"
 _TIMEOUT = 10  # REST 单查轻量，比 flyai CLI 的 30s 更紧
 
+# 读缓存 TTL 分档（PoC2 §4.1 C1）：按数据稳定性分档；transit 窗口短于班次变动粒度
+_TTL_STABLE = 24 * 3600   # geocode/regeocode：行政区划稳定
+_TTL_WEATHER = 3600       # weather：1h
+_TTL_VOLATILE = 600       # text/around/transit：10min
+
 # infocode → 内核错误码（官方错误码表钉死三枚，其余兜底 amap_error）
 _INFOCODE_MAP = {
     "10001": "amap_invalid_key",
@@ -43,8 +56,9 @@ _HINTS = {
         "个人认证可提额，或降低调用频率。"),
     "amap_rate_limited": "触发高德 QPS 限流（infocode 10004）：请稍后重试并降低并发。",
     "amap_no_result": (
-        "高德未收录该地点或无匹配数据（常见于海外/生僻地名）："
-        "请改用 FlyAI 搜索（search_keyword / search_ai）。"),
+        "高德仅覆盖境内：境外田野点的定位/周边/接驳功能正在开发中"
+        "（后续版本将追加）；境内生僻地名请改用标准写法（省+市+乡镇）；"
+        "当前可改用 FlyAI 搜索（search_keyword / search_ai）了解位置与交通。"),
     "amap_timeout": "高德接口超时：请稍后重试。",
     "parse_error": "高德返回了非 JSON 内容：请重试；持续出现请查看 https://lbs.amap.com 服务公告。",
     "amap_error": "高德服务异常：请到 https://lbs.amap.com 查看错误码文档排查。",
@@ -102,11 +116,48 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
+def _cached(ttl_seconds: float):
+    """方法级实例读缓存（PoC2 §4.1 C1）：键=(方法名, 排序参数)，值=(expire_at, envelope)。
+
+    位置/关键字混合调用先 bind + apply_defaults 归一（同语义调用同键）；
+    只缓存 ok 包络（失败穿透：限流/配额等瞬态错误不放大）；出网在锁外
+    （site_profile 线程池并发不被串行化）；缓存存 fn 产物、命中返回其深
+    拷贝——交给调用方的对象永不与缓存共享（防下游改写污染）。
+    """
+
+    def deco(fn):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            bound = sig.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            params = {k: v for k, v in bound.arguments.items() if k != "self"}
+            key = (fn.__name__, tuple(sorted(params.items())))
+            with self._cache_lock:
+                hit = self._cache.get(key)
+                if hit is not None and hit[0] > time.monotonic():
+                    self.stats["cache_hit"] += 1
+                    return hit[1].model_copy(deep=True)
+            env = fn(self, *args, **kwargs)
+            if env.ok:
+                with self._cache_lock:
+                    self._cache[key] = (time.monotonic() + ttl_seconds, env)
+                return env.model_copy(deep=True)
+            return env
+        return wrapper
+    return deco
+
+
 class AMapClient:
-    """高德 v3 REST 客户端（无状态、可复用；api_key 由宿主从 Config 注入）。"""
+    """高德 v3 REST 客户端（实例持 TTL 读缓存与命中计数，跨线程可复用；
+    api_key 由宿主从 Config 注入；缓存仅进程内，不落盘不跨实例）。"""
 
     def __init__(self, api_key: str = ""):
         self.api_key = api_key
+        self.stats = {"cache_hit": 0}   # 宿主日志可见，验证省配额（§4.1）
+        self._cache: dict[tuple, tuple[float, Envelope]] = {}
+        self._cache_lock = threading.Lock()
 
     # ══════════════════════════════════════════
     # 传输层
@@ -146,6 +197,7 @@ class AMapClient:
     # 六原语
     # ══════════════════════════════════════════
 
+    @_cached(_TTL_STABLE)
     def geocode(self, address: str, city: str = "") -> Envelope:
         """地理编码：地名 → GeoLocation（画像地理段/末端接驳的锚点）。"""
         params: dict[str, Any] = {"address": address}
@@ -168,6 +220,7 @@ class AMapClient:
             formatted_address=_first(g.get("formatted_address")),
             source="amap"))
 
+    @_cached(_TTL_STABLE)
     def regeocode(self, location: str) -> Envelope:
         """逆地理编码："lng,lat" → GeoLocation（报道人/样点坐标落到行政区的反向锚定）。"""
         payload, err = self._call("/v3/geocode/regeo", {"location": location})
@@ -185,6 +238,7 @@ class AMapClient:
             formatted_address=_first(regeo.get("formatted_address")),
             source="amap"))
 
+    @_cached(_TTL_VOLATILE)
     def text_search(self, keywords: str, city: str = "", page_size: int = 10) -> Envelope:
         """关键词 POI 搜索：按行政区找目标（卫生院/派出所/集贸市场等田野保障设施）。"""
         params: dict[str, Any] = {"keywords": keywords, "offset": page_size}
@@ -195,6 +249,7 @@ class AMapClient:
             return err
         return _pois_page(payload)
 
+    @_cached(_TTL_VOLATILE)
     def around_search(self, keywords: str, location: str, radius: int = 5000,
                       page_size: int = 10) -> Envelope:
         """周边搜索：以 "lng,lat" 为圆心找半径内设施（驻村便利性画像）。"""
@@ -205,6 +260,7 @@ class AMapClient:
             return err
         return _pois_page(payload)
 
+    @_cached(_TTL_VOLATILE)
     def direction_transit(self, origin: str, destination: str,
                           city: str = "", cityd: str = "",
                           date: str = "") -> Envelope:
@@ -228,6 +284,7 @@ class AMapClient:
             return err
         return _transits_page(payload)
 
+    @_cached(_TTL_WEATHER)
     def weather(self, city: str, extensions: str = "all") -> Envelope:
         """天气：all=4 日预报（casts）/ base=实况（lives），city 支持名称或 adcode。"""
         payload, err = self._call("/v3/weather/weatherInfo",

@@ -11,8 +11,10 @@ import { test, expect } from "@playwright/test";
  *   - Hub 标题 = ProjectHub h1「田野罗盘」；创建按钮 = 输入框旁发送钮 aria-label「创建项目」
  *     （页面无其他「创建」字样控件，用 aria-label 精确匹配发送钮）
  *   - 工作台输入框 = Composer textarea aria-label「消息输入」，Enter 发送
- *   - 住宿卡 = HotelCard(SearchResultCard)，条目行 li 内 Price 渲染「¥180」（mock payload price=180）
- *   - 航班降级 chip = CardShell「降级 · flyai_unavailable」（活动条同款 chip 另有一处，故 scope 到卡片内）
+ *   - 住宿卡 = 搜索原语 collapsed 级（C 节）：先点折叠摘要条「酒店搜索 1 条 · ¥180–180」
+ *     展开原卡 HotelCard(SearchResultCard)，条目行 li 内 Price 渲染「¥180」（mock payload price=180）
+ *   - 航班降级 = collapsed 失败态摘要条单行「航班搜索 无数据 降级 · flyai_unavailable」
+ *     （活动条另有同款降级文案非按钮，用 button role + name 正则精确匹配折叠卡）
  *   - 阶段推进 = PhaseBanner「阶段 B · 田野点画像」（LeftRail 常驻列出四阶段名，不可用裸「田野点画像」断言）
  *   - 八章导航 = ChapterNav nav[aria-label=提案章节导航]；正文 = ProposalViewer 的 markdown h2
  *   - 下载 = ProposalView 左栏「下载 .md」按钮（2026-10-18 Header 导出按钮已删，页面内唯一）
@@ -35,17 +37,21 @@ test("L4 完整剧本：新建项目→工作台回合→工具卡价格→阶�
   await composer.press("Enter");
 
   // ③ 断言工具卡价格与 mock payload 一致（search_hotels items[0].price = 180 → ¥180；
+  //    C 节：搜索原语默认折叠，先断言折叠摘要条再点击展开原卡；
   //    scope 到「大理古城客栈」条目行内，排除卡片底部「最低 ¥180 · 最高 ¥180」摘要的重复匹配）
-  await expect(page.getByText("住宿搜索结果")).toBeVisible({ timeout: 15_000 });
+  const collapsedHotel = page.getByRole("button", { name: /酒店搜索 1 条 · ¥180–180/ });
+  await expect(collapsedHotel).toBeVisible({ timeout: 15_000 });
+  await collapsedHotel.click();
+  await expect(page.getByText("住宿搜索结果")).toBeVisible();
   const hotelRow = page.locator("li").filter({ hasText: "大理古城客栈" });
   await expect(hotelRow).toBeVisible();
   await expect(hotelRow.getByText("¥180")).toBeVisible();
   // 摘要行同源数字（同一 payload 的 cheapest/dearest，不换算不失真）
   await expect(page.getByText("最低 ¥180 · 最高 ¥180")).toBeVisible();
 
-  // ④ 断言降级如实呈现（search_flights tool_completed degraded=flyai_unavailable → 卡片头部 chip）
-  const flightCard = page.locator("details").filter({ hasText: "航班搜索结果" });
-  await expect(flightCard.getByText(/降级\s*·\s*flyai_unavailable/)).toBeVisible({ timeout: 15_000 });
+  // ④ 断言降级如实呈现（search_flights failed+degraded → C 节折叠失败态摘要条单行如实标注）
+  const collapsedFlight = page.getByRole("button", { name: /航班搜索 无数据 降级 · flyai_unavailable/ });
+  await expect(collapsedFlight).toBeVisible({ timeout: 15_000 });
 
   // ⑤ 断言阶段推进（SSE phase_transition → field_site_profiles；PhaseBanner 主文切到「阶段 B · 田野点画像」）
   await expect(page.getByText("阶段 B · 田野点画像")).toBeVisible({ timeout: 15_000 });

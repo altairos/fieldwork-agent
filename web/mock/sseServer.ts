@@ -7,6 +7,8 @@
  *   `id: {seq}\nevent: {name}\ndata: {turn_id,seq,...payload}\n\n`
  *   支持 Last-Event-ID 请求头从该 seq 之后补发。
  * - POST /projects/:id/turns/:tid/cancel   → {turn_id, status:"cancelled"}
+ * - GET  /projects/:id/messages             → 消息史回放（内存；assistant 带 quick_replies 键，
+ *   B 节刷新恢复，对齐 turns.py::list_messages 只透出该键的约定）
  * - GET /projects、POST /projects、GET /projects/:id、GET /projects/:id/proposal
  *   → 固定假数据（够前端联调即可）
  * - GET /projects/:id/proposals            → 版本列表（Task 8 rest.listProposals 消费）
@@ -45,6 +47,18 @@ interface TurnRecord {
 /** turn_id → 回合脚本（内存 Map，进程重启即失）。 */
 const turns = new Map<string, TurnRecord>();
 
+/** 演示回合的快捷作答选项（B 节 [[options]] 契约，与尾帧标记一致）。 */
+export const QUICK_REPLIES = ["换家客栈", "先定行程", "换个城市"];
+
+/** 演示回合的最终 assistant 正文（后端剥离 [[options]] 标记后入史的形态）。 */
+const ASSISTANT_REPLY = "正在为您搜索大理住宿…已找到住宿，航班搜索暂不可用。";
+
+/** project_id → 消息史（内存，进程重启即失）：GET /messages 回放用（B3 刷新恢复）。 */
+const messageLog = new Map<
+  string,
+  Array<{ role: "user" | "assistant"; content: string; quick_replies?: string[] }>
+>();
+
 /** 脚本化的一段完整演示回合（11 帧，seq 从 1 单调递增）。 */
 export function buildScript(turnId: string): ScriptFrame[] {
   return [
@@ -76,13 +90,95 @@ export function buildScript(turnId: string): ScriptFrame[] {
       event: "tool_completed",
       payload: { call_id: "c2", ok: false, data: null, degraded: "flyai_unavailable" },
     },
+    // N7 冒烟演示帧（PoC2 §5.2）：画像卡带 geo/facilities（C4 双源 + 地图块），
+    // 行程卡带 last_mile（N2 末端接驳行 + N6 接驳示意地图）；坐标取昆明/喜洲真值
+    {
+      event: "tool_started",
+      payload: { call_id: "c3", tool: "profile_field_site", args: { location: "喜洲镇" }, purpose: "田野点画像" },
+    },
+    {
+      event: "tool_completed",
+      payload: {
+        call_id: "c3",
+        ok: true,
+        data: {
+          location: "喜洲镇",
+          geo: { location: "100.1961,25.0473", province: "云南省" },
+          facilities: { items: [
+            { name: "喜洲卫生院", extra: { location: "100.2005,25.0487", facility_kind: "卫生院 诊所" } },
+            { name: "喜洲镇中心学校", extra: { location: "100.1902,25.0601", facility_kind: "学校" } },
+          ], total: 2 },
+          transport: null, accommodation: null, culture: [], amenities: null,
+          summary: { section_counts: {}, accommodation_nightly_min: null, transport_min: null, hints: {} },
+          generated_at: "2026-10-18T08:00:00",
+        },
+      },
+    },
+    {
+      event: "tool_started",
+      payload: { call_id: "c4", tool: "compose_itinerary", args: { departure: "昆明", destinations: ["喜洲"], days: 90 }, purpose: "行程编排" },
+    },
+    {
+      event: "tool_completed",
+      payload: {
+        call_id: "c4",
+        ok: true,
+        data: {
+          departure: "昆明", destinations: ["喜洲"],
+          start_date: "2026-06-01", end_date: "2026-08-29",
+          legs: [{
+            from: "昆明", to: "喜洲", date: "2026-06-01", direction: "outbound",
+            chosen: { name: "MU5843", price: 620, mode: "flight", price_raw: "¥620", extra: {} },
+            alternatives: [], note: "",
+            last_mile: {
+              hub_geo: { location: "102.7126,25.0389", city: "昆明" },
+              site_geo: { location: "100.1961,25.0473", city: "喜洲" },
+              options: {
+                items: [{ name: "8路", price: 8, schedule: { duration_minutes: 60 } }],
+                total: 2, cheapest: 8, dearest: 12,
+              },
+              note: "",
+            },
+          }],
+          stays: [{
+            dest: "喜洲", check_in: "2026-06-01", check_out: "2026-08-29", nights: 89,
+            nightly_price: 150, chosen: { name: "喜洲客栈", price: 150, mode: "民宿", extra: {} },
+            alternatives: [], long_stay_unverified: true,
+          }],
+          rhythm: [
+            { label: "适应期", days: 9, note: "报到、熟悉村落格局" },
+            { label: "深入期", days: 45, note: "参与式观察与深度访谈" },
+            { label: "补充期", days: 24, note: "补访缺口、整理笔记" },
+          ],
+          buffer_days: 9,
+          alternatives: [{ from: "昆明", to: "喜洲", items: [{ name: "G2937", price: 350, mode: "train", price_raw: "¥350", extra: {} }] }],
+          budget: {
+            items: [
+              { name: "交通（昆明→喜洲）", amount: 620, source: "cheapest", currency: "CNY", unit: "票价×人数", quantity: 1, people: 1, priced_at: "2026-10-18T08:00:00", source_ref: "MU5843" },
+              { name: "住宿（喜洲）", amount: 13500, source: "cheapest", currency: "CNY", unit: "每晚价×夜数×房间数", quantity: 90, people: 1, priced_at: "2026-10-18T08:00:00", source_ref: "喜洲客栈" },
+            ],
+            total: 14120, budget_total: 20000, over_budget: false, coverage: "complete", uncovered: [],
+          },
+          generated_at: "2026-10-18T08:00:00",
+        },
+      },
+    },
     { event: "message_delta", payload: { text: "已找到住宿，" } },
-    { event: "message_delta", payload: { text: "航班搜索暂不可用。" } },
+    // 尾帧带 [[options]] 标记（B 节契约）：流式期间前端 strip 半截标记防闪烁，
+    // turn_done 后 store 剥离入史 + chips 上场
+    {
+      event: "message_delta",
+      payload: { text: "航班搜索暂不可用。\n\n[[options]]换家客栈|先定行程|换个城市[[/options]]" },
+    },
     {
       event: "phase_transition",
       payload: { from: "research_positioning", to: "field_site_profiles" },
     },
-    { event: "turn_done", payload: { reply_id: turnId, usage: { total_tokens: 42 } } },
+    // turn_done 携带 quick_replies（对齐 loop.py 轮末抽取后的 payload 形状）
+    {
+      event: "turn_done",
+      payload: { reply_id: turnId, usage: { total_tokens: 42 }, quick_replies: QUICK_REPLIES },
+    },
   ];
 }
 
@@ -110,7 +206,7 @@ export function parseLastEventId(raw: string | string[] | undefined): number {
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID, X-DashScope-Key, X-FlyAI-Key",
+  "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID, X-DashScope-Key, X-FlyAI-Key, X-Owner-Token",
 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -142,17 +238,28 @@ const FAKE_CONTEXT = {
   target_location: "大理",
 };
 
-function fakeProjectList() {
-  return [
-    {
-      project_id: "field_20261015_demo",
-      phase: "research_positioning",
-      created_at: "2026-10-15T09:00:00Z",
-      updated_at: "2026-10-15T09:30:00Z",
-      research_context: FAKE_CONTEXT,
-      counts: { sites: 1, informants: 0, proposals: 0 },
-    },
-  ];
+// ---------------------------------------------------------------- 归属存储（spec 对齐：创建需令牌 + 列表过滤 + 404 隔离）
+
+interface StoredProject { id: string; owner: string; }
+
+/** 内存项目登记：id → 归属（anon:<token>）。mock 轻量——只记归属，内容恒返回假数据。 */
+const projects = new Map<string, StoredProject>();
+
+/** 与后端 owner_from_request 同构：裸 token 归一化 anon:<token>；缺失/空 → null。 */
+function ownerFromHeaders(req: IncomingMessage): string | null {
+  const raw = String(req.headers["x-owner-token"] ?? "").trim();
+  return raw === "" ? null : `anon:${raw}`;
+}
+
+/** 项目归属守卫：不存在/归属不符/无令牌 → 404（不泄露存在性，与后端 checked_owned_project 同形）。 */
+function ownedProject(res: ServerResponse, req: IncomingMessage, projectId: string): boolean {
+  const owner = ownerFromHeaders(req);
+  const rec = projects.get(projectId);
+  if (!owner || !rec || rec.owner !== owner) {
+    sendJson(res, 404, { detail: `项目不存在: ${projectId}` });
+    return false;
+  }
+  return true;
 }
 
 function fakeSnapshot(projectId: string) {
@@ -222,9 +329,21 @@ function streamTurn(res: ServerResponse, req: IncomingMessage, turnId: string, f
 
 /** 模拟阿里云部署形态：服务端环境变量已配 key（GET /settings/status 消费）。
  *  e2e 用 POST /__test/settings 翻转后须恢复，不污染同进程后续用例。 */
-let settingsState: { dashscope_configured: boolean; flyai_configured: boolean } = {
+let settingsState: {
+  dashscope_configured: boolean;
+  flyai_configured: boolean;
+  amap_configured: boolean;
+  amap_js_configured: boolean;
+  amap_js_key: string;
+  amap_js_security: string;
+} = {
   dashscope_configured: true,
   flyai_configured: true,
+  amap_configured: true,
+  // N6 地图面板链（settings.py 同构）：mock 下发占位 JS Key，面板可真加载 loader
+  amap_js_configured: true,
+  amap_js_key: "mock-js-key",
+  amap_js_security: "mock-js-security",
 };
 
 // ---------------------------------------------------------------- 路由
@@ -270,8 +389,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     return;
   }
 
+  // GET /projects/:id/messages → 消息史回放（B3 刷新恢复：只透出 quick_replies 键）
+  if (method === "GET" && (m = RE_MESSAGES.exec(path))) {
+    sendJson(res, 200, messageLog.get(decodeURIComponent(m[1])) ?? []);
+    return;
+  }
+
   if (method === "POST" && (m = RE_MESSAGES.exec(path))) {
-    await readBody(req); // 请求体 {text, idempotency_key?} 对 mock 无实际作用
+    const rawBody = await readBody(req); // {text, idempotency_key?}；text 入消息史
+    const projectId = decodeURIComponent(m[1]);
+    if (!ownedProject(res, req, projectId)) return;
     // 403 门（同构 turns.py::_resolve_clients）：服务端未配且请求头未带页面 key
     const pageKey = String(req.headers["x-dashscope-key"] ?? "").trim();
     if (!settingsState.dashscope_configured && !pageKey) {
@@ -283,7 +410,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
       });
       return;
     }
-    const projectId = decodeURIComponent(m[1]);
+    // 消息史入账：user 即问即记；assistant 剥离标记后带 quick_replies 入史（后端形态）
+    let text = "";
+    try {
+      text = String((JSON.parse(rawBody || "{}") as { text?: string }).text ?? "");
+    } catch {
+      text = "";
+    }
+    const history = messageLog.get(projectId) ?? [];
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: ASSISTANT_REPLY, quick_replies: QUICK_REPLIES });
+    messageLog.set(projectId, history);
     const turnId = newTurnId();
     turns.set(turnId, { projectId, frames: buildScript(turnId), status: "running" });
     sendJson(res, 201, { turn_id: turnId, status: "running" });
@@ -291,6 +428,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   }
 
   if (method === "GET" && (m = RE_EVENTS.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const turnId = decodeURIComponent(m[2]);
     const record = turns.get(turnId);
     // 未知 tid 也现编一份脚本（演示容错，方便直接 GET 冒烟）
@@ -299,6 +437,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   }
 
   if (method === "POST" && (m = RE_CANCEL.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const turnId = decodeURIComponent(m[2]);
     const record = turns.get(turnId);
     if (!record) {
@@ -312,6 +451,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
 
   // GET /projects/:id/proposals → 版本列表（Task 8 rest.listProposals 消费）
   if (method === "GET" && (m = RE_PROPOSALS.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     sendJson(res, 200, [
       { id: "doc_1", kind: "proposal", version: "draft", created_at: "2026-10-15T09:00:00Z" },
       { id: "doc_2", kind: "proposal", version: "final", created_at: "2026-10-15T10:00:00Z" },
@@ -323,6 +463,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
   // mock 职责边界：只复刻后端的状态码/响应头/文件名形状（docx 返回 PK 魔数、txt 轻量去标记），不引入 python-docx 逻辑。
   if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const doc = fakeProposal();
     const format = url.searchParams.get("format") ?? "md";
     if (format === "docx") {
@@ -355,6 +496,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
 
   // GET /projects/:id/proposals/:docId/download → 三格式附件（by-id 端点，ProposalView 主入口）。
   if (method === "GET" && (m = RE_BY_ID_DOWNLOAD.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const doc = fakeProposal();
     const format = url.searchParams.get("format") ?? "md";
     if (format === "docx") {
@@ -386,12 +528,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   }
 
   if (method === "GET" && (m = RE_PROPOSAL.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     sendJson(res, 200, fakeProposal());
     return;
   }
 
   if (method === "GET" && path === "/projects") {
-    sendJson(res, 200, fakeProjectList());
+    const owner = ownerFromHeaders(req);
+    if (!owner) {
+      sendJson(res, 200, []);
+      return;
+    }
+    sendJson(res, 200, [...projects.values()].filter((p) => p.owner === owner).map((p) => ({
+      project_id: p.id,
+      phase: "research_positioning",
+      created_at: "2026-10-15T09:00:00Z",
+      updated_at: "2026-10-15T09:30:00Z",
+      research_context: FAKE_CONTEXT,
+      counts: { sites: 1, informants: 0, proposals: 0 },
+    })));
     return;
   }
 
@@ -402,13 +557,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     } catch {
       body = {};
     }
+    const owner = ownerFromHeaders(req);
+    if (!owner) {
+      sendJson(res, 400, {
+        detail: { code: "owner_token_required", message: "创建项目需携带 X-Owner-Token 头" },
+      });
+      return;
+    }
     const projectId = body.project_id || `field_${Date.now()}`;
+    projects.set(projectId, { id: projectId, owner });
     sendJson(res, 201, { project_id: projectId, phase: "research_positioning" });
     return;
   }
 
   if (method === "GET" && (m = RE_PROJECT.exec(path))) {
-    sendJson(res, 200, fakeSnapshot(decodeURIComponent(m[1])));
+    const pid = decodeURIComponent(m[1]);
+    if (!ownedProject(res, req, pid)) return;
+    sendJson(res, 200, fakeSnapshot(pid));
     return;
   }
 

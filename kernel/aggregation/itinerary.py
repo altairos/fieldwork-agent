@@ -27,7 +27,13 @@
   缺失项进 ``uncovered``；``over_budget`` 仅在 complete 时为真——partial 时 total
   只是已知小计，不得据此宣布"预算内/超支"；
 - 长住诚实：单点 > ``LONG_STAY_THRESHOLD`` 晚时，日价仅作估算线索，该 stay 标
-  ``long_stay_unverified=True`` 并写入 degraded，不宣称长期住宿已落实。
+  ``long_stay_unverified=True`` 并写入 degraded，不宣称长期住宿已落实；
+- 末端接驳（PoC2 N2）：``amap_client`` 注入（None 自建），每腿"前一城市→到达点"
+  公交方案进 ``leg["last_mile"]``（地名级 geocode 复用，每腿至多 2 geocode + 1
+  transit）；首次 ``amap_invalid_key`` 即全程停用接驳（环境缺席不进 ``uncovered``、
+  不降级核心 coverage）；查过无价与交通同口径进 ``uncovered``；预算联动
+  ``cheapest×人数``（unit=高德公交最低价×人数）；``inputs_hash`` 不含接驳
+  （增强非方案输入）。
 """
 
 from collections import defaultdict
@@ -36,10 +42,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
 
+from fieldwork_agent.kernel.aggregation.amap_refs import (
+    live_geocode_ref,
+    live_transit_ref,
+)
 from fieldwork_agent.kernel.models import (
     BudgetBreakdown,
     BudgetItem,
     Envelope,
+    GeoLocation,
     ItemPage,
     ItineraryPlan,
     PhaseSegment,
@@ -48,6 +59,7 @@ from fieldwork_agent.kernel.models import (
     compute_inputs_hash,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from pydantic import BaseModel
 
@@ -72,7 +84,7 @@ MAX_ALTERNATIVES = 3
 
 
 class ComposeItineraryArgs(BaseModel):
-    """``compose_itinerary`` 的入参模型（``client`` 注入参数不进 schema）。"""
+    """``compose_itinerary`` 的入参模型（``client``/``amap_client`` 注入参数不进 schema）。"""
 
     departure: str
     destinations: list[str]
@@ -199,16 +211,93 @@ def live_hotel_ref(dest: str, check_in: str, check_out: str,
     return f"{ref}|{hotel_types}" if hotel_types else ref
 
 
+# ---------------------------------------------------------------- 末端接驳（N2）
+
+
+# amap_no_result（典型：境外地名，高德仅覆盖境内）明示功能缺口——评审要求
+# 不静默跳过；服务类错误（source_exception/amap_error 等）不适用此口径。
+_OVERSEAS_NOTE = "境外田野点的接驳功能正在开发中，后续版本将追加"
+
+
+def _memo_geocode(amap_client: AMapClient, address: str,
+                  memo: dict[str, GeoLocation]) -> tuple[GeoLocation | None, ToolError | None]:
+    """地名级 geocode 复用：同地名跨腿只解析一次；失败不缓存（下次仍重试）。"""
+    if address in memo:
+        return memo[address], None
+    env = _safe_call(amap_client.geocode, address, city=address)
+    if env.ok and isinstance(env.data, GeoLocation):
+        memo[address] = env.data
+        return env.data, None
+    return None, env.error
+
+
+def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
+                        memo: dict[str, GeoLocation]) -> tuple[dict[str, Any], bool, bool, bool]:
+    """单腿末端接驳（PoC2 §3.2）：前一城市→到达点的公交方案。
+
+    返回 ``(last_mile, queried, has_price, invalid_key)``；``invalid_key`` 由调用方
+    据此全程停用后续接驳查询（无 Key 属环境缺席而非数据缺口，不进 uncovered）。
+    N5 §4.3 C3：``live_refs`` 只收集实际成功的高德调用规格键——geocode 成功
+    （含 memo 命中，轮内该地名必曾真实调用过）恒附，transit 键在调用 ok
+    时附（有无报价快照均真实，宿主登记所有 ok 调用）。
+    """
+    refs: list[str] = []
+    hub_geo, hub_err = _memo_geocode(amap_client, hop["from"], memo)
+    if hub_err is not None and hub_err.code == "amap_invalid_key":
+        return {"hub_geo": None, "site_geo": None, "options": None,
+                "note": "未配置高德 API Key，接驳查询已停用",
+                "live_refs": refs}, True, False, True
+    if hub_geo is None:
+        note = f"接驳未纳入：{hop['from']} 地名解析失败（{hub_err.code}），预算未计该条"
+        if hub_err.code == "amap_no_result":
+            note += f"；{_OVERSEAS_NOTE}"
+        return {"hub_geo": None, "site_geo": None, "options": None,
+                "note": note, "live_refs": refs}, True, False, False
+    refs.append(live_geocode_ref(hop["from"]))
+    site_geo, site_err = _memo_geocode(amap_client, hop["to"], memo)
+    if site_err is not None and site_err.code == "amap_invalid_key":
+        return {"hub_geo": None, "site_geo": None, "options": None,
+                "note": "未配置高德 API Key，接驳查询已停用",
+                "live_refs": refs}, True, False, True
+    if site_geo is None:
+        note = f"接驳未纳入：{hop['to']} 地名解析失败（{site_err.code}），预算未计该条"
+        if site_err.code == "amap_no_result":
+            note += f"；{_OVERSEAS_NOTE}"
+        return {"hub_geo": hub_geo, "site_geo": None, "options": None,
+                "note": note, "live_refs": refs}, True, False, False
+    refs.append(live_geocode_ref(hop["to"]))
+    transit_env = _safe_call(
+        amap_client.direction_transit, origin=hub_geo.location,
+        destination=site_geo.location, city=hub_geo.city, cityd=site_geo.city)
+    page = transit_env.data if transit_env.ok and isinstance(transit_env.data, ItemPage) else None
+    if page is not None:
+        refs.append(live_transit_ref(hub_geo.location, site_geo.location))
+    if page is None:
+        detail = transit_env.error.message if transit_env.error else "无公交方案"
+        return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
+                "note": f"接驳公交查询失败：{detail}，预算未计该条",
+                "live_refs": refs}, True, False, False
+    if page.cheapest is None or page.cheapest <= 0:
+        return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
+                "note": "接驳公交无可用报价，预算未计该条",
+                "live_refs": refs}, True, False, False
+    return {"hub_geo": hub_geo, "site_geo": site_geo, "options": page,
+            "note": "", "live_refs": refs}, True, True, False
+
+
 # ---------------------------------------------------------------- 能力实现
 
 
 def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       duration_days: int, budget_total: float, researcher_count: int = 1,
                       rooms: int = 0, meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT,
-                      *, client: FlyAIClient | None = None) -> Envelope:
+                      *, client: FlyAIClient | None = None,
+                      amap_client: AMapClient | None = None) -> Envelope:
     """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与可复核预算（日期只用 timedelta）。"""
     if client is None:
         client = FlyAIClient()
+    if amap_client is None:
+        amap_client = AMapClient()  # 与 client 对称自建；无 Key 时首调即短路停用接驳
     bad = _validate(departure, destinations, duration_days, budget_total, researcher_count)
     if bad is not None:
         return bad
@@ -277,16 +366,37 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       "行程聚合失败：所有交通与住宿数据源均未返回有效结果",
                       "flyai CLI 不可用或无网络，请确认 `flyai` 命令可用后重试")
 
-    # 4) 腿与住宿装配：无价即降级，不抛异常
+    # 4) 腿与住宿装配：无价即降级，不抛异常；末端接驳（N2）随腿计算
     notes: list[str] = []
+    uncovered: list[str] = []
     legs: list[dict[str, Any]] = []
+    lm_priced: list[bool] = []
+    lm_queried: list[bool] = []
+    geo_memo: dict[str, GeoLocation] = {}  # 地名级 geocode 复用：同地名跨腿零重复
+    amap_disabled = False  # 无 Key 首败即全程停用（增强缺席，不惩罚核心口径）
     for idx, hop in enumerate(hops):
         chosen, alts = _select(transport_cands.get(idx, []))
         if chosen is None:
             notes.append(f"交通（{hop['from']}→{hop['to']}）无可用价格，预算未计该条")
+        if amap_disabled:
+            last_mile = {"hub_geo": None, "site_geo": None, "options": None,
+                         "note": "未配置高德 API Key，接驳查询已停用",
+                         "live_refs": []}
+            leg_queried = leg_priced = leg_no_key = False
+        else:
+            last_mile, leg_queried, leg_priced, leg_no_key = \
+                _plan_leg_last_mile(amap_client, hop, geo_memo)
+            if leg_no_key:
+                amap_disabled = True
+        # 查过但无价与交通同口径进 uncovered；无 Key 停用属环境缺席，不计缺口
+        if leg_queried and not leg_priced and not leg_no_key:
+            uncovered.append(f"接驳（{hop['from']}→{hop['to']}）")
+        lm_queried.append(leg_queried)
+        lm_priced.append(leg_priced)
         legs.append({**hop, "chosen": chosen, "alternatives": alts,
                      "note": "" if chosen else "无可用价格：数据源失败或结果未含报价，"
-                                               "预算未计该条，请人工核验"})
+                                               "预算未计该条，请人工核验",
+                     "last_mile": last_mile})
 
     stays: list[dict[str, Any]] = []
     for idx, w in enumerate(windows):
@@ -311,7 +421,6 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     rooms_eff = rooms if rooms > 0 else max(1, (researcher_count + 1) // 2)
     priced_at = datetime.now().isoformat()
     items: list[BudgetItem] = []
-    uncovered: list[str] = []
     priced_count = 0
     for leg in legs:
         if leg["chosen"] is not None:
@@ -327,6 +436,19 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                                                f"（{ref_fn(leg['from'], leg['to'], leg['date'])}）"))
         else:
             uncovered.append(f"交通（{leg['from']}→{leg['to']}）")
+    # 末端接驳预算（N2）：cheapest×人数，口径标注高德来源；无价已在腿装配进 uncovered
+    for leg, leg_priced in zip(legs, lm_priced, strict=True):
+        if not leg_priced:
+            continue
+        priced_count += 1
+        lm = leg["last_mile"]
+        first = next((i for i in lm["options"].items if i.price is not None), None)
+        items.append(BudgetItem(
+            name=f"接驳（{leg['from']}→{leg['to']}）",
+            amount=round(lm["options"].cheapest * researcher_count, 2),
+            source="cheapest", unit="高德公交最低价×人数",
+            quantity=1.0, people=researcher_count, priced_at=priced_at,
+            source_ref=f"{first.name}（高德公交）" if first else "高德公交"))
     for stay in stays:
         if stay["nightly_price"] is not None:
             priced_count += 1

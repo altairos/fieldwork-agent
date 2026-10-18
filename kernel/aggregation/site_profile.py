@@ -25,6 +25,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
+from fieldwork_agent.kernel.aggregation.amap_refs import (
+    live_around_ref,
+    live_geocode_ref,
+)
 from fieldwork_agent.kernel.models import (
     Envelope,
     FieldSiteProfile,
@@ -163,10 +167,12 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     geo: GeoLocation | None = None
     facilities: ItemPage | None = None
     degraded: str | None = None
+    live_refs: list[str] = []  # N5 §4.3 C3：实际成功的高德调用规格键，宿主轮末替换
     geo_env = _safe_call(amap_client.geocode, address=location)
     if geo_env.ok and isinstance(geo_env.data, GeoLocation):
         geo = geo_env.data
         succeeded += 1  # 高德也算源：flyai 全挂但 geocode 成功仍可出 geo-only 画像
+        live_refs.append(live_geocode_ref(location))
         if geo.location:
             geo_tasks = [lambda kw=kw: _safe_call(
                 amap_client.around_search, keywords=kw,
@@ -177,26 +183,31 @@ def profile_field_site(location: str, budget_per_night: float = 200,
             fac_items: list[SearchItem] = []
             seen_names: set[str] = set()
             any_around_ok = False
-            for fac_env in fac_envs:
+            for fac_env, fac_kw in zip(fac_envs, DEFAULT_FACILITY_KEYWORDS, strict=True):
                 if fac_env.ok and isinstance(fac_env.data, ItemPage):
                     any_around_ok = True
+                    live_refs.append(live_around_ref(fac_kw, geo.location))
                     for item in fac_env.data.items:  # 跨关键词同名去重，首见保留
                         if item.name not in seen_names:
                             seen_names.add(item.name)
+                            # N6 地图面板：附命中关键词（五类色分数据源，前端不猜
+                            # 语义）；extra.location 的 POI 坐标随条目透传。
+                            item.extra = {**item.extra, "facility_kind": fac_kw}
                             fac_items.append(item)
             if any_around_ok:  # 全部 around 失败 → 缺段 None（区分于空页）
                 facilities = _build_page(fac_items, max_items_per_section)
     else:
         # 无 Key 单独点名（默认无 Key 部署的第一路径，指对排查方向：配 Key，
-        # 而非误导为地名未收录/服务不可用）；其余失败（含海外 amap_no_result）
-        # 维持双源回退口径。
+        # 而非误导为地名未收录/服务不可用）；境外 amap_no_result 明示功能缺口
+        # （正在开发中，不静默跳过）；其余失败维持双源回退口径。
         err_code = geo_env.error.code if geo_env.error is not None else ""
         if err_code == "amap_invalid_key":
-            degraded = ("高德地理底座未建立（未配置高德 API Key），"
-                        "geo/facilities 段缺省，画像回退飞猪数据源")
+            degraded = "地理底座：未配置高德 API Key，已回退纯 FlyAI 文本链路"
+        elif err_code == "amap_no_result":
+            degraded = ("地理底座：高德未收录（境外田野点的定位/周边设施"
+                        "正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路")
         else:
-            degraded = ("高德地理底座未建立（地名未收录或服务不可用），"
-                        "geo/facilities 段缺省，画像回退飞猪数据源")
+            degraded = "地理底座：高德未收录，已回退纯 FlyAI 文本链路"
 
     # 全部源失败（含仅 ok=False / 仅异常；geocode 亦无结果）→ 整体失败包络
     if succeeded == 0:
@@ -264,6 +275,7 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         amenities=amenities,
         geo=geo,
         facilities=facilities,
+        live_refs=live_refs,
         summary=summary,
         generated_at=datetime.now().isoformat(),
     )

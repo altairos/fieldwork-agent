@@ -2,6 +2,7 @@
 import asyncio
 
 import pytest
+from conftest import OWNER, OWNER_TOKEN
 from fieldwork_agent.web_host.app import create_app
 from httpx import ASGITransport, AsyncClient
 
@@ -21,7 +22,7 @@ def app(tmp_path):
     from fieldwork_agent.web_host.deps import init_deps
 
     repo = JsonRepository(projects_dir=tmp_path / "projects")
-    repo.create("p1")
+    repo.create("p1", owner=OWNER)
     application = create_app(config=None, repo=repo)
     # ASGITransport 不触发 lifespan，手动初始化依赖
     init_deps(application, config=None, repo=repo)
@@ -30,9 +31,10 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
+    from conftest import make_client
+
     app.state.llm = FakeLLM()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with make_client(app) as c:
         yield c
 
 
@@ -74,7 +76,8 @@ async def test_no_llm_key_rejected_403(app):
     """
     app.state.llm = None
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "你好"})
         assert r.status_code == 403
         assert "turn_id" not in r.json()  # 未创建回合，未进入对话
@@ -106,7 +109,8 @@ async def test_create_turn_with_page_key_headers(app, monkeypatch):
     monkeypatch.setattr(turns_mod, "_build_llm", fake_build_llm)
     monkeypatch.setattr(turns_mod, "FlyAIClient", FakeFlyAIClient)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "hi"},
                          headers={"X-DashScope-Key": "sk-page",
                                   "X-FlyAI-Key": "fk-page"})
@@ -121,23 +125,87 @@ async def test_create_turn_with_page_key_headers(app, monkeypatch):
     assert app.state.llm is None  # 不动启动单例
 
 
+async def test_amap_page_key_builds_turn_level_client(app, monkeypatch):
+    """N4：X-Amap-Key 页面 key → 回合级 AMapClient 注入 run_turn（monkeypatch 录参）。
+
+    spy 掉 run_turn 不真跑回合（聚焦 key 解析链），录 amap_client 实参；
+    页面 key 构建的实例正是回合收到的实例，且不写回 app.state.amap。
+    """
+    import fieldwork_agent.web_host.agent.loop as loop_mod
+    from fieldwork_agent.web_host.api import turns as turns_mod
+
+    app.state.llm = FakeLLM()
+    built: list = []
+    got: list = []
+
+    class FakeAMapClient:
+        def __init__(self, api_key=""):
+            self.api_key = api_key
+            built.append(self)
+
+    async def spy_run_turn(repo, pid, turn_id, text, tm, llm, flyai, **kw):
+        got.append(kw.get("amap_client"))
+
+    monkeypatch.setattr(turns_mod, "AMapClient", FakeAMapClient)
+    monkeypatch.setattr(loop_mod, "run_turn", spy_run_turn)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        r = await c.post("/projects/p1/messages", json={"text": "hi"},
+                         headers={"X-Amap-Key": "ak-page"})
+        assert r.status_code == 201
+        await asyncio.sleep(0.3)  # 等后台任务执行 spy
+    assert len(built) == 1 and built[0].api_key == "ak-page"
+    assert got == [built[0]]              # 回合用的正是页面 key 构建的实例
+    assert app.state.amap is not built[0]  # 不动启动单例
+
+
+async def test_amap_missing_key_falls_back_to_singleton(app, monkeypatch):
+    """N4：无 X-Amap-Key 头 → run_turn 收到启动单例 app.state.amap。"""
+    import fieldwork_agent.web_host.agent.loop as loop_mod
+
+    app.state.llm = FakeLLM()
+    singleton = app.state.amap
+    got: list = []
+
+    async def spy_run_turn(repo, pid, turn_id, text, tm, llm, flyai, **kw):
+        got.append(kw.get("amap_client"))
+
+    monkeypatch.setattr(loop_mod, "run_turn", spy_run_turn)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        r = await c.post("/projects/p1/messages", json={"text": "hi"})
+        assert r.status_code == 201
+        await asyncio.sleep(0.3)
+    assert got == [singleton]
+
+
 async def test_settings_status_reports_configured_flags(app):
-    """GET /settings/status 只回布尔状态（不回明文 key）。"""
+    """GET /settings/status 回布尔状态；JS Key 例外下发明文（地图面板前端必）。"""
     from types import SimpleNamespace
 
     app.state.llm = FakeLLM()  # 钉死，避免开发者本机 key 影响判定
-    app.state.config = SimpleNamespace(flyai_api_key="fk")
+    app.state.config = SimpleNamespace(
+        flyai_api_key="fk", amap_api_key="ak",
+        amap_js_key="jsk", amap_js_security="jsc")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/settings/status")
         assert r.status_code == 200
-        assert r.json() == {"dashscope_configured": True, "flyai_configured": True}
+        assert r.json() == {"dashscope_configured": True, "flyai_configured": True,
+                            "amap_configured": True, "amap_js_configured": True,
+                            "amap_js_key": "jsk", "amap_js_security": "jsc"}
 
     app.state.llm = None
-    app.state.config = SimpleNamespace(flyai_api_key="")
+    app.state.config = SimpleNamespace(
+        flyai_api_key="", amap_api_key="",
+        amap_js_key="", amap_js_security="")
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/settings/status")
-        assert r.json() == {"dashscope_configured": False, "flyai_configured": False}
+        assert r.json() == {"dashscope_configured": False, "flyai_configured": False,
+                            "amap_configured": False, "amap_js_configured": False,
+                            "amap_js_key": "", "amap_js_security": ""}
 
 
 async def test_cancel_turn(client):
@@ -211,6 +279,39 @@ async def test_list_messages_unknown_project_404(client):
     assert r.status_code == 404
 
 
+async def test_list_messages_returns_quick_replies(app):
+    """GET /messages：assistant 消息 metadata.quick_replies 非空时回传该键
+    （快捷选项刷新恢复）；正文为剥离 [[options]] 标记后的干净版本。
+    对照 test_list_messages_restores_history：无标记消息不带该键。
+    """
+
+    class OptionsLLM:
+        def chat_stream(self, messages, **kw):
+            reply = ("先校准研究问题吗？"
+                     "[[options]]是|否，换个方向[[/options]]")
+            return iter([
+                {"delta": reply},
+                {"content": reply, "tool_calls": None,
+                 "finish_reason": "stop", "usage": {}},
+            ])
+
+    app.state.llm = OptionsLLM()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        await c.post("/projects/p1/messages", json={"text": "hi"})
+        await asyncio.sleep(0.5)  # 等后台回合完成（assistant 消息落盘）
+        m = await c.get("/projects/p1/messages")
+        assert m.status_code == 200
+        data = m.json()
+        assert data[0] == {"role": "user", "content": "hi"}  # user 消息不带键
+        assert data[1] == {
+            "role": "assistant",
+            "content": "先校准研究问题吗？",
+            "quick_replies": ["是", "否，换个方向"],
+        }
+
+
 # ------------------------------------------------ 套餐端点（X-DashScope-Plan）
 # 套餐 Key（sk-sp-）与通用端点不互通（401）；页面/服务端各自可声明套餐类型，
 # 白名单映射到专属 OpenAI 兼容端点。
@@ -230,7 +331,8 @@ async def test_turn_dashscope_plan_header_selects_endpoint(app, monkeypatch):
     # turns._build_llm 延迟 import llm 模块属性，monkeypatch 模块级 LLMClient 即生效
     monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "hi"},
                          headers={"X-DashScope-Key": "sk-sp-x",
                                   "X-DashScope-Plan": "coding"})
@@ -252,7 +354,8 @@ async def test_turn_unknown_plan_rejected_to_default(app, monkeypatch):
 
     monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
         r = await c.post("/projects/p1/messages", json={"text": "hi"},
                          headers={"X-DashScope-Key": "sk-sp-x",
                                   "X-DashScope-Plan": "https://evil.example.com/v1"})
@@ -287,6 +390,28 @@ def test_init_deps_singleton_uses_config_plan(tmp_path, monkeypatch):
         "api_key": "sk-sp-x", "models": {"interview": "q"},
         "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     }
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：回合四端点对非 owner 一律 404
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_turn_endpoints_hidden_from_other_owner(app, client):
+    from conftest import OTHER_TOKEN, make_client
+
+    r = await client.post("/projects/p1/messages", json={"text": "hi"})
+    assert r.status_code == 201
+    tid = r.json()["turn_id"]
+    await asyncio.sleep(0.3)
+    async with make_client(app, owner_token=OTHER_TOKEN) as other:
+        assert (await other.post("/projects/p1/messages",
+                                 json={"text": "hi"})).status_code == 404
+        assert (await other.get(
+            f"/projects/p1/turns/{tid}/events")).status_code == 404
+        assert (await other.post(
+            f"/projects/p1/turns/{tid}/cancel")).status_code == 404
+        assert (await other.get("/projects/p1/messages")).status_code == 404
 
 
 def test_init_deps_builds_amap_singleton(tmp_path, monkeypatch):

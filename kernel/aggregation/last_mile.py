@@ -4,10 +4,10 @@
 路径规划（``city``=出发市、``cityd``=到达市），返回两端正算结果与接驳方案页。约定：
 
 - 严格无状态：``amap_client`` keyword-only 注入，默认 None 时自建；
-- 任一端 geocode 失败（含海外地名 ``amap_no_result`` 或调用异常）→ 统一
-  ``amap_no_result`` 失败包络（message 指明哪一端，hint 引导标准地名），
-  失败即止不发 transit；无 Key（``amap_invalid_key``）例外：原样透传
-  配 Key 指引，不折 no_result（防默认无 Key 部署下 LLM 按换地名 hint 空转）；
+- 任一端 geocode 失败（含境外地名 ``amap_no_result`` 或调用异常）→ 统一
+  ``amap_no_result`` 失败包络（message 指明哪一端，hint 明示境外接驳缺口
+  并引导标准地名），失败即止不发 transit；无 Key（``amap_invalid_key``）例外：
+  原样透传配 Key 指引，不折 no_result（防默认无 Key 部署下 LLM 按换地名 hint 空转）；
 - transit 失败（无方案/服务不可用）不算整体失败：``ok=True`` + 空 ``options``
   + ``degraded`` 附言（末端接驳查不到 ≠ 出行不可行，建议班车/包车等公路方式）；
 - ``date_hint`` 透传（N1）：合法 YYYY-MM-DD 且 3 天内（含当日）→ v3 ``date``
@@ -17,12 +17,15 @@
 """
 from datetime import date, datetime, timedelta
 
+from fieldwork_agent.kernel.aggregation.amap_refs import live_geocode_ref, live_transit_ref
 from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from pydantic import BaseModel, Field
 
-_NO_RESULT_HINT = "请改用标准地名（省+市+乡镇）；海外地名高德不收录，可改用搜索工具。"
+_NO_RESULT_HINT = ("高德仅覆盖境内：境外田野点的末端接驳功能正在开发中"
+                   "（后续版本将追加）；境内生僻地名请改用标准写法（省+市+乡镇）；"
+                   "可暂用搜索工具了解交通。")
 
 
 class PlanLastMileArgs(BaseModel):
@@ -91,15 +94,20 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
     transit_env = amap_client.direction_transit(
         origin=hub_geo.location, destination=site_geo.location,
         city=hub_geo.city, cityd=site_geo.city, date=date_param)
+    # N5 §4.3 C3：geocode×2 走到此处必成功恒附；transit 键只在调用成功时附
+    live_refs = [live_geocode_ref(hub), live_geocode_ref(site)]
     if transit_env.ok and isinstance(transit_env.data, ItemPage):
         options, degraded = transit_env.data, None
+        live_refs.append(
+            live_transit_ref(hub_geo.location, site_geo.location, date_param))
     else:
         options = ItemPage(items=[], total=0)
         degraded = "末端公交接驳暂不可查（无方案或服务不可用），可考虑城际班车/包车等公路方式"
     if date_note:  # date 降级附言与 transit 失败附言同时发生时合并呈现
         degraded = date_note if degraded is None else f"{degraded}；{date_note}"
     return Envelope(ok=True,
-                    data={"hub": hub_geo, "site": site_geo, "options": options},
+                    data={"hub": hub_geo, "site": site_geo, "options": options,
+                          "live_refs": live_refs},
                     degraded=degraded)
 
 

@@ -64,7 +64,8 @@ def _researcher_nonempty(ctx: ResearchContext) -> bool:
     if ctx.extras:
         return True
     fields = (ctx.discipline, ctx.topic, ctx.site_status, ctx.scale, ctx.budget,
-              ctx.time_window, ctx.departure_city, ctx.target_location, ctx.travel_date)
+              ctx.time_window, ctx.departure_city, ctx.target_location, ctx.travel_date,
+              ctx.purpose, ctx.research_questions)
     return any(str(v).strip() for v in fields)
 
 
@@ -72,7 +73,9 @@ def _bullets_researcher(ctx: ResearchContext) -> list[str]:
     lines: list[str] = []
     pairs = [
         ("学科", ctx.discipline),
-        ("研究问题", ctx.topic),
+        ("研究主题", ctx.topic),
+        ("研究问题", ctx.research_questions),
+        ("输出用途", ctx.purpose),
         ("田野点确定度", ctx.site_status),
         ("调研规模", ctx.scale),
         ("预算", ctx.budget),
@@ -424,20 +427,26 @@ def _guide_degrade(topic: str, itype: str) -> str:
     return f"{head}\n\n{body}"
 
 
-def _guide_prompt(topic: str, itype: str) -> str:
+def _guide_prompt(topic: str, itype: str, *,
+                  research_questions: str = "", discipline: str = "") -> str:
     """guide 的 user prompt：固定包含 INTERVIEW_GUIDE_METHODOLOGY 与"知情同意话术"字样。"""
     entry = informants.get_informant(itype)
+    head = f"研究主题：{topic}\n\n"
+    if research_questions:
+        head += f"研究问题：{research_questions}\n\n"
+    if discipline:
+        head += f"学科取向：{discipline}\n\n"
     return (
-        f"研究主题：{topic}\n\n"
-        f"目标报道人类型：{itype}\n\n"
+        head
+        + f"目标报道人类型：{itype}\n\n"
         f"该类型条目：\n{_entry_block(entry, itype)}\n\n"
         f"{informants.INTERVIEW_GUIDE_METHODOLOGY}\n\n"
         + assets.generation_prompt("guide_instruction")
     )
 
 
-def compose_interview_guide(topic: str, informant_types: list[str], *,
-                            llm: Any = None) -> dict[str, str]:
+def compose_interview_guide(topic: str, informant_types: list[str], *, llm: Any = None,
+                            research_questions: str = "", discipline: str = "") -> dict[str, str]:
     """每类报道人产出一份半结构式提纲；无 llm 或 llm error 分支都走模板降级。"""
     guides: dict[str, str] = {}
     for itype in informant_types:
@@ -445,7 +454,9 @@ def compose_interview_guide(topic: str, informant_types: list[str], *,
         if llm is not None:
             messages = [
                 {"role": "system", "content": assets.generation_prompt("guide_system")},
-                {"role": "user", "content": _guide_prompt(topic, itype)},
+                {"role": "user", "content": _guide_prompt(
+                    topic, itype, research_questions=research_questions,
+                    discipline=discipline)},
             ]
             resp = llm.chat(messages, slot="interview", max_tokens=4096, temperature=0.5)
             content = (resp or {}).get("content", "") or ""
@@ -483,6 +494,8 @@ class ComposeInterviewGuideArgs(BaseModel):
 
     topic: str
     informant_types: list[str] = Field(default_factory=list)
+    research_questions: str = ""
+    discipline: str = ""
 
 
 def proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
@@ -516,10 +529,13 @@ def proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
     return Envelope(ok=True, data=doc)
 
 
-def guide_handler(topic: str, informant_types: list, *, llm: Any = None) -> Envelope:
+def guide_handler(topic: str, informant_types: list, *, llm: Any = None,
+                  research_questions: str = "", discipline: str = "") -> Envelope:
     """registry 分派入口：逐类提纲折进 ``Envelope.data``（``dict[str, str]``）。"""
     return Envelope(ok=True,
-                    data=compose_interview_guide(topic, informant_types or [], llm=llm))
+                    data=compose_interview_guide(topic, informant_types or [], llm=llm,
+                                                 research_questions=research_questions,
+                                                 discipline=discipline))
 
 
 register(CapabilityMeta(

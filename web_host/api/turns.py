@@ -1,10 +1,18 @@
 """回合路由（R4）：创建/SSE 订阅/取消。"""
 import asyncio
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
-from fieldwork_agent.web_host.api.guard import checked_project_id, checked_turn_id
-from fieldwork_agent.web_host.deps import get_flyai_raw, get_llm, get_repo, get_turn_manager
+from fieldwork_agent.web_host.api.guard import checked_owned_project, checked_turn_id
+from fieldwork_agent.web_host.api.owner import owner_from_request
+from fieldwork_agent.web_host.deps import (
+    get_amap_raw,
+    get_flyai_raw,
+    get_llm,
+    get_repo,
+    get_turn_manager,
+)
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
     encode_event,
@@ -28,6 +36,8 @@ DASHSCOPE_HEADER = "X-DashScope-Key"
 FLYAI_HEADER = "X-FlyAI-Key"
 # 套餐类型（coding/token）：套餐 Key（sk-sp-）配专属 OpenAI 兼容端点，白名单映射
 DASHSCOPE_PLAN_HEADER = "X-DashScope-Plan"
+# 高德 Web 服务 Key（N4 多租户）：与 MCP 侧 AMAP_KEY_HEADER 同名同义
+AMAP_HEADER = "X-Amap-Key"
 
 
 def _header(request: Request, name: str) -> str:
@@ -47,8 +57,9 @@ def _resolve_clients(request: Request):
 
     - 百炼必填：无页面 key 且单例 None（服务端未配）→ 403 llm_key_required，
       不创建回合、不进入对话（不再降级为固定文案）；
-    - 飞猪可选：仅影响工具调用可用性，缺失时回落单例（可为空 key，工具内部降级）。
-    返回 (llm, flyai)，均为回合级实例，不写回 app.state。
+    - 飞猪可选：仅影响工具调用可用性，缺失时回落单例（可为空 key，工具内部降级）；
+    - 高德可选（N4）：同飞猪语义，页面 key 构建回合级 AMapClient。
+    返回 (llm, flyai, amap)，均为回合级实例，不写回 app.state。
     """
     llm = get_llm(request)
     page_key = _header(request, DASHSCOPE_HEADER)
@@ -67,51 +78,57 @@ def _resolve_clients(request: Request):
     flyai_key = _header(request, FLYAI_HEADER)
     if flyai_key:
         flyai = FlyAIClient(flyai_key)
-    return llm, flyai
+    amap = get_amap_raw(request.app)
+    amap_key = _header(request, AMAP_HEADER)
+    if amap_key:
+        amap = AMapClient(amap_key)  # 纯 key 构造无失败面（MCP 同惯例），不走 try/except
+    return llm, flyai, amap
 
 
 @router.get("/projects/{project_id}/messages")
-async def list_messages(project_id: str, request: Request):
+async def list_messages(project_id: str, request: Request,
+                        owner: str | None = Depends(owner_from_request)):
     """消息史恢复（刷新回填）：按时间序回 role/content 全量史。
 
     只回 role/content（ts/metadata 是内核内部细节，不进 API 面）；
-    ``limit=0`` 走 repo 语义取全量。
+    唯一例外：assistant 消息 metadata.quick_replies 非空时回传该键
+    （快捷选项按钮刷新恢复）；``limit=0`` 走 repo 语义取全量。
     """
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
-    try:
-        messages = repo.get_messages(project_id, limit=0)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
-    return [{"role": m["role"], "content": m["content"]} for m in messages]
+    checked_owned_project(project_id, repo, owner)
+    messages = repo.get_messages(project_id, limit=0)
+    out = []
+    for m in messages:
+        item = {"role": m["role"], "content": m["content"]}
+        quick = (m.get("metadata") or {}).get("quick_replies")
+        if quick:
+            item["quick_replies"] = quick
+        out.append(item)
+    return out
 
 
 @router.post("/projects/{project_id}/messages", status_code=201)
 async def create_turn(project_id: str, body: CreateTurnRequest,
-                      request: Request, background: BackgroundTasks):
+                      request: Request, background: BackgroundTasks,
+                      owner: str | None = Depends(owner_from_request)):
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     tm = get_turn_manager(request)
-    try:
-        repo.get_state(project_id)
-    except KeyError:
-        raise HTTPException(404, f"项目不存在: {project_id}") from None
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
-    llm, flyai = _resolve_clients(request)
+    llm, flyai, amap = _resolve_clients(request)
     turn = tm.create_turn(project_id, idempotency_key=body.idempotency_key)
     background.add_task(_execute_turn, request.app, project_id,
-                        turn.turn_id, body.text, llm, flyai)
+                        turn.turn_id, body.text, llm, flyai, amap)
     return {"turn_id": turn.turn_id, "status": turn.status}
 
 
-async def _execute_turn(app, pid, tid, text, llm, flyai):
-    """后台任务：获取写锁 → 执行 agent loop → 释放。"""
+async def _execute_turn(app, pid, tid, text, llm, flyai, amap):
+    """后台任务：获取写锁 → 执行 agent loop → 释放（amap 为回合级实例，N4）。"""
     from fieldwork_agent.web_host.agent.loop import run_turn
-    from fieldwork_agent.web_host.deps import get_amap_raw, get_repo_raw, get_tm_raw
+    from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
     repo = get_repo_raw(app)
     tm = get_tm_raw(app)
-    amap = get_amap_raw(app)
     async with tm.acquire_write_lock(pid):
         await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap)
 
@@ -158,9 +175,10 @@ async def _event_stream(tm, project_id: str, turn_id: str, last_id: int, handle)
 
 
 @router.get("/projects/{project_id}/turns/{turn_id}/events")
-async def stream_events(project_id: str, turn_id: str, request: Request):
+async def stream_events(project_id: str, turn_id: str, request: Request,
+                        owner: str | None = Depends(owner_from_request)):
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
@@ -171,9 +189,10 @@ async def stream_events(project_id: str, turn_id: str, request: Request):
 
 
 @router.post("/projects/{project_id}/turns/{turn_id}/cancel")
-async def cancel_turn(project_id: str, turn_id: str, request: Request):
+async def cancel_turn(project_id: str, turn_id: str, request: Request,
+                      owner: str | None = Depends(owner_from_request)):
     repo = get_repo(request)
-    checked_project_id(project_id, repo)
+    checked_owned_project(project_id, repo, owner)
     checked_turn_id(turn_id)
     tm = get_turn_manager(request)
     handle = tm.get_turn(project_id, turn_id)
