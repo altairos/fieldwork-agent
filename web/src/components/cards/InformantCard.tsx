@@ -30,8 +30,8 @@ const FIELDS: { key: string; label: string; tone?: "ochre" | "soft" | "faint" }[
   { key: "ethics", label: "伦理", tone: "faint" },
 ];
 
-/** data → 候选数组（裸数组优先，其次常见包装键）。 */
-function toCandidates(data: unknown): Record<string, unknown>[] {
+/** data → 候选数组（裸数组优先，其次常见包装键）。导出供右栏面板判空复用（单一来源）。 */
+export function toCandidates(data: unknown): Record<string, unknown>[] {
   if (Array.isArray(data)) return asArray(data);
   const rec = asRecord(data);
   for (const key of ["candidates", "items", "value"]) {

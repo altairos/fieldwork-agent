@@ -72,6 +72,29 @@ describe("InformantsPanel 采纳登记", () => {
     await waitFor(() =>
       expect(useProjectStore.getState().snapshot?.informants).toHaveLength(1));
   });
+
+  test("失败的 suggest_informants 不渲染候选卡（右栏回到空态）", () => {
+    useToolsStore.setState({
+      byCallId: { c1: { call_id: "c1", tool: "suggest_informants", purpose: "", status: "failed", args: {},
+                        data: null, degraded: null,
+                        error: { code: "invalid_arguments", message: "参数校验失败", hint: "" } } },
+      order: ["c1"],
+    });
+    render(<InformantsPanel />);
+    expect(screen.queryByText(/未取得访谈对象候选/)).not.toBeInTheDocument();
+    expect(screen.getByText(/尚无访谈对象/)).toBeInTheDocument();
+  });
+
+  test("done 但零候选的 suggest_informants 不渲染候选卡（空数据不滞留）", () => {
+    useToolsStore.setState({
+      byCallId: { c1: { call_id: "c1", tool: "suggest_informants", purpose: "", status: "done", args: {},
+                        data: [], degraded: null } },
+      order: ["c1"],
+    });
+    render(<InformantsPanel />);
+    expect(screen.queryByText(/未取得访谈对象候选/)).not.toBeInTheDocument();
+    expect(screen.getByText(/尚无访谈对象/)).toBeInTheDocument();
+  });
 });
 
 describe("FieldSitesPanel 确认", () => {

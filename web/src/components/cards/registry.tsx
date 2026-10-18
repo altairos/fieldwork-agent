@@ -4,6 +4,7 @@ import { FlightCard } from "./FlightCard";
 import { HotelCard } from "./HotelCard";
 import { InformantCard } from "./InformantCard";
 import { ItineraryCard } from "./ItineraryCard";
+import { LiteratureCard } from "./LiteratureCard";
 import { LivingCostCard } from "./LivingCostCard";
 import { PoiCard } from "./PoiCard";
 import { ProposalCard } from "./ProposalCard";
@@ -62,6 +63,8 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   search_pois: PoiCard,
   search_keyword: PoiCard,
   search_ai: PoiCard,
+  // 学术文献检索（OpenAlex + 中文社科深链）：产出是用户核心交付物，用专属卡原样整卡渲染
+  search_literature: LiteratureCard,
   // 宿主层状态工具（轮 2 症状②，见头部注释例外说明）：data = {updated, reason}
   update_research_context: UpdateResearchContextCard,
 };
@@ -89,6 +92,7 @@ export const toolVisibility: Record<string, ToolVisibility> = {
   compose_proposal: "full",
   compose_interview_guide: "full",
   suggest_informants: "full",
+  search_literature: "full",
   // collapsed：8 搜索原语（过程性检索）
   search_flights: "collapsed",
   search_trains: "collapsed",

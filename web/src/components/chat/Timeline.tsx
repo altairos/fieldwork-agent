@@ -77,8 +77,11 @@ export function Timeline({
   const settled = order
     .map((id) => byCallId[id])
     .filter((call) => Boolean(call) && call.status !== "running");
-  // hidden 级不进时间线（含失败态：正文自会解释）；全部被隐藏时不渲染外层缩进容器
-  const visible = settled.filter((call) => (toolVisibility[call.tool] ?? "full") !== "hidden");
+  // hidden 级不进时间线（含失败态：正文自会解释）；失败态同样不进 settled 卡片区
+  // （问题4：工具未返回数据时空卡不滞留对话流，失败由活动条与助手正文承担）；
+  // done 但数据为空的卡保留（NoData 对“成功但无数据”仍有信息量）。全部被过滤时不渲染外层缩进容器。
+  const visible = settled.filter((call) =>
+    (toolVisibility[call.tool] ?? "full") !== "hidden" && call.status !== "failed");
   const empty = messages.length === 0 && settled.length === 0 && !streamBuffer && !turnRunning;
 
   return (

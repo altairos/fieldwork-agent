@@ -1,6 +1,7 @@
 import { Chip } from "../ui/Chip";
 import { PulseDot, type DotTone } from "../ui/PulseDot";
 import { IconAlert, IconCheck } from "../ui/icons";
+import { toolLabel } from "../cards/toolLabels";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
 
 /**
@@ -25,6 +26,10 @@ import { useToolsStore, type ToolCall } from "../../stores/tools";
  *   - running / failed / degraded 保留（进行中提示 + 异常提醒，语义从"全程审计视图"
  *     变为"进行中 + 异常"）。QuotaNoticeCard 逻辑不变。
  *
+ * 收敛规则（C 节问题 3）：行标题一律用中文名（toolLabel，不露英文工具名）；
+ *   同一工具**连续多次失败**按 order 聚合为一行（「连续 N 次失败」，不展开 args），
+ *   消除重试风暴噪音；不同工具、非连续、running/degraded 仍逐条。
+ *
  * 同源红线②：只读 tools store（tool_started/tool_completed 归约结果），不发请求、不转述数字；
  * 简述取内核下发的 `purpose` 原文，缺失时回落 `args` 的标量键值（原样呈现，不加工、不猜语义）。
  */
@@ -45,22 +50,52 @@ function argsSummary(args: Record<string, unknown>, limit = 3): string {
   return parts.join(" · ");
 }
 
-function Row({ call }: { call: ToolCall }) {
+/** 活动条显示行：单条调用，或连续同名失败的聚合组（count>1 才显示「连续 N 次」）。 */
+type StripRow =
+  | { kind: "single"; call: ToolCall }
+  | { kind: "failedGroup"; tool: string; count: number; call: ToolCall };
+
+/**
+ * 连续同名失败聚合：按 order 遍历，连续 failed 且同 tool 的合并为一组。
+ * 保留组内**首次**失败作代表（稳定 key + 错误样本）；running/done-degraded 不聚合。
+ */
+function groupRows(calls: ToolCall[]): StripRow[] {
+  const rows: StripRow[] = [];
+  for (const call of calls) {
+    const prev = rows[rows.length - 1];
+    if (call.status === "failed" && prev && prev.kind === "failedGroup" && prev.tool === call.tool) {
+      prev.count += 1;
+      continue;
+    }
+    rows.push(call.status === "failed"
+      ? { kind: "failedGroup", tool: call.tool, count: 1, call }
+      : { kind: "single", call });
+  }
+  return rows;
+}
+
+function Row({ row }: { row: StripRow }) {
+  const call = row.call;
+  const aggregated = row.kind === "failedGroup" && row.count > 1;
   const degraded = Boolean(call.degraded);
   const failed = call.status === "failed";
   const running = call.status === "running";
   const rateLimited = failed && call.error?.code === RATE_LIMIT_CODE;
   const dot: DotTone = running ? "cinnabar" : failed ? "ochre" : "bamboo";
-  const desc = call.purpose || argsSummary(call.args);
+  const label = toolLabel(call.tool);
+  // 聚合行不展开 args/purpose（重试风暴下多行 args 是主要噪音源）
+  const desc = aggregated ? "" : call.purpose || argsSummary(call.args);
   const tail = running
     ? "进行中"
-    : failed
-      ? rateLimited
-        ? "每日共享配额已用尽"
-        : call.data === null || call.data === undefined
-          ? "未取得数据"
-          : "调用失败"
-      : "";
+    : aggregated
+      ? `连续 ${row.count} 次失败`
+      : failed
+        ? rateLimited
+          ? "每日共享配额已用尽"
+          : call.data === null || call.data === undefined
+            ? "未取得数据"
+            : "调用失败"
+        : "";
 
   return (
     <li className={`flex items-center gap-2 text-[12.5px] ${failed || degraded ? "opacity-60" : ""}`.trim()}>
@@ -68,7 +103,7 @@ function Row({ call }: { call: ToolCall }) {
       <span
         className={`num text-inksoft ${failed ? "line-through decoration-inkfaint/60" : ""}`.trim()}
       >
-        {call.tool}
+        {label}
       </span>
       {desc && <span className="text-inkfaint truncate">· {desc}</span>}
       {degraded && <Chip tone="ochre" className="ml-1 shrink-0">降级 · {call.degraded}</Chip>}
@@ -122,12 +157,13 @@ export function ToolActivityStrip() {
     .filter((c) => c.tool !== "update_research_context" && !(c.status === "done" && !c.degraded));
   if (calls.length === 0) return null;
   const quotaExhausted = calls.some((c) => c.status === "failed" && c.error?.code === RATE_LIMIT_CODE);
+  const rows = groupRows(calls);
   return (
     <div className="hairline rounded-lg bg-card px-4 py-3 space-y-2">
       <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-1">AGENT 工具活动</div>
       <ul className="space-y-2">
-        {calls.map((call) => (
-          <Row key={call.call_id} call={call} />
+        {rows.map((row) => (
+          <Row key={row.call.call_id} row={row} />
         ))}
       </ul>
       {quotaExhausted && <QuotaNoticeCard />}

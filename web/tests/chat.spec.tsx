@@ -32,10 +32,11 @@ describe("Timeline", () => {
 });
 
 describe("ToolActivityStrip", () => {
-  test("渲染工具调用状态", () => {
+  test("渲染工具调用状态（中文名，不露英文工具名）", () => {
     useToolsStore.getState().applyEvent({ event: "tool_started", call_id: "c1", tool: "search_hotels", args: {}, purpose: "住宿" });
     render(<ToolActivityStrip />);
-    expect(screen.getByText(/search_hotels/)).toBeInTheDocument();
+    expect(screen.getByText(/酒店搜索/)).toBeInTheDocument();
+    expect(screen.queryByText(/search_hotels/)).not.toBeInTheDocument();
   });
   test("降级工具显示降级标记", () => {
     const s = useToolsStore.getState();
@@ -192,15 +193,16 @@ describe("ToolActivityStrip 细节", () => {
     render(<ToolActivityStrip />);
     expect(screen.queryByText(/AGENT 工具活动/)).not.toBeInTheDocument();
   });
-  test("按 order 稳定排序渲染每个调用（保留态：running）", () => {
+  test("按 order 稳定排序渲染每个调用（保留态：running，中文名）", () => {
     const s = useToolsStore.getState();
     s.applyEvent({ event: "tool_started", call_id: "c1", tool: "compose_itinerary", args: { days: 90 }, purpose: "排行程" });
     s.applyEvent({ event: "tool_started", call_id: "c2", tool: "profile_field_site", args: { location: "喜洲镇" }, purpose: "" });
     render(<ToolActivityStrip />);
     const rows = screen.getAllByRole("listitem");
     expect(rows).toHaveLength(2);
-    expect(rows[0].textContent).toContain("compose_itinerary");
-    expect(rows[1].textContent).toContain("profile_field_site");
+    expect(rows[0].textContent).toContain("行程规划");        // 中文名（不露英文工具名）
+    expect(rows[0].textContent).not.toContain("compose_itinerary");
+    expect(rows[1].textContent).toContain("田野点画像");
     expect(rows[1].textContent).toContain("喜洲镇"); // purpose 为空时回落 args 摘要
   });
   test("成功且未降级的调用不进活动条（C 节精简：结果由 settled 区卡片承担）", () => {
@@ -243,6 +245,35 @@ describe("ToolActivityStrip 细节", () => {
     render(<ToolActivityStrip />);
     expect(screen.queryByText(/每日共享配额已用尽/)).not.toBeInTheDocument();
     expect(screen.queryByText(/您也可以申请自己的免费 API Key/)).not.toBeInTheDocument();
+  });
+  test("同一工具连续多次失败聚合为一行（中文名 + 连续 N 次，不露英文名/args）", () => {
+    const s = useToolsStore.getState();
+    for (const id of ["c1", "c2", "c3"]) {
+      s.applyEvent({ event: "tool_started", call_id: id, tool: "suggest_informants",
+        args: { research_topic: "白族银器", site_profile: "{...}" }, purpose: "生成候选" });
+      s.applyEvent({ event: "tool_completed", call_id: id, ok: false, data: null, degraded: null,
+        error: { code: "invalid_arguments", message: "参数校验失败", hint: "" } });
+    }
+    render(<ToolActivityStrip />);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(1);                              // 3 次失败合并为 1 行
+    expect(rows[0].textContent).toContain("访谈对象候选生成"); // 中文名
+    expect(rows[0].textContent).toContain("连续 3 次失败");
+    expect(rows[0].textContent).not.toContain("suggest_informants"); // 不露英文工具名
+    expect(rows[0].textContent).not.toContain("白族银器");           // 不展开 args
+  });
+  test("不同工具的失败不聚合（各自一行）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "suggest_informants", args: {}, purpose: "" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: false, data: null, degraded: null,
+      error: { code: "invalid_arguments", message: "boom1", hint: "" } });
+    s.applyEvent({ event: "tool_started", call_id: "c2", tool: "compose_proposal", args: {}, purpose: "" });
+    s.applyEvent({ event: "tool_completed", call_id: "c2", ok: false, data: null, degraded: null,
+      error: { code: "invalid_arguments", message: "boom2", hint: "" } });
+    render(<ToolActivityStrip />);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByText(/访谈对象候选生成/)).toBeInTheDocument();
+    expect(screen.getByText(/研究方案草稿生成/)).toBeInTheDocument();
   });
 });
 
@@ -290,6 +321,15 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
     useToolsStore.getState().applyEvent({ event: "tool_started", call_id: "c1", tool: "search_flights", args: {}, purpose: "交通" });
     render(<Timeline />);
     expect(screen.queryByText(/工具未返回数据/)).not.toBeInTheDocument();
+  });
+  test("失败的 full 级工具不渲染结果卡（访谈对象候选窗不滞留对话流）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "suggest_informants", args: {}, purpose: "生成候选" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: false, data: null, degraded: null,
+      error: { code: "invalid_arguments", message: "参数校验失败", hint: "" } });
+    render(<Timeline />);
+    // 失败结果由活动条与助手正文承担，不再渲染空卡（NoData 占位）
+    expect(screen.queryByText(/未取得访谈对象候选/)).not.toBeInTheDocument();
   });
 });
 

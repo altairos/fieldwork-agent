@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { IconAlert, IconUsers } from "../ui/icons";
-import { InformantCard } from "../cards/InformantCard";
+import { InformantCard, toCandidates } from "../cards/InformantCard";
 import { boolOf, strOf } from "../cards/data";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
@@ -35,11 +35,13 @@ export function InformantsPanel() {
   const notApplicable = boolOf(ctx.interviews_not_applicable);
   const naReason = strOf(ctx.interviews_na_reason);
 
-  // 最新一次 suggest_informants（done/failed 都呈现：失败时卡片如实说明未取得候选）
+  // 最新一次 suggest_informants：仅 done 且非空候选才呈现（问题4：失败/零候选
+  // 不再让右栏滞留空卡，回到“尚无访谈对象”空态；失败说明由中栏活动条与正文承担）
   let candidateCall: ToolCall | null = null;
   for (const id of order) {
     const call = byCallId[id];
-    if (call && call.tool === "suggest_informants" && call.status !== "running") candidateCall = call;
+    if (call && call.tool === "suggest_informants" && call.status === "done"
+        && toCandidates(call.data === undefined ? null : call.data).length > 0) candidateCall = call;
   }
 
   const [adopting, setAdopting] = useState<number | null>(null);
