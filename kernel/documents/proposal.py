@@ -112,7 +112,9 @@ _DIRECTION_ZH = {"outbound": "去程", "inter": "站间", "return": "返程"}
 def _booking_suffix(chosen: dict) -> str:
     """chosen 带飞猪 ``jump_url`` 时尾接 markdown 预订链接（A3/D11），否则空串。"""
     jump = chosen.get("jump_url")
-    return f" [预订]({jump})" if jump else ""
+    if not isinstance(jump, str) or not jump.startswith(("http://", "https://")):
+        return ""
+    return f" [预订]({jump})"
 
 
 def _fmt_price(value) -> str:

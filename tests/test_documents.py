@@ -356,3 +356,7 @@ def test_bullets_itinerary_structured_with_booking_links():
     assert _bullets_itinerary({}) == ["- （暂无行程数据）"]
     assert _bullets_itinerary(None) == ["- （暂无行程数据）"]
     assert _bullets_itinerary({"legs": [], "stays": []}) == ["- **legs**：[]", "- **stays**：[]"]
+    # 防御：非 http(s) 协议的 jump_url 不渲染预订链接（markdown 注入面收紧）
+    bad = {**itinerary, "stays": [{**itinerary["stays"][0],
+           "chosen": {**itinerary["stays"][0]["chosen"], "jump_url": "javascript:alert(1)"}}]}
+    assert not any("[预订]" in ln for ln in _bullets_itinerary(bad))
