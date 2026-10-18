@@ -8,10 +8,13 @@ F05：注入 TurnPatchBuffer 时写操作进暂存区（轮末 commit/取消 dis
 """
 from __future__ import annotations
 
+from typing import Any
+
 from fieldwork_agent.kernel.context_patch import (
     context_fields_hint,
     sanitize_context_patch,
 )
+from fieldwork_agent.kernel.guidance.brief import build_project_brief
 from fieldwork_agent.kernel.models import Envelope, ToolError
 
 _UPDATE_SCHEMA = {
@@ -38,12 +41,26 @@ _UPDATE_SCHEMA = {
     },
 }
 
+_BRIEF_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "get_project_brief",
+        "description": "查询当前项目的研究定位/田野点/访谈对象/方案/搜索缓存有界摘要",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+}
+
 
 def build_project_state_tools(repo, pid: str, *,
                               buffer: "TurnPatchBuffer | None" = None):
     """构建绑定 pid 的受限状态写工具：返回 (schemas, handlers)。
 
     ``buffer``（F05）注入后写操作进回合级暂存区，轮末由宿主 commit/discard。
+    F04：另含只读 get_project_brief——有界摘要经 kernel.guidance.brief 推导，
+    暂存视图覆盖 research_context（未提交的状态也能被摘要看见）。
     """
 
     def update_research_context(patch: dict, reason: str = "") -> Envelope:
@@ -62,4 +79,15 @@ def build_project_state_tools(repo, pid: str, *,
             data["reason"] = reason
         return Envelope(ok=True, data=data)
 
-    return [_UPDATE_SCHEMA], {"update_research_context": update_research_context}
+    def get_project_brief(**_: Any) -> Envelope:
+        state = repo.get_state(pid)
+        if buffer is not None:
+            state = {**state,
+                     "research_context": buffer.staged_view()}
+        return Envelope(ok=True,
+                        data={"brief": build_project_brief(
+                            state, cached_searches=repo.list_cached_searches(pid))})
+
+    return ([_UPDATE_SCHEMA, _BRIEF_SCHEMA],
+            {"update_research_context": update_research_context,
+             "get_project_brief": get_project_brief})

@@ -40,7 +40,8 @@ def test_r05_unknown_field_rejected_atomically(env):
     """审计二 R05：白名单外键 + 空白值 → 整次拒绝（原子），绝不部分写入。"""
     repo, _ = env
     schemas, handlers = build_state_tools(repo, "p1")
-    assert [s["function"]["name"] for s in schemas] == ["update_research_context"]
+    assert [s["function"]["name"] for s in schemas] == \
+        ["update_research_context", "get_project_brief"]
     envl = handlers["update_research_context"](
         patch={"budget": "5万", "hacked": "x", "topic": "  "})
     assert not envl.ok
@@ -119,3 +120,14 @@ def test_data_carries_updated_and_reason_for_card(env):
     envl2 = handlers["update_research_context"](patch={"scale": "单人"})
     assert envl2.ok
     assert envl2.data == {"updated": ["scale"]}
+
+
+def test_get_project_brief_returns_bounded_summary(env):
+    """F04：get_project_brief 工具返回有界项目摘要（repo 状态透出）。"""
+    repo, _ = env
+    repo.update_research_context("p1", {"topic": "宗族礼生"})
+    _, handlers = build_state_tools(repo, "p1")
+    envl = handlers["get_project_brief"]()
+    assert envl.ok
+    assert "项目摘要：" in envl.data["brief"]
+    assert "宗族礼生" in envl.data["brief"]

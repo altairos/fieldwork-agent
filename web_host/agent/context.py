@@ -1,5 +1,6 @@
 """system prompt + 项目快照 + 历史消息组装（spec §3.3 步骤 1）。"""
 from fieldwork_agent.kernel.guidance import phases
+from fieldwork_agent.kernel.guidance.brief import build_project_brief
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 
 _TOOL_GUIDANCE = (
@@ -36,16 +37,10 @@ _OPTIONS_REMINDER = (
 
 
 def build_snapshot(repo: ProjectRepository, pid: str) -> str:
+    """F04 有界项目摘要：kernel brief 推导（搜索缓存收 repo 索引传入）。"""
     state = repo.get_state(pid)
-    ctx = state.get("research_context") or {}
-    filled = [f"{k}={v}" for k, v in ctx.items() if k != "extras" and str(v).strip()]
-    extras = ctx.get("extras") or {}
-    filled += [f"{k}={v}" for k, v in extras.items()]
-    n_sites = len(state.get("field_sites") or [])
-    n_inf = len(state.get("informants") or [])
-    n_prop = len(state.get("proposals") or [])
-    return (f"当前项目快照：已采集[{'；'.join(filled) if filled else '（空）'}]；"
-            f"候选田野点 {n_sites} 个、访谈对象 {n_inf} 位、方案草稿 {n_prop} 份。")
+    return build_project_brief(
+        state, cached_searches=repo.list_cached_searches(pid))
 
 
 def build_system_prompt(phase: str, snapshot: str) -> str:

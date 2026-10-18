@@ -33,6 +33,7 @@ from fieldwork_agent.kernel.documents.proposal import (
     proposal_handler,
 )
 from fieldwork_agent.kernel.guidance import phases
+from fieldwork_agent.kernel.guidance.brief import build_project_brief
 from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.llm import LLMClient
@@ -301,22 +302,12 @@ class FieldAgent:
         return dispatch
 
     def _snapshot(self, pid: str) -> str:
-        """repo 快照摘要：已采集上下文 + 各渠道计数，帮 LLM 掌握现状不重复问。"""
+        """repo 快照摘要（F04 有界版）：kernel brief + 行程状态拼接。"""
         state = self.repo.get_state(pid)
-        ctx = state.get("research_context") or {}
-        filled = [f"{k}={v}" for k, v in ctx.items()
-                  if k != "extras" and str(v).strip()]
-        extras = ctx.get("extras") or {}
-        if extras:
-            filled += [f"{k}={v}" for k, v in extras.items()]
-        n_sites = len(state.get("field_sites") or [])
-        n_inf = len(state.get("informants") or [])
-        n_prop = len(state.get("proposals") or [])
-        return ("当前项目快照："
-                f"已采集[{'；'.join(filled) if filled else '（空）'}]；"
-                f"候选田野点 {n_sites} 个、访谈对象 {n_inf} 位、"
-                f"方案草稿 {n_prop} 份"
-                f"{'；已有行程' if self._has_itinerary(state, pid) else '；尚无行程'}。")
+        brief = build_project_brief(
+            state, cached_searches=self.repo.list_cached_searches(pid))
+        tail = ("；已有行程" if self._has_itinerary(state, pid) else "；尚无行程")
+        return brief + tail + "。"
 
     # ─── 采集：extract 落研究上下文 ──────────────────────────────
 
