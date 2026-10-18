@@ -9,6 +9,7 @@ import { Header } from "../components/layout/Header";
 import { Button } from "../components/ui/Button";
 import { IconBook, IconDownload } from "../components/ui/icons";
 import { authHeaders } from "../lib/keys";
+import { ownerHeaders } from "../lib/session";
 import { useExportFormatStore } from "../stores/exportFormat";
 import type { ProposalDoc } from "../types/models";
 
@@ -140,7 +141,7 @@ export function ProposalView() {
     setDlError(null);
     try {
       const resp = await fetch(rest.proposalByIdDownloadUrl(projectId, doc.id, format), {
-        headers: authHeaders(),
+        headers: { ...authHeaders(), ...ownerHeaders() },
       });
       if (!resp.ok) throw new ApiError(resp.status, "下载失败");
       const url = URL.createObjectURL(await resp.blob());

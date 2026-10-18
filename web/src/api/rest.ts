@@ -5,6 +5,7 @@ import type {
 } from "../types/models";
 import type { ExportFormat } from "../lib/exportFormat";
 import { authHeaders } from "../lib/keys";
+import { ownerHeaders } from "../lib/session";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -35,7 +36,7 @@ export interface HealthStatus {
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, {
     ...init,
-    headers: { "Content-Type": "application/json", ...authHeaders(), ...init?.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...ownerHeaders(), ...init?.headers },
   });
   if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);

@@ -51,6 +51,7 @@ describe("keys", () => {
     expect(inits[0]?.headers).toMatchObject({
       Accept: "text/event-stream",
       "X-App-Token": "secret-token",
+      "X-Owner-Token": expect.stringMatching(/^[0-9a-f]{32}$/),
     });
   });
 });

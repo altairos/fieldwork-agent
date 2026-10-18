@@ -74,6 +74,14 @@ describe("rest 状态修正/确认/by-id 方法", () => {
     expect(calls[0].url).toBe("/projects/p1/messages");
     expect(r).toEqual([{ role: "user", content: "你好" }]);
   });
+
+  it("req 统一注入 X-Owner-Token（session 懒生成，所有 /projects 请求归属）", async () => {
+    localStorage.clear();
+    const calls = stubFetch([{ research_context: {}, phase_transition: null }]);
+    await rest.updateResearchContext("p1", { budget: "5万" });
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(headers["X-Owner-Token"]).toMatch(/^[0-9a-f]{32}$/);
+  });
 });
 
 describe("types: 快照确认状态与记录 id", () => {
