@@ -7,6 +7,7 @@ from fieldwork_agent.kernel.documents.informants import suggest_informants
 from fieldwork_agent.kernel.documents.proposal import (
     PROPOSAL_SECTIONS,
     _bullets_itinerary,
+    _fmt_price,
     build_context_block,
     compose_interview_guide,
     compose_proposal,
@@ -360,3 +361,22 @@ def test_bullets_itinerary_structured_with_booking_links():
     bad = {**itinerary, "stays": [{**itinerary["stays"][0],
            "chosen": {**itinerary["stays"][0]["chosen"], "jump_url": "javascript:alert(1)"}}]}
     assert not any("[预订]" in ln for ln in _bullets_itinerary(bad))
+    # 驻留项：带 jump_url 的腿整行断言（此前仅 stay 路径覆盖整行拼接）
+    leg_linked = {**itinerary, "legs": [
+        {**itinerary["legs"][0],
+         "chosen": {**itinerary["legs"][0]["chosen"], "jump_url": "https://train.example/g29"}},
+        itinerary["legs"][1],
+    ]}
+    assert _bullets_itinerary(leg_linked)[0] == (
+        "- 腿：昆明 → 大理（2026-11-01，去程）：G29 ¥350，备选 1 条"
+        " [预订](https://train.example/g29)")
+
+
+def test_fmt_price_never_scientific_notation():
+    """驻留项：大额价格不落 :g 科学计数法（¥1.23457e+06 对用户不可读）。"""
+    assert _fmt_price(1234567.0) == "¥1234567"
+    assert _fmt_price(12345678.5) == "¥12345678.5"
+    assert _fmt_price(350) == "¥350"
+    assert _fmt_price(150.5) == "¥150.5"
+    assert _fmt_price(0.0) == "¥0"
+    assert _fmt_price("¥350") == "¥350"   # 非数字原样

@@ -150,6 +150,10 @@ describe("ItineraryCard 时间线与预算", () => {
   });
   const PLAN_LINKED = {
     ...PLAN,
+    legs: [{
+      ...PLAN.legs[0],
+      chosen: { ...PLAN.legs[0].chosen, jump_url: "https://flight.example/mu5843" },
+    }],
     stays: [{
       ...PLAN.stays[0],
       chosen: { ...PLAN.stays[0].chosen, jump_url: "https://hotel.example/x" },
@@ -162,6 +166,9 @@ describe("ItineraryCard 时间线与预算", () => {
   };
   test("chosen/备选带 jump_url 时链接化并显示时效提示（A3+D11）", () => {
     render(<ItineraryCard data={PLAN_LINKED} />);
+    const legLink = screen.getByRole("link", { name: "MU5843" });   // 交通腿 chosen 名称链接化（驻留项补盖）
+    expect(legLink).toHaveAttribute("href", "https://flight.example/mu5843");
+    expect(legLink).toHaveAttribute("target", "_blank");
     const stayLink = screen.getByRole("link", { name: "喜洲客栈" });
     expect(stayLink).toHaveAttribute("href", "https://hotel.example/x");
     expect(stayLink).toHaveAttribute("target", "_blank");

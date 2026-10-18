@@ -118,8 +118,12 @@ def _booking_suffix(chosen: dict) -> str:
 
 
 def _fmt_price(value) -> str:
-    """价格 → ``¥350``（整数抹 .0）/ ``¥150.5`` 文本；非数字原样 str。"""
-    return f"¥{value:g}" if isinstance(value, (int, float)) else str(value)
+    """价格 → ``¥350``（整数抹 .0）/ ``¥150.5`` 文本；非数字原样 str；大额不落科学计数法。"""
+    if isinstance(value, int):
+        return f"¥{value}"
+    if isinstance(value, float):
+        return f"¥{format(value, 'f').rstrip('0').rstrip('.')}"
+    return str(value)
 
 
 def _leg_line(leg: dict) -> str:
