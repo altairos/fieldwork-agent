@@ -249,6 +249,9 @@ class ResearchContext(BaseModel):
     # 审阅意见 R3：非访谈型研究显式跳过访谈对象硬条件（附理由）
     interviews_not_applicable: bool = False
     interviews_na_reason: str = ""
+    # F03：analyze 推荐时窗与用户约束分离——推荐结果入候选槽位，
+    # time_window 只保留用户确认的约束值
+    candidate_windows: list[dict[str, Any]] = Field(default_factory=list)
     extras: dict[str, Any] = Field(default_factory=dict)
 
 

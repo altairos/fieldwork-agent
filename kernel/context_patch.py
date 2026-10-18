@@ -7,11 +7,17 @@ Web 回合工具（``web_host/agent/state_tools.py``）、MCP
 任一字段非法即整次拒绝（原子语义），绝不部分写入。kernel 只依赖标准库。
 """
 
+
+def _nonempty(v) -> bool:
+    return isinstance(v, str) and v.strip()
+
+
 ALLOWED_CONTEXT_FIELDS = (
     "discipline", "topic", "site_status", "scale", "budget",
     "time_window", "departure_city", "target_location", "travel_date",
     "purpose", "research_questions", "interviews_not_applicable",
     "interviews_na_reason",
+    "candidate_windows",
 )
 
 
@@ -33,6 +39,12 @@ def sanitize_context_patch(patch: dict, current: dict | None = None) -> dict:
         if key not in ALLOWED_CONTEXT_FIELDS:
             errors.append(f"未知字段：{key}")
             continue
+        if key == "candidate_windows":
+            if (not isinstance(value, list) or not value
+                    or not all(isinstance(w, dict) and _nonempty(w.get("start"))
+                               and _nonempty(w.get("end")) for w in value)):
+                errors.append("candidate_windows 须为非空列表，每项含非空 start/end")
+            continue
         if key == "interviews_not_applicable":
             if not isinstance(value, bool):
                 errors.append(f"{key} 须为布尔")
@@ -50,5 +62,6 @@ def sanitize_context_patch(patch: dict, current: dict | None = None) -> dict:
             errors.append(f"{key} 不得为空白字符串")
     if errors:
         raise ValueError("；".join(errors))
-    return {k: (v if k == "interviews_not_applicable" else v.strip())
+    return {k: (v if k in ("interviews_not_applicable", "candidate_windows")
+                else v.strip())
             for k, v in patch.items()}

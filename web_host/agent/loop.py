@@ -47,6 +47,23 @@ def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
     return reply[:match.start()].rstrip(), options
 
 
+# 中文全角引号归一（问题3）：LLM 输出的成对半角双引号在内容含中文时
+# 归一为全角“”；纯西文内容保持半角；代码块（``` 围栏内）不动
+_HALF_QUOTED_RE = re.compile(r'"([^"\n]*)"')
+_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+
+
+def _normalize_cjk_quotes(text: str) -> str:
+    """成对、同行、无嵌套的半角双引号对：内容含中文才转全角，否则原样。"""
+    parts = text.split("```")
+    for i in range(0, len(parts), 2):  # 偶数段在代码块外
+        parts[i] = _HALF_QUOTED_RE.sub(
+            lambda m: f"“{m.group(1)}”" if _CJK_CHAR_RE.search(m.group(1))
+            else m.group(0),
+            parts[i])
+    return "```".join(parts)
+
+
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
                    amap_client: Any = None,
@@ -81,6 +98,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     total_calls = 0
     start = time.monotonic()
     accumulated_reply = ""
+    finish_reason = ""
     usage_total: dict = {}
     call_name_map: dict[str, str] = {}
 
@@ -134,6 +152,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             usage_total = final_resp.get("usage", {}) or usage_total
             tool_calls = final_resp.get("tool_calls")
             if not tool_calls:
+                finish_reason = str(final_resp.get("finish_reason") or "")
                 break
 
             # 并行工具执行
@@ -169,16 +188,18 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     cid = repo.cache_search(pid, f"time_window::{dest}",
                                             "analyze_fieldwork_window", data)
                     snapshot_ids.append(cid)
-                    # spec §5.3：推荐时窗确定性回写 ResearchContext.time_window
-                    w = (data.get("windows") or [{}])[0]
-                    if w.get("start") and w.get("end"):
-                        reason = (w.get("reasons") or [""])[0]
-                        merged = repo.get_research_context(pid)
-                        merged["time_window"] = (
-                            f'{w["start"]} ~ {w["end"]}'
-                            f'（推荐时窗{("：" + reason) if reason else ""}）'
-                        )
-                        repo.update_research_context(pid, merged)
+                    # F03：推荐时窗与用户约束分离——写 candidate_windows
+                    # （候选，未经用户确认），time_window 只留用户确认值
+                    wins = [w for w in (data.get("windows") or [])
+                            if w.get("start") and w.get("end")][:3]
+                    if wins:
+                        payload = [
+                            {"start": w["start"], "end": w["end"],
+                             "reason": (w.get("reasons") or [""])[0]}
+                            for w in wins
+                        ]
+                        repo.update_research_context(
+                            pid, {"candidate_windows": payload})
             # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
             # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
@@ -194,6 +215,44 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                         {"code": "internal_error", "message": str(exc), "hint": ""})
         tm.finish(pid, turn_id, "failed")
         return
+
+    # 截断续写防御（生产实录 field_20261018_202833 回合4：回复停在
+    # 「先问最实际的：」而 turn 照常 completed）：无 tool_calls 终止且
+    # finish_reason=length，或非空正文以未完标点/开引号结尾（服务端异常终止）
+    # 时，追加 system 续写指令再流式一次拼接（不带工具，防续写轮两调工具）；
+    # 只续一次，续写失败或仍空则保留原文——已流出的内容绝不丢。
+    handle = tm.get_turn(pid, turn_id)
+    if handle is None:
+        return  # 项目删除竞态：续写与轮末的写入目标均已消失
+    if (llm is not None and accumulated_reply
+            and not handle.cancel_event.is_set()
+            and _looks_truncated(accumulated_reply, finish_reason)):
+        messages.append({"role": "system", "content":
+                         "你的上一条回复在句中被截断了，已输出内容的末尾如下：\n"
+                         + accumulated_reply[-300:]
+                         + "\n请紧接着上述末尾继续写完剩余内容：直接续写正文，"
+                           "不要重复已写出的内容，不要重新开头，写完即止。"})
+        try:
+            stream = llm.chat_stream(messages, tools=None, slot="interview")
+            iterations += 1
+            final_resp = None
+            async for chunk in _async_iter(stream):
+                if tm.get_turn(pid, turn_id) is None:
+                    return  # 项目删除竞态：同主流，停止消费与发射
+                if "delta" in chunk and chunk["delta"]:
+                    tm.append_event(pid, turn_id, "message_delta",
+                                    {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    final_resp = chunk
+            if final_resp and not final_resp.get("error"):
+                cont = final_resp.get("content", "") or ""
+                if cont:
+                    accumulated_reply += cont
+                    finish_reason = (str(final_resp.get("finish_reason") or "")
+                                     or finish_reason)
+                    usage_total = final_resp.get("usage", {}) or usage_total
+        except Exception:
+            pass  # 续写失败保留原文，不丢已流出的内容
 
     # 空回复收敛（对齐 CLI runtime/loop.py 的触顶收敛）：主循环退出但零正文时
     # 不让回合静默结束——追加 system 收敛指令再取一次最终回答（不带工具，
@@ -247,11 +306,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     quick_replies: list[str] = []
     if not cancelled and accumulated_reply:
         accumulated_reply, quick_replies = _extract_quick_replies(accumulated_reply)
+        accumulated_reply = _normalize_cjk_quotes(accumulated_reply)
     if not cancelled:
         try:
             if accumulated_reply:
                 repo.append_message(pid, "assistant", accumulated_reply,
                                     {"tool_calls": total_calls,
+                                     "finish_reason": finish_reason,
                                      **({"quick_replies": quick_replies}
                                         if quick_replies else {})})
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
@@ -273,8 +334,22 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         tm.append_event(pid, turn_id, "turn_done",
                         {"reply_id": turn_id, "usage": usage_total,
                          "snapshot_ids": snapshot_ids,
-                         "quick_replies": quick_replies})
+                         "quick_replies": quick_replies,
+                         "finish_reason": finish_reason})
         tm.finish(pid, turn_id, "completed")
+
+
+# 未完标点/开引号：非空正文以其结尾几乎必为句中截断（服务端异常终止），
+# 触发一次续写兑底；句号/问号/叹号/引号闭合等完整结尾不在此列
+_INCOMPLETE_TAIL_CHARS = '：:，,、；;—…"“‘\''
+
+
+def _looks_truncated(reply: str, finish_reason: str) -> bool:
+    """终止帧是否截断：length 触顶，或正文尾部落在未完标点/开引号上。"""
+    if finish_reason == "length":
+        return True
+    tail = reply.rstrip()
+    return bool(tail) and tail[-1] in _INCOMPLETE_TAIL_CHARS
 
 
 _SENTINEL = object()

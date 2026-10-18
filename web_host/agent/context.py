@@ -19,10 +19,19 @@ _TOOL_GUIDANCE = (
     "职责边界：本助手只服务田野调查研究方案的设计与产出。输出用途（海外申请/"
     "开题/申报等）仅用于校准方案体例与严谨度，不提供留学申请咨询：不问标化成绩、"
     "GPA、写作样本、择校与申请策略；用户提起时温和拉回研究设计。\n\n"
-    "交互约定：向用户提问且候选答案可枚举时，在回复最末尾输出一行"
-    "[[options]]选项甲|选项乙|选项丙[[/options]]（2-4 个选项、以 | 分隔、"
-    "每个 ≤ 12 字，与正文中给出的备选一致），前端会渲染为快捷按钮供用户点选；"
-    "开放式问题或非提问回复不使用该标记。"
+    "交互约定：向用户提问时优先把问题设计成候选答案可枚举的形式，并在回复"
+    "最末尾输出一行[[options]]选项甲|选项乙|选项丙[[/options]]（2-4 个选项、"
+    "以 | 分隔、每个 ≤ 12 字，与正文中给出的备选一致），前端会渲染为快捷按钮"
+    "供用户点选；只有确实无法枚举的开放式问题才直接提问不带标记。"
+)
+
+# 每轮动态提醒（追加在 user 消息之后）：长对话中 system prompt 的交互约定
+# 指令会随轮次衰减（生产实录：前 2 回合规守 [[options]]、后 2 回合遗忘），
+# 尾部短提醒以最近距离对抗衰减；仅影响当轮 LLM 输入，不落库。
+_OPTIONS_REMINDER = (
+    "提醒：若本回合向用户提出的问题候选答案可枚举，务必在回复最末尾输出"
+    "[[options]]选项|选项|选项[[/options]] 标记（2-4 项、以 | 分隔、每项 ≤ 12 字）；"
+    "无法枚举的开放式问题不需要。"
 )
 
 
@@ -52,4 +61,5 @@ def build_messages(repo: ProjectRepository, pid: str, user_text: str,
     msgs += [{"role": m["role"], "content": m["content"]}
              for m in history if m.get("role") in ("user", "assistant")]
     msgs.append({"role": "user", "content": user_text})
+    msgs.append({"role": "system", "content": _OPTIONS_REMINDER})
     return msgs
