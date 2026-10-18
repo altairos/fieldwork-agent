@@ -670,12 +670,8 @@ _ANALYZE_ARGS = {
 }
 
 
-def test_analyze_window_writes_time_window_to_research_context(env):
-    """spec §5.3：analyze 成功后宿主把推荐时窗确定性回写 research_context.time_window。
-
-    FakeFlyAI 采样恒 cheapest=100 → 手算首窗 [07-01, 07-03]：
-    est = 100×2 航 + 100×2 晚 + 150×3 餐 = 850 → reasons[0] 含「估算 ¥850」。
-    """
+def test_analyze_window_writes_candidate_windows_not_constraint(env):
+    """F03：推荐时窗写 candidate_windows，time_window（用户约束）保持为空。"""
     repo, tm = env
     llm = WindowLLM([
         [{"delta": ""},
@@ -690,9 +686,11 @@ def test_analyze_window_writes_time_window_to_research_context(env):
     turn = tm.create_turn("p1")
     from fieldwork_agent.web_host.agent.loop import run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
-    tw = repo.get_research_context("p1")["time_window"]
-    assert tw.startswith("2026-07-01 ~ 2026-07-03（推荐时窗：")
-    assert "估算 ¥850" in tw
+    ctx = repo.get_research_context("p1")
+    assert ctx.get("time_window", "") == ""
+    wins = ctx["candidate_windows"]
+    assert wins and wins[0]["start"] == "2026-07-01" and wins[0]["end"] == "2026-07-03"
+    assert "估算 ¥850" in wins[0]["reason"]
     # 时窗快照本身仍落盘（既有行为不变）
     cached = repo.list_cached_searches("p1")
     assert any(c["tool"] == "analyze_fieldwork_window" for c in cached)
@@ -991,6 +989,40 @@ def test_extract_quick_replies_bounds():
     assert opts4 == [] and body4 == empty_tag
 
 
+# ------------------------------- 中文全角引号归一（问题3 后端）
+
+
+def test_normalize_cjk_quotes_unit():
+    """成对半角双引号且内容含中文 → 全角“”；纯西文内容/单边引号/代码块内
+    保持原样；已全角幂等。"""
+    from fieldwork_agent.web_host.agent.loop import _normalize_cjk_quotes
+    assert _normalize_cjk_quotes('去"周城"看扎染') == "去“周城”看扎染"
+    assert _normalize_cjk_quotes('"甲"和"乙"两个点') == "“甲”和“乙”两个点"
+    assert _normalize_cjk_quotes('He said "hello" to me') == 'He said "hello" to me'
+    assert _normalize_cjk_quotes('只剩"半边引号') == '只剩"半边引号'
+    assert _normalize_cjk_quotes('已是“全角”的') == '已是“全角”的'
+    assert _normalize_cjk_quotes(
+        '代码外"归一"\n```python\nprint("中文提示")\n```\n完'
+    ) == '代码外“归一”\n```python\nprint("中文提示")\n```\n完'
+
+
+def test_cjk_quotes_normalized_in_persisted_reply(env):
+    """问题3：LLM 半角引号回复落库前归一为全角；quick_replies 抽取不受影响。"""
+    repo, tm = env
+    reply = ('先看"周城"的扎染坊，再访"喜洲"的民居。\n\n'
+             '[[options]]先去周城|先去喜洲[[/options]]')
+    llm = FakeLLM([[{"delta": reply}, {"content": reply, "tool_calls": None,
+                    "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assistant = next(m for m in repo.get_messages("p1")
+                     if m["role"] == "assistant")
+    assert '"周城"' not in assistant["content"]
+    assert "“周城”的扎染坊，再访“喜洲”" in assistant["content"]
+    assert assistant["metadata"]["quick_replies"] == ["先去周城", "先去喜洲"]
+
+
 class CancelMidStreamWithOptionsLLM:
     """流式中途取消（P1-4 变体）：残缺终帧带 [[options]] 标记。"""
     def __init__(self, tm, pid, tid):
@@ -1030,6 +1062,120 @@ class RecordingGuideLLM(FakeLLM):
     def chat(self, messages, **kw):
         self.chat_messages = messages
         return {"content": "guide"}
+
+
+# ------------------------------- 截断续写防御 + finish_reason 透传
+# （生产实录 field_20261018_202833 回合4：回复停在「先问最实际的：」而 turn 照常
+#  completed，finish_reason 无处可查——先透传可观测，再对截断做一次续写兑底）
+
+
+def test_turn_done_and_meta_carry_finish_reason(env):
+    """finish_reason 可观测性：正常 stop 回合——turn_done payload 与 assistant
+    metadata 均携带 finish_reason（截断排查此前无从下手）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好的。"}, {"content": "好的。", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {"total_tokens": 5}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["finish_reason"] == "stop"
+    assistant = next(m for m in repo.get_messages("p1") if m["role"] == "assistant")
+    assert assistant["metadata"]["finish_reason"] == "stop"
+
+
+def test_length_truncated_reply_continues_and_merges(env):
+    """finish_reason=length（token 触顶截断）：追加 system 续写指令再流式一次，
+    续写 deltas 与原文拼接为完整回复；只续一次、续写轮不带工具。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "先问最实际的："},
+         {"content": "先问最实际的：", "tool_calls": None,
+          "finish_reason": "length", "usage": {"total_tokens": 4096}}],
+        [{"delta": "你打算跟谁学艺？"},
+         {"content": "你打算跟谁学艺？", "tool_calls": None,
+          "finish_reason": "stop", "usage": {"total_tokens": 10}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert deltas == "先问最实际的：你打算跟谁学艺？"
+    assert len(llm.calls) == 2
+    cont_messages, cont_kw = llm.calls[1]
+    assert cont_messages[-1]["role"] == "system"
+    assert "截断" in cont_messages[-1]["content"]
+    assert cont_kw.get("tools") is None              # 续写不带工具
+    assistant = next(m for m in repo.get_messages("p1") if m["role"] == "assistant")
+    assert assistant["content"] == "先问最实际的：你打算跟谁学艺？"
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["finish_reason"] == "stop"      # 续写后的最终终止
+
+
+def test_half_sentence_stop_triggers_continuation(env):
+    """生产实录场景：finish_reason=stop 但回复停在「先问最实际的：」——
+    服务端异常终止。非空回复以未完标点（：，、；—…及开引号）结尾同样
+    触发一次续写。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "先问最实际的："},
+         {"content": "先问最实际的：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {"total_tokens": 223}}],
+        [{"delta": "经费来源是自费还是课题经费？"},
+         {"content": "经费来源是自费还是课题经费？", "tool_calls": None,
+          "finish_reason": "stop", "usage": {"total_tokens": 8}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    deltas = "".join(e.data["text"] for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                     if e.event == "message_delta")
+    assert deltas == "先问最实际的：经费来源是自费还是课题经费？"
+    assert len(llm.calls) == 2
+
+
+def test_complete_reply_not_continued(env):
+    """完整回复（句号/问号结尾 + stop）不触发续写：LLM 只调一次。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "这是完整回答。"},
+                    {"content": "这是完整回答。", "tool_calls": None,
+                     "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assert len(llm.calls) == 1
+
+
+# ------------------------------- [[options]] 每轮动态提醒（指令随对话变长衰减）
+
+
+def test_build_messages_appends_options_reminder_after_user(env):
+    """生产实录：前 2 回合规守 [[options]] 约定、后 2 回合遗忘（长对话中
+    system prompt 指令衰减）。每轮 build_messages 在 user 消息后追加 system
+    短提醒（对抗衰减；仅影响当轮 LLM 输入，不落库）。"""
+    repo, tm = env
+    from fieldwork_agent.web_host.agent.context import build_messages
+    msgs = build_messages(repo, "p1", "帮我定位选题", "research_positioning")
+    assert msgs[-2]["role"] == "user" and msgs[-2]["content"] == "帮我定位选题"
+    assert msgs[-1]["role"] == "system"
+    assert "[[options]]" in msgs[-1]["content"]
+
+
+def test_options_reminder_reaches_llm_every_turn(env):
+    """e2e：提醒确实到达 LLM 输入（run_turn → chat_stream 的 messages 尾部）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好。"}, {"content": "好。", "tool_calls": None,
+                    "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    msgs = llm.calls[0][0]
+    assert msgs[-1]["role"] == "system" and "[[options]]" in msgs[-1]["content"]
+    # 提醒不落库：消息史只存 user/assistant 原文
+    persisted_roles = {m["role"] for m in repo.get_messages("p1")}
+    assert persisted_roles <= {"user", "assistant"}
 
 
 def test_doc_tool_receives_repo_research_questions(env):
