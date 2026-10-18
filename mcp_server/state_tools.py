@@ -12,13 +12,12 @@ Windows 绝对路径/盘符整体替换基路径）；规则实现已下沉 kern
 （审计 F01 单一来源），本模块薄壳折 MCP 错误包络。
 """
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
-from fieldwork_agent.kernel.repository.guard import project_id_violation
+from fieldwork_agent.kernel.repository.guard import new_project_id, project_id_violation
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 from fieldwork_agent.mcp_server import request_ctx
 from mcp.types import Tool, ToolAnnotations
@@ -97,23 +96,19 @@ def build_handlers(repo: ProjectRepository, *,
         return None
 
     def create_project(project_id: str | None = None) -> dict:
-        pid = project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
-        # 自动生成 id（field_<时间戳>）天然合法；统一走守卫更简单（终审 C1 修法 4）
+        pid = project_id or new_project_id()
+        # 自动生成 id（field_<时间戳>_<随机>）天然合法；统一走守卫更简单（终审 C1 修法 4）
         if (bad := guard_project_id(pid, repo)) is not None:
             return bad
         owner = request_ctx.resolved_owner() if enforce_owner else None
-        if enforce_owner:
-            if owner is None:
-                return _err("owner_token_required", "创建项目需携带 X-Owner-Token 头",
-                            "共享 HTTP 模式下项目归属为必需项")
-            # N02 同源：已存在且归属他人 → 拒绝（与不存在同形，不覆盖、不泄露）
-            try:
-                existing = repo.get_state(pid)
-            except KeyError:
-                existing = None
-            if existing is not None and existing.get("owner") != owner:
-                return _not_found(pid)
-        repo.create(pid, owner=owner)   # 幂等：已存在则保留存量
+        if enforce_owner and owner is None:
+            return _err("owner_token_required", "创建项目需携带 X-Owner-Token 头",
+                        "共享 HTTP 模式下项目归属为必需项")
+        repo.create(pid, owner=owner)   # 幂等：已存在则保留存量 owner，不覆盖
+        # N02 竞争安全复核（与 REST 同源）：create 后归属仍非本人 → 已存在
+        # 他人项目/并发落败，与不存在同形拒绝（不覆盖、不泄露）。
+        if enforce_owner and repo.get_state(pid).get("owner") != owner:
+            return _not_found(pid)
         return _ok({"project_id": pid})
 
     def list_projects() -> dict:

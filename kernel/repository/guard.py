@@ -5,6 +5,8 @@ mcp_server（折 tool 错误包络）与 web_host（折 HTTPException）两个�
 """
 
 import re
+import secrets
+from datetime import datetime
 from typing import Any
 
 PID_MAX_LEN = 64
@@ -106,3 +108,13 @@ def normalize_owner_token(raw: str | None) -> str | None:
     if not OWNER_TOKEN_RE.fullmatch(token):
         raise ValueError("非法 X-Owner-Token 头")
     return f"anon:{token}"
+
+
+def new_project_id() -> str:
+    """自动生成项目 ID：``field_<时间戳>_<随机>``（N02：随机段消除同秒碰撞）。
+
+    时间戳保可读性与大致时序；6 位十六进制随机段（secrets）消除不同用户
+    同秒创建的碰撞面（旧实现仅精确到秒）；形状恒过 project_id_violation
+    （字母数字下划线，长度远低于 PID_MAX_LEN）。REST 与 MCP 两入口共用。
+    """
+    return f"field_{datetime.now():%Y%m%d_%H%M%S}_{secrets.token_hex(3)}"
