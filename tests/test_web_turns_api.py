@@ -215,6 +215,39 @@ async def test_list_messages_unknown_project_404(client):
     assert r.status_code == 404
 
 
+async def test_list_messages_returns_quick_replies(app):
+    """GET /messages：assistant 消息 metadata.quick_replies 非空时回传该键
+    （快捷选项刷新恢复）；正文为剥离 [[options]] 标记后的干净版本。
+    对照 test_list_messages_restores_history：无标记消息不带该键。
+    """
+
+    class OptionsLLM:
+        def chat_stream(self, messages, **kw):
+            reply = ("先校准研究问题吗？"
+                     "[[options]]是|否，换个方向[[/options]]")
+            return iter([
+                {"delta": reply},
+                {"content": reply, "tool_calls": None,
+                 "finish_reason": "stop", "usage": {}},
+            ])
+
+    app.state.llm = OptionsLLM()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        await c.post("/projects/p1/messages", json={"text": "hi"})
+        await asyncio.sleep(0.5)  # 等后台回合完成（assistant 消息落盘）
+        m = await c.get("/projects/p1/messages")
+        assert m.status_code == 200
+        data = m.json()
+        assert data[0] == {"role": "user", "content": "hi"}  # user 消息不带键
+        assert data[1] == {
+            "role": "assistant",
+            "content": "先校准研究问题吗？",
+            "quick_replies": ["是", "否，换个方向"],
+        }
+
+
 # ------------------------------------------------ 套餐端点（X-DashScope-Plan）
 # 套餐 Key（sk-sp-）与通用端点不互通（401）；页面/服务端各自可声明套餐类型，
 # 白名单映射到专属 OpenAI 兼容端点。

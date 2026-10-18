@@ -7,6 +7,8 @@
  *   `id: {seq}\nevent: {name}\ndata: {turn_id,seq,...payload}\n\n`
  *   支持 Last-Event-ID 请求头从该 seq 之后补发。
  * - POST /projects/:id/turns/:tid/cancel   → {turn_id, status:"cancelled"}
+ * - GET  /projects/:id/messages             → 消息史回放（内存；assistant 带 quick_replies 键，
+ *   B 节刷新恢复，对齐 turns.py::list_messages 只透出该键的约定）
  * - GET /projects、POST /projects、GET /projects/:id、GET /projects/:id/proposal
  *   → 固定假数据（够前端联调即可）
  * - GET /projects/:id/proposals            → 版本列表（Task 8 rest.listProposals 消费）
@@ -45,6 +47,18 @@ interface TurnRecord {
 /** turn_id → 回合脚本（内存 Map，进程重启即失）。 */
 const turns = new Map<string, TurnRecord>();
 
+/** 演示回合的快捷作答选项（B 节 [[options]] 契约，与尾帧标记一致）。 */
+export const QUICK_REPLIES = ["换家客栈", "先定行程", "换个城市"];
+
+/** 演示回合的最终 assistant 正文（后端剥离 [[options]] 标记后入史的形态）。 */
+const ASSISTANT_REPLY = "正在为您搜索大理住宿…已找到住宿，航班搜索暂不可用。";
+
+/** project_id → 消息史（内存，进程重启即失）：GET /messages 回放用（B3 刷新恢复）。 */
+const messageLog = new Map<
+  string,
+  Array<{ role: "user" | "assistant"; content: string; quick_replies?: string[] }>
+>();
+
 /** 脚本化的一段完整演示回合（11 帧，seq 从 1 单调递增）。 */
 export function buildScript(turnId: string): ScriptFrame[] {
   return [
@@ -77,12 +91,21 @@ export function buildScript(turnId: string): ScriptFrame[] {
       payload: { call_id: "c2", ok: false, data: null, degraded: "flyai_unavailable" },
     },
     { event: "message_delta", payload: { text: "已找到住宿，" } },
-    { event: "message_delta", payload: { text: "航班搜索暂不可用。" } },
+    // 尾帧带 [[options]] 标记（B 节契约）：流式期间前端 strip 半截标记防闪烁，
+    // turn_done 后 store 剥离入史 + chips 上场
+    {
+      event: "message_delta",
+      payload: { text: "航班搜索暂不可用。\n\n[[options]]换家客栈|先定行程|换个城市[[/options]]" },
+    },
     {
       event: "phase_transition",
       payload: { from: "research_positioning", to: "field_site_profiles" },
     },
-    { event: "turn_done", payload: { reply_id: turnId, usage: { total_tokens: 42 } } },
+    // turn_done 携带 quick_replies（对齐 loop.py 轮末抽取后的 payload 形状）
+    {
+      event: "turn_done",
+      payload: { reply_id: turnId, usage: { total_tokens: 42 }, quick_replies: QUICK_REPLIES },
+    },
   ];
 }
 
@@ -281,8 +304,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     return;
   }
 
+  // GET /projects/:id/messages → 消息史回放（B3 刷新恢复：只透出 quick_replies 键）
+  if (method === "GET" && (m = RE_MESSAGES.exec(path))) {
+    sendJson(res, 200, messageLog.get(decodeURIComponent(m[1])) ?? []);
+    return;
+  }
+
   if (method === "POST" && (m = RE_MESSAGES.exec(path))) {
-    await readBody(req); // 请求体 {text, idempotency_key?} 对 mock 无实际作用
+    const rawBody = await readBody(req); // {text, idempotency_key?}；text 入消息史
     const projectId = decodeURIComponent(m[1]);
     if (!ownedProject(res, req, projectId)) return;
     // 403 门（同构 turns.py::_resolve_clients）：服务端未配且请求头未带页面 key
@@ -296,6 +325,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
       });
       return;
     }
+    // 消息史入账：user 即问即记；assistant 剥离标记后带 quick_replies 入史（后端形态）
+    let text = "";
+    try {
+      text = String((JSON.parse(rawBody || "{}") as { text?: string }).text ?? "");
+    } catch {
+      text = "";
+    }
+    const history = messageLog.get(projectId) ?? [];
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: ASSISTANT_REPLY, quick_replies: QUICK_REPLIES });
+    messageLog.set(projectId, history);
     const turnId = newTurnId();
     turns.set(turnId, { projectId, frames: buildScript(turnId), status: "running" });
     sendJson(res, 201, { turn_id: turnId, status: "running" });

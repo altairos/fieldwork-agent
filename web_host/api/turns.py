@@ -77,12 +77,20 @@ async def list_messages(project_id: str, request: Request,
     """消息史恢复（刷新回填）：按时间序回 role/content 全量史。
 
     只回 role/content（ts/metadata 是内核内部细节，不进 API 面）；
-    ``limit=0`` 走 repo 语义取全量。
+    唯一例外：assistant 消息 metadata.quick_replies 非空时回传该键
+    （快捷选项按钮刷新恢复）；``limit=0`` 走 repo 语义取全量。
     """
     repo = get_repo(request)
     checked_owned_project(project_id, repo, owner)
     messages = repo.get_messages(project_id, limit=0)
-    return [{"role": m["role"], "content": m["content"]} for m in messages]
+    out = []
+    for m in messages:
+        item = {"role": m["role"], "content": m["content"]}
+        quick = (m.get("metadata") or {}).get("quick_replies")
+        if quick:
+            item["quick_replies"] = quick
+        out.append(item)
+    return out
 
 
 @router.post("/projects/{project_id}/messages", status_code=201)

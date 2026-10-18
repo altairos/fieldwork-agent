@@ -742,3 +742,93 @@ def test_r05_finalize_failure_sets_failed(env, monkeypatch):
     assert errs and errs[-1].data["code"] == "internal_error"
     assert "轮末持久化失败" in errs[-1].data["message"]
     assert tm.get_turn("p1", turn.turn_id).status == "failed"
+
+
+# ------------------------------- 快捷选项标记（B 节：[[options]] 轮末抽取）
+
+
+def test_options_tag_stripped_meta_and_turn_done_carry_quick_replies(env):
+    """B 节：回复尾部 [[options]] 标记轮末剥离——干净正文入史、选项写入
+    消息 metadata.quick_replies 与 turn_done payload（前端据此渲染 chips）。"""
+    repo, tm = env
+    reply = ("你想先校准哪一项？\n\n"
+             "[[options]]研究问题|田野地点|时间窗[[/options]]")
+    llm = FakeLLM([[
+        {"delta": reply},
+        {"content": reply, "tool_calls": None, "finish_reason": "stop",
+         "usage": {"total_tokens": 5}},
+    ]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assistant = next(m for m in repo.get_messages("p1")
+                     if m["role"] == "assistant")
+    assert assistant["content"] == "你想先校准哪一项？"  # 标记与尾随空白已剥离
+    assert assistant["metadata"]["quick_replies"] == ["研究问题", "田野地点", "时间窗"]
+    assert assistant["metadata"]["tool_calls"] == 0
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["quick_replies"] == ["研究问题", "田野地点", "时间窗"]
+
+
+def test_no_options_tag_reply_intact_and_quick_replies_empty(env):
+    """无标记回合（渐进增强基准）：正文原样入史、metadata 无 quick_replies
+    键、turn_done payload 携带空表。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好的，已记录。"}, {"content": "好的，已记录。",
+                    "tool_calls": None, "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assistant = next(m for m in repo.get_messages("p1")
+                     if m["role"] == "assistant")
+    assert assistant["content"] == "好的，已记录。"
+    assert "quick_replies" not in (assistant.get("metadata") or {})
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["quick_replies"] == []
+
+
+def test_extract_quick_replies_bounds():
+    """抽取单元边界：最多 4 项、每项截 20 字；解析不出有效选项回落原文。"""
+    from fieldwork_agent.web_host.agent.loop import _extract_quick_replies
+    body, opts = _extract_quick_replies(
+        "正文\n[[options]]甲|乙|丙|丁|戊[[/options]]")
+    assert body == "正文"
+    assert opts == ["甲", "乙", "丙", "丁"]  # 第 5 项丢弃
+    long_opt = "长" * 30
+    _, opts2 = _extract_quick_replies(f"[[options]]{long_opt}|乙[[/options]]")
+    assert opts2 == ["长" * 20, "乙"]          # 单项截 20 字
+    body3, opts3 = _extract_quick_replies("纯正文，无标记")
+    assert body3 == "纯正文，无标记" and opts3 == []
+    empty_tag = "[[options]] | | [[/options]]"  # 全空选项：无按钮可渲染
+    body4, opts4 = _extract_quick_replies(empty_tag)
+    assert opts4 == [] and body4 == empty_tag
+
+
+class CancelMidStreamWithOptionsLLM:
+    """流式中途取消（P1-4 变体）：残缺终帧带 [[options]] 标记。"""
+    def __init__(self, tm, pid, tid):
+        self._tm, self._pid, self._tid = tm, pid, tid
+
+    def chat_stream(self, messages, **kw):
+        def _gen():
+            yield {"delta": "部分"}
+            self._tm.cancel(self._pid, self._tid)
+            yield {"content": "残缺[[options]]甲|乙[[/options]]",
+                   "tool_calls": None, "finish_reason": "stop", "usage": {}}
+        return _gen()
+
+
+def test_cancelled_turn_never_extracts_quick_replies(env):
+    """取消回合不做标记抽取：带标记的残缺回复不入史、不发 turn_done，
+    终态 cancelled（取消即中止本轮全部状态变更，含 quick_replies）。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = CancelMidStreamWithOptionsLLM(tm, "p1", turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
+    types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
+    assert "turn_done" not in types  # 无 payload 可携带选项

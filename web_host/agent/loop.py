@@ -1,6 +1,7 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -23,6 +24,26 @@ from fieldwork_agent.web_host.turn_manager import TurnManager
 # 无 LLM 降级提示：web 宿主无启动横幅渠道，提示附在回复末尾（CLI 宿主用启动横幅呈现）
 _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
                   "以上为固定引导文案；配置后可启用智能对话。）")
+
+# 快捷选项标记：LLM 在枚举型提问末尾输出 [[options]]甲|乙|丙[[/options]]，
+# 轮末剥离标记、选项入消息 meta 与 turn_done payload（渐进增强：无标记则无选项）
+_OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
+
+
+def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
+    """剥离尾部 [[options]] 标记；返回 (干净正文, 选项列表)。
+
+    选项按 | 切分、strip、滤空，最多取 4 个，每项截断 20 字；
+    标记缺失或解析不出有效选项 → (原文, [])。
+    """
+    match = _OPTIONS_TAG_RE.search(reply)
+    if not match:
+        return reply, []
+    options = [opt.strip()[:20] for opt in match.group(1).split("|")]
+    options = [opt for opt in options if opt][:4]
+    if not options:
+        return reply, []
+    return reply[:match.start()].rstrip(), options
 
 
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
@@ -209,11 +230,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
     cancelled = handle.cancel_event.is_set()
+    quick_replies: list[str] = []
+    if not cancelled and accumulated_reply:
+        accumulated_reply, quick_replies = _extract_quick_replies(accumulated_reply)
     if not cancelled:
         try:
             if accumulated_reply:
                 repo.append_message(pid, "assistant", accumulated_reply,
-                                    {"tool_calls": total_calls})
+                                    {"tool_calls": total_calls,
+                                     **({"quick_replies": quick_replies}
+                                        if quick_replies else {})})
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
             _apply_extractions(repo, pid, user_text)
             transition = check_and_advance(repo, pid)
@@ -232,7 +258,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     else:
         tm.append_event(pid, turn_id, "turn_done",
                         {"reply_id": turn_id, "usage": usage_total,
-                         "snapshot_ids": snapshot_ids})
+                         "snapshot_ids": snapshot_ids,
+                         "quick_replies": quick_replies})
         tm.finish(pid, turn_id, "completed")
 
 

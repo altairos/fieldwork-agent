@@ -18,6 +18,13 @@ import { useToolsStore, type ToolCall } from "../../stores/tools";
  *   配额用尽（error.code=flyai_rate_limited）：行尾标「每日共享配额已用尽」，
  *      条下渲染一次性通知卡（配额说明 + 申请自己的 API Key 外链）
  *
+ * 过滤规则（C 节问题 2，对话流精简）：只留「活的和有问题的」——
+ *   - update_research_context 不显示（内部状态写入，含失败重试噪音；正文自会解释）；
+ *   - 成功且未降级（done && !degraded）不显示——成功活动的结果呈现由时间线 settled 区
+ *     卡片/折叠摘要条承担，信息不丢失、密度下降；
+ *   - running / failed / degraded 保留（进行中提示 + 异常提醒，语义从"全程审计视图"
+ *     变为"进行中 + 异常"）。QuotaNoticeCard 逻辑不变。
+ *
  * 同源红线②：只读 tools store（tool_started/tool_completed 归约结果），不发请求、不转述数字；
  * 简述取内核下发的 `purpose` 原文，缺失时回落 `args` 的标量键值（原样呈现，不加工、不猜语义）。
  */
@@ -103,12 +110,17 @@ function QuotaNoticeCard() {
   );
 }
 
-/** 工具活动条；本回合尚无任何调用时不渲染（不留空壳）。 */
+/** 工具活动条；过滤后无可见行时不渲染（不留空壳）。 */
 export function ToolActivityStrip() {
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
   if (order.length === 0) return null;
-  const calls = order.map((id) => byCallId[id]).filter((c): c is ToolCall => Boolean(c));
+  const calls = order
+    .map((id) => byCallId[id])
+    .filter((c): c is ToolCall => Boolean(c))
+    // 只留活的和有问题的：内部状态写入不显示；成功且未降级不显示（结果由 settled 区卡片承担）
+    .filter((c) => c.tool !== "update_research_context" && !(c.status === "done" && !c.degraded));
+  if (calls.length === 0) return null;
   const quotaExhausted = calls.some((c) => c.status === "failed" && c.error?.code === RATE_LIMIT_CODE);
   return (
     <div className="hairline rounded-lg bg-card px-4 py-3 space-y-2">

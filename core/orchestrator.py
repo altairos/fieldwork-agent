@@ -119,7 +119,10 @@ _TOOL_GUIDANCE = (
     "（amap_geocode/amap_around_search/amap_direction_transit/amap_weather 等）；"
     "高德未收录（amap_no_result，常见于海外地名）时改用搜索工具。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案、"
-    "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。"
+    "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。\n\n"
+    "职责边界：本助手只服务田野调查研究方案的设计与产出。输出用途（海外申请/"
+    "开题/申报等）仅用于校准方案体例与严谨度，不提供留学申请咨询：不问标化成绩、"
+    "GPA、写作样本、择校与申请策略；用户提起时温和拉回研究设计。"
 )
 
 

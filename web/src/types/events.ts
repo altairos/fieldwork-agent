@@ -51,6 +51,8 @@ export interface TurnDone {
   usage: Record<string, unknown>;
   /** 本轮产生的搜索快照 cid（M3 证据链，后端 Task 10 注入；旧回合无此字段）。 */
   snapshot_ids?: string[];
+  /** 轮末抽取的快捷作答选项（[[options]] 标记，B 节问题 4；无标记/旧事件缺省）。 */
+  quick_replies?: string[];
 }
 
 /** 错误事件（带下一步建议 hint）。 */

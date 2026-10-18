@@ -44,6 +44,8 @@ class TurnDone(BaseModel):
 
     reply_id: str = ""
     usage: dict = Field(default_factory=dict)
+    # 本轮抽出的快捷选项（[[options]] 标记剥离结果；无标记为空）
+    quick_replies: list[str] = Field(default_factory=list)
 
 
 class ErrorEvent(BaseModel):

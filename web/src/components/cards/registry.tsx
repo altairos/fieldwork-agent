@@ -69,5 +69,35 @@ export function getToolCard(tool: string): ComponentType<ToolCardProps> {
   return toolCardRegistry[tool] ?? ToolCardFallback;
 }
 
+/**
+ * 工具可见性分级（C 节问题 2，对话流精简）——时间线 settled 区按此分流：
+ * - full：聚合/文档产出（用户核心交付物），原样整卡渲染；
+ * - collapsed：过程性检索（8 搜索原语），折叠为单行摘要条，点击展开原卡；
+ * - hidden：内部状态写入，时间线不显示（成功与失败均不显示，正文自会解释）；
+ * 未注册工具（Fallback 卡）默认 full（新能力优先保证可见，再人工分级）。
+ * 键集与上方注册表同源（update_research_context 为宿主层状态工具，同样列入）。
+ */
+export type ToolVisibility = "full" | "collapsed" | "hidden";
+export const toolVisibility: Record<string, ToolVisibility> = {
+  // full：聚合/文档产出（用户核心交付物）
+  profile_field_site: "full",
+  compose_itinerary: "full",
+  analyze_fieldwork_window: "full",
+  compose_proposal: "full",
+  compose_interview_guide: "full",
+  suggest_informants: "full",
+  // collapsed：8 搜索原语（过程性检索）
+  search_flights: "collapsed",
+  search_trains: "collapsed",
+  search_hotels: "collapsed",
+  search_marriott_hotels: "collapsed",
+  search_marriott_packages: "collapsed",
+  search_pois: "collapsed",
+  search_keyword: "collapsed",
+  search_ai: "collapsed",
+  // hidden：内部状态写入
+  update_research_context: "hidden",
+};
+
 /** Task 7 右栏「预算」面板复用同一份 BudgetBreakdown 视图（同源，不另写一套）。 */
 export { BudgetCard };
