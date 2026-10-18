@@ -205,3 +205,52 @@ def test_update_context_tool_description_lists_full_whitelist():
     for field in ALLOWED_CONTEXT_FIELDS:
         assert field in patch_desc, f"patch 描述缺字段：{field}"
     assert "持久化" in desc, "description 缺持久化纪律文案"
+
+
+# ---------------------------------------------------------------- 审计三 Fix 4：知识库「存了看得见」
+
+
+def test_knowledge_tools_advertise_view_path():
+    """审计三 Fix 4：CLI/managed agent 场景无 Web 面板，查看途径必须写进工具面。
+
+    症状：agent 称「已存入知识库」但用户无法即时查看。repo 层 search_knowledge
+    空文本本就返回全量（json/sqlite 双实现一致），缺的是把这个能力告诉
+    agent——description 是百炼编排端规划调用的主要信号源：
+    search_knowledge 需声明空串列出全部；add_knowledge_entry 需声明
+    写入后应告知用户查看方式。
+    """
+    search_tool = next(t for t in STATE_TOOLS if t.name == "search_knowledge")
+    assert "空字符串" in (search_tool.description or "")
+    assert "全部" in (search_tool.description or "")
+    assert "空字符串" in search_tool.input_schema["properties"]["text"]["description"]
+    add_tool = next(t for t in STATE_TOOLS if t.name == "add_knowledge_entry")
+    assert "告知用户" in (add_tool.description or "")
+    assert "search_knowledge" in (add_tool.description or "")
+
+
+def test_add_knowledge_entry_result_has_view_hint(tmp_path):
+    """审计三 Fix 4：add 成功包络带 view_hint，即时提醒 agent 在回复中告知查看命令。
+
+    description 是规划期信号，view_hint 是结果期兑底——即使模型没细读
+    描述，工具结果内的指引也会随回合进入上下文。
+    """
+    h = build_handlers(make_repo(tmp_path))
+    h["create_project"](project_id="p1")
+    r = h["add_knowledge_entry"](project_id="p1", title="t", content="c")
+    assert r["ok"] and r["data"]["id"]
+    hint = r["data"]["view_hint"]
+    assert "search_knowledge" in hint and "空字符串" in hint
+
+
+def test_search_knowledge_empty_text_lists_all(tmp_path):
+    """审计三 Fix 4：text="" 走通 handler 全链路返回全量条目。
+
+    repo 能力（json/sqlite 空文本→list_knowledge）在 MCP 面的直达验证——
+    agent 说「列出知识库」时按新描述空串调用，必须真的拿得到全部条目。
+    """
+    h = build_handlers(make_repo(tmp_path))
+    h["create_project"](project_id="p1")
+    h["add_knowledge_entry"](project_id="p1", title="族谱", content="碑刻著录")
+    h["add_knowledge_entry"](project_id="p1", title="访谈", content="提纲草稿")
+    r = h["search_knowledge"](project_id="p1", text="")
+    assert r["ok"] and len(r["data"]) == 2

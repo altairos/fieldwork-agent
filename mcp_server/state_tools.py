@@ -116,9 +116,16 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
         try:
-            return _ok({"id": repo.add_knowledge(project_id, title, content,
-                                                 source=source, tags=tags,
-                                                 category=category)})
+            entry_id = repo.add_knowledge(project_id, title, content,
+                                          source=source, tags=tags,
+                                          category=category)
+            # 审计三 Fix 4：结果期兑底——CLI/managed agent 无 Web 面板，成功包络
+            # 内直接给出查看命令，提醒 agent 在回复中告知用户。
+            return _ok({"id": entry_id,
+                        "view_hint": "已持久化。回复用户时应告知查看方式："
+                                     "对本 agent 说「列出知识库」即可调出全部条目"
+                                     "（调用 search_knowledge，text 传空字符串）；"
+                                     "也可传关键词检索。"})
         except KeyError:
             return _not_found(project_id)
 
@@ -216,7 +223,10 @@ STATE_TOOLS: list[Tool] = [
                       "required": ["project_id", "record"]},
          annotations=_annotations()),
     Tool(name="add_knowledge_entry",
-         description="向项目知识库新增一条知识条目，返回条目 id；随后可用 search_knowledge 检索。",
+         description="向项目知识库新增一条知识条目，返回条目 id；随后可用 search_knowledge 检索。"
+                     "写入成功后应在回复中告知用户查看方式：对本 agent 说「列出知识库」"
+                     "即可调出（调用 search_knowledge，text 传空字符串返回全部条目），"
+                     "或按关键词检索。",
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "title": {"type": "string", "description": "条目标题"},
@@ -228,11 +238,14 @@ STATE_TOOLS: list[Tool] = [
                       "required": ["project_id", "title", "content"]},
          annotations=_annotations()),
     Tool(name="search_knowledge",
-         description="关键词过滤检索项目知识库（标题+正文+标签，大小写不敏感，空白分词 AND 匹配）。",
+         description="检索项目知识库（标题+正文+标签，大小写不敏感，空白分词 AND 匹配）；"
+                     "text 传空字符串则按创建顺序返回全部条目——用户要求"
+                     "「列出知识库/知识库里有什么」时用空串调用即可。",
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "text": {"type": "string",
-                                              "description": "检索文本（空白分词，要求全部命中）"}},
+                                              "description": "检索文本（空白分词，要求全部命中）；"
+                                                              "传空字符串返回全部条目"}},
                       "required": ["project_id", "text"]},
          annotations=_annotations()),
     Tool(name="check_phase_advance",
