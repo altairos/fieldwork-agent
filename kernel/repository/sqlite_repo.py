@@ -22,9 +22,10 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
 )
-from fieldwork_agent.kernel.repository.guard import cache_id_violation
+from fieldwork_agent.kernel.repository.guard import cache_id_violation, owner_violation
+from fieldwork_agent.kernel.repository.protocol import _UNSET
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MESSAGE_WINDOW = 50
 CACHE_LIMIT_BYTES = 64 * 1024
 
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at    TEXT NOT NULL,
     phase         TEXT NOT NULL,
     phase_history TEXT NOT NULL DEFAULT '[]',   -- JSON array
-    proposal_confirmed INTEGER NOT NULL DEFAULT 0   -- 审计二 R09：方案确认态
+    proposal_confirmed INTEGER NOT NULL DEFAULT 0,   -- 审计二 R09：方案确认态
+    owner         TEXT                          -- 归属（anon:<token>；NULL=无主）归属隔离
 );
 CREATE TABLE IF NOT EXISTS research_context (
     project_id TEXT PRIMARY KEY,
@@ -135,15 +137,19 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 """
 
-# v1 → v2 增量（审计二 R02）：存量行由 DEFAULT 值补齐，不改任何既有语义。
-# confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对 v1 库
-# 在版本分支之前即已建好），增量面只剩两列；执行见 _ensure_schema 的显式事务
+# 跨版本增量列（存量行由 DEFAULT 值补齐，不改任何既有语义）：
+# - v1→v2（审计二 R02）：projects.proposal_confirmed、proposals.dep_hash
+# - v2→v3（归属隔离）：projects.owner
+# confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对旧库
+# 在版本分支之前即已建好）；执行见 _ensure_schema 的显式事务
 # （补列与 user_version 同生共死，防「列已加、版本未进」的半迁移库重开锁死）。
-_MIGRATE_V1_TO_V2_COLUMNS = (
+_MIGRATE_COLUMNS = (
     ("projects", "proposal_confirmed",
      "ALTER TABLE projects ADD COLUMN proposal_confirmed INTEGER NOT NULL DEFAULT 0"),
     ("proposals", "dep_hash",
      "ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''"),
+    ("projects", "owner",
+     "ALTER TABLE projects ADD COLUMN owner TEXT"),
 )
 
 
@@ -253,7 +259,7 @@ class SqliteRepository:
                 # duplicate column 锁死（终审 T2-M1）。缺列才补 = 半迁移库幂等恢复。
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    for table, column, stmt in _MIGRATE_V1_TO_V2_COLUMNS:
+                    for table, column, stmt in _MIGRATE_COLUMNS:
                         cols = {r[1] for r in conn.execute(
                             f"PRAGMA table_info({table})")}
                         if column not in cols:
@@ -266,6 +272,11 @@ class SqliteRepository:
                     except sqlite3.Error:
                         pass
                     raise
+            # 归属索引（spec 为 owner 过滤路径预留）：不能进 _SCHEMA——旧库重开时
+            # executescript 先于下方迁移分支执行，彼时 owner 列尚不存在，建索引会
+            # 直接报 no such column；放这里在补列之后幂等补建（新库/旧库殊途同归）。
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner)")
 
     def _require(self, pid: str) -> None:
         with self._connect() as conn:
@@ -281,14 +292,17 @@ class SqliteRepository:
 
     # ------------------------------------------------------------------ 项目与阶段
 
-    def create(self, project_id: str) -> None:
-        """幂等建项目：已存在则原样保留存量（INSERT OR IGNORE），不覆盖、不报错。"""
+    def create(self, project_id: str, owner: str | None = None) -> None:
+        """幂等建项目：已存在则原样保留存量（INSERT OR IGNORE 天然不覆盖 owner）。"""
+        reason = owner_violation(owner)
+        if reason:
+            raise ValueError(f"非法 owner（{reason}）: {owner}")
         now = _now()
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO projects(project_id,created_at,updated_at,phase,phase_history)"
-                " VALUES(?,?,?,?,?)",
-                (project_id, now, now, PHASES[0], "[]"))
+                "INSERT OR IGNORE INTO projects(project_id,created_at,updated_at,phase,phase_history,owner)"
+                " VALUES(?,?,?,?,?,?)",
+                (project_id, now, now, PHASES[0], "[]", owner))
             conn.execute(
                 "INSERT OR IGNORE INTO research_context(project_id,data) VALUES(?,?)",
                 (project_id, "{}"))
@@ -299,10 +313,11 @@ class SqliteRepository:
         with self._connect() as conn:
             conn.execute("DELETE FROM projects WHERE project_id=?", (pid,))
 
-    def list_projects(self) -> list[dict]:
+    def list_projects(self, owner=_UNSET) -> list[dict]:
+        """项目摘要列表：owner 三态（缺省全量 / None 仅无主 / str 仅该归属）。"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT project_id, phase, created_at, updated_at FROM projects"
+                "SELECT project_id, owner, phase, created_at, updated_at FROM projects"
                 " ORDER BY project_id").fetchall()
         return [
             {
@@ -312,7 +327,24 @@ class SqliteRepository:
                 "updated_at": r["updated_at"],
             }
             for r in rows
+            if owner is _UNSET or r["owner"] == owner   # SQL NULL ↔ Python None
         ]
+
+    def set_owner(self, pid: str, owner: str | None) -> None:
+        """改写归属（账号认领预留）；幂等（同值直接返回，不动 updated_at）；未知项目 KeyError。"""
+        reason = owner_violation(owner)
+        if reason:
+            raise ValueError(f"非法 owner（{reason}）: {owner}")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT owner FROM projects WHERE project_id=?", (pid,)).fetchone()
+            if row is None:
+                raise KeyError(f"未知项目: {pid}")
+            if row["owner"] == owner:
+                return
+            conn.execute(
+                "UPDATE projects SET owner=?, updated_at=? WHERE project_id=?",
+                (owner, _now(), pid))
 
     def get_state(self, pid: str) -> dict:
         """完整状态 dict（键序对齐 JsonRepository._default_state），每次现读、全新副本。"""
@@ -320,7 +352,7 @@ class SqliteRepository:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT project_id, created_at, updated_at, phase, phase_history,"
-                " proposal_confirmed FROM projects WHERE project_id=?",
+                " proposal_confirmed, owner FROM projects WHERE project_id=?",
                 (pid,)).fetchone()
             ctx_row = conn.execute(
                 "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
@@ -348,6 +380,7 @@ class SqliteRepository:
             "updated_at": row["updated_at"],
             "phase": row["phase"],
             "phase_history": json.loads(row["phase_history"]),
+            "owner": row["owner"],
             "research_context": json.loads(ctx_row["data"]) if ctx_row else {},
             # 窗口装配：最近 ≤MESSAGE_WINDOW 条，正序返回（单轨真源在 messages 表）
             "dialogue_context": [

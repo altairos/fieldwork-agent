@@ -252,6 +252,7 @@ class TestContract:
             "updated_at",
             "phase",
             "phase_history",
+            "owner",
             "research_context",
             "dialogue_context",
             "field_sites",
@@ -308,3 +309,33 @@ class TestContract:
     def test_delete_unknown_project_raises_keyerror(self, repo):
         with pytest.raises(KeyError):
             repo.delete_project("nope")
+
+    # ---------------------------------------------------------------- owner 归属（归属隔离）
+
+    def test_create_owner_persists_and_idempotent_keeps(self, repo):
+        repo.create("p_owned", owner="anon:abc")
+        assert repo.get_state("p_owned")["owner"] == "anon:abc"
+        repo.create("p_owned", owner="anon:other")   # 幂等打开：不覆盖已有归属
+        assert repo.get_state("p_owned")["owner"] == "anon:abc"
+
+    def test_list_projects_owner_three_states(self, repo):
+        repo.create("p_mine", owner="anon:me")
+        repo.create("p_other", owner="anon:other")
+        repo.create("p_free")
+        assert [p["project_id"] for p in repo.list_projects()] == [
+            "p1", "p_free", "p_mine", "p_other"]   # 缺省全量（p1 为 fixture 建的无主项目）
+        assert [p["project_id"] for p in repo.list_projects(owner="anon:me")] == ["p_mine"]
+        assert [p["project_id"] for p in repo.list_projects(owner=None)] == ["p1", "p_free"]
+
+    def test_set_owner_claims_releases_and_errors(self, repo):
+        repo.set_owner("p1", "anon:me")              # 认领
+        assert repo.get_state("p1")["owner"] == "anon:me"
+        repo.set_owner("p1", "anon:me")              # 幂等：同值直接返回
+        repo.set_owner("p1", None)                   # 退回无主
+        assert repo.get_state("p1")["owner"] is None
+        with pytest.raises(KeyError):
+            repo.set_owner("nope", "anon:me")
+        with pytest.raises(ValueError):
+            repo.create("p_bad", owner="no-namespace")
+        with pytest.raises(ValueError):
+            repo.set_owner("p1", "Anon:UPPER")
