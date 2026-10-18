@@ -56,7 +56,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     try:
         while True:
             handle = tm.get_turn(pid, turn_id)
-            if handle and handle.cancel_event.is_set():
+            # 项目删除竞态（审查 1.2）：purge 已连同订阅/磁盘/内存清除回合，
+            # 无处发事件也无处持久化，静默退出（finish 同样无处可写）
+            if handle is None:
+                return
+            if handle.cancel_event.is_set():
                 break
             if iterations >= max_iters or total_calls >= max_tool_calls:
                 break
@@ -75,6 +79,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             iterations += 1
             final_resp = None
             async for chunk in _async_iter(stream):
+                if tm.get_turn(pid, turn_id) is None:
+                    return  # 项目删除竞态：停止消费已无消费者的流
                 if "delta" in chunk and chunk["delta"]:
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})
@@ -158,8 +164,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     # 思考模型最终轮「只想不写」（思考流在 reasoning_content、正文为空，
     # 回合无回复即 completed）。cancel 已取消的回合不做兑底（终态 cancelled）。
     handle = tm.get_turn(pid, turn_id)
+    if handle is None:
+        return  # 项目删除竞态：收敛与轮末的写入目标均已消失
     if (llm is not None and not accumulated_reply
-            and not (handle and handle.cancel_event.is_set())):
+            and not handle.cancel_event.is_set()):
         limit_hit = (iterations >= max_iters or total_calls >= max_tool_calls
                      or time.monotonic() - start > max_wall_seconds)
         reason = ("本回合已达到处理上限。" if limit_hit
@@ -172,6 +180,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             iterations += 1
             final_resp = None
             async for chunk in _async_iter(stream):
+                if tm.get_turn(pid, turn_id) is None:
+                    return  # 项目删除竞态：同主流，停止消费与发射
                 if "delta" in chunk and chunk["delta"]:
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})
@@ -191,25 +201,31 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
 
     # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 阶段推进
     # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
-    try:
-        if accumulated_reply:
-            repo.append_message(pid, "assistant", accumulated_reply,
-                                {"tool_calls": total_calls})
-        _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
-        _apply_extractions(repo, pid, user_text)
-        transition = check_and_advance(repo, pid)
-        if transition:
-            tm.append_event(pid, turn_id, "phase_transition", transition)
-    except Exception as exc:
-        tm.append_event(pid, turn_id, "error",
-                        {"code": "internal_error",
-                         "message": f"轮末持久化失败: {exc}", "hint": ""})
-        tm.finish(pid, turn_id, "failed")
-        return
+    # P1-4：取消即中止本轮全部状态变更——残缺回复/工具产物/抽取/阶段推进
+    # 均不落地，直接走 cancelled 终态（轮末块同步无 await，取消不会中途插入）
+    handle = tm.get_turn(pid, turn_id)
+    if handle is None:
+        return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
+    cancelled = handle.cancel_event.is_set()
+    if not cancelled:
+        try:
+            if accumulated_reply:
+                repo.append_message(pid, "assistant", accumulated_reply,
+                                    {"tool_calls": total_calls})
+            _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
+            _apply_extractions(repo, pid, user_text)
+            transition = check_and_advance(repo, pid)
+            if transition:
+                tm.append_event(pid, turn_id, "phase_transition", transition)
+        except Exception as exc:
+            tm.append_event(pid, turn_id, "error",
+                            {"code": "internal_error",
+                             "message": f"轮末持久化失败: {exc}", "hint": ""})
+            tm.finish(pid, turn_id, "failed")
+            return
 
     # 终态
-    handle = tm.get_turn(pid, turn_id)
-    if handle and handle.cancel_event.is_set():
+    if cancelled:
         tm.finish(pid, turn_id, "cancelled")
     else:
         tm.append_event(pid, turn_id, "turn_done",

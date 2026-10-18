@@ -2,14 +2,37 @@
 
 import asyncio
 import json
+import os
+import shutil
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from fieldwork_agent.web_host.events import EventEnvelope
+from pydantic import ValidationError
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """同目录临时文件写入后 os.replace 原子替换，避免崩溃留下半写 JSON。
+
+    replace 前 flush+fsync：rename 只保证名字原子、不保证数据落盘，
+    掉电后目标文件可能是零字节空壳（审查 1.3 加固）。
+    """
+    text = json.dumps(payload, ensure_ascii=False)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
 
 
 @dataclass
@@ -97,7 +120,10 @@ class TurnManager:
                 line = line.strip()
                 if not line:
                     continue
-                envelope = EventEnvelope.model_validate_json(line)
+                try:
+                    envelope = EventEnvelope.model_validate_json(line)
+                except ValidationError:
+                    continue  # 崩溃半写坏行：跳过，保住其余事件
                 if envelope.seq > after_seq:
                     results.append(envelope)
         return results
@@ -119,6 +145,31 @@ class TurnManager:
         handle.cancel_event.set()
         self.finish(pid, tid, "cancelled")
         return True
+
+    def cancel_all(self, pid: str) -> int:
+        """取消该项目全部 running 回合（删除项目前调用，让后台 loop 尽快退出）；
+        返回取消数。"""
+        cancelled = 0
+        for key, handle in list(self._turns.items()):
+            if key.startswith(f"{pid}:") and handle.status not in TERMINAL_STATUSES:
+                self.cancel(pid, handle.turn_id)
+                cancelled += 1
+        return cancelled
+
+    def purge_project(self, pid: str) -> None:
+        """删除项目的兑底清理：内存注册表（回合/幂等/锁/订阅）与磁盘 turns 目录。
+
+        ``rmtree(ignore_errors=True)``：json 后端下 tm 与 repo 同根，目录可能已被
+        ``repo.delete_project`` 先行移除，幂等即可。
+        """
+        prefix = f"{pid}:"
+        self._turns = {k: v for k, v in self._turns.items() if not k.startswith(prefix)}
+        self._idempotency = {
+            k: v for k, v in self._idempotency.items() if not k.startswith(prefix)}
+        self._locks.pop(pid, None)
+        self._subscribers = {
+            k: v for k, v in self._subscribers.items() if not k.startswith(prefix)}
+        shutil.rmtree(self._root / pid, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # 写锁
@@ -175,14 +226,17 @@ class TurnManager:
                 meta_path = tid_dir / "meta.json"
                 if not meta_path.exists():
                     continue
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue  # 坏 meta（半写/不可读）：跳过该回合目录
+                if not isinstance(meta, dict):
+                    continue  # 合法 JSON 但非 dict（旧格式残留/外部写入）：同样安全跳过
                 if meta.get("status") != "running":
                     continue
-                # 更新磁盘
+                # 更新磁盘（原子写，防恢复过程自身半写）
                 meta["status"] = "interrupted"
-                meta_path.write_text(
-                    json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-                )
+                _atomic_write_json(meta_path, meta)
                 # 更新内存 handle（如果存在）
                 tid = tid_dir.name
                 handle = self._turns.get(f"{pid}:{tid}")
@@ -204,5 +258,4 @@ class TurnManager:
             "idempotency_key": handle.idempotency_key,
             "created_at": handle.created_at,
         }
-        meta_path = turn_dir / "meta.json"
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        _atomic_write_json(turn_dir / "meta.json", meta)

@@ -1,5 +1,6 @@
 # tests/test_web_turn_manager.py
 import asyncio
+import json
 
 import pytest
 from fieldwork_agent.web_host.turn_manager import TurnManager
@@ -82,3 +83,69 @@ def test_is_writing(tm):
         async with tm.acquire_write_lock("p1"):
             assert tm.is_writing("p1") is True
     asyncio.run(_run())
+
+
+def test_replay_skips_corrupted_lines(tm):
+    """events.jsonl 中存在坏行（崩溃半写）时，replay 跳过坏行返回其余事件。"""
+    t = tm.create_turn("p1")
+    tm.append_event("p1", t.turn_id, "message_delta", {"text": "a"})
+    events_path = tm._root / "p1" / "turns" / t.turn_id / "events.jsonl"
+    with events_path.open("a", encoding="utf-8") as f:
+        f.write("{not valid json\n")
+    tm.append_event("p1", t.turn_id, "message_delta", {"text": "b"})
+    events = tm.replay("p1", t.turn_id, after_seq=0)
+    assert [e.seq for e in events] == [1, 2]
+
+
+def test_recover_interrupted_skips_corrupted_meta(tm):
+    """meta.json 损坏的回合目录不应让 recover_interrupted 崩溃；其余回合照常恢复。"""
+    good = tm.create_turn("p1")
+    bad_dir = tm._root / "p1" / "turns" / "badturn0000000000"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "meta.json").write_text("{not valid json", encoding="utf-8")
+    # 审后补：合法 JSON 但非 dict（旧格式残留/外部写入）同样属坏 meta，
+    # 不得让启动路径 recover 崩溃
+    bad_dir2 = tm._root / "p1" / "turns" / "badturn0000000001"
+    bad_dir2.mkdir(parents=True)
+    (bad_dir2 / "meta.json").write_text("[1, 2]", encoding="utf-8")
+    tm.recover_interrupted(["p1"])
+    assert tm.get_turn("p1", good.turn_id).status == "interrupted"
+
+
+def test_write_meta_leaves_no_temp_files(tm):
+    """原子写后回合目录只含 meta.json / events.jsonl，无临时文件碎片；meta 始终可解析。"""
+    t = tm.create_turn("p1")
+    tm.finish("p1", t.turn_id, "completed")
+    turn_dir = tm._root / "p1" / "turns" / t.turn_id
+    assert sorted(p.name for p in turn_dir.iterdir()) == ["meta.json"]
+    meta = json.loads((turn_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["status"] == "completed"
+
+
+def test_atomic_write_json_fsyncs_before_replace(tmp_path, monkeypatch):
+    """加固（审查 1.3）：os.replace 前先 fsync 落盘——rename 只保证名字原子、
+    不保证数据落盘；掉电后目标文件不得是零字节空壳。"""
+    import fieldwork_agent.web_host.turn_manager as tm_mod
+    synced = []
+    monkeypatch.setattr(tm_mod.os, "fsync", lambda fd: synced.append(fd))
+    path = tmp_path / "meta.json"
+    tm_mod._atomic_write_json(path, {"a": 1})
+    assert len(synced) == 1  # replace 前恰好 fsync 一次
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+    assert not list(tmp_path.glob("*.tmp"))  # 无残留临时文件
+
+
+def test_recover_interrupted_leaves_terminal_turns_untouched(tm):
+    """锚定（审查 1.4）：recover 只针对 running 回合——四种终态的磁盘 meta
+    保持原样，不被误标 interrupted（误恢复会把已完结回合当崩溃残留）。"""
+    statuses = ["completed", "failed", "cancelled", "interrupted"]
+    for status in statuses:
+        t = tm.create_turn("p1")
+        tm.finish("p1", t.turn_id, status)
+    tm.recover_interrupted(["p1"])
+    turns_dir = tm._root / "p1" / "turns"
+    on_disk = set()
+    for d in turns_dir.iterdir():
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        on_disk.add(meta["status"])
+    assert on_disk == set(statuses)

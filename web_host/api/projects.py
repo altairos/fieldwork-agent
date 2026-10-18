@@ -2,10 +2,10 @@
 """项目 CRUD 路由（spec §3.2）。"""
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fieldwork_agent.kernel.repository.guard import cache_id_violation
 from fieldwork_agent.web_host.api.guard import checked_project_id
-from fieldwork_agent.web_host.deps import get_repo
+from fieldwork_agent.web_host.deps import get_repo, get_turn_manager
 from pydantic import BaseModel
 
 router = APIRouter(tags=["projects"])
@@ -61,6 +61,20 @@ async def get_project(project_id: str, repo=Depends(get_repo)):
             "updated_at": state.get("updated_at"),
             "proposal_confirmed": bool(state.get("proposal_confirmed")),
             "proposal_confirmation_stale": repo.is_proposal_confirmation_stale(project_id)}
+
+
+@router.delete("/projects/{project_id}", status_code=204)
+async def delete_project(project_id: str, request: Request, repo=Depends(get_repo)):
+    """删除即整域清除：取消活动回合 → repo 数据 → turns 注册表与磁盘残留。"""
+    checked_project_id(project_id, repo)
+    tm = get_turn_manager(request)
+    tm.cancel_all(project_id)
+    try:
+        repo.delete_project(project_id)
+    except KeyError:
+        raise HTTPException(404, f"项目不存在: {project_id}") from None
+    tm.purge_project(project_id)
+    return Response(status_code=204)
 
 
 @router.get("/projects/{project_id}/cached-searches")

@@ -160,3 +160,59 @@ async def test_list_knowledge_invalid_pid_400(client):
     # 穿越形态用 %5C（反斜杠）编码，同 R01 先例（httpx 会规范化 ../ 段）
     r = await client.get("/projects/..%5C..%5Csecret/knowledge")
     assert r.status_code == 400
+
+
+# ────────────────────────────────────────────────────────────────
+# DELETE /projects/{id}：删除即整域清除（项目删除按钮的服务端面）
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_delete_project_removes_from_list(client):
+    await client.post("/projects", json={"project_id": "p1"})
+    await client.post("/projects", json={"project_id": "p2"})
+    r = await client.delete("/projects/p1")
+    assert r.status_code == 204
+    r2 = await client.get("/projects")
+    assert [p["project_id"] for p in r2.json()] == ["p2"]
+    assert (await client.get("/projects/p1")).status_code == 404
+
+
+async def test_delete_project_unknown_404(client):
+    r = await client.delete("/projects/ghost")
+    assert r.status_code == 404
+
+
+@pytest.fixture
+def iso_app(tmp_path):
+    """tm root 与 repo 同根的隔离 app：删除端点会清理 turns 磁盘目录，
+    不得写进真实 ~/.fieldwork_agent（同 test_init_deps_singleton 的 config 注入手法）。"""
+    from types import SimpleNamespace
+
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.web_host.deps import init_deps
+
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    _app = create_app(config=None, repo=repo, web_dist=tmp_path / "nonexistent")
+    init_deps(_app, config=SimpleNamespace(
+        projects_dir=tmp_path / "projects", flyai_api_key=""), repo=repo)
+    return _app
+
+
+@pytest.fixture
+async def iso_client(iso_app):
+    transport = ASGITransport(app=iso_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def test_delete_project_cancels_running_turn(iso_client, iso_app, tmp_path):
+    """删除时该项目 running 回合被取消，内存注册表与 turns 磁盘目录一并清除。"""
+    await iso_client.post("/projects", json={"project_id": "p1"})
+    tm = iso_app.state.turn_manager
+    handle = tm.create_turn("p1")
+    r = await iso_client.delete("/projects/p1")
+    assert r.status_code == 204
+    assert handle.status == "cancelled"
+    assert handle.cancel_event.is_set()
+    assert not (tmp_path / "projects" / "p1").exists()
+    assert tm.get_turn("p1", handle.turn_id) is None

@@ -253,6 +253,83 @@ def test_cancel_stops_loop(env):
     assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
 
 
+class CancelMidStreamLLM:
+    """流式中途取消：首帧 delta 流出后、终帧前触发 cancel（P1-4 场景）。"""
+    def __init__(self, tm, pid, tid):
+        self._tm, self._pid, self._tid = tm, pid, tid
+        self.calls = []
+
+    def chat_stream(self, messages, **kw):
+        self.calls.append((list(messages), kw))
+        def _gen():
+            yield {"delta": "部分"}
+            self._tm.cancel(self._pid, self._tid)
+            yield {"content": "残缺回复", "tool_calls": None,
+                   "finish_reason": "stop", "usage": {}}
+        return _gen()
+
+
+def test_cancel_skips_end_of_turn_side_effects(env):
+    """P1-4：流途中取消的回合，轮末副作用全部不落地。
+
+    取消即中止本轮全部状态变更：残缺 assistant 回复不入历史、对话中的
+    研究信息不被抽取写回、阶段不推进；终态仍为 cancelled。
+    """
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = CancelMidStreamLLM(tm, "p1", turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id,
+                         "我想研究大理的宗族变迁，单人调研，预算2万",
+                         tm, llm, FakeFlyAI()))
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    # 残缺回复不入消息史（只留用户消息）
+    assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
+    # 取消轮的抽取不写回
+    assert not repo.get_research_context("p1").get("topic")
+
+
+class DeleteProjectMidStreamLLM:
+    """流式中途删除项目（审查 1.2 竞态）：首帧 delta 后执行 DELETE 路由三步
+    （cancel_all → repo.delete_project → tm.purge_project），随后按 trailing_deltas
+    决定是否继续产出迟到 delta，最后产出终帧。"""
+    def __init__(self, repo, tm, pid, trailing_deltas=()):
+        self._repo, self._tm, self._pid = repo, tm, pid
+        self._trailing = list(trailing_deltas)
+
+    def chat_stream(self, messages, **kw):
+        def _gen():
+            yield {"delta": "部分"}
+            self._tm.cancel_all(self._pid)
+            self._repo.delete_project(self._pid)
+            self._tm.purge_project(self._pid)
+            for text in self._trailing:
+                yield {"delta": text}
+            yield {"content": "残缺回复", "tool_calls": None,
+                   "finish_reason": "stop", "usage": {}}
+        return _gen()
+
+
+def test_project_deleted_mid_stream_late_delta_no_crash(env):
+    """审查 1.2：删除后仍有迟到 delta 到达——流内事件发射前必须检测回合
+    已被清除，不得让 append_event 的 KeyError 逃逸成未处理任务异常。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = DeleteProjectMidStreamLLM(repo, tm, "p1", trailing_deltas=("迟到",))
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+
+
+def test_project_deleted_mid_stream_end_of_turn_no_crash(env):
+    """审查 1.2：删除后仅终帧到达——轮末持久化（append_message/抽取/推进）
+    与其 error 兜底都不得对已清除的回合抛 KeyError。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = DeleteProjectMidStreamLLM(repo, tm, "p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+
+
 def test_user_message_not_duplicated_to_llm(env):
     """F09：当前用户消息只发一次给模型（不随 history 重复）。"""
     repo, tm = env
