@@ -163,13 +163,23 @@ class SqliteRepository:
         return self._db_path
 
     @contextmanager
-    def _connect(self):
+    def _connect(self, immediate: bool = False):
+        """打开一次性连接。``immediate=True`` 时以 BEGIN IMMEDIATE 开写事务：
+        SELECT 前即取 RESERVED 写锁，read-modify-write（字段合并/阶段史/
+        序号分配/确认校验）全程独占，杜绝双进程并发丢更新（审计 R04）。
+
+        并发写者在 busy_timeout 内排队等锁；读路径保持 deferred（WAL 下
+        读不阻塞）。「_ensure_schema 不用 immediate：executescript 会隐式
+        COMMIT 掉手动事务。」
+        """
         conn = sqlite3.connect(self._db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
         except Exception:
@@ -203,7 +213,7 @@ class SqliteRepository:
     def create(self, project_id: str) -> None:
         """幂等建项目：已存在则原样保留存量（INSERT OR IGNORE），不覆盖、不报错。"""
         now = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO projects(project_id,created_at,updated_at,phase,phase_history)"
                 " VALUES(?,?,?,?,?)",
@@ -215,7 +225,7 @@ class SqliteRepository:
     def delete_project(self, pid: str) -> None:
         """删除即整域清除：全部子表 FK 均 ON DELETE CASCADE，删主行即级联清空。"""
         self._require(pid)
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute("DELETE FROM projects WHERE project_id=?", (pid,))
 
     def list_projects(self) -> list[dict]:
@@ -300,7 +310,7 @@ class SqliteRepository:
         if phase not in PHASES:
             raise ValueError(f"未知阶段: {phase}")
         now = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：阶段史读改写锁化
             row = conn.execute(
                 "SELECT phase, phase_history FROM projects WHERE project_id=?",
                 (pid,)).fetchone()
@@ -321,7 +331,7 @@ class SqliteRepository:
     def update_research_context(self, pid: str, patch: dict) -> None:
         self._require(pid)
         now = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：读-合并-写全程持锁
             row = conn.execute(
                 "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
             data = json.loads(row["data"]) if row else {}
@@ -335,9 +345,7 @@ class SqliteRepository:
     def get_research_context(self, pid: str) -> dict:
         self._require(pid)
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
-        return json.loads(row["data"]) if row else {}
+            return self._read_research_context(conn, pid)
 
     # ------------------------------------------------------------------ 消息史
 
@@ -345,7 +353,7 @@ class SqliteRepository:
         """追加一条到全量史（messages 表，单轨真源）；窗口由 get_state 现算，无需回写。"""
         self._require(pid)
         now = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT INTO messages(project_id, role, content, meta, ts)"
                 " VALUES(?,?,?,?,?)",
@@ -397,7 +405,7 @@ class SqliteRepository:
 
     def save_field_site(self, pid: str, record: dict) -> str:
         self._require(pid)
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：存在性检查+seq 分配锁化
             entry = self._upsert_json_record(conn, pid, record, "field_sites", "site")
             # 对齐 json_repo：记录变更同事务推进 updated_at（json 侧经 _save 刷新）
             conn.execute(
@@ -408,14 +416,11 @@ class SqliteRepository:
     def list_field_sites(self, pid: str) -> list[dict]:
         self._require(pid)
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT data FROM field_sites WHERE project_id=? ORDER BY seq",
-                (pid,)).fetchall()
-        return [json.loads(r["data"]) for r in rows]
+            return self._read_field_sites(conn, pid)
 
     def save_informant(self, pid: str, record: dict) -> str:
         self._require(pid)
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：存在性检查+seq 分配锁化
             entry = self._upsert_json_record(conn, pid, record, "informants", "inf")
             conn.execute(
                 "UPDATE projects SET updated_at=? WHERE project_id=?",
@@ -425,10 +430,7 @@ class SqliteRepository:
     def list_informants(self, pid: str) -> list[dict]:
         self._require(pid)
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT data FROM informants WHERE project_id=? ORDER BY seq",
-                (pid,)).fetchall()
-        return [json.loads(r["data"]) for r in rows]
+            return self._read_informants(conn, pid)
 
     # ------------------------------------------------------------------ 搜索缓存
 
@@ -449,7 +451,7 @@ class SqliteRepository:
             stored = {"truncated": True, "preview": preview}
         else:
             stored = result
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT INTO search_cache(id, project_id, query, tool, result, cached_at)"
                 " VALUES(?,?,?,?,?,?)",
@@ -507,7 +509,7 @@ class SqliteRepository:
         """
         self._require(pid)
         entry_id = _new_id("know")
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：seq 分配锁化
             conn.execute(
                 "INSERT INTO knowledge(id, project_id, title, content, source,"
                 " category, tags, created_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -519,22 +521,7 @@ class SqliteRepository:
     def list_knowledge(self, pid: str) -> list[dict]:
         self._require(pid)
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT id, title, content, source, tags, category, created_at"
-                " FROM knowledge WHERE project_id=? ORDER BY seq",
-                (pid,)).fetchall()
-        return [
-            {
-                "id": r["id"],
-                "title": r["title"],
-                "content": r["content"],
-                "source": r["source"],
-                "tags": json.loads(r["tags"]),
-                "category": r["category"],
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
+            return self._read_knowledge(conn, pid)
 
     def search_knowledge(self, pid: str, text: str) -> list[dict]:
         """标题+正文+标签拼检索串，空白分词后要求全部子串命中（裁决1：非 FTS5，
@@ -556,7 +543,7 @@ class SqliteRepository:
 
     def delete_knowledge(self, pid: str, entry_id: str) -> None:
         """不存在不报错（幂等）；对齐 json_repo：无 _require、不推 updated_at。"""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "DELETE FROM knowledge WHERE project_id=? AND id=?", (pid, entry_id))
 
@@ -572,11 +559,11 @@ class SqliteRepository:
         """
         self._require(pid)
         record_id = _new_id("prop")
-        dep_hash = self._current_confirm_hash(pid)
         uid = record_id.rsplit("_", 1)[-1]   # 与 id 同源（json 侧 id/后缀共用 uid）
         filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
         saved_at = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：指纹+存在性检查+seq 分配同锁
+            dep_hash = self._current_confirm_hash(pid, conn=conn)
             exists = conn.execute(
                 "SELECT 1 FROM proposals WHERE project_id=? AND filename=?",
                 (pid, filename)).fetchone()
@@ -629,7 +616,7 @@ class SqliteRepository:
         """确认田野点：翻 data.confirmed=True（不写 confirmations，对齐 json_repo）。"""
         self._require(pid)
         now = _now()
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:   # R04：读-改-写锁化
             row = conn.execute(
                 "SELECT data FROM field_sites WHERE project_id=? AND id=?",
                 (pid, site_id)).fetchone()
@@ -645,51 +632,108 @@ class SqliteRepository:
                 "UPDATE projects SET updated_at=? WHERE project_id=?", (now, pid))
         return True
 
-    def _current_confirm_hash(self, pid: str) -> str:
+    def _current_confirm_hash(self, pid: str, conn=None) -> str:
+        """五路依赖指纹（R09）。传 conn 时在该（写）事务内现读——确认校验/
+        存档指纹与写入同锁原子（审计 R04：写锁覆盖状态 API）。"""
+        if conn is None:
+            with self._connect() as ro:
+                return self._current_confirm_hash(pid, conn=ro)
         return compute_confirm_hash(
-            self.get_research_context(pid),
-            self.list_field_sites(pid),
-            self.list_informants(pid),
-            self.list_knowledge(pid),
-            self._latest_itinerary_cid(pid))
+            self._read_research_context(conn, pid),
+            self._read_field_sites(conn, pid),
+            self._read_informants(conn, pid),
+            self._read_knowledge(conn, pid),
+            self._latest_itinerary_cid(conn, pid))
 
-    def _latest_itinerary_cid(self, pid: str) -> str:
-        for cached in reversed(self.list_cached_searches(pid)):
+    def _latest_itinerary_cid(self, conn, pid: str) -> str:
+        for cached in reversed(self._read_cached_search_index(conn, pid)):
             if cached.get("tool") == "compose_itinerary":
                 return cached["id"]
         return ""
 
+    # 读 helper：公开读方法的单连接内联版（供写事务复用，R04）
+
+    def _read_research_context(self, conn, pid: str) -> dict:
+        row = conn.execute(
+            "SELECT data FROM research_context WHERE project_id=?", (pid,)).fetchone()
+        return json.loads(row["data"]) if row else {}
+
+    def _read_field_sites(self, conn, pid: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT data FROM field_sites WHERE project_id=? ORDER BY seq",
+            (pid,)).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def _read_informants(self, conn, pid: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT data FROM informants WHERE project_id=? ORDER BY seq",
+            (pid,)).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
+    def _read_knowledge(self, conn, pid: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT id, title, content, source, tags, category, created_at"
+            " FROM knowledge WHERE project_id=? ORDER BY seq",
+            (pid,)).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "content": r["content"],
+                "source": r["source"],
+                "tags": json.loads(r["tags"]),
+                "category": r["category"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def _read_cached_search_index(self, conn, pid: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT id, query, tool, cached_at FROM search_cache WHERE project_id=?"
+            " ORDER BY cached_at",
+            (pid,)).fetchall()
+        return [
+            {"id": r["id"], "query": r["query"], "tool": r["tool"],
+             "cached_at": r["cached_at"]}
+            for r in rows
+        ]
+
     def confirm_proposal(self, pid: str, doc_id: str = "") -> dict:
-        """四重校验后写 confirmations（对齐 json_repo 语义与错误码）。"""
+        """四重校验后写 confirmations（对齐 json_repo 语义与错误码）。
+
+        R04：校验读（含五路指纹）与写入同在 BEGIN IMMEDIATE 事务——
+        防校验-写入竞态（写锁覆盖状态 API），不再跨两个连接。"""
         self._require(pid)
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             rows = conn.execute(
                 "SELECT id, kind, dep_hash FROM proposals"
                 " WHERE project_id=? ORDER BY seq",
                 (pid,)).fetchall()
-        records = [
-            {"id": r["id"], "kind": r["kind"], "dep_hash": r["dep_hash"]}
-            for r in rows
-        ]
-        if not doc_id:
-            proposals = [r for r in records if r.get("kind", "proposal") == "proposal"]
-            doc_id = proposals[-1]["id"] if proposals else ""
-        record = next((r for r in records if r.get("id") == doc_id), None)
-        if record is None:
-            raise ProposalConfirmError(f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
-        if record.get("kind", "proposal") != "proposal":
-            raise ProposalConfirmError(
-                f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
-        current = self._current_confirm_hash(pid)
-        if not record.get("dep_hash"):
-            raise ProposalConfirmError(
-                "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
-        if record["dep_hash"] != current:
-            raise ProposalConfirmError(
-                "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
-        rec = ConfirmationRecord(
-            kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
-        with self._connect() as conn:
+            records = [
+                {"id": r["id"], "kind": r["kind"], "dep_hash": r["dep_hash"]}
+                for r in rows
+            ]
+            if not doc_id:
+                proposals = [r for r in records
+                             if r.get("kind", "proposal") == "proposal"]
+                doc_id = proposals[-1]["id"] if proposals else ""
+            record = next((r for r in records if r.get("id") == doc_id), None)
+            if record is None:
+                raise ProposalConfirmError(
+                    f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
+            if record.get("kind", "proposal") != "proposal":
+                raise ProposalConfirmError(
+                    f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
+            current = self._current_confirm_hash(pid, conn=conn)
+            if not record.get("dep_hash"):
+                raise ProposalConfirmError(
+                    "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
+            if record["dep_hash"] != current:
+                raise ProposalConfirmError(
+                    "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
+            rec = ConfirmationRecord(
+                kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
             conn.execute(
                 "INSERT INTO confirmations(project_id, kind, subject, confirmed_at,"
                 " dep_hash) VALUES(?,?,?,?,?)",
@@ -736,27 +780,27 @@ class SqliteRepository:
         替换式是关键：迁移序里 create→set_phase 已写一条 at=now 的转移史，
         只有替换才能保证终态 == JSON 侧原样。
         """
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "UPDATE projects SET phase_history=? WHERE project_id=?",
                 (_dumps(list(history or [])), pid))
 
     def _import_project_meta(self, pid: str, created_at: str, updated_at: str) -> None:
         """raw 回写项目时间戳（迁移保形；公开 create/set_phase 会以 _now() 重盖）。"""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "UPDATE projects SET created_at=?, updated_at=? WHERE project_id=?",
                 (created_at, updated_at, pid))
 
     def _clear_messages(self, pid: str) -> None:
         """清空该项目消息史（迁移中断重跑时先清空再重导，保证不产生重复行）。"""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute("DELETE FROM messages WHERE project_id=?", (pid,))
 
     def _import_message(self, pid: str, role: str, content: str,
                         meta: dict, ts: str) -> None:
         """INSERT 一条消息，保留原 ts（不用 _now()）。"""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT INTO messages(project_id, role, content, meta, ts)"
                 " VALUES(?,?,?,?,?)",
@@ -774,7 +818,7 @@ class SqliteRepository:
         entry = dict(entry)
         rid = entry.get("id") or _legacy_id(entry)
         saved_at = entry.get("saved_at") or ""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 f"INSERT OR REPLACE INTO {table}(id, project_id, saved_at, seq, data)"
                 " VALUES(?,?,?,?,?)",
@@ -783,7 +827,7 @@ class SqliteRepository:
 
     def _import_knowledge(self, pid: str, entry: dict) -> None:
         """知识条目原样入库（保留原 id+created_at+tags 等）。"""
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO knowledge(id, project_id, title, content,"
                 " source, category, tags, created_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -800,7 +844,7 @@ class SqliteRepository:
         legacy 单值键读出的记录无 content 时填空串（content 列 NOT NULL；
         json 侧 _proposal_doc 对缺失文件同样以空串兜底）。
         """
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO proposals(id, project_id, kind, version,"
                 " filename, content, dep_hash, saved_at, seq) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -817,7 +861,7 @@ class SqliteRepository:
         旧缓存文件的 source_tool 读作 tool（对齐 json_repo list_cached_searches
         的读时归一）。
         """
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO search_cache(id, project_id, query, tool,"
                 " result, cached_at) VALUES(?,?,?,?,?,?)",

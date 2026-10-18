@@ -310,6 +310,13 @@ class FieldAgent:
 
     # ─── 确定性推进 ──────────────────────────────
 
+    def advance_phase(self) -> dict[str, str] | None:
+        """公开推进入口（F04）：确认等写操作后由宿主显式调用，
+        对齐 Web 宿主的 ``check_and_advance`` 用法。无活跃项目返回 None。"""
+        if not self.project_id:
+            return None
+        return self._advance(self.project_id)
+
     def _advance(self, pid: str) -> dict[str, str] | None:
         """轮末用 check_advance 确定性判定；可推进则落 phase，返回 {from,to}，否则 None。"""
         state = self.repo.get_state(pid)

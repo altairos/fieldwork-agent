@@ -1,7 +1,11 @@
 """SqliteRepository 实现细节单测（契约平价由 repository_contract 双跑把关，这里测 sqlite 专属）。"""
+import json
 import sqlite3
+import threading
 from pathlib import Path
+from unittest import mock
 
+import fieldwork_agent.kernel.repository.sqlite_repo as sqlite_repo_mod
 import pytest
 from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
 
@@ -287,3 +291,85 @@ def test_get_state_proposals_exclude_content(tmp_path):
     assert len(st["proposals"]) == 1
     assert "content" not in st["proposals"][0]
     assert st["proposals"][0]["filename"].endswith(".md")
+
+
+# ── R04：写路径并发锁（BEGIN IMMEDIATE，双进程丢更新）──────────────────
+
+def test_update_research_context_interleaved_no_lost_update(tmp_path):
+    """R04 复现审计交错：A 读旧值后挂起，让 B 完整提交一次 patch，再放行 A 写回。
+
+    deferred 事务下 A 的读不持写锁 → A 以旧值 REPLACE，B 的键丢失；
+    BEGIN IMMEDIATE 后 A 的 read-modify-write 全程持写锁，B 排队等锁，
+    两个不相交 patch 俱存（对齐审计复现的 budget/topic 场景）。
+    """
+    repo_a = SqliteRepository(db_path=tmp_path / "conc.db")
+    repo_b = SqliteRepository(db_path=tmp_path / "conc.db")   # 独立实例=独立连接，模拟 Web/MCP 双进程
+    pid = "p_conc"
+    repo_a.create(pid)
+
+    a_read_done = threading.Event()
+    gate = threading.Event()
+    real_loads = json.loads
+    state = {"first": True}
+    seen_lock = threading.Lock()
+
+    def gated_loads(s, *args, **kwargs):
+        with seen_lock:
+            first = state["first"]
+            state["first"] = False
+        if first:   # 首次 = A 的 research_context 读，卡住制造确定交错
+            a_read_done.set()
+            assert gate.wait(timeout=10)
+        return real_loads(s, *args, **kwargs)
+
+    with mock.patch.object(sqlite_repo_mod.json, "loads", gated_loads):
+        t_a = threading.Thread(
+            target=lambda: repo_a.update_research_context(pid, {"a": 1}))
+        t_a.start()
+        assert a_read_done.wait(timeout=10)          # A 已读完旧值
+        t_b = threading.Thread(
+            target=lambda: repo_b.update_research_context(pid, {"b": 2}))
+        t_b.start()
+        # 旧实现：B 无锁立即完成；新实现：B 阻塞在 BEGIN IMMEDIATE 等 A 的写锁
+        t_b.join(timeout=2)
+        gate.set()                                    # 放行 A
+        t_a.join(timeout=10)
+        if t_b.is_alive():                            # 新实现：B 等 A 提交后获锁
+            t_b.join(timeout=10)
+        assert not t_a.is_alive() and not t_b.is_alive()
+
+    ctx = repo_a.get_research_context(pid)
+    assert ctx.get("a") == 1 and ctx.get("b") == 2
+
+
+def test_write_paths_open_immediate_transactions(tmp_path):
+    """R04 防回归：写路径（字段合并/阶段史/序号分配/确认校验）必须读前
+    先 BEGIN IMMEDIATE——用 trace 回调钉住真实语句序列。"""
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    with mock.patch.object(sqlite_repo_mod.sqlite3, "connect",
+                           side_effect=traced_connect):
+        repo = SqliteRepository(db_path=tmp_path / "trace.db")
+        pid = "p_trace"
+        repo.create(pid)
+        repo.update_research_context(pid, {"topic": "宗族"})
+        repo.save_field_site(pid, {"name": "祠堂"})
+        repo.add_knowledge(pid, "背景", "内容")
+        repo.save_proposal(pid, "# 方案")
+        repo.confirm_proposal(pid)
+
+    upper = [s.strip().upper() for s in statements]
+    assert "BEGIN IMMEDIATE" in upper
+    # 字段合并的读必须在写锁之后：SELECT data 不得早于首个 BEGIN IMMEDIATE
+    first_begin = upper.index("BEGIN IMMEDIATE")
+    first_ctx_read = next(i for i, s in enumerate(upper)
+                          if s.startswith("SELECT DATA FROM RESEARCH_CONTEXT"))
+    assert first_ctx_read > first_begin
+    # 六个写方法各自锁化（create/字段合并/序号分配×2/存档/确认）
+    assert upper.count("BEGIN IMMEDIATE") >= 6
