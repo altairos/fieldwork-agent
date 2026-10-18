@@ -89,6 +89,12 @@ tests/
 - **高德**：环境变量 `AMAP_API_KEY` 初始化 → `~/.fieldwork_agent/config.json` 的
   `amap_api_key` 同样覆盖 env。`AMapClient(api_key="")` 无 Key 时所有原语在 `_call`
   统一短路返回 `amap_invalid_key` 包络（不出网），宿主无需额外判断。
+- **高德 JS Key（Web 地图面板）**：环境变量 `AMAP_JS_KEY` + `AMAP_JS_SECURITY`
+  （JS API 2.0 安全密钥）→ `config.json` 的 `amap_js_key`/`amap_js_security`
+  同样覆盖 env。JS Key 与服务 Key **分离申请**（前端明文暴露，靠安全密钥
+  域名白名单防护，参考 [jscode 指南](https://lbs.amap.com/api/javascript-api-v2/guide/abc/jscode)）；
+  缺失时 `/settings/status` 返回 `amap_js_configured: false`，前端 `AmapMapPanel`
+  降级为坐标文字卡（坐标与设施清单仍可读）。
 - **能力开关**：`dashscope_available` / `flyai_available` / `amap_available` / `dingtalk_available` 供上层降级判断。
 
 设置 flyai 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：

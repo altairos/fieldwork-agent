@@ -90,11 +90,13 @@ function parseFrames(raw: string): ParsedFrame[] {
   });
 }
 
-/** 演示回合的 11 帧事件名序列（对齐 brief Step 3 脚本）。 */
+/** 演示回合的 15 帧事件名序列（N7 增补 c3 画像/c4 行程演示帧，PoC2 §5.2）。 */
 const EXPECTED_SEQUENCE = [
   "message_delta", "message_delta", "message_delta",
   "tool_started", "tool_completed",
   "tool_started", "tool_completed",
+  "tool_started", "tool_completed",   // c3 profile_field_site（C4 双源演示）
+  "tool_started", "tool_completed",   // c4 compose_itinerary（N2 last_mile 演示）
   "message_delta", "message_delta",
   "phase_transition", "turn_done",
 ];
@@ -142,7 +144,7 @@ describe("mock sse server smoke", () => {
     }
 
     const frames = parseFrames(stream.body);
-    expect(frames).toHaveLength(11);
+    expect(frames).toHaveLength(15);
     expect(frames.map((f) => f.event)).toEqual(EXPECTED_SEQUENCE);
     // seq 从 1 单调递增；data 内 turn_id/seq 平铺且与 id 行一致
     frames.forEach((f, i) => {
@@ -157,8 +159,20 @@ describe("mock sse server smoke", () => {
     expect(c1.ok).toBe(true);
     expect(c1.data.items[0]).toMatchObject({ name: "大理古城客栈", price: 180 });
     expect(frames[6].data).toMatchObject({ call_id: "c2", ok: false, data: null, degraded: "flyai_unavailable" });
-    expect(frames[9].data).toMatchObject({ from: "research_positioning", to: "field_site_profiles" });
-    expect(frames[10].data).toMatchObject({ reply_id: turn.turn_id, usage: { total_tokens: 42 } });
+    // N7 演示帧抽查：c3 画像带 geo/facilities（C4 地图块），c4 行程带 last_mile（N2 接驳）
+    expect(frames[7].data).toMatchObject({ call_id: "c3", tool: "profile_field_site", args: { location: "喜洲镇" } });
+    const c3 = frames[8].data as { ok: boolean; data: { geo: { location: string }; facilities: { total: number } } };
+    expect(c3.ok).toBe(true);
+    expect(c3.data.geo.location).toBe("100.1961,25.0473");
+    expect(c3.data.facilities.total).toBe(2);
+    expect(frames[9].data).toMatchObject({ call_id: "c4", tool: "compose_itinerary", args: { departure: "昆明", destinations: ["喜洲"] } });
+    const c4 = frames[10].data as { ok: boolean; data: { legs: { last_mile: { hub_geo: { city: string }; site_geo: { city: string } } }[]; budget: { total: number } } };
+    expect(c4.ok).toBe(true);
+    expect(c4.data.legs[0].last_mile.hub_geo.city).toBe("昆明");
+    expect(c4.data.legs[0].last_mile.site_geo.city).toBe("喜洲");
+    expect(c4.data.budget.total).toBe(14120);
+    expect(frames[13].data).toMatchObject({ from: "research_positioning", to: "field_site_profiles" });
+    expect(frames[14].data).toMatchObject({ reply_id: turn.turn_id, usage: { total_tokens: 42 } });
   });
 
   test("Last-Event-ID resumes from seq N+1", async () => {
@@ -166,10 +180,10 @@ describe("mock sse server smoke", () => {
       { headers: { ...OWNER }, body: "{}" });
     const turn = JSON.parse(created.body) as CreateTurnResponse;
     const stream = await call(port, "GET", `/projects/p1/turns/${turn.turn_id}/events`, {
-      headers: { "Last-Event-ID": "9", ...OWNER },
+      headers: { "Last-Event-ID": "13", ...OWNER },
     });
     const frames = parseFrames(stream.body);
-    expect(frames.map((f) => f.id)).toEqual([10, 11]);
+    expect(frames.map((f) => f.id)).toEqual([14, 15]);
     expect(frames.map((f) => f.event)).toEqual(["phase_transition", "turn_done"]);
   });
 

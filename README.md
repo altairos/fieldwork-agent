@@ -203,6 +203,7 @@ curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 | `DASHSCOPE_API_KEY` | 是（LLM 功能） | 阿里云百炼/通义千问密钥，缺失时降级为规则回复 |
 | `FLYAI_API_KEY` | 否 | 飞猪 FlyAI 密钥；未设置时自动回退读取 `~/.flyai/config.json` 的 `key` 字段 |
 | `AMAP_API_KEY` | 否 | 高德开放平台 Web 服务 Key（[console.amap.com](https://console.amap.com) 申请）；也可写入 `~/.fieldwork_agent/config.json` 的 `amap_api_key`。缺失时高德原语统一返回 `amap_invalid_key`，其余功能不受影响 |
+| `AMAP_JS_KEY` / `AMAP_JS_SECURITY` | 否 | 高德 Web 端（JS API 2.0）Key 与安全密钥，仅供 Web 地图面板；须与 `AMAP_API_KEY`（Web 服务 Key）**分离申请**（控制台选“Web 端（JS API）”类型），安全密钥配域名白名单。也可写入 `config.json` 的 `amap_js_key`/`amap_js_security`。缺失时地图面板降级为坐标文字卡，其余功能不受影响 |
 | `FIELDWORK_APP_TOKEN` | 否 | Web 宿主访问令牌；非空时所有 `/projects`、`/settings` 接口要求 `X-App-Token` 请求头匹配（仅环境变量，不落盘） |
 | `FA_INTERVIEW_MODEL` | 否 | 对话推进模型，默认 `qwen3.8-flash` |
 | `FA_PROPOSAL_MODEL` | 否 | 长文方案模型，默认 `qwen-max` |
@@ -213,7 +214,7 @@ curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 ### 配置优先级（`core/config.py`）
 
 1. 环境变量初始化；
-2. 若存在 `~/.fieldwork_agent/config.json` 则**覆盖**环境变量（DashScope/FlyAI/高德密钥、三槽模型、钉钉配置；高德键为 `amap_api_key`）；
+2. 若存在 `~/.fieldwork_agent/config.json` 则**覆盖**环境变量（DashScope/FlyAI/高德密钥、三槽模型、钉钉配置；高德键为 `amap_api_key`，Web 面板键为 `amap_js_key`/`amap_js_security`）；
 3. FlyAI 密钥：环境变量 `FLYAI_API_KEY` 优先，为空时回退 `~/.flyai/config.json`。
 
 设置 FlyAI 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：

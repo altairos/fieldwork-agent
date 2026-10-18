@@ -542,7 +542,10 @@ def test_amap_live_key_matches_kernel_refs():
     """N5 契约：宿主 _live_key amap 分支与 kernel amap_refs 纯函数逐字符一致
     （radius/city 等副参不进键，date 缺省留空段）；非契约方法（weather）无键。"""
     from fieldwork_agent.kernel.aggregation.amap_refs import (
-        live_around_ref, live_geocode_ref, live_transit_ref)
+        live_around_ref,
+        live_geocode_ref,
+        live_transit_ref,
+    )
     from fieldwork_agent.web_host.agent.loop import _live_key
     assert _live_key("geocode", {"address": "喜洲", "city": "大理"}) == \
         live_geocode_ref("喜洲")

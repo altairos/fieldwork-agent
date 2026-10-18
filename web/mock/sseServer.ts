@@ -90,6 +90,79 @@ export function buildScript(turnId: string): ScriptFrame[] {
       event: "tool_completed",
       payload: { call_id: "c2", ok: false, data: null, degraded: "flyai_unavailable" },
     },
+    // N7 冒烟演示帧（PoC2 §5.2）：画像卡带 geo/facilities（C4 双源 + 地图块），
+    // 行程卡带 last_mile（N2 末端接驳行 + N6 接驳示意地图）；坐标取昆明/喜洲真值
+    {
+      event: "tool_started",
+      payload: { call_id: "c3", tool: "profile_field_site", args: { location: "喜洲镇" }, purpose: "田野点画像" },
+    },
+    {
+      event: "tool_completed",
+      payload: {
+        call_id: "c3",
+        ok: true,
+        data: {
+          location: "喜洲镇",
+          geo: { location: "100.1961,25.0473", province: "云南省" },
+          facilities: { items: [
+            { name: "喜洲卫生院", extra: { location: "100.2005,25.0487", facility_kind: "卫生院 诊所" } },
+            { name: "喜洲镇中心学校", extra: { location: "100.1902,25.0601", facility_kind: "学校" } },
+          ], total: 2 },
+          transport: null, accommodation: null, culture: [], amenities: null,
+          summary: { section_counts: {}, accommodation_nightly_min: null, transport_min: null, hints: {} },
+          generated_at: "2026-10-18T08:00:00",
+        },
+      },
+    },
+    {
+      event: "tool_started",
+      payload: { call_id: "c4", tool: "compose_itinerary", args: { departure: "昆明", destinations: ["喜洲"], days: 90 }, purpose: "行程编排" },
+    },
+    {
+      event: "tool_completed",
+      payload: {
+        call_id: "c4",
+        ok: true,
+        data: {
+          departure: "昆明", destinations: ["喜洲"],
+          start_date: "2026-06-01", end_date: "2026-08-29",
+          legs: [{
+            from: "昆明", to: "喜洲", date: "2026-06-01", direction: "outbound",
+            chosen: { name: "MU5843", price: 620, mode: "flight", price_raw: "¥620", extra: {} },
+            alternatives: [], note: "",
+            last_mile: {
+              hub_geo: { location: "102.7126,25.0389", city: "昆明" },
+              site_geo: { location: "100.1961,25.0473", city: "喜洲" },
+              options: {
+                items: [{ name: "8路", price: 8, schedule: { duration_minutes: 60 } }],
+                total: 2, cheapest: 8, dearest: 12,
+              },
+              note: "",
+            },
+          }],
+          stays: [{
+            dest: "喜洲", check_in: "2026-06-01", check_out: "2026-08-29", nights: 89,
+            nightly_price: 150, chosen: { name: "喜洲客栈", price: 150, mode: "民宿", extra: {} },
+            alternatives: [], long_stay_unverified: true,
+          }],
+          rhythm: [
+            { label: "适应期", days: 9, note: "报到、熟悉村落格局" },
+            { label: "深入期", days: 45, note: "参与式观察与深度访谈" },
+            { label: "补充期", days: 24, note: "补访缺口、整理笔记" },
+          ],
+          buffer_days: 9,
+          alternatives: [{ from: "昆明", to: "喜洲", items: [{ name: "G2937", price: 350, mode: "train", price_raw: "¥350", extra: {} }] }],
+          budget: {
+            items: [
+              { name: "交通（昆明→喜洲）", amount: 620, source: "cheapest", currency: "CNY", unit: "票价×人数", quantity: 1, people: 1, priced_at: "2026-10-18T08:00:00", source_ref: "MU5843" },
+              { name: "住宿（喜洲）", amount: 13500, source: "cheapest", currency: "CNY", unit: "每晚价×夜数×房间数", quantity: 90, people: 1, priced_at: "2026-10-18T08:00:00", source_ref: "喜洲客栈" },
+            ],
+            total: 14120, budget_total: 20000, over_budget: false, coverage: "complete", uncovered: [],
+          },
+          generated_at: "2026-10-18T08:00:00",
+        },
+      },
+    },
     { event: "message_delta", payload: { text: "已找到住宿，" } },
     // 尾帧带 [[options]] 标记（B 节契约）：流式期间前端 strip 半截标记防闪烁，
     // turn_done 后 store 剥离入史 + chips 上场
