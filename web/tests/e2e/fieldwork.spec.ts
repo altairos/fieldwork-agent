@@ -15,7 +15,7 @@ import { test, expect } from "@playwright/test";
  *   - 航班降级 chip = CardShell「降级 · flyai_unavailable」（活动条同款 chip 另有一处，故 scope 到卡片内）
  *   - 阶段推进 = PhaseBanner「阶段 B · 田野点画像」（LeftRail 常驻列出四阶段名，不可用裸「田野点画像」断言）
  *   - 八章导航 = ChapterNav nav[aria-label=提案章节导航]；正文 = ProposalViewer 的 markdown h2
- *   - 下载 = ProposalView 左栏「下载 .md」按钮（Header 的导出按钮文案为「导出」，不冲突）
+ *   - 下载 = ProposalView 左栏「下载 .md」按钮（2026-10-18 Header 导出按钮已删，页面内唯一）
  */
 test("L4 完整剧本：新建项目→工作台回合→工具卡价格→阶段推进→提案八章→下载", async ({ page }) => {
   // ① 首页：新建项目（h1「田野罗盘」用 heading role 精确匹配；kicker「FIELDWORK COMPASS」非 heading）

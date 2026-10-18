@@ -1,6 +1,6 @@
 import { Chip } from "../ui/Chip";
 import { ThemeSwitcher } from "../ui/ThemeSwitcher";
-import { IconDownload, IconMenu } from "../ui/icons";
+import { IconMenu } from "../ui/icons";
 import { DEFAULT_PHASES } from "./LeftRail";
 
 /**
@@ -8,12 +8,14 @@ import { DEFAULT_PHASES } from "./LeftRail";
  * 设计板同源：
  *   顶栏基座（设计板自身 header，lines 95-96）：`sticky top-0 z-40 backdrop-blur bg-paper/85 border-b border-hairline` + `h-14 flex items-center gap-6`
  *   左品牌区（lines 97-103）：logo + 「田野罗盘 / FIELDWORK COMPASS」双行 + 竖分隔线（line 104）
- *   项目名（line 399 左栏项目名样式 `text-inkfaint truncate` 提级为顶栏主名）+ 阶段徽标（line 322 项目卡 chip：dot + 「C 行程规划」）
+ *   项目名（line 399 左栏项目名样式 `text-inkfaint truncate` 提级为顶栏主名）+ 阶段徽标
+ *     （chip 样式沿用项目卡 dot；文案 = 阶段名 + 进行中后缀「××中」，与左栏「A · 研究定位」
+ *     静态清单式呈现区分——顶栏表达的是当前进行状态）
  *   右视图切换（tabbtn，lines 74/106-109）：`px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk`，
  *     选中态（line 74 `.tabbtn[aria-selected="true"]`）：`text-cinnabar border-cinnabar`
- *   导出按钮（line 243「下载 .md」outline + line 134 download 图标）。
+ *   （2026-10-18：导出按钮已删——提案页左栏已有完整下载区，顶栏重复入口移除。）
  * 移动端（<lg，批次 A）：左侧汉堡钮（onMenu 触发 Workspace 左栏抽屉，仅传 prop 时渲染），
- *   品牌双行文字/分隔线 md+ 展开，配色/导出按钮文字 sm+ 展开（图标常驻），
+ *   品牌双行文字/分隔线 md+ 展开，配色按钮文字 sm+ 展开（图标常驻），
  *   边距与间距收窄——避免单行顶栏在小屏溢出。
  */
 export type WorkspaceView = "workspace" | "proposal";
@@ -23,7 +25,6 @@ export function Header({
   phase,
   view = "workspace",
   onNavigate,
-  onExport,
   onMenu,
 }: {
   projectName?: string;
@@ -31,14 +32,13 @@ export function Header({
   phase?: string;
   view?: WorkspaceView;
   onNavigate?: (view: WorkspaceView) => void;
-  onExport?: () => void;
   /** 移动端汉堡钮（触发 Workspace 左栏抽屉）；不传则不渲染（如 ProposalView 无抽屉） */
   onMenu?: () => void;
 }) {
   const meta = DEFAULT_PHASES.find((p) => p.id === phase);
   const views: { id: WorkspaceView; label: string }[] = [
     { id: "workspace", label: "工作台" },
-    { id: "proposal", label: "提案" },
+    { id: "proposal", label: "方案草稿" },
   ];
   return (
     <header className="sticky top-0 z-40 backdrop-blur bg-paper/85 border-b border-hairline">
@@ -70,7 +70,7 @@ export function Header({
           {meta && (
             <Chip tone="cinnabar" className="shrink-0">
               <span className="dot bg-cinnabar" aria-hidden="true" />
-              {meta.letter} {meta.label}
+              {meta.label}中
             </Chip>
           )}
         </div>
@@ -95,14 +95,6 @@ export function Header({
             ))}
           </div>
           <ThemeSwitcher />
-          <button
-            type="button"
-            onClick={onExport}
-            className="ml-1 sm:ml-3 h-8 px-2.5 rounded-md hairline bg-card text-ink text-[12.5px] hover:bg-cardsunk transition inline-flex items-center gap-1.5"
-          >
-            <IconDownload className="w-4 h-4" />
-            <span className="hidden sm:inline">导出</span>
-          </button>
         </div>
       </div>
     </header>

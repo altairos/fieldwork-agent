@@ -94,9 +94,11 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
           方案确认已因研究信息变更失效，请在「方案」页重新确认。
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2">
+      {/* 同行等高：label 纵向 flex + textarea grow——grid 行高取同行较高者，
+          AutoGrow 的内联 height 只撑不缩，矮侧由 flex 拉伸补齐到行底 */}
+      <div className="grid grid-cols-2 gap-2 items-start">
         {EDIT_FIELDS.map((f) => (
-          <label key={f.key} className="block min-w-0">
+          <label key={f.key} className="flex flex-col min-w-0">
             <span className="text-[10px] text-inkfaint">{f.label}</span>
             <AutoGrowTextarea
               aria-label={f.label}
@@ -105,7 +107,7 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
                 setDraft({ ...draft, [f.key]: e.target.value });
                 setDirty(true);
               }}
-              className="w-full mt-0.5 text-[12px] leading-relaxed bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar resize-none overflow-hidden"
+              className="grow shrink-0 w-full mt-0.5 text-[12px] leading-relaxed bg-cardsunk hairline rounded-md px-2 py-1 outline-none focus:border-cinnabar resize-none overflow-hidden"
             />
           </label>
         ))}

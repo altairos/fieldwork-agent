@@ -17,7 +17,7 @@ import type { ProposalDoc } from "../types/models";
  * 设计板同源：view-proposal（lines 677-767）：
  *   左栏 240px（679-710）：题头「RESEARCH PROPOSAL」+ 项目名（682-686）、
  *     版本区（688-695 → VersionSwitch）、八章导航（696-705 → ChapterNav，滚动高亮）、
- *     底部「下载 .md」主按钮 + 「访谈提纲（kind 切换）」outline 按钮（706-709）
+ *     底部「下载 .md」主按钮 + 「查看访谈提纲/研究方案」kind 切换按钮（706-709）
  *   右栏正文（712-767）：`overflow-y-auto scroll bg-paper/40` → ProposalViewer（max-w-720 纸面排版）
  * 移动端（<lg，批次 A）：网格回落单栏——左栏 auto 行限高 46vh（八章导航内部滚动，题头/版本/按钮
  *   常驻可见），正文 1fr；左栏分隔线改 border-b（lg+ 恢复设计板 border-r）。
@@ -164,7 +164,15 @@ export function ProposalView() {
       setSelectedId(d.id);
       setError(null);
     } catch (err: unknown) {
-      setError(`提案加载失败：${String(err)}`);
+      // 用户友好文案（2026-10-18）：不透出响应体原文（如 {"detail":"尚无提案文档"}）；
+      // 404 = 尚未生成 → 指引回工作台；其余按 HTTP 状态归类。
+      if (err instanceof ApiError && err.status === 404) {
+        setError("方案草稿尚未生成：回到工作台继续推进，生成后会自动出现在这里。");
+      } else if (err instanceof ApiError) {
+        setError(`方案草稿加载失败（HTTP ${err.status}），请稍后重试`);
+      } else {
+        setError("方案草稿加载失败，请稍后重试");
+      }
     }
   }
 
@@ -231,7 +239,6 @@ export function ProposalView() {
         onNavigate={(v) => {
           if (v === "workspace") navigate(`/p/${projectId}`);
         }}
-        onExport={doc ? download : undefined}
       />
       <div className="flex-1 grid grid-cols-1 grid-rows-[auto_1fr] lg:grid-cols-[240px_1fr] lg:grid-rows-1 min-h-0 hairline rounded-xl bg-card shadow-card overflow-hidden mx-4 mb-4">
         {/* 左栏：题头 + 版本 + 八章导航 + 下载/kind（设计板 681-710） */}
@@ -273,7 +280,7 @@ export function ProposalView() {
               className="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center justify-center gap-1.5 hover:bg-cardsunk transition disabled:opacity-50 disabled:pointer-events-none"
             >
               <IconBook className="w-4 h-4" />
-              {kindLabel(otherKind)}（kind 切换）
+              查看{kindLabel(otherKind)}
             </button>
             {confirmed && !stale && (
               <div className="text-[11px] text-bamboo leading-snug">方案已确认</div>
@@ -316,7 +323,7 @@ export function ProposalView() {
               </div>
             </div>
           ) : (
-            <div className="text-center text-inkfaint text-[13px] py-16">提案加载中…</div>
+            <div className="text-center text-inkfaint text-[13px] py-16">方案草稿加载中…</div>
           )}
         </div>
       </div>

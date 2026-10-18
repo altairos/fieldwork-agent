@@ -8,8 +8,8 @@
  * 机制：html[data-theme] 切换 CSS 变量；tailwind.config.ts 以
  * rgb(var(--fw-*) / <alpha-value>) 引用（支持 /25 /40 等透明度修饰符），
  * 故颜色变量值为空格分隔 RGB 三元组；纸纹 / 阴影 / 滚动条为非颜色变量。
- * A1/A2 与默认共享纸墨系与数据色，块内只列差异，其余回落 :root；
- * A3 全套替换（白底冷灰 + Fluent 蓝）。
+ * A1/A2 主色族自定 + 纸色族换冷调（蓝灰/青绿，2026-10-18），ink/inksoft 沿用
+ * :root 暖墨，其余回落；A3 全套替换（白底冷灰 + Fluent 蓝）。
  * 红线：lg-mio #A8412F 为静态 SVG 品牌资产不受影响；danger 始终为语义红。
  */
 
@@ -51,6 +51,14 @@ html[data-theme="cinnabar"] {
 
 /* A1 靛青 — 主色与数据色统一为靛青，朱砂家族整体退场 */
 html[data-theme="indigo"] {
+  /* 纸色族（2026-10-18）：暖米纸改冷调蓝灰纸与靛青主色同温；ink/inksoft 沿用 :root 暖墨 */
+  --fw-paper: 243 246 249;      /* #F3F6F9 */
+  --fw-paperdeep: 233 238 242;  /* #E9EEF2 */
+  --fw-card: 249 251 253;       /* #F9FBFD */
+  --fw-cardsunk: 236 241 245;   /* #ECF1F5 */
+  --fw-inkfaint: 138 148 158;   /* #8A949E */
+  --fw-hairline: 211 219 228;   /* #D3DBE4 */
+  --fw-hairsoft: 223 228 236;   /* #DFE4EC */
   --fw-cinnabar: 58 92 116;     /* #3A5C74（与 indigo 同值） */
   --fw-cinnabarsoft: 123 149 169; /* #7B95A9 */
   --fw-cinnabarwash: 233 238 241; /* #E9EEF1 */
@@ -58,10 +66,19 @@ html[data-theme="indigo"] {
   --fw-tintpress: 46 74 95;     /* #2E4A5F */
   --fw-tintline: 210 221 228;   /* #D2DDE4 */
   --fw-grain1: rgba(58, 92, 116, 0.012);
+  --fw-thumb: #C3CEDA;
 }
 
 /* A2 青衿 — 深青绿主色，bamboo 提亮拉开明度差 */
 html[data-theme="bamboo"] {
+  /* 纸色族（2026-10-18）：暖米纸改绿调青纸与青衿主色同温；ink/inksoft 沿用 :root 暖墨 */
+  --fw-paper: 242 245 238;      /* #F2F5EE */
+  --fw-paperdeep: 230 237 224;  /* #E6EDE0 */
+  --fw-card: 247 250 244;       /* #F7FAF4 */
+  --fw-cardsunk: 235 241 230;   /* #EBF1E6 */
+  --fw-inkfaint: 136 146 128;   /* #889280 */
+  --fw-hairline: 207 218 199;   /* #CFDAC7 */
+  --fw-hairsoft: 220 228 213;   /* #DCE4D5 */
   --fw-cinnabar: 70 104 58;     /* #46683A */
   --fw-cinnabarsoft: 122 148 104; /* #7A9468 */
   --fw-cinnabarwash: 232 239 227; /* #E8EFE3 */
@@ -71,6 +88,7 @@ html[data-theme="bamboo"] {
   --fw-tintpress: 56 82 46;     /* #38522E */
   --fw-tintline: 212 224 204;   /* #D4E0CC */
   --fw-grain1: rgba(94, 122, 78, 0.012);
+  --fw-thumb: #C4CFBA;
 }
 
 /* A3 Word蓝白 — 纯白底 + Fluent 蓝 + Office 习惯辅助色（全量替换） */

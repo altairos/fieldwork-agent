@@ -153,7 +153,7 @@ function Workspace() {
         useUiStore.getState().applyEvent({
           event: "error",
           code: "snapshot_failed",
-          message: `项目快照加载失败：${String(err)}`,
+          message: "项目快照加载失败，请稍后重试",  // 友好文案（2026-10-18）：不透出 String(err)；err 供上方令牌判定
           hint: "请刷新重试",
         });
       });
@@ -177,7 +177,7 @@ function Workspace() {
         useUiStore.getState().applyEvent({
           event: "error",
           code: "history_failed",
-          message: `对话历史加载失败：${String(err)}`,
+          message: "对话历史加载失败，请稍后重试",
           hint: "请刷新重试",
         });
       });

@@ -3,23 +3,21 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
-import { IconBook, IconCompass } from "../ui/icons";
+import { IconCompass } from "../ui/icons";
 import { asRecord, strOf } from "../cards/data";
 import { rest, type KnowledgeEntry } from "../../api/rest";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
 
 /**
- * KnowledgePanel — 右栏「知识库」面板（研究定位投影 + 学科纵深静态说明）。
+ * KnowledgePanel — 右栏「知识库」面板（研究定位投影 + 已存条目）。
  *
  * 设计板同源：右栏知识库面板 lines 661-669
- *   标题 line 663 `font-serif text-[15px] font-600 mb-3`
  *   条目卡 line 665 `hairline rounded-lg bg-card p-3` + 主行 `text-[12.5px] font-medium`
  *     + 副行 `text-[11px] text-inkfaint mt-1`（此处主行 = 槽位值，副行 = 槽位名，不臆造资料标题）
- *   学术纵深卡 lines 379-382 `hairline rounded-lg bg-card p-5` + `font-serif text-[15px] font-600 mb-2`
- *     + `text-[12px] text-inksoft leading-relaxed`（正文同设计板 line 381；R1 口径修订见 DEPTH_TEXT 注释）
- *   底部说明行 line 668 `hairline rounded-lg bg-paper/60 p-3 mt-3 flex items-center gap-2
- *     text-[12px] text-inkfaint`
+ *   （2026-10-18 精简：删去面板标题「研究定位 · 知识库」与「学术纵深」静态卡——
+ *     Tab 已标知识库、面板无重复标题的必要；实时口径声明栏上提为 RightDock 常驻 footer，
+ *     五个 Tab 一致呈现。）
  *
  * 同源红线②：只读 `snapshot.research_context`（REST 初始快照 = 内核 ResearchContext 槽位），
  * 不改写字段值（原样呈现内核抽取结果）；未填槽位如实计入「已填 N / 总数」，
@@ -52,14 +50,6 @@ const PURPOSE_LABEL: Record<string, string> = {
   course: "课程作业",
   global: "海外/留学申请",
 };
-
-/**
- * 学术纵深静态说明（与设计板 line 381 同源；2026-10-16 按审阅意见 R1 修订：去掉
- * 「自动生成…嵌入提案第三章」——访谈提纲是独立文档（compose_interview_guide 产出），
- * 仅被方案的方法/伦理章节引用，不存在自动嵌入机制。导出供 ProjectHub 侧栏复用同文案）。
- */
-export const DEPTH_TEXT =
-  "内置 10+ 类访谈对象类型库（村落长老/宗族头人/宗教人士/基层干部/返乡务工者/非遗传承人…），每类含接近策略、注意事项、建议提问域与伦理提示，可据此起草半结构式访谈提纲，供方案的方法与伦理章节引用。";
 
 /** 条目正文的 Markdown 排版（P1）：面板小字号版，先例 ProposalViewer.COMPONENTS。
  *  单换行 → 硬换行用 content.split("\n").join("  \n") 预处理（无新依赖）。 */
@@ -227,8 +217,6 @@ export function KnowledgePanel() {
 
   return (
     <div>
-      <div className="font-serif text-[15px] font-semibold mb-3">研究定位 · 知识库</div>
-
       {!hasContext || filledCount === 0 ? (
         <EmptyState
           icon={<IconCompass className="w-4 h-4" />}
@@ -288,20 +276,6 @@ export function KnowledgePanel() {
             ))}
           </div>
         )}
-      </div>
-
-      {/* 学术纵深（设计板 lines 379-382 静态说明，非工具数据，不与同源红线冲突） */}
-      <div className="hairline rounded-lg bg-card p-4">
-        <div className="font-serif text-[15px] font-semibold mb-2 flex items-center gap-2">
-          <IconBook className="w-4 h-4 text-cinnabar" />
-          学术纵深
-        </div>
-        <p className="text-[12px] text-inksoft leading-relaxed">{DEPTH_TEXT}</p>
-      </div>
-
-      <div className="hairline rounded-lg bg-paper/60 p-3 mt-3 flex items-center gap-2 text-[12px] text-inkfaint">
-        <IconCompass className="w-4 h-4 shrink-0" />
-        本面板实时同步系统状态：数值与文本一律来自内核快照与工具返回，不经模型转述。
       </div>
     </div>
   );

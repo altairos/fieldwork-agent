@@ -93,7 +93,7 @@ function ProjectRow({ p, onOpen, onDelete }: { p: ProjectSummary; onOpen: () => 
         <span className="text-[13px] text-ink truncate min-w-0 flex-1">
           {p.research_context?.topic || p.project_id}
         </span>
-        {meta && <span className="text-[11.5px] text-inksoft shrink-0">{meta.label}</span>}
+        {meta && <span className="text-[11.5px] text-inksoft shrink-0">{meta.label}中</span>}
         <span className="flex items-center gap-1 text-[11px] text-inkfaint shrink-0">
           <IconClock className="w-3.5 h-3.5" />
           {fmtRelative(p.updated_at ?? p.created_at)}
@@ -142,8 +142,9 @@ export function ProjectHub() {
       .then((list) => {
         if (alive) setProjects(list);
       })
-      .catch((err: unknown) => {
-        if (alive) setListError(`项目列表加载失败：${String(err)}`);
+      .catch(() => {
+        // 用户友好文案（2026-10-18）：不透出 String(err) 原文，前缀与 routes 断言保持
+        if (alive) setListError("项目列表加载失败，请稍后重试");
       });
     return () => {
       alive = false;
@@ -156,8 +157,8 @@ export function ProjectHub() {
       await rest.deleteProject(id);
       setProjects((cur) => (cur === null ? cur : cur.filter((x) => x.project_id !== id)));
       setDeleteError(null);
-    } catch (err: unknown) {
-      setDeleteError(`项目删除失败：${String(err)}`);
+    } catch {
+      setDeleteError("项目删除失败，请稍后重试");
     }
   }
 
@@ -178,8 +179,8 @@ export function ProjectHub() {
         turnId = null;
       }
       navigate(turnId ? `/p/${res.project_id}?turn=${turnId}` : `/p/${res.project_id}`);
-    } catch (err: unknown) {
-      setCreateError(`项目创建失败：${String(err)}`);
+    } catch {
+      setCreateError("项目创建失败，请稍后重试");
       setCreating(false);
     }
   }
