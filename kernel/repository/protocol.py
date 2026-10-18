@@ -11,7 +11,9 @@
 - **缓存 64KB 上限**：``cache_search`` 落盘超限即替换为
   ``{"truncated": True, "preview": ...}``，宿主据 ``truncated`` 判断需重新检索；
 - **幂等创建**：``create`` 对已存在项目不得清空存量（宿主可反复调用做"打开"）；
-- 记录类方法（田野点/报道人）**同 id 视为更新**：宿主可先存草稿后置 ``confirmed``。
+- 记录类方法（田野点/报道人）**同 id 视为更新**：宿主可先存草稿后置 ``confirmed``；
+- **删除即整域清除**：``delete_project`` 连带消息/记录/缓存/文档一起消失，邻居项目
+  不受影响；同名重建为全新状态（不得复活已删数据）。
 """
 
 from typing import Protocol, runtime_checkable
@@ -19,7 +21,7 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class ProjectRepository(Protocol):
-    """项目状态与产物读写协议（27 个方法，全部以 dict 进出）。"""
+    """项目状态与产物读写协议（28 个方法，全部以 dict 进出）。"""
 
     # ---------------------------------------------------------------- 项目与阶段
 
@@ -29,6 +31,10 @@ class ProjectRepository(Protocol):
 
     def list_projects(self) -> list[dict]:
         """项目摘要列表：``{"project_id", "phase", "created_at", "updated_at"}``。"""
+        ...
+
+    def delete_project(self, pid: str) -> None:
+        """删除项目及全部数据（消息/记录/缓存/文档）；未知项目 ``KeyError``。"""
         ...
 
     def get_state(self, pid: str) -> dict:

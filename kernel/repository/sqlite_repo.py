@@ -212,6 +212,12 @@ class SqliteRepository:
                 "INSERT OR IGNORE INTO research_context(project_id,data) VALUES(?,?)",
                 (project_id, "{}"))
 
+    def delete_project(self, pid: str) -> None:
+        """删除即整域清除：全部子表 FK 均 ON DELETE CASCADE，删主行即级联清空。"""
+        self._require(pid)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM projects WHERE project_id=?", (pid,))
+
     def list_projects(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -670,7 +676,7 @@ class SqliteRepository:
             doc_id = proposals[-1]["id"] if proposals else ""
         record = next((r for r in records if r.get("id") == doc_id), None)
         if record is None:
-            raise ProposalConfirmError(f"文档不存在： {doc_id or '（尚无文档）'}", "not_found")
+            raise ProposalConfirmError(f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
         if record.get("kind", "proposal") != "proposal":
             raise ProposalConfirmError(
                 f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")

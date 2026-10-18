@@ -149,6 +149,16 @@ def test_delete_unknown_knowledge_is_noop(json_repo):
     assert json_repo.list_knowledge("p1") == []
 
 
+def test_delete_knowledge_rejects_path_traversal(json_repo):
+    """P2-2：entry_id 含路径段（../、分隔符、绝对路径）必须 ValueError，
+
+    防拼路径越 knowledge 目录删任意文件；合法 id 均为单段名（know_...）。
+    """
+    for evil in ("../../victim", "..\\..\\victim", "/etc/passwd", "C:\\windows\\evil"):
+        with pytest.raises(ValueError):
+            json_repo.delete_knowledge("p1", evil)
+
+
 # ---------------------------------------------------------------- 存量兼容（Step 5）
 
 

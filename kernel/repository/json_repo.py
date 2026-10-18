@@ -22,6 +22,7 @@
 
 import json
 import os
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -222,6 +223,11 @@ class JsonRepository:
             return
         self._save(project_id, _default_state(project_id))
 
+    def delete_project(self, pid: str) -> None:
+        """删除即整域清除：整个项目目录（state/消息史/知识/缓存/文档）一并移除。"""
+        self._require(pid)
+        shutil.rmtree(self._project_dir(pid))
+
     def list_projects(self) -> list[dict]:
         if not self._projects_dir.exists():
             return []
@@ -419,6 +425,10 @@ class JsonRepository:
         return matched
 
     def delete_knowledge(self, pid: str, entry_id: str) -> None:
+        # P2-2：entry_id 必须是单段文件名（拒绝 ../、分隔符、绝对路径），
+        # 防拼路径越 knowledge 目录删任意文件；合法 id 均为单段名
+        if entry_id != Path(entry_id).name:
+            raise ValueError(f"非法知识条目 id（含路径段）: {entry_id!r}")
         path = self._knowledge_dir(pid) / f"{entry_id}.json"
         if path.exists():
             path.unlink()
@@ -531,7 +541,10 @@ class JsonRepository:
         """
         state = self._load(pid)
         if not doc_id:
-            doc_id = state["proposals"][-1]["id"] if state.get("proposals") else ""
+            # P2-1：取“最新一份 proposal”，筛掉 interview_guide 等其他 kind（对齐 sqlite）
+            proposals = [r for r in state.get("proposals") or []
+                         if r.get("kind", "proposal") == "proposal"]
+            doc_id = proposals[-1]["id"] if proposals else ""
         record = next(
             (r for r in state.get("proposals") or [] if r.get("id") == doc_id), None)
         if record is None:

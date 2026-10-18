@@ -217,6 +217,19 @@ class TestContract:
         repo.save_proposal("p1", "# 方案 v2", version="final")
         assert repo.is_proposal_confirmation_stale("p1") is True
 
+    def test_confirm_without_doc_id_picks_latest_proposal_kind(self, repo):
+        """P2-1：空 doc_id 取“最新一份 proposal”，跳过 interview_guide 等其他 kind。
+
+        双后端一致：json 版曾直接取 [-1]，后续保存其他 kind 文档后空参
+        确认会误报 wrong_kind，与 sqlite 版分歧。
+        """
+        repo.save_proposal("p1", "# 方案", kind="proposal", version="final")
+        repo.save_proposal("p1", "# 访谈指南", kind="interview_guide", version="final")
+        rec = repo.confirm_proposal("p1")   # 空 doc_id → 确认 proposal 而非报错
+        confirmed = repo.get_proposal_by_id("p1", rec["subject"])
+        assert confirmed["kind"] == "proposal"
+        assert confirmed["content"] == "# 方案"
+
     # ---------------------------------------------------------------- 项目与状态面
 
     def test_create_is_idempotent(self, repo):
@@ -268,3 +281,30 @@ class TestContract:
         again = repo_factory(tmp_path)
         assert again.get_phase("p1") == "field_site_profiles"
         assert again.get_messages("p1")[-1]["content"] == "重启测试"
+
+    def test_delete_project_purges_domain_data(self, repo):
+        """删除即整域清除：消息/记录/缓存/文档随项目消失，邻居项目不受影响，
+        同名重建为全新状态（幂等 create 不得复活已删数据）。"""
+        repo.append_message("p1", "user", "待删除")
+        repo.save_field_site("p1", {"name": "喜洲"})
+        repo.cache_search("p1", "仪式", "web_search", {"hits": 1})
+        repo.save_proposal("p1", "# 方案", version="final")
+        repo.create("p2")
+        repo.delete_project("p1")
+        assert [p["project_id"] for p in repo.list_projects()] == ["p2"]
+        with pytest.raises(KeyError):
+            repo.get_state("p1")
+        with pytest.raises(KeyError):
+            repo.get_messages("p1")
+        with pytest.raises(KeyError):
+            repo.list_field_sites("p1")
+        # 同名重建 = 全新项目
+        repo.create("p1")
+        assert repo.get_phase("p1") == "research_positioning"
+        assert repo.get_messages("p1") == []
+        assert repo.list_field_sites("p1") == []
+        assert repo.get_state("p1")["proposals"] == []
+
+    def test_delete_unknown_project_raises_keyerror(self, repo):
+        with pytest.raises(KeyError):
+            repo.delete_project("nope")
