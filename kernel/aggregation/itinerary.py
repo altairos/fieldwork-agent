@@ -214,6 +214,11 @@ def live_hotel_ref(dest: str, check_in: str, check_out: str,
 # ---------------------------------------------------------------- 末端接驳（N2）
 
 
+# amap_no_result（典型：境外地名，高德仅覆盖境内）明示功能缺口——评审要求
+# 不静默跳过；服务类错误（source_exception/amap_error 等）不适用此口径。
+_OVERSEAS_NOTE = "境外田野点的接驳功能正在开发中，后续版本将追加"
+
+
 def _memo_geocode(amap_client: AMapClient, address: str,
                   memo: dict[str, GeoLocation]) -> tuple[GeoLocation | None, ToolError | None]:
     """地名级 geocode 复用：同地名跨腿只解析一次；失败不缓存（下次仍重试）。"""
@@ -243,10 +248,11 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
                 "note": "未配置高德 API Key，接驳查询已停用",
                 "live_refs": refs}, True, False, True
     if hub_geo is None:
+        note = f"接驳未纳入：{hop['from']} 地名解析失败（{hub_err.code}），预算未计该条"
+        if hub_err.code == "amap_no_result":
+            note += f"；{_OVERSEAS_NOTE}"
         return {"hub_geo": None, "site_geo": None, "options": None,
-                "note": f"接驳未纳入：{hop['from']} 地名解析失败（{hub_err.code}），"
-                        "预算未计该条",
-                "live_refs": refs}, True, False, False
+                "note": note, "live_refs": refs}, True, False, False
     refs.append(live_geocode_ref(hop["from"]))
     site_geo, site_err = _memo_geocode(amap_client, hop["to"], memo)
     if site_err is not None and site_err.code == "amap_invalid_key":
@@ -254,10 +260,11 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
                 "note": "未配置高德 API Key，接驳查询已停用",
                 "live_refs": refs}, True, False, True
     if site_geo is None:
+        note = f"接驳未纳入：{hop['to']} 地名解析失败（{site_err.code}），预算未计该条"
+        if site_err.code == "amap_no_result":
+            note += f"；{_OVERSEAS_NOTE}"
         return {"hub_geo": hub_geo, "site_geo": None, "options": None,
-                "note": f"接驳未纳入：{hop['to']} 地名解析失败（{site_err.code}），"
-                        "预算未计该条",
-                "live_refs": refs}, True, False, False
+                "note": note, "live_refs": refs}, True, False, False
     refs.append(live_geocode_ref(hop["to"]))
     transit_env = _safe_call(
         amap_client.direction_transit, origin=hub_geo.location,

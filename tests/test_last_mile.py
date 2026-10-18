@@ -108,6 +108,7 @@ def test_hub_geocode_fail_returns_amap_no_result_without_transit():
     env = plan_last_mile("昆明", "喜洲", amap_client=geo)
     assert env.ok is False and env.error.code == "amap_no_result"
     assert "枢纽" in env.error.message and env.error.hint
+    assert "正在开发中" in env.error.hint  # 境外接驳缺口须明示，不静默跳过
     assert [c[0] for c in geo.calls] == ["geocode"]
 
 

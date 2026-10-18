@@ -298,6 +298,7 @@ def test_geo_failure_degrades_not_fails():
     assert env.data.accommodation.items[0].name == "M"   # flyai 段照常
     assert [m for m, _ in geo.calls] == ["geocode"]      # 无锚点不跟发 around
     assert env.degraded and "高德" in env.degraded        # 隐式双源回退说明
+    assert "正在开发中" in env.degraded      # 境外功能缺口须明示，不静默跳过
 
 
 def test_geo_invalid_key_degraded_names_missing_key():
@@ -398,8 +399,9 @@ def test_live_refs_geocode_only_when_around_all_fail():
 
 
 def test_geo_fail_degraded_canonical_wording():
-    """C4（§4.4）规范文案：失败分支统一为「地理底座：高德未收录，已回退纯
-    FlyAI 文本链路」；无任何成功 amap 调用 → live_refs 空表。"""
+    """C4（§4.4）规范文案：失败分支统一为「地理底座：高德未收录（境外田野
+    点的定位/周边设施正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路」
+    （no_result 单列：境外缺口明示）；无任何成功 amap 调用 → live_refs 空表。"""
     class GeoNoResultRefs(StubGeoClient):
         def geocode(self, address: str, city: str = ""):
             self.calls.append(("geocode", {"address": address}))
@@ -409,7 +411,8 @@ def test_geo_fail_degraded_canonical_wording():
     env = profile_field_site("Chiang Mai", client=StubClient(),
                              amap_client=GeoNoResultRefs())
     assert env.ok is True
-    assert env.degraded == "地理底座：高德未收录，已回退纯 FlyAI 文本链路"
+    assert env.degraded == ("地理底座：高德未收录（境外田野点的定位/周边设施"
+                            "正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路")
     assert env.data.live_refs == []
 
 

@@ -56,8 +56,9 @@ _HINTS = {
         "个人认证可提额，或降低调用频率。"),
     "amap_rate_limited": "触发高德 QPS 限流（infocode 10004）：请稍后重试并降低并发。",
     "amap_no_result": (
-        "高德未收录该地点或无匹配数据（常见于海外/生僻地名）："
-        "请改用 FlyAI 搜索（search_keyword / search_ai）。"),
+        "高德仅覆盖境内：境外田野点的定位/周边/接驳功能正在开发中"
+        "（后续版本将追加）；境内生僻地名请改用标准写法（省+市+乡镇）；"
+        "当前可改用 FlyAI 搜索（search_keyword / search_ai）了解位置与交通。"),
     "amap_timeout": "高德接口超时：请稍后重试。",
     "parse_error": "高德返回了非 JSON 内容：请重试；持续出现请查看 https://lbs.amap.com 服务公告。",
     "amap_error": "高德服务异常：请到 https://lbs.amap.com 查看错误码文档排查。",

@@ -198,11 +198,14 @@ def profile_field_site(location: str, budget_per_night: float = 200,
                 facilities = _build_page(fac_items, max_items_per_section)
     else:
         # 无 Key 单独点名（默认无 Key 部署的第一路径，指对排查方向：配 Key，
-        # 而非误导为地名未收录/服务不可用）；其余失败（含海外 amap_no_result）
-        # 维持双源回退口径。
+        # 而非误导为地名未收录/服务不可用）；境外 amap_no_result 明示功能缺口
+        # （正在开发中，不静默跳过）；其余失败维持双源回退口径。
         err_code = geo_env.error.code if geo_env.error is not None else ""
         if err_code == "amap_invalid_key":
             degraded = "地理底座：未配置高德 API Key，已回退纯 FlyAI 文本链路"
+        elif err_code == "amap_no_result":
+            degraded = ("地理底座：高德未收录（境外田野点的定位/周边设施"
+                        "正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路")
         else:
             degraded = "地理底座：高德未收录，已回退纯 FlyAI 文本链路"
 

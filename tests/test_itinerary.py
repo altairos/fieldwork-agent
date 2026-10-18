@@ -438,6 +438,7 @@ def test_last_mile_failure_enters_uncovered_not_error():
     assert env.ok is True
     lm = env.data.legs[0]["last_mile"]
     assert lm["hub_geo"] is None and lm["options"] is None and lm["note"]
+    assert "正在开发中" in lm["note"]  # amap_no_result → 境外接驳缺口须明示
     assert any("接驳" in u for u in env.data.budget.uncovered)  # 查过无价与单腿交通同口径
     assert env.data.budget.coverage == "partial"
     assert all(not i.name.startswith("接驳") for i in env.data.budget.items)

@@ -53,6 +53,7 @@ def test_geocode_no_result_is_amap_no_result(monkeypatch):
     env = client.geocode("Kiribati")
     assert env.ok is False and env.error.code == "amap_no_result"
     assert env.error.hint  # 回退引导不可缺 hint
+    assert "正在开发中" in env.error.hint  # 境外功能缺口须明示，不静默跳过
 
 
 # ---------------------------------------------------------------- regeocode
