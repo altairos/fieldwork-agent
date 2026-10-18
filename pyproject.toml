@@ -70,7 +70,10 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-exclude = [".venv", "build", "dist"]
+# .audit/ 是复审过程的审计辅助材料（一次性诊断脚本 + 日志/截图），仅为可追溯性保留入库，
+# 不属于生产代码，故排除在正式 lint 门禁之外（N15：明确审计辅助材料保留范围，
+# 其脚本诊断不计入业务/正式测试的 ruff 计数）。.tmp_home/.superpowers 已 gitignore，ruff 自动跳过。
+exclude = [".venv", "build", "dist", ".audit"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
