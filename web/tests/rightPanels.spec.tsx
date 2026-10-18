@@ -1,6 +1,6 @@
 // web/tests/rightPanels.spec.tsx —— 右栏确认/采纳/研究信息编辑（Task 9）
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { InformantCard } from "../src/components/cards/InformantCard";
 import { InformantsPanel } from "../src/components/right/InformantsPanel";
 import { FieldSitesPanel } from "../src/components/right/FieldSitesPanel";
@@ -8,17 +8,6 @@ import { ProgressPanel } from "../src/components/right/ProgressPanel";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
 import type { ProjectSnapshot } from "../src/types/models";
-
-function stubFetch(resps: unknown[] = []) {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
-  let i = 0;
-  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-    calls.push({ url, init });
-    const resp = resps[Math.min(i++, resps.length - 1)] ?? {};
-    return { ok: true, status: 200, json: async () => resp } as unknown as Response;
-  }));
-  return calls;
-}
 
 /** R06b：可指定 ok/status 的响应桩（stubFetch 的失败态版本；末项耗尽后重复）。 */
 function stubFetchSeq(resps: Array<{ body: unknown; ok?: boolean; status?: number }>) {
@@ -30,6 +19,10 @@ function stubFetchSeq(resps: Array<{ body: unknown; ok?: boolean; status?: numbe
     return { ok: r.ok ?? true, status: r.status ?? 200, json: async () => r.body } as unknown as Response;
   }));
   return calls;
+}
+
+function stubFetch(resps: unknown[] = []) {
+  return stubFetchSeq(resps.map((body) => ({ body })));
 }
 
 const SNAP: ProjectSnapshot = {
@@ -156,6 +149,8 @@ describe("FieldSitesPanel — R06b 回读失败提示与重试", () => {
     await waitFor(() => expect(calls[0]?.url).toBe("/projects/p1"));
     await waitFor(() => expect(useProjectStore.getState().refreshError).toBeNull());
     expect(screen.queryByText(MSG)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(useProjectStore.getState().snapshot?.field_sites[0].confirmed).toBe(true));
   });
 
   test("重试仍失败（500）→ 提示保留，仍可再试", async () => {
