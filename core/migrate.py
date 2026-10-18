@@ -102,6 +102,8 @@ def _verify(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
         sstate = sqlite_repo.get_state(pid)
         if sstate["phase"] != jstate["phase"]:
             problems.append(f"{pid}: phase 不一致")
+        if sqlite_repo.get_state(pid).get("owner") != jstate.get("owner"):
+            problems.append(f"{pid}: owner 不一致")
         if bool(jstate.get("proposal_confirmed")) != bool(sstate.get("proposal_confirmed")):
             problems.append(
                 f"{pid}: proposal_confirmed 不一致"
@@ -169,7 +171,7 @@ def migrate_to_sqlite(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
             _clear_project(sqlite_repo, pid)
         jstate = json_repo.get_state(pid)
         json_repo.create(pid)           # 幂等打开 = 触发 json 侧消息史规范化
-        sqlite_repo.create(pid)                              # 幂等建项目
+        sqlite_repo.create(pid, owner=jstate.get("owner"))   # 幂等建项目（归属随迁）
         sqlite_repo.set_phase(pid, jstate["phase"])          # 阶段（同阶段不写史）
         sqlite_repo._import_phase_history(pid, jstate["phase_history"])
         if jstate["research_context"]:

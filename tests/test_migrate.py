@@ -57,6 +57,7 @@ def test_migrate_imports_all_seven_types(legacy_json_repo, tmp_path):
         assert ss["research_context"] == js["research_context"]
         assert ss["created_at"] == js["created_at"]   # 时间戳保形（M2）
         assert ss["updated_at"] == js["updated_at"]
+        assert ss["owner"] == js["owner"]   # 归属随迁（legacy fixture 无 owner 键，双侧 None）
         assert [m["content"] for m in sqlite.get_messages(pid, 0)] == \
                [m["content"] for m in legacy_json_repo.get_messages(pid, 0)]
         # 窗口（C1）：sqlite 侧现算窗口 == json 侧 backfill 后的全量消息史；
@@ -277,3 +278,20 @@ def test_verify_catches_confirmation_drift(tmp_path):
                      (f"migrated:{pid}", "json"))
     with pytest.raises(RuntimeError, match="confirmations"):
         migrate_to_sqlite(json_repo, sqlite)
+
+
+def test_migrate_carries_owner(tmp_path):
+    """归属随迁：json 侧有主项目迁移后 sqlite 侧 owner 一致；无主项目保持无主。"""
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    json_repo = JsonRepository(projects_dir=projects)
+    json_repo.create("p_owned", owner="anon:old-device")
+    json_repo.set_phase("p_owned", "field_site_profiles")
+    sqlite = SqliteRepository(db_path=tmp_path / "fieldwork.db")
+    migrate_to_sqlite(json_repo, sqlite)
+    assert sqlite.get_state("p_owned")["owner"] == "anon:old-device"
+
+    json_repo.create("p_free")                       # 同库新增无主项目
+    migrate_to_sqlite(json_repo, sqlite)              # p_owned 已标记跳过，只迁 p_free
+    assert sqlite.get_state("p_free")["owner"] is None
+    assert sqlite.get_state("p_owned")["owner"] == "anon:old-device"   # 幂等重迁不丢归属
