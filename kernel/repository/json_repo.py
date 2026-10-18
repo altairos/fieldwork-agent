@@ -452,6 +452,10 @@ class JsonRepository:
 
     def _proposal_doc(self, pid: str, record: dict) -> dict:
         doc = dict(record)
+        # R09 前的记录无 dep_hash 键：读出统一补空串（空串=无指纹，与
+        # confirm/stale 的 falsy 判定同义），保 sqlite 侧 list_proposals
+        # 七键形态平价——迁移全等校验（core/migrate._verify）依赖此形状。
+        doc.setdefault("dep_hash", "")
         path = self._output_dir(pid) / record.get("filename", "")
         doc["content"] = path.read_text(encoding="utf-8") if path.exists() else ""
         return doc

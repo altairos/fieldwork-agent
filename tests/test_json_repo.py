@@ -174,6 +174,9 @@ def test_legacy_proposal_draft_readable(legacy_repo):
     assert docs[0]["version"] == "draft"
     assert docs[0]["filename"] == "proposal_draft_20260105_101500.md"
     assert "研究定位" in docs[0]["content"]
+    # 旧记录无指纹也恒有 dep_hash 键（空串=无指纹）：读出形状与 sqlite 侧
+    # list_proposals 七键平价，迁移全等校验（test_migrate）依赖此形状。
+    assert docs[0]["dep_hash"] == ""
     latest = legacy_repo.get_latest_proposal("legacy_project")
     assert latest["content"] == docs[0]["content"]
     # 新写入与旧记录共存，旧的排在前面（按 saved_at 升序）

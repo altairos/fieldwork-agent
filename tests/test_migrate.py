@@ -140,3 +140,35 @@ def test_migrate_two_legacy_projects_same_proposal_id(tmp_path):
             "SELECT project_id FROM proposals WHERE id='legacy_proposal_draft'"
             " ORDER BY project_id").fetchall()
     assert [r[0] for r in rows] == ["legacy_a", "legacy_b"]
+
+
+def test_migrate_pre_r09_list_record(tmp_path):
+    """R09 前保存的新式 proposals 列表记录（无 dep_hash 键）迁移读出仍须平价。
+
+    dep_hash 是 R09 新增：单值键分支已补空键（bfef02c），但列表记录走
+    _proposal_doc(dict(record)+content) 读出，旧记录无键则 json 侧 6 键 vs
+    sqlite 侧恒 7 键（dep_hash=""），_verify 全等校验必失败。真实存量
+    （R09 前用过 save_proposal 的项目）正是这种形状，fixture 未覆盖。
+    """
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    shutil.copytree(FIXTURE, projects / "legacy_project")
+    state_path = projects / "legacy_project" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # 单值键提升为 R09 前的新式列表记录（有 id/kind/version，无 dep_hash）
+    legacy = state.pop("proposal_draft")
+    state["proposals"] = [{
+        "id": "prop_20260105101500_ab12cd34",
+        "kind": "proposal",
+        "version": "draft",
+        "filename": legacy["filename"],
+        "saved_at": legacy.get("saved_at", ""),
+    }]
+    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False),
+                          encoding="utf-8")
+
+    json_repo = JsonRepository(projects_dir=projects)
+    sqlite = SqliteRepository(db_path=tmp_path / "fieldwork.db")
+    migrate_to_sqlite(json_repo, sqlite)   # 缺补键时抛 RuntimeError（即红）
+    pid = "legacy_project"
+    assert sqlite.list_proposals(pid) == json_repo.list_proposals(pid)
