@@ -4,7 +4,7 @@ import json
 import re
 
 import pytest
-from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
+from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, SearchItem
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.web_host.turn_manager import TurnManager
 
@@ -512,6 +512,108 @@ def test_itinerary_quotes_bound_to_live_snapshots(env):
     old = [c for c in index if c["tool"] == "search_hotels"
            and repo.get_cached_search("p1", c["id"])["result"]["cheapest"] == 11.0]
     assert old and all(c["id"] != stay_cid for c in old)
+
+
+# ---------------------------------------------------------------- N5 amap 快照链（宿主侧）
+
+
+class SnapshotAMap:
+    """N5 测试桩：全方法成功，data 与真实 AMapClient 同构
+    （geocode→GeoLocation、around→ItemPage、transit/weather→dict）。"""
+
+    def geocode(self, address="", city=""):
+        return Envelope(ok=True, data=GeoLocation(
+            location="100.196,25.047", city="大理白族自治州", adcode="532901"))
+
+    def around_search(self, keywords="", location="", radius=5000, page_size=10):
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name=f"{keywords}点", price=0.0)],
+            total=1, cheapest=0.0, dearest=0.0))
+
+    def direction_transit(self, origin="", destination="", city="", cityd="",
+                          date=""):
+        return Envelope(ok=True, data={"transits": []})
+
+    def weather(self, city="", extensions="all"):
+        return Envelope(ok=True, data={"city": city})
+
+
+def test_amap_live_key_matches_kernel_refs():
+    """N5 契约：宿主 _live_key amap 分支与 kernel amap_refs 纯函数逐字符一致
+    （radius/city 等副参不进键，date 缺省留空段）；非契约方法（weather）无键。"""
+    from fieldwork_agent.kernel.aggregation.amap_refs import (
+        live_around_ref, live_geocode_ref, live_transit_ref)
+    from fieldwork_agent.web_host.agent.loop import _live_key
+    assert _live_key("geocode", {"address": "喜洲", "city": "大理"}) == \
+        live_geocode_ref("喜洲")
+    assert _live_key("around_search", {"keywords": "卫生院 诊所",
+                                       "location": "100.196,25.047",
+                                       "radius": 5000}) == \
+        live_around_ref("卫生院 诊所", "100.196,25.047")
+    assert _live_key("direction_transit", {"origin": "102.71,25.03",
+                                           "destination": "100.19,25.04",
+                                           "date": "2026-11-02"}) == \
+        live_transit_ref("102.71,25.03", "100.19,25.04", "2026-11-02")
+    assert _live_key("direction_transit", {"origin": "102.71,25.03",
+                                           "destination": "100.19,25.04"}) == \
+        live_transit_ref("102.71,25.03", "100.19,25.04")
+    assert _live_key("weather", {"city": "大理"}) == ""
+
+
+def test_amap_drain_snapshots_position_args_and_label(env):
+    """N5：_drain_snapshots amap 分支——geocode 位置传参（last_mile 形态）与
+    around 关键字传参（site_profile 形态）都进快照；method 名带 amap_ 前缀；
+    live_refs 文案「amap 快照」；weather 无键但有快照；游标幂等。"""
+    from fieldwork_agent.kernel.sources.flyai import RecordingClient
+    from fieldwork_agent.web_host.agent.loop import _drain_snapshots
+    repo, _tm = env
+    rec = RecordingClient(SnapshotAMap())
+    rec.geocode("喜洲")  # 位置传参：RecordingClient 记 args=["喜洲"]、kwargs={}
+    rec.around_search(keywords="卫生院 诊所", location="100.196,25.047")
+    rec.weather(city="大理")
+    snapshot_ids, live_refs = [], {}
+    cursor = _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs,
+                              0, label="amap")
+    index = repo.list_cached_searches("p1")
+    assert {c["tool"] for c in index} == \
+        {"amap_geocode", "amap_around_search", "amap_weather"}
+    geo_row = next(c for c in index if c["tool"] == "amap_geocode")
+    assert "喜洲" in geo_row["query"]  # 位置参并入参数视图，query 可读
+    assert live_refs["@live:amap_geocode:喜洲"].startswith("amap 快照")
+    assert live_refs["@live:amap_around_search:卫生院 诊所|100.196,25.047"] \
+        .startswith("amap 快照")
+    assert not any(k.startswith("@live:amap_weather") for k in live_refs)
+    assert len(snapshot_ids) == 3 and cursor == len(rec.calls)
+    _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs, cursor, label="amap")
+    assert len(repo.list_cached_searches("p1")) == 3  # 幂等不重复落盘
+
+
+def test_amap_profile_live_refs_replaced_by_snapshots(env):
+    """N5 金标准：profile_field_site 附的 live_refs 规格键在轮末被替换为
+    「amap 快照 {cid}」真实引用，@live: 键零残留；快照与 snapshot_ids 均在。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "profile_field_site",
+                                          "arguments": {"location": "喜洲"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "画像喜洲", tm, llm,
+                         FakeFlyAI(), amap_client=SnapshotAMap()))
+    profile = repo.get_state("p1")["field_sites"][0]["profile"]
+    refs = profile["live_refs"]
+    assert refs and all(r.startswith("amap 快照 ") for r in refs)
+    tools = {c["tool"] for c in repo.list_cached_searches("p1")}
+    assert {"amap_geocode", "amap_around_search"} <= tools
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["snapshot_ids"]
+    assert "@live:" not in json.dumps(profile, ensure_ascii=False)
 
 
 
