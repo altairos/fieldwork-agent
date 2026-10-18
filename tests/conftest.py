@@ -125,3 +125,26 @@ def _public_assets(tmp_path, monkeypatch):
     assets.reload(empty)
     yield
     assets.reload(empty)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_host_env(tmp_path, monkeypatch):
+    """隔离部署边界环境：宿主侧变量不泄入任何测试，测试也不碰真实用户目录。
+
+    根因（2026-10-18 web 401 批量失败排查）：共享开发 shell 里临时 export 的
+    FIELDWORK_APP_TOKEN（部署验证用）被 pytest 子进程继承，config=None 的
+    web 测试构造真实 Config() 读到令牌 → App Token 守卫拦掉全部 /projects
+    系请求（70 例 401）。CI/部署流水线复用 runner 时同理会无差别崩。
+    测试对部署边界变量必须不敏感：这里统一剥离，并仿 isolated_home 把
+    CONFIG_DIR/PROJECTS_DIR/Path.home 指向 tmp_path——真实 ~/.fieldwork_agent
+    （含 amap_api_key）与 ~/.flyai 不再被测试读写。
+    """
+    for var in ("FIELDWORK_APP_TOKEN", "DASHSCOPE_API_KEY",
+                "DASHSCOPE_HTTP_BASE_URL", "FLYAI_API_KEY", "AMAP_API_KEY",
+                "FA_DASHSCOPE_PLAN", "FA_INTERVIEW_MODEL",
+                "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL", "FA_STORAGE"):
+        monkeypatch.delenv(var, raising=False)
+    from fieldwork_agent.core import config as config_mod
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config_mod, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
