@@ -24,6 +24,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   const abortRef = useRef<AbortController | null>(null);
   const turnIdRef = useRef<string | null>(null);
   const seenRef = useRef<Set<number>>(new Set());
+  // N10：请求代次——每次 send/adopt/retry 与项目切换都递增；回读（快照/消息）返回时
+  // 若代次已变则弃置，杜绝旧响应写入新页面 store（adopt 的收尾 hydrate 此前缺此保护）。
+  const generationRef = useRef(0);
   // 守卫 401 回调经 ref 中转：send 不因此重造（依赖数组不抖），调用方换弹层状态不重启回合句柄。
   // 无依赖 effect 每次 render 同步最新引用（opts 可能是内联对象）。
   const onAuthErrorRef = useRef(opts?.onAuthError);
@@ -32,9 +35,74 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   // 卸载 / projectId 变化 → abort 旧流（cleanup 先于新 effect 执行，符合"换项目先断旧流"语义）
   useEffect(() => {
     return () => {
+      generationRef.current++;      // N10：换项目/卸载即作废在途回读，旧响应不写新页 store
       abortRef.current?.abort();
     };
   }, [projectId]);
+
+  // ── N10：send/adopt 共用的终态回读与流订阅（统一逻辑，不再各修各的）──
+  // 回读返回时若代次已变（切换项目/新回合）或项目已切换，一律弃置，绝不写新页面 store。
+  const staleGuard = useCallback((gen: number) => (
+    gen !== generationRef.current
+    || useProjectStore.getState().projectId !== projectId
+  ), [projectId]);
+
+  // 工具产物（田野点画像等）轮末才落盘、流内事件不含持久化记录 → 首见 turn_done 后回读快照。
+  const refreshSnapshot = useCallback(async (gen: number) => {
+    try {
+      const snap = await rest.getProject(projectId);
+      if (staleGuard(gen)) return;                    // 竞态守卫：已切换项目/新回合，弃置旧快照
+      useProjectStore.getState().loadSnapshot(snap);
+      useProjectStore.getState().setRefreshError(null);
+    } catch {
+      // 仅代次守卫（不含项目守卫）：回读失败要如实提示，但切换项目/新回合后不再置错
+      if (gen === generationRef.current)
+        useProjectStore.getState().setRefreshError("快照刷新失败，最新田野点/行程可能未显示");
+    }
+  }, [projectId, staleGuard]);
+
+  // adopt 回放不含 user 帧（user 消息只落 chat_history）→ 以后端事实史覆盖式 hydrate 补齐首问。
+  const rehydrateMessages = useCallback(async (gen: number) => {
+    try {
+      const msgs = await rest.getMessages(projectId);
+      // N10：请求代次守卫——切换项目（cleanup 递增代次）或新回合后，旧响应弃置、
+      // 不写入新页面 store（此前 adopt 的收尾 hydrate 无任何守卫）
+      if (gen !== generationRef.current) return;
+      useConversationStore.getState().hydrate(msgs);
+    } catch { /* 静默：store 已有回放内容兑底，刷新自愈 */ }
+  }, [projectId]);
+
+  // 统一流订阅 + 终态刷新：send 与 adopt 共用。首见 turn_done 回读快照（覆盖 send/adopt 两路，
+  // 修复 adopt 漏刷快照致「确认按钮为 0、reload 才出现」）；rehydrateMessages 时（adopt）收尾对齐消息史。
+  const streamAndRefresh = useCallback(async (
+    turnId: string, gen: number, opts: { rehydrateMessages: boolean },
+  ) => {
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setBusy(true);
+    try {
+      await streamTurnEvents(projectId, turnId, {
+        signal: ctrl.signal,
+        onEvent: (env: EventEnvelope) => {
+          // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
+          const prev = seenRef.current;
+          seenRef.current = dispatchEvent(env, seenRef.current);
+          if (env.event === "turn_done") {
+            if (seenRef.current !== prev) void refreshSnapshot(gen);
+            setRetryable(true);
+            setIncomplete(env.data.incomplete === true);
+          }
+        },
+        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
+        onClose: () => { setBusy(false); },
+      });
+    } catch (err) {
+      useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
+    } finally {
+      setBusy(false);
+      if (opts.rehydrateMessages) void rehydrateMessages(gen);
+    }
+  }, [projectId, refreshSnapshot, rehydrateMessages]);
 
   const send = useCallback(async (text: string) => {
     if (!text.trim() || busy) return;
@@ -70,59 +138,23 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
       return;
     }
 
-    // ── 第二步：订阅 SSE 事件流 ──
+    // ── 第二步：订阅 SSE 事件流（与 adopt 共用 streamAndRefresh）──
     // 此阶段消息已被后端接受，异常只如实上屏；绝不调 failTurn（会弹掉真实对话内容）。
-    // 流内错误由 onError 回调处理（重连耗尽后），turnRunning 由 error/turn_done 事件与 onClose 负责。
-
-    // ── R06a：回合末回读项目快照 ──
-    // 工具产物（田野点画像等）轮末才落盘，流内事件不含持久化记录；首见 turn_done 后异步回读，
-    // 失败只置 refreshError 提示态，绝不向回合流抛错、不阻塞收尾。
-    const refreshSnapshot = async () => {
-      try {
-        const snap = await rest.getProject(projectId);
-        if (useProjectStore.getState().projectId !== projectId) return; // 竞态守卫：已切换项目，弃置旧快照
-        useProjectStore.getState().loadSnapshot(snap);
-        useProjectStore.getState().setRefreshError(null);
-      } catch {
-        useProjectStore.getState().setRefreshError("快照刷新失败，最新田野点/行程可能未显示");
-      }
-    };
-
+    // 流内错误由 onError 回调处理，turnRunning 由 error/turn_done 事件与 onClose 负责；
+    // 首见 turn_done 回读项目快照（R06a），send 无需 re-hydrate 消息史（乐观 push + delta 已对齐）。
     turnIdRef.current = turnId;
     setLastTurnId(turnId);
     setRetryable(false);
     setIncomplete(false);
     seenRef.current = new Set();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setBusy(true);
-    try {
-      await streamTurnEvents(projectId, turnId, {
-        signal: ctrl.signal,
-        onEvent: (env: EventEnvelope) => {
-          // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
-          const prev = seenRef.current;
-          seenRef.current = dispatchEvent(env, seenRef.current);
-          if (env.event === "turn_done") {
-            if (seenRef.current !== prev) void refreshSnapshot();
-            setRetryable(true);
-            setIncomplete(env.data.incomplete === true);
-          }
-        },
-        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
-        onClose: () => { setBusy(false); },
-      });
-    } catch (err) {
-      useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
-    } finally {
-      setBusy(false);
-    }
-  }, [projectId, busy]);
+    const gen = ++generationRef.current;   // N10：本次请求代次
+    await streamAndRefresh(turnId, gen, { rehydrateMessages: false });
+  }, [projectId, busy, streamAndRefresh]);
 
   // 领养回合（首页两步创建→跳转接住，轮 4）：不 POST 创建，只订阅该回合事件流。
-  // 回放的 message_delta/tool/turn_done 正常进 store；结束后 re-hydrate 对齐后端
-  // 事实史——回放不含 user 帧（user 消息只落 chat_history），首页首问由覆盖式
-  // hydrate 补齐（与回放的并发竞态由 conversation store 的 turn_done 查重收敛）。
+  // N10：与 send 共用 streamAndRefresh——终态同样回读项目快照（修复 adopt 漏刷致
+  // 「确认按钮为 0、reload 才出现」），并额外 re-hydrate 消息史（回放不含 user 首问）；
+  // 两处回读均带请求代次守卫，切换项目后的旧响应不再写入新页面 store。
   const adopt = useCallback(async (turnId: string) => {
     abortRef.current?.abort();               // StrictMode/重复领养：先断旧流
     turnIdRef.current = turnId;
@@ -130,33 +162,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     setRetryable(false);
     setIncomplete(false);
     seenRef.current = new Set();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setBusy(true);
-    try {
-      await streamTurnEvents(projectId, turnId, {
-        signal: ctrl.signal,
-        onEvent: (env: EventEnvelope) => {
-          seenRef.current = dispatchEvent(env, seenRef.current);
-          if (env.event === "turn_done") {
-            setRetryable(true);
-            setIncomplete(env.data.incomplete === true);
-          }
-        },
-        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
-        onClose: () => { setBusy(false); },
-      });
-    } catch (err) {
-      useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
-    } finally {
-      setBusy(false);
-      // re-hydrate：以 GET /messages 的后端事实为准（含 user 首问）；失败静默——
-      // store 已有回放内容兑底，刷新自愈
-      rest.getMessages(projectId)
-        .then((msgs) => useConversationStore.getState().hydrate(msgs))
-        .catch(() => {});
-    }
-  }, [projectId]);
+    const gen = ++generationRef.current;     // N10：本次请求代次（作废旧流在途回读）
+    await streamAndRefresh(turnId, gen, { rehydrateMessages: true });
+  }, [projectId, streamAndRefresh]);
 
   const cancel = useCallback(async () => {
     abortRef.current?.abort();
