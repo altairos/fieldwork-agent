@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import date, datetime
 from typing import Any
 
 from fieldwork_agent.kernel.models import Envelope, ItemPage, Schedule, SearchItem, ToolError
@@ -134,6 +135,34 @@ _RATE_LIMIT_HINT = (
 )
 
 
+def _today() -> date:
+    """当前日期（单点可 monkeypatch：测试不依赖真实墙钟）。"""
+    return date.today()
+
+
+def _future_date_envelope(value: str, field: str, today: date) -> Envelope | None:
+    """过去日期 → flyai_invalid_date 包络（不启动 CLI）；空/无法解析/未来 → None。"""
+    if not value:
+        return None
+    try:
+        day = datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None                       # 非 ISO 日期交 CLI 判定，避免自造格式规则
+    if day >= today:
+        return None
+    try:
+        suggested = day.replace(year=day.year + 1)
+    except ValueError:                    # 2/29 → 次年无此日
+        suggested = day.replace(year=day.year + 1, day=28)
+    while suggested < today:
+        suggested = suggested.replace(year=suggested.year + 1)
+    return Envelope(ok=False, error=ToolError(
+        code="flyai_invalid_date",
+        message=f"{field}非法：{value} 早于今天（{today.isoformat()}）",
+        hint=(f"实时搜索仅支持今天（{today.isoformat()}）及以后的日期；"
+              f"若计划 {day.month} 月 {day.day} 日出发，请改用 {suggested.isoformat()} 重试")))
+
+
 def _error_envelope(message: str) -> Envelope:
     """把 ``_run_command`` 的错误字符串映射为机器可读错误码。"""
     low = message.lower()
@@ -146,6 +175,11 @@ def _error_envelope(message: str) -> Envelope:
                       "搜索日期无效（入离时间校验失败）：实时搜索仅支持未来日期，"
                       "研究计划中的历史日程不能作为实时搜索日期——请改用未来的可比"
                       "日期重试，并向用户说明价格仅为未来参照")
+    elif "出发日期非法" in message or "invalid date" in low or "date_invalid" in low:
+        code, hint = ("flyai_invalid_date",
+                      "出发日期非法：实时搜索仅支持今天及以后的日期；"
+                      "请把计划中的历史日程换成一个未来的可比日期后重试，"
+                      "并向用户说明价格仅为未来参照")
     elif "not found" in low:
         code, hint = ("flyai_unavailable", "未找到 flyai CLI，请安装后确认其在 PATH 中可执行")
     elif "timed out" in low:
@@ -260,6 +294,11 @@ class FlyAIClient:
     def search_flights(self, origin: str, destination: str, dep_date: str = "",
                        back_date: str = "", sort_type: str = "2", max_price: str = "") -> Envelope:
         """航班搜索 — 跨省/跨国调研大交通。"""
+        today = _today()
+        for value, field in ((dep_date, "出发日期"), (back_date, "返程日期")):
+            bad = _future_date_envelope(value, field, today)
+            if bad is not None:
+                return bad
         args = ["search-flight", "--origin", origin, "--destination", destination]
         if dep_date:
             args.extend(["--dep-date", dep_date])
@@ -275,6 +314,11 @@ class FlyAIClient:
                       back_date: str = "", seat_class: str = "",
                       journey_type: str = "", sort_type: str = "4") -> Envelope:
         """火车搜索 — 高铁/普速备选方案。"""
+        today = _today()
+        for value, field in ((dep_date, "出发日期"), (back_date, "返程日期")):
+            bad = _future_date_envelope(value, field, today)
+            if bad is not None:
+                return bad
         args = ["search-train", "--origin", origin, "--destination", destination]
         if dep_date:
             args.extend(["--dep-date", dep_date])
@@ -296,6 +340,11 @@ class FlyAIClient:
                       hotel_types: str = "", max_price: str = "", sort: str = "price_asc",
                       poi_name: str = "", hotel_stars: str = "") -> Envelope:
         """酒店/民宿搜索 — 按类型、价格、POI 距离筛选住宿。"""
+        today = _today()
+        for value, field in ((check_in, "入住日期"), (check_out, "离店日期")):
+            bad = _future_date_envelope(value, field, today)
+            if bad is not None:
+                return bad
         args = ["search-hotel", "--dest-name", dest_name]
         if check_in:
             args.extend(["--check-in-date", check_in])
@@ -317,6 +366,11 @@ class FlyAIClient:
                                hotel_brands: str = "", max_price: str = "",
                                sort: str = "price_asc") -> Envelope:
         """万豪旗下酒店搜索 — 高端备选。"""
+        today = _today()
+        for value, field in ((check_in, "入住日期"), (check_out, "离店日期")):
+            bad = _future_date_envelope(value, field, today)
+            if bad is not None:
+                return bad
         args = ["search-marriott-hotel", "--dest-name", dest_name]
         if check_in:
             args.extend(["--check-in-date", check_in])

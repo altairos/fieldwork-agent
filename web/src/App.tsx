@@ -262,7 +262,12 @@ function Workspace() {
         </div>
         <main className="flex flex-col bg-paper/40 min-w-0 min-h-0">
           <PhaseBanner />
-          <Timeline />
+          <Timeline
+            onRetry={() => { void turn.retry(); }}
+            canRetry={turn.canRetry}
+            retrying={turn.busy}
+            incomplete={turn.incomplete}
+          />
           <Composer
             turn={turn}
             locked={composerLocked}

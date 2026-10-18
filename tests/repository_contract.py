@@ -98,6 +98,29 @@ class TestContract:
     def test_messages_empty_project(self, repo):
         assert repo.get_messages("p1") == []
 
+    def test_pop_last_message_removes_tail(self, repo):
+        repo.append_message("p1", "user", "提问")
+        repo.append_message("p1", "assistant", "回答")
+        popped = repo.pop_last_message("p1")
+        assert popped["role"] == "assistant" and popped["content"] == "回答"
+        assert [m["content"] for m in repo.get_messages("p1", limit=0)] == ["提问"]
+
+    def test_pop_last_message_role_filter(self, repo):
+        repo.append_message("p1", "user", "问")
+        repo.append_message("p1", "assistant", "答")
+        assert repo.pop_last_message("p1", role="user")["content"] == "问"
+        assert [m["content"] for m in repo.get_messages("p1", limit=0)] == ["答"]
+
+    def test_pop_last_message_none_when_no_match(self, repo):
+        assert repo.pop_last_message("p1") is None
+        repo.append_message("p1", "user", "问")
+        assert repo.pop_last_message("p1", role="assistant") is None
+        assert [m["content"] for m in repo.get_messages("p1", limit=0)] == ["问"]
+
+    def test_pop_last_message_unknown_project(self, repo):
+        with pytest.raises(KeyError):
+            repo.pop_last_message("ghost")
+
     # ---------------------------------------------------------------- 研究上下文
 
     def test_research_context_patch_merges(self, repo):

@@ -33,6 +33,9 @@ interface BudgetItemView {
   people: number | null;
   priced_at: string;
   source_ref: string;
+  amount_low: number | null;
+  amount_high: number | null;
+  basis: string;
 }
 
 interface BudgetView {
@@ -41,6 +44,8 @@ interface BudgetView {
   budget_total: number | null;
   over_budget: boolean;
   coverage: string;
+  total_high: number | null;
+  over_budget_possible: boolean;
   uncovered: string[];
 }
 
@@ -59,6 +64,9 @@ export function toBudget(data: unknown): BudgetView {
       people: numOf(r.people),
       priced_at: strOf(r.priced_at),
       source_ref: strOf(r.source_ref),
+      amount_low: numOf(r.amount_low),
+      amount_high: numOf(r.amount_high),
+      basis: strOf(r.basis),
     };
   });
   return {
@@ -67,6 +75,8 @@ export function toBudget(data: unknown): BudgetView {
     budget_total: numOf(rec.budget_total),
     over_budget: boolOf(rec.over_budget),
     coverage: strOf(rec.coverage),
+    total_high: numOf(rec.total_high),
+    over_budget_possible: boolOf(rec.over_budget_possible),
     uncovered: asArray(rec.uncovered).map((u) => strOf(u)).filter((u) => u !== ""),
   };
 }
@@ -167,8 +177,9 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
   const pct = percent(b.total, b.budget_total);
   const diff =
     b.total !== null && b.budget_total !== null ? Math.abs(b.total - b.budget_total) : null;
-  // 结论色：不完整 → ochre（不给结论）；complete 且超支 → danger；否则 bamboo
-  const tone = !complete ? "ochre" : over ? "danger" : "bamboo";
+  const crossLine = complete && b.over_budget_possible && !over;
+  // 结论色：不完整/跨线 → ochre（不给"预算内"结论）；complete 且超支 → danger；否则 bamboo
+  const tone = !complete || crossLine ? "ochre" : over ? "danger" : "bamboo";
   const barColor = tone === "danger" ? "bg-danger" : tone === "ochre" ? "bg-ochre" : "bg-bamboo";
   const pctColor =
     tone === "danger" ? "text-danger" : tone === "ochre" ? "text-ochre" : "text-bamboo";
@@ -177,6 +188,8 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
     <Chip tone="ochre">预算不完整</Chip>
   ) : over ? (
     <Chip tone="cinnabar">超出预算</Chip>
+  ) : crossLine ? (
+    <Chip tone="ochre">跨预算线</Chip>
   ) : (
     <Chip tone="bamboo">预算内</Chip>
   );
@@ -211,6 +224,11 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
                 style={{ width: `${pct === null ? 0 : Math.min(100, pct)}%` }}
               />
             </div>
+            {b.total_high !== null && (
+              <div className="text-[11px] text-inkfaint mt-1">
+                {`含估算区间，上限约 ${yuan(b.total_high)}`}
+              </div>
+            )}
           </div>
 
           {/* 超支红警：只在 coverage=complete（内核此时才置 over_budget）时给结论 */}
@@ -220,7 +238,13 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
             </Notice>
           )}
           {complete && !over && diff !== null && (
-            <div className="text-[11.5px] text-bamboo">{`低于预算上限 ${yuan(diff)}（报价齐备，可据此判断）`}</div>
+            crossLine ? (
+              <div className="text-[11.5px] text-ochre">
+                {`按下限低于预算 ${yuan(diff)}，按上限（${yuan(b.total_high)}）可能超出，需按区间预留`}
+              </div>
+            ) : (
+              <div className="text-[11.5px] text-bamboo">{`低于预算上限 ${yuan(diff)}（报价齐备，可据此判断）`}</div>
+            )
           )}
 
           {/* 逐条明细（设计板 lines 654-658：`flex justify-between py-1.5 border-b border-hairsoft`） */}
@@ -239,10 +263,21 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
                     {caliber(item) && (
                       <div className="text-[10.5px] text-inkfaint truncate">{caliber(item)}</div>
                     )}
+                    {item.basis && (
+                      <div className="text-[10.5px] text-inkfaint truncate" title={item.basis}>
+                        {item.basis}
+                      </div>
+                    )}
                     <SnapshotDisclosure sourceRef={item.source_ref} />
                   </div>
                   <span className="shrink-0 inline-flex items-baseline gap-1">
-                    <Price value={item.amount} source={item.source || undefined} />
+                    {item.amount_low !== null && item.amount_high !== null ? (
+                      <span className="num text-[12.5px] text-ink">
+                        {`${yuan(item.amount_low)}–${yuan(item.amount_high)}`}
+                      </span>
+                    ) : (
+                      <Price value={item.amount} source={item.source || undefined} />
+                    )}
                     {item.currency && item.currency !== "CNY" && (
                       <Chip tone="neutral">{item.currency}</Chip>
                     )}

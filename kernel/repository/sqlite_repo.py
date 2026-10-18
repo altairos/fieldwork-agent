@@ -478,6 +478,26 @@ class SqliteRepository:
             return messages
         return messages[-limit:]
 
+    def pop_last_message(self, pid: str, role: str | None = None) -> dict | None:
+        """弹出最近一条（可按 role 过滤）：按 id 倒序取一条后 DELETE 并推进 updated_at。"""
+        self._require(pid)
+        sql = "SELECT id, role, content, meta, ts FROM messages WHERE project_id=?"
+        params: list = [pid]
+        if role is not None:
+            sql += " AND role=?"
+            params.append(role)
+        sql += " ORDER BY id DESC LIMIT 1"
+        now = _now()
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(sql, params).fetchone()
+            if row is None:
+                return None
+            conn.execute("DELETE FROM messages WHERE id=?", (row["id"],))
+            conn.execute(
+                "UPDATE projects SET updated_at=? WHERE project_id=?", (now, pid))
+        return {"role": row["role"], "content": row["content"], "ts": row["ts"],
+                "metadata": json.loads(row["meta"])}
+
     # ------------------------------------------------------------------ 田野点与报道人
 
     def _upsert_json_record(self, conn, pid: str, record: dict,

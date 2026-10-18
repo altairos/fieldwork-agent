@@ -435,3 +435,65 @@ describe("useTurn — cancel 复位 conversation store（P2-9）", () => {
     expect(st.messages).toEqual([{ role: "user", content: "帮我排行程" }]);  // 已接受的消息不弹掉
   });
 });
+
+
+// ------------------------------- 重新生成（Task 11）
+
+describe("useTurn — 重新生成", () => {
+  test("retry 成功：POST /turns/t1/retry → 丢末条 assistant → 订阅新回合", async () => {
+    useConversationStore.setState({
+      messages: [{ role: "user", content: "帮我排行程" },
+                 { role: "assistant", content: "残缺回复" }],
+      streamBuffer: "", turnRunning: false, lastUsage: {},
+    });
+    const urls: string[] = [];
+    // 已结束且中断的旧回合：turn_done 置 retryable，incomplete 置中断提示
+    const sseOne = sseResp([
+      'id: 1\nevent: turn_done\n' +
+        'data: {"turn_id":"t1","seq":1,"reply_id":"t1","usage":{},"incomplete":true}\n\n',
+    ]);
+    const sseTwo = sseResp([
+      'id: 1\nevent: turn_done\n' +
+        'data: {"turn_id":"t2","seq":1,"reply_id":"t2","usage":{},"incomplete":false}\n\n',
+    ]);
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      urls.push(u);
+      if (u.endsWith("/retry")) return jsonResp({ turn_id: "t2", status: "running" }, true, 201);
+      // adopt 的 re-hydrate：返回当前 store 史（adopt 的 hydrate 是 fire-and-forget，
+      // 固定返回 [] 会把断言打空）
+      if (u.endsWith("/messages")) return jsonResp(useConversationStore.getState().messages, true, 200);
+      if (u.includes("/turns/t2/events")) return sseTwo.resp;
+      return sseOne.resp;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.adopt("t1"); });
+    expect(result.current.canRetry).toBe(true);
+
+    await act(async () => { await result.current.retry(); });
+    expect(urls.some((u) => u.endsWith("/turns/t1/retry"))).toBe(true);
+    expect(urls.some((u) => u.includes("/turns/t2/events"))).toBe(true);
+    // 残缺 assistant 已丢弃；新回合无 delta → 仅剩 user 消息
+    expect(useConversationStore.getState().messages.map((m) => m.content))
+      .toEqual(["帮我排行程"]);
+    expect(sseTwo.cancel).toHaveBeenCalled();
+  });
+
+  test("retry 被拒（409）→ 如实上屏，不动本地消息", async () => {
+    useConversationStore.setState({
+      messages: [{ role: "user", content: "问" },
+                 { role: "assistant", content: "答" }],
+      streamBuffer: "", turnRunning: false, lastUsage: {},
+    });
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      jsonResp({ detail: "对话末尾不是「用户消息 + 助手回复」" }, false, 409)));
+
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.retry("t1"); });
+    expect(useConversationStore.getState().messages.map((m) => m.content))
+      .toEqual(["问", "答"]);
+    expect(useUiStore.getState().degradedBanner?.code).toBe("retry_failed");
+  });
+});

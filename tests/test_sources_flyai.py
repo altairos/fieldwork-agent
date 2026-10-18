@@ -1,4 +1,5 @@
 """kernel/sources/flyai — 8 原子搜索原语与结果归一化（全部基于 mock，不联网不起子进程）。"""
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -60,6 +61,7 @@ def test_search_hotel_argv_and_envelope(monkeypatch):
 
 def test_search_flights_argv_full_order(monkeypatch):
     """可选参数按旧 tools/flyai_tools.py 的顺序拼装，空值不出现。"""
+    monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 18))
     calls = {}
     def fake_run(args):
         calls["args"] = args
@@ -348,6 +350,8 @@ def test_execute_surfaces_message_key_error(monkeypatch):
     """status!=0 且无 error 键但有 message 键（飞猪对过去日期的真实形态
     CICO_CHECK_PARAM_ERROR）→ 原因进 error.message 并映射 flyai_invalid_date，
     不再吞成兜底文案"flyai 调用失败"让 LLM 无从自救。"""
+    # 前置日期校验会先拦住过去日期；固定今天早于 check_in 以直达 CLI 错误路径
+    monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 1))
     c = FlyAIClient()
     monkeypatch.setattr(c, "_run_command", lambda args: {
         "status": 1, "data": None, "systemMessage": None,
@@ -366,3 +370,58 @@ def test_error_envelope_invalid_date_hint():
     assert env.error is not None
     assert env.error.code == "flyai_invalid_date"
     assert "未来日期" in env.error.hint
+
+# ------------------------------------------- 前置日期校验（Task 7）
+
+
+def test_past_dep_date_rejected_before_cli(monkeypatch):
+    monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 18))
+    called = []
+    client = FlyAIClient()
+    monkeypatch.setattr(client, "_run_command", lambda a: called.append(a) or {"status": 0, "data": {}})
+    env = client.search_trains("昆明", "大理", dep_date="2026-07-15")
+    assert env.ok is False and env.error.code == "flyai_invalid_date"
+    assert "2027-07-15" in env.error.hint
+    assert "今天（2026-10-18）" in env.error.hint
+    assert called == []                                  # 未启动 CLI
+
+
+def test_today_and_future_dates_pass(monkeypatch):
+    monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 18))
+    client = FlyAIClient()
+    monkeypatch.setattr(client, "_run_command",
+                        lambda a: {"status": 0, "data": {"itemList": []}})
+    assert client.search_flights("北京", "大理", dep_date="2026-10-18").ok is True
+    assert client.search_trains("昆明", "大理", dep_date="2026-12-01").ok is True
+
+
+def test_back_date_and_hotel_dates_validated(monkeypatch):
+    monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 18))
+    client = FlyAIClient()
+    monkeypatch.setattr(client, "_run_command",
+                        lambda a: {"status": 0, "data": {"itemList": []}})
+    flights = client.search_flights("北京", "大理", dep_date="2026-11-01",
+                                    back_date="2026-07-01")
+    assert flights.error.code == "flyai_invalid_date" and "返程日期" in flights.error.message
+    hotels = client.search_hotels("大理", check_in="2026-11-01", check_out="2026-10-01")
+    assert hotels.error.code == "flyai_invalid_date" and "离店日期" in hotels.error.message
+    marriott = client.search_marriott_hotels("大理", check_in="2026-07-01")
+    assert marriott.error.code == "flyai_invalid_date"
+
+
+def test_unparseable_date_passes_to_cli(monkeypatch):
+    """非 YYYY-MM-DD（如「7月15日」）不做本地判定，交 CLI 报错并走 _error_envelope。"""
+    monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 18))
+    client = FlyAIClient()
+    monkeypatch.setattr(client, "_run_command",
+                        lambda a: {"status": 0, "data": {"itemList": []}})
+    assert client.search_trains("昆明", "大理", dep_date="7月15日").ok is True
+
+
+def test_departure_date_illegal_maps_to_invalid_date(monkeypatch):
+    client = FlyAIClient()
+    monkeypatch.setattr(client, "_run_command",
+                        lambda a: {"status": 1, "message": "出发日期非法"})
+    env = client.search_trains("昆明", "大理")
+    assert env.ok is False and env.error.code == "flyai_invalid_date"
+    assert "今天" in env.error.hint or "未来" in env.error.hint

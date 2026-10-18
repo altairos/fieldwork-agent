@@ -187,6 +187,16 @@ class JsonRepository:
             for entry in entries:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def _rewrite_chat_lines(self, pid: str, entries: list[dict]) -> None:
+        """整表重写消息史（弹末条用）：先写 tmp 再 os.replace，避免半行。"""
+        path = self._chat_file(pid)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / (path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+
     def _backfill_chat_log(self, pid: str, state: dict) -> None:
         """存量迁移：旧版只把**溢出**部分写进 jsonl，最近若干条留在 state 窗口里。
 
@@ -319,6 +329,27 @@ class JsonRepository:
         if limit <= 0:
             return messages
         return messages[-limit:]
+
+    def pop_last_message(self, pid: str, role: str | None = None) -> dict | None:
+        """弹出最近一条（可按 role 过滤）：jsonl 整表重写 + state 窗口同步弹出。"""
+        state = self._load(pid)
+        self._backfill_chat_log(pid, state)
+        entries = self._read_chat_log(pid)
+        index = next((i for i in range(len(entries) - 1, -1, -1)
+                      if role is None or entries[i].get("role") == role), None)
+        if index is None:
+            return None
+        popped = entries.pop(index)
+        self._rewrite_chat_lines(pid, entries)
+        window = state["dialogue_context"]
+        key = (popped.get("ts"), popped.get("role"), popped.get("content"))
+        for i in range(len(window) - 1, -1, -1):
+            w = window[i]
+            if (w.get("ts"), w.get("role"), w.get("content")) == key:
+                del window[i]
+                break
+        self._save(pid, state)
+        return popped
 
     # ------------------------------------------------------------------ 田野点与报道人
 

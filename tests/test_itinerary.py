@@ -120,24 +120,68 @@ def test_buffer_days_formula():
 
 
 def test_budget_items_formula_and_over_budget_flag():
-    """R2 口径：交通=单价×人数、住宿=晚价×夜数×房间数、市内与餐饮=人均日标准×人数×天数（估算）。"""
+    """R2 口径：交通=单价×人数、住宿=晚价×夜数×房间数、餐饮/市内交通=表值区间×人数×天数。"""
     env = compose_itinerary("昆明", ["大理"], "2026-11-01", 30, 20000, client=StubClient())
     b = env.data.budget
     by_name = {i.name: i for i in b.items}
     assert by_name["交通（昆明→大理）"].amount == 350.0       # 去程腿
-    assert by_name["交通（大理→昆明）"].amount == 350.0       # 返程腿，两条腿合计=单价×人数×2
+    assert by_name["交通（大理→昆明）"].amount == 350.0       # 返程腿
     assert by_name["住宿（大理）"].amount == 150.0 * 29       # 150/晚 × 29 夜 × 1 间
-    meal = by_name["市内与餐饮"]
-    assert meal.amount == 150.0 * 1 * 30                     # 可调人均日标准×人数×天数
-    assert meal.source == "estimate" and meal.unit == "人均每日×人数×天数"
+    food = by_name["餐饮（估算）"]
+    assert food.amount == 18.0 * 1 * 30                      # village+mixed 下沿
+    assert food.amount_low == 18.0 * 30 and food.amount_high == 30.0 * 30
+    assert food.source == "estimate" and food.unit == "元/人·天×人数×天数"
+    assert "默认口径" in food.basis and "14.7" in food.basis
+    local = by_name["市内交通（估算）"]
+    assert local.amount == 0.0 and local.amount_high == 5.0 * 30
     assert all(i.currency == "CNY" for i in b.items)
     assert all(i.source in ("cheapest", "estimate") for i in b.items)
-    assert b.total == 700.0 + 4350.0 + 4500.0
-    assert b.over_budget is False and b.coverage == "complete"
+    assert b.total == 700.0 + 4350.0 + 540.0 + 0.0
+    assert b.total_high == 700.0 + 4350.0 + 900.0 + 150.0
+    assert b.over_budget is False and b.over_budget_possible is False
+    assert b.coverage == "complete"
 
     tight = compose_itinerary("昆明", ["大理"], "2026-11-01", 30, 1000, client=StubClient())
     assert tight.data.budget.budget_total == 1000
-    assert tight.data.budget.over_budget is True  # complete 时才允许下超支结论
+    assert tight.data.budget.over_budget is True          # 下沿已超
+    assert tight.data.budget.over_budget_possible is True
+
+
+def test_explicit_meal_override_replaces_meal_range_only():
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
+                            meals_local_per_person_day=30, client=StubClient())
+    by_name = {i.name: i for i in env.data.budget.items}
+    food = by_name["餐饮（估算）"]
+    assert food.amount_low == food.amount_high == 30.0 * 10
+    assert "人工指定" in food.basis
+    # override 只作用于餐标：市内交通仍按表值区间（village 0-5 元/人·天）
+    assert by_name["市内交通（估算）"].amount_high == 5.0 * 10
+
+
+def test_settlement_and_board_mode_shift_amounts():
+    cheap = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
+                              settlement_type="village", board_mode="self_cook",
+                              client=StubClient())
+    dear = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
+                             settlement_type="city", board_mode="eat_out",
+                             client=StubClient())
+    a = next(i for i in cheap.data.budget.items if i.name == "餐饮（估算）")
+    b = next(i for i in dear.data.budget.items if i.name == "餐饮（估算）")
+    assert b.amount_low > a.amount_high
+    assert "默认口径" not in b.basis
+
+
+def test_local_transport_can_be_excluded():
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
+                            include_local_transport=False, client=StubClient())
+    assert not any(i.name == "市内交通（估算）" for i in env.data.budget.items)
+
+
+def test_invalid_settlement_rejected():
+    env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000,
+                            settlement_type="hamlet", client=StubClient())
+    assert env.ok is False and env.error.code == "bad_input"
+    assert "settlement_type" in env.error.message
 
 
 def test_coverage_partial_when_transport_unpriced():
@@ -175,7 +219,7 @@ def test_budget_scales_with_researcher_count():
     env = compose_itinerary("昆明", ["大理"], "2026-11-01", 10, 20000, 3, client=StubClient())
     by_name = {i.name: i.amount for i in env.data.budget.items}
     assert by_name["交通（昆明→大理）"] == 350.0 * 3          # 交通按人数计
-    assert by_name["市内与餐饮"] == 150.0 * 3 * 10            # R2：估算条目同样按人数×天数的可解释口径
+    assert by_name["餐饮（估算）"] == 18.0 * 3 * 10            # village+mixed 下沿×人数×天数
 
 
 def test_stay_prefers_cheapest_and_breaks_tie_for_guesthouse():

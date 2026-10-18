@@ -63,7 +63,7 @@ describe("BudgetCard coverage", () => {
 // 补充断言：注册表 key 必须与真实工具名全等（不臆造、不漏映射）。
 // 名单分两组：内核名单取自实测 `fieldwork_agent.kernel.CAPABILITIES()`
 // （kernel/registry.py + kernel/sources/flyai.py + kernel/aggregation/* +
-// kernel/documents/*，14 项，与 mcp_server/mapping.py TOOL_GROUPS 键集一致）；
+// kernel/documents/*，15 项，与 mcp_server/mapping.py TOOL_GROUPS 键集一致）；
 // 宿主层状态工具（轮 2 症状②）由 web_host/agent/state_tools.py 每回合注入
 // loop，不经内核 registry，是注册表唯一超出内核键集的合法例外。
 // ──────────────────────────────────────────────────────────────────────────
@@ -71,6 +71,7 @@ const KERNEL_TOOLS = [
   "profile_field_site",
   "compose_itinerary",
   "analyze_fieldwork_window",
+  "estimate_living_cost",
   "compose_proposal",
   "compose_interview_guide",
   "suggest_informants",
@@ -88,7 +89,7 @@ const KERNEL_TOOLS = [
 const HOST_STATE_TOOLS = ["update_research_context"];
 
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 内核 14 能力名 + 宿主状态工具（无臆造 key）", () => {
+  test("注册表键集 = 内核 15 能力名 + 宿主状态工具（无臆造 key）", () => {
     expect(Object.keys(toolCardRegistry).sort()).toEqual(
       [...KERNEL_TOOLS, ...HOST_STATE_TOOLS].sort(),
     );
@@ -384,5 +385,56 @@ describe("ProposalCard 下载入口（终审#1）", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:card-docx");
     useExportFormatStore.setState({ format: "md" });
     vi.unstubAllGlobals();
+  });
+});
+
+describe("SearchResultCard 失败原因透传", () => {
+  test("error.hint 优先于通用无供给文案", () => {
+    render(<TrainCard data={null} error={{
+      code: "flyai_invalid_date",
+      message: "出发日期非法",
+      hint: "实时搜索仅支持今天（2026-10-18）及以后的日期；请改用 2027-07-15 重试",
+    }} />);
+    expect(screen.getByText(/仅支持今天（2026-10-18）及以后/)).toBeInTheDocument();
+    expect(screen.queryByText(/本次查询无可用供给/)).not.toBeInTheDocument();
+  });
+
+  test("只有 message 时展示 message", () => {
+    render(<TrainCard data={null} error={{ code: "flyai_error", message: "服务暂不可用" }} />);
+    expect(screen.getByText(/服务暂不可用/)).toBeInTheDocument();
+  });
+
+  test("无 error 时保持原文案", () => {
+    render(<TrainCard data={null} />);
+    expect(screen.getByText(/本次查询无可用供给/)).toBeInTheDocument();
+  });
+});
+
+describe("BudgetCard 估算区间", () => {
+  const RANGE_BUDGET = {
+    items: [
+      { name: "住宿（大理）", amount: 4350, source: "cheapest", currency: "CNY",
+        unit: "每晚价×夜数×房间数", quantity: 29, people: 1, priced_at: "", source_ref: "" },
+      { name: "餐饮（估算）", amount: 540, amount_low: 540, amount_high: 900,
+        source: "estimate", currency: "CNY", unit: "元/人·天×人数×天数",
+        quantity: 30, people: 1, priced_at: "", basis: "村内混合；云南农村人均食品烟酒 5,351 元/年" },
+    ],
+    total: 4890, total_high: 5250, budget_total: 20000,
+    over_budget: false, over_budget_possible: false,
+    coverage: "complete", uncovered: [],
+  };
+
+  test("条目渲染区间与口径", () => {
+    render(<BudgetCard data={RANGE_BUDGET} />);
+    expect(screen.getByText("¥540–¥900")).toBeInTheDocument();
+    expect(screen.getByText(/云南农村人均食品烟酒/)).toBeInTheDocument();
+    expect(screen.getByText(/上限约 ¥5250/)).toBeInTheDocument();
+  });
+
+  test("区间跨预算线显示「跨预算线」且不显示「预算内」", () => {
+    render(<BudgetCard data={{ ...RANGE_BUDGET, budget_total: 5000, over_budget_possible: true }} />);
+    expect(screen.getByText("跨预算线")).toBeInTheDocument();
+    expect(screen.queryByText("预算内")).not.toBeInTheDocument();
+    expect(screen.getByText(/按上限.*可能超出/)).toBeInTheDocument();
   });
 });

@@ -24,6 +24,7 @@ from typing import Any
 
 from fieldwork_agent.kernel.aggregation.itinerary import compose_itinerary
 from fieldwork_agent.kernel.aggregation.last_mile import plan_last_mile
+from fieldwork_agent.kernel.aggregation.living_cost import estimate_living_cost
 from fieldwork_agent.kernel.aggregation.site_profile import profile_field_site
 from fieldwork_agent.kernel.aggregation.window import analyze_fieldwork_window
 from fieldwork_agent.kernel.documents.informants import suggest_informants
@@ -34,6 +35,7 @@ from fieldwork_agent.kernel.documents.proposal import (
 )
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
+from fieldwork_agent.kernel.guidance.costs import COST_GUIDANCE
 from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.llm import LLMClient
@@ -88,6 +90,8 @@ _CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str | tuple[str, ...]]
     "plan_last_mile": (plan_last_mile, "amap_client"),
     "compose_itinerary": (compose_itinerary, "client"),
     "analyze_fieldwork_window": (analyze_fieldwork_window, ("client", "llm")),
+    # 纯函数能力：无外部客户端注入（inject 为空串 → dispatch 不注入任何 kwargs）
+    "estimate_living_cost": (estimate_living_cost, ""),
     "compose_proposal": (proposal_handler, "llm"),
     "compose_interview_guide": (guide_handler, "llm"),
     "suggest_informants": (suggest_informants, "llm"),
@@ -129,6 +133,12 @@ _TOOL_GUIDANCE = (
     "开题/申报等）仅用于校准方案体例与严谨度，不提供留学申请咨询：不问标化成绩、"
     "GPA、写作样本、择校与申请策略；用户提起时温和拉回研究设计。"
 )
+
+
+def _system_prompt(phase: str, snapshot: str) -> str:
+    """CLI 回合 system（与 web_host/agent/context.py 同序拼装）。"""
+    return "\n\n".join([phases.time_anchor(), phases.phase_prompt(phase),
+                        COST_GUIDANCE, _TOOL_GUIDANCE, snapshot])
 
 
 def _to_dict(data: Any) -> dict:
@@ -243,8 +253,7 @@ class FieldAgent:
 
         phase = self.repo.get_phase(pid)
         if self.llm is not None:
-            system = "\n\n".join([phases.phase_prompt(phase), _TOOL_GUIDANCE,
-                                  self._snapshot(pid)])
+            system = _system_prompt(phase, self._snapshot(pid))
             messages = [{"role": "system", "content": system}]
             messages += [{"role": m["role"], "content": m["content"]}
                          for m in history if m.get("role") in ("user", "assistant")]

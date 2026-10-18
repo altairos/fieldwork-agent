@@ -17,8 +17,9 @@
   住宿总夜数 = ``duration_days - 1``，按目的地均分（余数分给靠前的点）；
 - 预算条目口径（审阅意见 R2，金额来源全部标注 ``source``）：交通 = 所选最低价 × 人数
   （逐腿计，多目的地不低估）；住宿 = 每晚最低价 × 该点夜数 × 房间数（默认 2 人/间
-  假设，``rooms`` 可调）；``市内与餐饮`` = 人均日标准(``meals_local_per_person_day``，
-  默认 150) × 人数 × 天数（estimate，不再按总预算百分比）。每条携带
+  假设，``rooms`` 可调）；餐饮与市内交通 = 按「聚落类型 × 就餐方式」查表得到的
+  人均日区间 × 人数 × 天数（estimate，见 ``living_cost.py``），不再有单点日标准；
+  每条携带
   ``currency/unit/quantity/people/priced_at/source_ref`` 可复核口径；
 - 快照回链（R08）：预算条目 ``source_ref`` 携带规格键（``@live:工具:参数``，由
   ``live_flight_ref`` 等纯函数生成）；宿主轮末以真实快照引用替换（web_host loop
@@ -46,6 +47,11 @@ from fieldwork_agent.kernel.aggregation.amap_refs import (
     live_geocode_ref,
     live_transit_ref,
 )
+from fieldwork_agent.kernel.aggregation.living_cost import (
+    BOARD_MODES,
+    SETTLEMENT_TYPES,
+    estimate_living_cost,
+)
 from fieldwork_agent.kernel.models import (
     BudgetBreakdown,
     BudgetItem,
@@ -61,7 +67,7 @@ from fieldwork_agent.kernel.models import (
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # 唯一的日期格式：所有日期都由 datetime + timedelta 产出，再用它格式化
 DATE_FMT = "%Y-%m-%d"
@@ -73,8 +79,9 @@ RHYTHM_RATIOS: list[tuple[str, float, str]] = [
     ("补充期", 0.20, "补访核验、材料归档与离场前回访"),
 ]
 
-# 市内交通与餐饮估算的人均日标准（元/人·天，可由宿主调整；R2：不再按总预算百分比）
-MEALS_PER_PERSON_DAY_DEFAULT = 150.0
+# 默认生活成本口径：村内混合（自炊+搭伙）；表值见 living_cost.FOOD_RANGE
+DEFAULT_SETTLEMENT = "village"
+DEFAULT_BOARD_MODE = "mixed"
 
 # 单点住宿超过该夜数即视为长住：日价只能作估算线索（R2/R6）
 LONG_STAY_THRESHOLD = 14
@@ -93,7 +100,14 @@ class ComposeItineraryArgs(BaseModel):
     budget_total: float
     researcher_count: int = 1
     rooms: int = 0  # 0 = 按 2 人/间假设自动推导
-    meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT
+    settlement_type: str | None = Field(
+        default=None, description="聚落类型 village/town/county/city；驻村通常 village")
+    board_mode: str | None = Field(
+        default=None, description="就餐方式 self_cook/shared_meal/mixed/eat_out")
+    include_local_transport: bool = Field(
+        default=True, description="是否把市内交通作为独立估算条目")
+    meals_local_per_person_day: float | None = Field(
+        default=None, description="人工指定人均日餐标（元/人·天）；不填则按聚落与就餐方式查表")
 
 
 # ---------------------------------------------------------------- 内部工具
@@ -127,7 +141,8 @@ def _error(code: str, message: str, hint: str) -> Envelope:
 
 
 def _validate(departure: str, destinations: list[str], duration_days: int,
-              budget_total: float, researcher_count: int) -> Envelope | None:
+              budget_total: float, researcher_count: int,
+              settlement_type: str = "", board_mode: str = "") -> Envelope | None:
     """入参校验：命中即返回 bad_input 错误包络，否则 None。"""
     problems: list[str] = []
     if not departure or not departure.strip():
@@ -140,6 +155,10 @@ def _validate(departure: str, destinations: list[str], duration_days: int,
         problems.append("budget_total 必须 > 0")
     if researcher_count < 1:
         problems.append("researcher_count 必须 ≥ 1")
+    if settlement_type and settlement_type not in SETTLEMENT_TYPES:
+        problems.append(f"settlement_type 必须是 {'/'.join(SETTLEMENT_TYPES)} 之一")
+    if board_mode and board_mode not in BOARD_MODES:
+        problems.append(f"board_mode 必须是 {'/'.join(BOARD_MODES)} 之一")
     if not problems:
         return None
     return _error("bad_input", "；".join(problems),
@@ -290,7 +309,10 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
 
 def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       duration_days: int, budget_total: float, researcher_count: int = 1,
-                      rooms: int = 0, meals_local_per_person_day: float = MEALS_PER_PERSON_DAY_DEFAULT,
+                      rooms: int = 0, settlement_type: str | None = None,
+                      board_mode: str | None = None,
+                      include_local_transport: bool = True,
+                      meals_local_per_person_day: float | None = None,
                       *, client: FlyAIClient | None = None,
                       amap_client: AMapClient | None = None) -> Envelope:
     """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与可复核预算（日期只用 timedelta）。"""
@@ -298,7 +320,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         client = FlyAIClient()
     if amap_client is None:
         amap_client = AMapClient()  # 与 client 对称自建；无 Key 时首调即短路停用接驳
-    bad = _validate(departure, destinations, duration_days, budget_total, researcher_count)
+    bad = _validate(departure, destinations, duration_days, budget_total,
+                    researcher_count, settlement_type or "", board_mode or "")
     if bad is not None:
         return bad
     try:
@@ -465,11 +488,38 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                                     if stay["chosen"] else ""))
         else:
             uncovered.append(f"住宿（{stay['dest']}）")
-    meal_amount = round(meals_local_per_person_day * researcher_count * duration_days, 2)
-    items.append(BudgetItem(name="市内与餐饮", amount=meal_amount, source="estimate",
-                            unit="人均每日×人数×天数", quantity=float(duration_days),
-                            people=researcher_count))
+    # 生活成本（表驱动区间）：单一装配路径，meal override 只替换餐饮金额；
+    # 未指定口径时按默认村内混合并在 basis 前缀标注
+    st = settlement_type or DEFAULT_SETTLEMENT
+    bm = board_mode or DEFAULT_BOARD_MODE
+    living = estimate_living_cost(settlement_type=st, board_mode=bm,
+                                  days=duration_days, people=researcher_count,
+                                  include_local_transport=include_local_transport)
+    data = living.data if isinstance(living.data, dict) else {}
+    default_note = ("默认口径（调用方未指定聚落类型/就餐方式）；"
+                    if not (settlement_type and board_mode) else "")
+    basis = f"{default_note}{data.get('caliber', '')}；{data.get('basis', '')}"
+    for entry in data.get("items", []):
+        if entry["name"] == "餐饮" and meals_local_per_person_day is not None:
+            amount = round(float(meals_local_per_person_day)
+                           * researcher_count * duration_days, 2)
+            items.append(BudgetItem(
+                name="餐饮（估算）", amount=amount,
+                amount_low=amount, amount_high=amount, source="estimate",
+                unit=entry["unit"], quantity=float(duration_days),
+                people=researcher_count,
+                basis=(f"人工指定人均日标准 {meals_local_per_person_day} 元/人·天；"
+                       f"{default_note}{data.get('caliber', '')}")))
+            continue
+        items.append(BudgetItem(
+            name=f"{entry['name']}（估算）", amount=entry["amount_low"],
+            amount_low=entry["amount_low"], amount_high=entry["amount_high"],
+            source="estimate", unit=entry["unit"],
+            quantity=float(duration_days), people=researcher_count,
+            basis=basis))
     total = round(sum(i.amount for i in items), 2)
+    total_high = round(sum(i.amount_high if i.amount_high is not None else i.amount
+                           for i in items), 2)
     # coverage：全部预期报价可得=complete；部分可得=partial；一条都没有=unknown
     if not uncovered:
         coverage = "complete"
@@ -477,9 +527,11 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         coverage = "partial"
     else:
         coverage = "unknown"
-    budget = BudgetBreakdown(items=items, total=total, budget_total=budget_total,
-                             over_budget=coverage == "complete" and total > budget_total,
-                             coverage=coverage, uncovered=uncovered)
+    budget = BudgetBreakdown(
+        items=items, total=total, total_high=total_high, budget_total=budget_total,
+        over_budget=coverage == "complete" and total > budget_total,
+        over_budget_possible=coverage == "complete" and total_high > budget_total,
+        coverage=coverage, uncovered=uncovered)
 
     # 6) 备选：由已抓到的未选交通候选汇成（零额外调用）
     alternatives: list[dict[str, Any]] = [
@@ -503,7 +555,11 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
             "departure": departure, "destinations": list(destinations),
             "start_date": start_date, "duration_days": duration_days,
             "budget_total": budget_total, "researcher_count": researcher_count,
-            "rooms": rooms_eff}),
+            "rooms": rooms_eff,
+            "settlement_type": settlement_type or DEFAULT_SETTLEMENT,
+            "board_mode": board_mode or DEFAULT_BOARD_MODE,
+            "include_local_transport": include_local_transport,
+            }),
     )
     return Envelope(ok=True, data=plan, degraded="；".join(notes) if notes else None)
 

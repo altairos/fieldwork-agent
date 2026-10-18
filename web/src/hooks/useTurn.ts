@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { rest, ApiError, isAppTokenError } from "../api/rest";
+import { rest, ApiError, isAppTokenError, apiDetail } from "../api/rest";
 import { streamTurnEvents } from "../api/sse";
 import { dispatchEvent } from "../lib/dispatch";
 import { useConversationStore } from "../stores/conversation";
@@ -18,6 +18,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [keyMissing, setKeyMissing] = useState(false);
+  const [lastTurnId, setLastTurnId] = useState<string | null>(null);
+  const [retryable, setRetryable] = useState(false);
+  const [incomplete, setIncomplete] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const turnIdRef = useRef<string | null>(null);
   const seenRef = useRef<Set<number>>(new Set());
@@ -86,6 +89,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     };
 
     turnIdRef.current = turnId;
+    setLastTurnId(turnId);
+    setRetryable(false);
+    setIncomplete(false);
     seenRef.current = new Set();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -97,7 +103,11 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
           const prev = seenRef.current;
           seenRef.current = dispatchEvent(env, seenRef.current);
-          if (env.event === "turn_done" && seenRef.current !== prev) void refreshSnapshot();
+          if (env.event === "turn_done") {
+            if (seenRef.current !== prev) void refreshSnapshot();
+            setRetryable(true);
+            setIncomplete(env.data.incomplete === true);
+          }
         },
         onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
         onClose: () => { setBusy(false); },
@@ -116,6 +126,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   const adopt = useCallback(async (turnId: string) => {
     abortRef.current?.abort();               // StrictMode/重复领养：先断旧流
     turnIdRef.current = turnId;
+    setLastTurnId(turnId);
+    setRetryable(false);
+    setIncomplete(false);
     seenRef.current = new Set();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -123,7 +136,13 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     try {
       await streamTurnEvents(projectId, turnId, {
         signal: ctrl.signal,
-        onEvent: (env: EventEnvelope) => { seenRef.current = dispatchEvent(env, seenRef.current); },
+        onEvent: (env: EventEnvelope) => {
+          seenRef.current = dispatchEvent(env, seenRef.current);
+          if (env.event === "turn_done") {
+            setRetryable(true);
+            setIncomplete(env.data.incomplete === true);
+          }
+        },
         onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
         onClose: () => { setBusy(false); },
       });
@@ -145,7 +164,49 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     // P2-9：abort 断流收不到终态事件，须主动复位流式态（残缺回复丢弃，user 消息保留）
     useConversationStore.getState().cancelTurn();
     setBusy(false);
+    setRetryable(false);
+    setLastTurnId(null);
+    setIncomplete(false);
   }, [projectId]);
 
-  return { send, adopt, cancel, busy, conflict, keyMissing };
+  // 重新生成：只对「本会话刚结束的回合」开放（lastTurnId 由 send/adopt 写入）；
+  // 必须先等 POST 成功再丢本地 assistant——失败时历史保持原样。
+  const retry = useCallback(async (turnId?: string) => {
+    const target = turnId ?? lastTurnId;
+    if (!target || busy) return;
+    setKeyMissing(false);
+    setRetryable(false);
+    try {
+      const created = await rest.retryTurn(projectId, target);
+      useConversationStore.getState().dropLastAssistant();
+      useConversationStore.getState().beginTurn();
+      setIncomplete(false);
+      await adopt(created.turn_id);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
+      else if (isAppTokenError(err)) {
+        useUiStore.getState().applyEvent({
+          event: "error", code: "send_failed",
+          message: "访问令牌缺失或已失效，重新生成被拒绝",
+          hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+        });
+        onAuthErrorRef.current?.();
+      } else {
+        const detail = err instanceof ApiError ? apiDetail(err) : null;
+        useUiStore.getState().applyEvent({
+          event: "error", code: "retry_failed",
+          message: detail ?? (err instanceof ApiError && err.status === 409
+            ? "无法重新生成：对话末尾不是「用户消息 + 助手回复」"
+            : String(err)),
+          hint: "请等当前回合结束，或直接重新发送这条问题",
+        });
+      }
+    }
+  }, [projectId, busy, lastTurnId, adopt]);
+
+  return {
+    send, adopt, cancel, retry, busy, conflict, keyMissing,
+    canRetry: retryable && lastTurnId !== null && !busy,
+    incomplete,
+  };
 }

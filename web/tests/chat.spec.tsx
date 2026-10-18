@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "vitest";
+import { describe, expect, test, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { Timeline } from "../src/components/chat/Timeline";
 import { ToolActivityStrip } from "../src/components/chat/ToolActivityStrip";
@@ -514,3 +514,23 @@ describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
     expect(screen.getByText(/尚无田野点|喜洲/)).toBeInTheDocument();
   });
 });
+
+
+// ------------------------------- Timeline 重新生成（Task 11）
+
+describe("Timeline — 重新生成", () => {
+  test("中断提示 + 按钮点击回调", () => {
+    const onRetry = vi.fn();
+    render(<Timeline onRetry={onRetry} canRetry incomplete />);
+    expect(screen.getByText(/本轮生成中断/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新生成" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  test("无中断无按钮", () => {
+    render(<Timeline />);
+    expect(screen.queryByRole("button", { name: "重新生成" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/本轮生成中断/)).not.toBeInTheDocument();
+  });
+});
+

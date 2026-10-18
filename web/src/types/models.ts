@@ -87,6 +87,9 @@ export interface BudgetItem {
   people: number;
   priced_at: string;
   source_ref: string;
+  amount_low?: number | null;
+  amount_high?: number | null;
+  basis?: string;
 }
 
 /**
@@ -101,6 +104,8 @@ export interface BudgetBreakdown {
   over_budget: boolean;
   coverage: string;
   uncovered: string[];
+  total_high?: number | null;
+  over_budget_possible?: boolean;
 }
 
 /** 多目的地行程方案。 */

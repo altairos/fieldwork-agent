@@ -17,6 +17,7 @@ TOOL_GROUPS: dict[str, str] = {
     "compose_itinerary": "aggregation",
     "analyze_fieldwork_window": "aggregation",
     "plan_last_mile": "aggregation",
+    "estimate_living_cost": "aggregation",
     "compose_proposal": "document",
     "compose_interview_guide": "document",
     "suggest_informants": "document",

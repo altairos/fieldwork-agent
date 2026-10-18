@@ -9,6 +9,7 @@
   （设计规格 §3.3：阶段推进判定不得由 LLM 宣布，防幻觉推进）。
 """
 
+from datetime import date
 from typing import Any
 
 from fieldwork_agent.kernel import assets
@@ -177,3 +178,15 @@ def check_advance(
         return AdvanceResult(can_advance=False, to_phase=None,
                              missing_fields=["proposal_confirmation"])
     return AdvanceResult(can_advance=True, to_phase=nxt, missing_fields=[])
+
+
+_WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def time_anchor(today: date | None = None) -> str:
+    """当前日期锚点（system 最前段）：模型只有知道「今天」才不会给过去日期。"""
+    day = today or date.today()
+    return (f"今天是 {day.isoformat()}（{_WEEKDAYS[day.weekday()]}）。"
+            "行程、机票/火车/酒店搜索一律从今天起算：出发日期与入住/离店日期必须是"
+            "今天或之后的日期；计划里的历史日程不能当作实时搜索日期。过去日期会被"
+            "拒绝并返回 flyai_invalid_date，请改用未来日期重试并向用户说明。")

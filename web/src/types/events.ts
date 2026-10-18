@@ -53,6 +53,8 @@ export interface TurnDone {
   snapshot_ids?: string[];
   /** 轮末抽取的快捷作答选项（[[options]] 标记，B 节问题 4；无标记/旧事件缺省）。 */
   quick_replies?: string[];
+  /** 回合未收敛出正文（前导语/触顶/收敛失败）→ 前端展示中断提示与重新生成。 */
+  incomplete?: boolean;
 }
 
 /** 错误事件（带下一步建议 hint）。 */

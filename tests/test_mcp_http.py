@@ -22,7 +22,7 @@ pytest.importorskip("mcp", reason="HTTP 入口依赖 mcp SDK（pip install '.[mc
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.mcp_server import dispatch
 
-EXPECTED_TOOLS = 30   # 21 能力（含 amap 六原语 + plan_last_mile）+ 9 状态（与 test_mcp_server_contract.EXPECTED 同源对齐）
+EXPECTED_TOOLS = 31   # 22 能力（含 amap 六原语 + plan_last_mile + estimate_living_cost）+ 9 状态（与 test_mcp_server_contract.EXPECTED 同源对齐）
 
 HEADERS = {
     "Content-Type": "application/json",

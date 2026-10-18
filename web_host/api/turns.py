@@ -200,3 +200,38 @@ async def cancel_turn(project_id: str, turn_id: str, request: Request,
         raise HTTPException(404, "回合不存在")
     tm.cancel(project_id, turn_id)
     return {"turn_id": turn_id, "status": handle.status}
+
+
+@router.post("/projects/{project_id}/turns/{turn_id}/retry", status_code=201)
+async def retry_turn(project_id: str, turn_id: str, request: Request,
+                     background: BackgroundTasks,
+                     owner: str | None = Depends(owner_from_request)):
+    """重新生成：弹出末条 assistant 与 user，以同一文本新建回合。
+
+    只允许终态回合且对话末尾必须是 [user, assistant]——先校验后弹出，
+    任何一步失败都不改历史（否则弹完发现不可重试就丢消息）。
+    """
+    repo = get_repo(request)
+    checked_owned_project(project_id, repo, owner)
+    checked_turn_id(turn_id)
+    tm = get_turn_manager(request)
+    handle = tm.get_turn(project_id, turn_id)
+    if handle is None:
+        raise HTTPException(404, "回合不存在")
+    if handle.status not in TERMINAL_STATUSES:
+        raise HTTPException(409, "该回合仍在执行，无法重新生成")
+    if tm.is_writing(project_id):
+        raise HTTPException(409, "该项目有正在执行的回合")
+    tail = repo.get_messages(project_id, limit=2)
+    if len(tail) != 2 or tail[0]["role"] != "user" or tail[1]["role"] != "assistant":
+        raise HTTPException(409, detail={
+            "code": "retry_not_applicable",
+            "message": "对话末尾不是「用户消息 + 助手回复」，无法重新生成",
+        })
+    llm, flyai, amap = _resolve_clients(request)
+    repo.pop_last_message(project_id, role="assistant")
+    text = repo.pop_last_message(project_id, role="user")["content"]
+    turn = tm.create_turn(project_id)
+    background.add_task(_execute_turn, request.app, project_id,
+                        turn.turn_id, text, llm, flyai, amap)
+    return {"turn_id": turn.turn_id, "status": turn.status}

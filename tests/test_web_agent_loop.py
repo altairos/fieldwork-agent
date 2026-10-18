@@ -1081,6 +1081,7 @@ def test_turn_done_and_meta_carry_finish_reason(env):
     done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
                 if e.event == "turn_done")
     assert done.data["finish_reason"] == "stop"
+    assert done.data["incomplete"] is False
     assistant = next(m for m in repo.get_messages("p1") if m["role"] == "assistant")
     assert assistant["metadata"]["finish_reason"] == "stop"
 
@@ -1114,10 +1115,44 @@ def test_length_truncated_reply_continues_and_merges(env):
     assert done.data["finish_reason"] == "stop"      # 续写后的最终终止
 
 
-def test_half_sentence_stop_triggers_continuation(env):
-    """生产实录场景：finish_reason=stop 但回复停在「先问最实际的：」——
-    服务端异常终止。非空回复以未完标点（：，、；—…及开引号）结尾同样
-    触发一次续写。"""
+def test_preamble_and_truncation_rules():
+    from fieldwork_agent.web_host.agent.loop import _looks_like_preamble, _looks_truncated
+
+    assert _looks_like_preamble("先问最实际的：")                       # 结尾冒号
+    assert _looks_like_preamble("我这就把信息写入项目状态")              # 承诺词 + 无句号
+    assert not _looks_like_preamble("这是完整回答。")
+    assert not _looks_like_preamble("好的。")
+    # 冒号不再算「截断」（前导语走带工具重问，而非 tools=None 续写）
+    assert _looks_truncated("先问最实际的：", "stop") is False
+    assert _looks_truncated("价格约 ¥65×", "stop") is True
+    assert _looks_truncated("完整回答。", "length") is True
+
+
+def test_preamble_twice_falls_back_and_marks_incomplete(env):
+    """连续两次前导语：不再重问，交收敛块；收敛仍无正文 → turn_done.incomplete=True。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我这就去查："},
+         {"content": "我这就去查：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],
+        [{"delta": "马上开始："},
+         {"content": "马上开始：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],
+        [{"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+    assert len(llm.calls) == 3                    # 主循环 2 次 + 收敛 1 次
+
+
+def test_colon_preamble_retries_with_tools(env):
+    """生产实录场景：finish_reason=stop 且回复停在「先问最实际的：」——
+    这是前导语而非最终回答：带工具重问一次（不同于 length 的 tools=None 续写），
+    两轮文本拼接为完整回复。"""
     repo, tm = env
     llm = FakeLLM([
         [{"delta": "先问最实际的："},
@@ -1130,10 +1165,16 @@ def test_half_sentence_stop_triggers_continuation(env):
     turn = tm.create_turn("p1")
     from fieldwork_agent.web_host.agent.loop import run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
-    deltas = "".join(e.data["text"] for e in tm.replay("p1", turn.turn_id, after_seq=0)
-                     if e.event == "message_delta")
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
     assert deltas == "先问最实际的：经费来源是自费还是课题经费？"
     assert len(llm.calls) == 2
+    retry_messages, retry_kw = llm.calls[1]
+    assert retry_kw.get("tools") is not None            # 重问必须带工具
+    assert retry_messages[-1]["role"] == "system"
+    assert "前导语" in retry_messages[-1]["content"]
+    assistant = next(m for m in repo.get_messages("p1") if m["role"] == "assistant")
+    assert assistant["content"] == "先问最实际的：经费来源是自费还是课题经费？"
 
 
 def test_complete_reply_not_continued(env):

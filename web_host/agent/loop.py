@@ -103,6 +103,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     total_calls = 0
     start = time.monotonic()
     accumulated_reply = ""
+    stream_prefix = ""          # 前导语文本（已流出，重问后仍拼回持久化正文）
+    preamble_retried = False    # 只重问一次，防无限循环
+    incomplete = False          # 回合未收敛出正文 → turn_done.incomplete
     has_final_answer = False
     finish_reason = ""
     usage_total: dict = {}
@@ -154,15 +157,26 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                  "hint": "请检查百炼 API Key 是否有效"})
                 tm.finish(pid, turn_id, "failed")
                 return
-            accumulated_reply = final_resp.get("content", "") or accumulated_reply
+            raw = final_resp.get("content", "") or ""
+            if raw:
+                accumulated_reply = stream_prefix + raw
             usage_total = final_resp.get("usage", {}) or usage_total
             tool_calls = final_resp.get("tool_calls")
             if not tool_calls:
-                # F06：有正文且无后续工具调用的帧才算最终回答（前导语+触顶
-                # 退出的场景 accumulated_reply 非空但不是答案，收敛块须接管）
-                if (final_resp.get("content") or "").strip():
-                    has_final_answer = True
                 finish_reason = str(final_resp.get("finish_reason") or "")
+                answer = raw.strip()
+                if (answer and finish_reason != "length" and not preamble_retried
+                        and _looks_like_preamble(raw)):
+                    # 前导语（"我这就去查…"/"先问最实际的："）不是最终回答：文本
+                    # 已流出，记入前缀；带工具重问一次让它真正动手。length 不走此
+                    # 分支（截断续写仍然 tools=None，保持既有语义）。
+                    preamble_retried = True
+                    stream_prefix += raw
+                    messages.append({"role": "assistant", "content": raw})
+                    messages.append({"role": "system", "content": _PREAMBLE_NUDGE})
+                    continue
+                if answer and (finish_reason == "length" or not _looks_like_preamble(raw)):
+                    has_final_answer = True
                 break
 
             # 并行工具执行（F07：批前截断——越过额度的调用不执行，直接回填
@@ -308,18 +322,20 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     final_resp = chunk
             if final_resp and not final_resp.get("error"):
                 if (final_resp.get("content") or "").strip():
-                    accumulated_reply = final_resp["content"]
+                    accumulated_reply = stream_prefix + final_resp["content"]
                     has_final_answer = True  # 收敛成功即最终回答，三分支不再追加提示
                 usage_total = final_resp.get("usage", {}) or usage_total
         except Exception:
             accumulated_reply = ""  # 收敛重试失败不改变回合结果，走兑底文案
         if not accumulated_reply:
+            incomplete = True
             fallback = ("（已达本回合处理上限，未能基于现有信息生成完整回答；"
                         "请继续提问以接着现有材料推进。）" if limit_hit else
                         "（本次未生成文字回复；请继续提问或稍后重试。）")
             tm.append_event(pid, turn_id, "message_delta", {"text": fallback})
             accumulated_reply = fallback
         elif not has_final_answer:
+            incomplete = True
             # 前导语 + 未获最终回答：保留过程说明，追加提示
             note = ("\n\n（以上为过程说明；已达本回合处理上限，未能生成完整总结，"
                     "请继续提问以接着现有材料推进。）" if limit_hit else
@@ -370,17 +386,39 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                         {"reply_id": turn_id, "usage": usage_total,
                          "snapshot_ids": snapshot_ids,
                          "quick_replies": quick_replies,
-                         "finish_reason": finish_reason})
+                         "finish_reason": finish_reason,
+                         "incomplete": incomplete})
         tm.finish(pid, turn_id, "completed")
 
 
-# 未完标点/开引号：非空正文以其结尾几乎必为句中截断（服务端异常终止），
-# 触发一次续写兑底；句号/问号/叹号/引号闭合等完整结尾不在此列
-_INCOMPLETE_TAIL_CHARS = '：:，,、；;—…"“‘\''
+# 未完标点/开引号/截断算式：非空正文以其结尾几乎必为句中截断（服务端异常终止），
+# 触发一次续写兑底；句号/问号/叹号/引号闭合等完整结尾不在此列。
+# 冒号移出本表：以冒号结尾多为「前导语」，走带工具重问（见 _looks_like_preamble）。
+_INCOMPLETE_TAIL_CHARS = '，,、；;—…"“‘\'×÷≈+-='
+
+# 前导语尾字符 + 承诺词：无 tool_calls 且命中任一 → 不是最终回答
+_PREAMBLE_TAIL_CHARS = "：:，,、；;—…"
+_PROMISE_MARKERS = ("我这就", "马上", "我先", "接下来", "下面", "让我", "这就去",
+                    "先来", "我来", "实测", "查一下", "查一查")
+
+_PREAMBLE_NUDGE = ("你上一条回复只是前导语（说明接下来要做什么），尚未给出结果。"
+                   "请立即调用合适的工具获取真实数据，拿到结果后再给出完整回答；"
+                   "不要再输出「我这就去查」这类前导语。")
+
+
+def _looks_like_preamble(text: str) -> bool:
+    """前导语判定：以未完标点收尾，或短句且含承诺词、但未以句末标点收尾。"""
+    body = text.strip()
+    if not body:
+        return False
+    if body[-1] in _PREAMBLE_TAIL_CHARS:
+        return True
+    return (len(body) <= 120 and body[-1] not in "。！？"
+            and any(marker in body for marker in _PROMISE_MARKERS))
 
 
 def _looks_truncated(reply: str, finish_reason: str) -> bool:
-    """终止帧是否截断：length 触顶，或正文尾部落在未完标点/开引号上。"""
+    """终止帧是否截断：length 触顶，或正文尾部落在未完标点/截断算式上。"""
     if finish_reason == "length":
         return True
     tail = reply.rstrip()

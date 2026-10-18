@@ -72,6 +72,17 @@ def test_state_window_rolls_at_50(json_repo):
     assert len(lines) == 60
 
 
+def test_pop_last_message_syncs_dialogue_window(json_repo):
+    json_repo.append_message("p1", "user", "提问")
+    json_repo.append_message("p1", "assistant", "回答")
+    assert [m["role"] for m in _read_state(json_repo, "p1")["dialogue_context"]] == [
+        "user", "assistant"]
+    json_repo.pop_last_message("p1")
+    state = _read_state(json_repo, "p1")
+    assert [m["role"] for m in state["dialogue_context"]] == ["user"]
+    assert [m["content"] for m in json_repo.get_messages("p1", limit=0)] == ["提问"]
+
+
 def test_state_json_is_readable_unicode(json_repo):
     json_repo.save_field_site("p1", {"name": "喜洲"})
     raw = (json_repo.root / "p1" / "state.json").read_text(encoding="utf-8")

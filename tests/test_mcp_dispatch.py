@@ -316,16 +316,20 @@ def test_non_envelope_result_is_wrapped(monkeypatch):
 
 
 def test_registry_fns_expose_injection_seams():
-    """裸导入即注册：21 能力全进分派表；文档能力声明 llm、flyai 系声明 client、
+    """裸导入即注册：22 能力全进分派表；文档能力声明 llm、flyai 系声明 client、
     amap 系六原语与聚合能力 plan_last_mile 声明 amap_client（注入接缝分道，
     0c5b7bb 已落地）。"""
     fns = dispatch._CAPABILITY_FNS
-    assert len(fns) == 21 and DOCUMENT_TOOLS <= set(fns)
+    assert len(fns) == 22 and DOCUMENT_TOOLS <= set(fns)
     amap_tools = {n for n in fns if n.startswith(AMAP_TOOLS_PREFIX)} | {"plan_last_mile"}
     assert len(amap_tools) == 7
+    # 纯函数能力：无外部客户端注入接缝（estimate_living_cost 表驱动，无 I/O）
+    pure_tools = {"estimate_living_cost"}
     for name in DOCUMENT_TOOLS:
         assert "llm" in inspect.signature(fns[name]).parameters
     for name in amap_tools:
         assert "amap_client" in inspect.signature(fns[name]).parameters
-    for name in set(fns) - DOCUMENT_TOOLS - amap_tools:
+    for name in set(fns) - DOCUMENT_TOOLS - amap_tools - pure_tools:
         assert "client" in inspect.signature(fns[name]).parameters
+    for name in pure_tools:
+        assert not {"client", "amap_client", "llm"} & set(inspect.signature(fns[name]).parameters)

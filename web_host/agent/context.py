@@ -1,6 +1,7 @@
 """system prompt + 项目快照 + 历史消息组装（spec §3.3 步骤 1）。"""
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
+from fieldwork_agent.kernel.guidance.costs import COST_GUIDANCE
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 
 _TOOL_GUIDANCE = (
@@ -44,7 +45,8 @@ def build_snapshot(repo: ProjectRepository, pid: str) -> str:
 
 
 def build_system_prompt(phase: str, snapshot: str) -> str:
-    return "\n\n".join([phases.phase_prompt(phase), _TOOL_GUIDANCE, snapshot])
+    return "\n\n".join([phases.time_anchor(), phases.phase_prompt(phase),
+                        COST_GUIDANCE, _TOOL_GUIDANCE, snapshot])
 
 
 def build_messages(repo: ProjectRepository, pid: str, user_text: str,

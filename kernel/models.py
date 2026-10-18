@@ -136,6 +136,9 @@ class BudgetItem(BaseModel):
     people: int = 1
     priced_at: str = ""
     source_ref: str = ""
+    amount_low: float | None = None    # 估算区间下沿（amount 已等于下沿）
+    amount_high: float | None = None   # 估算区间上沿；报价类条目为 None
+    basis: str = ""                    # 估算口径与数据依据（报价类留空）
 
 
 class Schedule(BaseModel):
@@ -163,6 +166,8 @@ class BudgetBreakdown(BaseModel):
     over_budget: bool = False
     coverage: str = "unknown"
     uncovered: list[str] = Field(default_factory=list)
+    total_high: float | None = None            # 含估算上沿的合计；报价类条目 low=high
+    over_budget_possible: bool = False         # total_high > budget_total：区间跨预算线
 
 
 class ItineraryPlan(BaseModel):

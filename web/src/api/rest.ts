@@ -116,6 +116,9 @@ export const rest = {
       { method: "POST", body: JSON.stringify({ text, idempotency_key: idempotencyKey }) }),
   cancelTurn: (id: string, turnId: string) =>
     req<{ turn_id: string; status: string }>(`/projects/${id}/turns/${turnId}/cancel`, { method: "POST" }),
+  // 重新生成：后端弹出末条 assistant + user，以同一文本新建回合（201）
+  retryTurn: (id: string, turnId: string) =>
+    req<CreateTurnResponse>(`/projects/${id}/turns/${turnId}/retry`, { method: "POST" }),
   getProposal: (id: string) => req<ProposalDoc & { id: string }>(`/projects/${id}/proposal`),
   listProposals: (id: string) => req<ProposalMeta[]>(`/projects/${id}/proposals`),
   proposalDownloadUrl: (id: string, format?: ExportFormat) =>

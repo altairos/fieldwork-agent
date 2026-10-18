@@ -56,7 +56,17 @@ const PHASE_EXAMPLES: Record<string, string[]> = {
     "把访谈提纲要点并入方法论章节",
   ],
 };
-export function Timeline() {
+export function Timeline({
+  onRetry,
+  canRetry = false,
+  retrying = false,
+  incomplete = false,
+}: {
+  onRetry?: () => void;
+  canRetry?: boolean;
+  retrying?: boolean;
+  incomplete?: boolean;
+} = {}) {
   const messages = useConversationStore((s) => s.messages);
   const streamBuffer = useConversationStore((s) => s.streamBuffer);
   const turnRunning = useConversationStore((s) => s.turnRunning);
@@ -100,9 +110,29 @@ export function Timeline() {
                 key={call.call_id}
                 data={call.data === undefined ? null : call.data}
                 degraded={call.degraded ?? null}
+                error={call.error ?? null}
               />
             );
           })}
+        </div>
+      )}
+
+      {/* 回合中断：正文残缺/未收敛 → 给「重新生成」而不让用户自己重写问题 */}
+      {(incomplete || canRetry) && (
+        <div className="pl-9 flex items-center gap-2 flex-wrap text-[11.5px]">
+          {incomplete && (
+            <span className="text-ochre">本轮生成中断：正文可能在句中被截断，或未给出结论。</span>
+          )}
+          {canRetry && onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={retrying}
+              className="chip hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition disabled:opacity-50"
+            >
+              {retrying ? "正在重新生成…" : "重新生成"}
+            </button>
+          )}
         </div>
       )}
 

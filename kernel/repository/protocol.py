@@ -75,6 +75,13 @@ class ProjectRepository(Protocol):
         """按时间顺序取最近 ``limit`` 条（``limit <= 0`` 取全部）；只读全量史。"""
         ...
 
+    def pop_last_message(self, pid: str, role: str | None = None) -> dict | None:
+        """弹出最近一条消息（可按 role 过滤）并返回该条；无匹配返回 None。
+
+        用于「重新生成」：先弹 assistant 再弹 user，随后以同一文本新建回合。
+        """
+        ...
+
     # ---------------------------------------------------------------- 田野点与报道人
 
     def save_field_site(self, pid: str, record: dict) -> str:

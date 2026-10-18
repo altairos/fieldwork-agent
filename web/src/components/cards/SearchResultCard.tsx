@@ -146,6 +146,7 @@ interface SearchResultCardProps extends ToolCardProps {
 export function SearchResultCard({
   data,
   degraded,
+  error,
   title,
   icon,
   emptyTitle,
@@ -165,6 +166,8 @@ export function SearchResultCard({
   );
   // 内核若在 payload 内自带建议原文（profile_field_site 的 summary.hints），优先如实转述
   const kernelHint = hintKey ? strOf(asRecord(asRecord(rec.summary).hints)[hintKey]) : "";
+  // 失败原因优先于通用空态：hint 是可操作下一步（如改用未来日期），message 是事实描述
+  const failureHint = (error?.hint || error?.message || "").trim();
 
   return (
     <CardShell title={title} icon={icon} degraded={degraded} statusChip={statusChip}>
@@ -186,6 +189,7 @@ export function SearchResultCard({
           <EmptyState icon={icon} title={emptyTitle} hint={`返回 ${page.total} 条 · 未取得任何报价`} />
           <Notice tone="ochre">
             {kernelHint ||
+              failureHint ||
               `${
                 degraded ? "数据源本次未返回有效结果" : "本次查询无可用供给"
               }：该条不计入预算，请人工核验。下一步：${emptyNext}`}

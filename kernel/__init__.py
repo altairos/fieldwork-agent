@@ -11,6 +11,7 @@
 from fieldwork_agent.kernel.aggregation import (  # noqa: F401
     itinerary,
     last_mile,
+    living_cost,
     site_profile,
     window,
 )

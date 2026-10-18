@@ -4,6 +4,7 @@ import { FlightCard } from "./FlightCard";
 import { HotelCard } from "./HotelCard";
 import { InformantCard } from "./InformantCard";
 import { ItineraryCard } from "./ItineraryCard";
+import { LivingCostCard } from "./LivingCostCard";
 import { PoiCard } from "./PoiCard";
 import { ProposalCard } from "./ProposalCard";
 import { SiteProfileCard } from "./SiteProfileCard";
@@ -17,11 +18,11 @@ import type { ToolCardProps } from "./types";
  * 工具卡片注册表 — `tool name → card component`（红线②：卡片消费 `tool_completed.data`，
  * 是中栏时间线与右栏面板的唯一同源数据）。
  *
- * **键集 = 内核真实能力名（14 项）+ 宿主层状态工具（1 项），逐字对齐，不臆造**：
+ * **键集 = 内核真实能力名（15 项）+ 宿主层状态工具（1 项），逐字对齐，不臆造**：
  * 实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py 单一注册表），
  * kernel registry 面 / `mcp_server/mapping.py` TOOL_GROUPS / `core/orchestrator.py`
- * _CAPABILITY_DISPATCH / 本表 四处一致（8 搜索原语 + 3 聚合 + 3 文档 = 14，
- * 其中 3 聚合含 analyze_fieldwork_window）。
+ * _CAPABILITY_DISPATCH / 本表 四处一致（8 搜索原语 + 4 聚合 + 3 文档 = 15，
+ * 其中 4 聚合含 analyze_fieldwork_window 与 estimate_living_cost）。
  * 轮 2 症状②例外：`update_research_context` 是宿主层状态工具
  * （web_host/agent/state_tools.py 每回合注入 loop，非内核能力），
  * 是唯一超出内核键集的注册项——不注册则状态写入落 Fallback 裸 JSON。
@@ -47,6 +48,7 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   profile_field_site: SiteProfileCard,
   compose_itinerary: ItineraryCard,
   analyze_fieldwork_window: WindowCard,
+  estimate_living_cost: LivingCostCard,
   // 文档能力（提案与访谈提纲共用文档卡：payload 分别是 ProposalDoc / {类型: 正文}）
   compose_proposal: ProposalCard,
   compose_interview_guide: ProposalCard,
@@ -83,6 +85,7 @@ export const toolVisibility: Record<string, ToolVisibility> = {
   profile_field_site: "full",
   compose_itinerary: "full",
   analyze_fieldwork_window: "full",
+  estimate_living_cost: "full",
   compose_proposal: "full",
   compose_interview_guide: "full",
   suggest_informants: "full",

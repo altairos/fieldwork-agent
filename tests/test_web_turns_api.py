@@ -437,3 +437,43 @@ def test_init_deps_builds_amap_singleton(tmp_path, monkeypatch):
     init_deps(app, config=cfg, repo=repo)
     assert created == ["ak-n0"]
     assert isinstance(app.state.amap, FakeAMapClient)
+
+
+# ------------------------------- 重新生成（POST /turns/{id}/retry）
+
+
+async def test_retry_regenerates_last_turn(app, client):
+    r = await client.post("/projects/p1/messages", json={"text": "帮我排行程"})
+    first = r.json()["turn_id"]
+    await asyncio.sleep(0.5)                     # 等首回合完成（assistant 落盘）
+
+    rr = await client.post(f"/projects/p1/turns/{first}/retry")
+    assert rr.status_code == 201
+    assert rr.json()["turn_id"] != first
+    await asyncio.sleep(0.5)                     # 等重生成完成
+
+    msgs = (await client.get("/projects/p1/messages")).json()
+    assert [m["content"] for m in msgs] == ["帮我排行程", "收到"]   # 不重复、不丢
+
+
+async def test_retry_running_turn_rejected(app, client):
+    from fieldwork_agent.web_host.deps import get_tm_raw
+    handle = get_tm_raw(app).create_turn("p1")    # 只建状态不执行 → 非终态
+    r = await client.post(f"/projects/p1/turns/{handle.turn_id}/retry")
+    assert r.status_code == 409
+
+
+async def test_retry_unknown_turn_404(client):
+    r = await client.post("/projects/p1/turns/decafbad01234567/retry")
+    assert r.status_code == 404
+
+
+async def test_retry_requires_user_and_assistant_tail(app, client):
+    from fieldwork_agent.web_host.deps import get_repo_raw
+    r = await client.post("/projects/p1/messages", json={"text": "hi"})
+    tid = r.json()["turn_id"]
+    await asyncio.sleep(0.5)
+    get_repo_raw(app).append_message("p1", "user", "末条不是 assistant")
+    rr = await client.post(f"/projects/p1/turns/{tid}/retry")
+    assert rr.status_code == 409
+    assert "retry_not_applicable" in rr.text

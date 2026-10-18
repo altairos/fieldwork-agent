@@ -17,6 +17,7 @@ interface ConversationState {
   beginTurn: () => void;                 // 回合开始：turnRunning=true, 清 buffer
   failTurn: () => void;                  // 回合创建被拒：回滚乐观 UI（见实现处注释）
   cancelTurn: () => void;                // 用户取消：复位流式态，不动 messages（见实现处注释）
+  dropLastAssistant: () => void;         // 重新生成：后端已弹出，本地同步丢弃
   reset: () => void;
 }
 export const useConversationStore = create<ConversationState>()((set) => ({
@@ -74,5 +75,12 @@ export const useConversationStore = create<ConversationState>()((set) => ({
   // 否则打字光标永久脉冲；残缺 streamBuffer 丢弃（对齐后端：取消的残缺回复不入史），
   // messages 不动——user 消息已被后端接受，与 failTurn（回合被拒弹消息）语义相反。
   cancelTurn: () => set({ turnRunning: false, streamBuffer: "" }),
+  // 重新生成前调用：后端已把末条 assistant 弹出并重放 user 消息，本地只丢这一条；
+  // quickReplies 一并清空（旧选项属于已作废的回复）。
+  dropLastAssistant: () => set((st) => {
+    const msgs = st.messages.slice();
+    if (msgs.length && msgs[msgs.length - 1].role === "assistant") msgs.pop();
+    return { messages: msgs, quickReplies: [] };
+  }),
   reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, lastUsage: {}, quickReplies: [] }),
 }));
