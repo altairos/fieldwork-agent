@@ -170,7 +170,7 @@ function Workspace() {
           <LeftRail
             phase={phase}
             onBack={() => navigate("/")}
-            onSelect={(pid) => useUiStore.getState().setActiveTab(PHASE_TAB[pid] ?? "progress")}
+            onSelect={(pid) => useUiStore.getState().setActiveTab(PHASE_TAB[pid] ?? "basic-info")}
           />
         </div>
         <main className="flex flex-col bg-paper/40 min-w-0 min-h-0">

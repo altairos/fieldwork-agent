@@ -41,15 +41,15 @@ describe("选中态勾选标记（Tabs / VersionSwitch）", () => {
     render(
       <Tabs
         tabs={[
-          { id: "progress", label: "进度" },
+          { id: "basic-info", label: "基本信息" },
           { id: "sites", label: "田野点" },
         ]}
-        active="progress"
+        active="basic-info"
         onChange={() => {}}
       />,
     );
     const selected = screen.getByRole("tab", { selected: true });
-    expect(selected).toHaveTextContent("进度");
+    expect(selected).toHaveTextContent("基本信息");
     expect(selected.querySelector("svg")).toBeInTheDocument();
     const unselected = screen.getByRole("tab", { selected: false });
     expect(unselected.querySelector("svg")).not.toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("LeftRail 锁定态与点击语义（阶段推进红线）", () => {
     for (const p of DEFAULT_PHASES) {
       expect(PHASE_TAB[p.id]).toBeDefined();
     }
-    expect(PHASE_TAB.research_positioning).toBe("progress");
+    expect(PHASE_TAB.research_positioning).toBe("basic-info");
   });
 });
 

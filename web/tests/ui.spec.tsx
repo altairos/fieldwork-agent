@@ -37,11 +37,11 @@ describe("ProgressBar/Tabs", () => {
     expect(screen.getByText("D")).toBeInTheDocument();
   });
   test("Tabs 点击切换", () => {
-    let active = "progress";
+    let active = "basic-info";
     render(
       <Tabs
         tabs={[
-          { id: "progress", label: "进度" },
+          { id: "basic-info", label: "基本信息" },
           { id: "sites", label: "田野点" },
         ]}
         active={active}
@@ -50,6 +50,6 @@ describe("ProgressBar/Tabs", () => {
         }}
       />,
     );
-    expect(screen.getByText("进度")).toBeInTheDocument();
+    expect(screen.getByText("基本信息")).toBeInTheDocument();
   });
 });

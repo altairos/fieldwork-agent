@@ -15,7 +15,7 @@ import type { ProjectSnapshot } from "../src/types/models";
  * 1. 路由 `/p/:id` → `useParams` 取 id → 挂载即 `GET /projects/{id}` → `project.loadSnapshot`
  *    （右栏五面板的 REST 侧数据源；红线②：整个工作台只有这一次快照请求，面板不再各自取数）；
  * 2. 中栏三件（PhaseBanner / Timeline / Composer）与右栏 RightDock 同时在位，
- *    且加载快照后 **activeTab 仍是 progress**（红线①：不自动切 Tab）；
+ *    且加载快照后 **activeTab 仍是 basic-info**（红线①：不自动切 Tab）；
  * 3. 快照请求失败 → 经 ui store 的 error 事件如实上屏（PhaseBanner 降级横幅），不静默吞错。
  *
  * 用 `history.pushState` 驱动 BrowserRouter（不导出 Workspace，避免为测试放宽 App 的公开面）。
@@ -84,9 +84,9 @@ describe("Workspace 接线（App.tsx）", () => {
     // 中栏：Composer 输入框 + 时间线空态（尚无回合）
     expect(screen.getByRole("textbox", { name: "消息输入" })).toBeInTheDocument();
     expect(screen.getByText(/尚无对话/)).toBeInTheDocument();
-    // 右栏：默认进度面板；红线①——快照/阶段到位也不自动切 Tab
-    expect(screen.getByText(/采集进度/)).toBeInTheDocument();
-    expect(useUiStore.getState().activeTab).toBe("progress");
+    // 右栏：默认基本信息面板；红线①——快照/阶段到位也不自动切 Tab
+    expect(screen.getByText(/基本信息（可随时编辑）/)).toBeInTheDocument();
+    expect(useUiStore.getState().activeTab).toBe("basic-info");
 
     // 快照加载完成后：Header 项目名取 research_context.topic
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();

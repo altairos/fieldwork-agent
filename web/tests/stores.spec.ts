@@ -163,11 +163,11 @@ describe("conversation store turn_done 查重（hydrate×回放双写保护，�
 
 describe("project + ui 阶段推进(右栏不自动切)", () => {
   test("phase_transition 改 phase，ui.activeTab 不变，pendingSuggestion 置位", () => {
-    useUiStore.getState().setActiveTab("progress");
+    useUiStore.getState().setActiveTab("basic-info");
     useProjectStore.getState().applyEvent(ev({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" }));
     useUiStore.getState().applyEvent(ev({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" }));
     expect(useProjectStore.getState().phase).toBe("field_site_profiles");
-    expect(useUiStore.getState().activeTab).toBe("progress");           // 不自动切
+    expect(useUiStore.getState().activeTab).toBe("basic-info");       // 不自动切
     expect(useUiStore.getState().pendingSuggestion).not.toBeNull();     // 只给建议
   });
   test("error 事件置 degradedBanner，不中断已有内容", () => {

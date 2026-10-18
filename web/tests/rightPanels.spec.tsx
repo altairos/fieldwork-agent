@@ -5,7 +5,7 @@ import { InformantCard } from "../src/components/cards/InformantCard";
 import { InformantsPanel } from "../src/components/right/InformantsPanel";
 import { FieldSitesPanel } from "../src/components/right/FieldSitesPanel";
 import { KnowledgePanel } from "../src/components/right/KnowledgePanel";
-import { ProgressPanel } from "../src/components/right/ProgressPanel";
+import { BasicInfoPanel } from "../src/components/right/BasicInfoPanel";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
 import type { ProjectSnapshot } from "../src/types/models";
@@ -102,13 +102,13 @@ describe("FieldSitesPanel 确认", () => {
   });
 });
 
-describe("ProgressPanel 研究信息编辑", () => {
+describe("BasicInfoPanel 研究信息编辑", () => {
   test("改预算并保存 → PUT research-context 只带非空字段", async () => {
     const calls = stubFetch([
       { research_context: { budget: "5万" }, phase_transition: null },
       { ...SNAP, research_context: { budget: "5万" } },
     ]);
-    render(<ProgressPanel />);
+    render(<BasicInfoPanel />);
     fireEvent.change(screen.getByLabelText("预算"), { target: { value: "5万" } });
     fireEvent.click(screen.getByText("保存修正"));
     await waitFor(() =>
@@ -121,7 +121,7 @@ describe("ProgressPanel 研究信息编辑", () => {
   test("未改任何字段点保存 → 不发请求并提示", async () => {
     useProjectStore.getState().loadSnapshot({ ...SNAP, research_context: {} });
     const calls = stubFetch([]);
-    render(<ProgressPanel />);
+    render(<BasicInfoPanel />);
     fireEvent.click(screen.getByText("保存修正"));
     await waitFor(() =>
       expect(screen.getByText(/未填写任何要修正的字段/)).toBeInTheDocument());

@@ -72,7 +72,7 @@ import { PhaseBanner } from "../src/components/chat/PhaseBanner";
 import { Composer, type TurnHandle } from "../src/components/chat/Composer";
 import { InformantsPanel } from "../src/components/right/InformantsPanel";
 import { KnowledgePanel } from "../src/components/right/KnowledgePanel";
-import { ProgressPanel } from "../src/components/right/ProgressPanel";
+import { BasicInfoPanel } from "../src/components/right/BasicInfoPanel";
 import { RightDock } from "../src/components/layout/RightDock";
 import { useUiStore } from "../src/stores/ui";
 import type { ProjectSnapshot } from "../src/types/models";
@@ -217,7 +217,7 @@ describe("PhaseBanner", () => {
     useUiStore.getState().applyEvent({ event: "phase_transition", from: "field_site_profiles", to: "itinerary_planning" });
     render(<PhaseBanner />);
     expect(screen.getByText(/已进入itinerary_planning阶段/)).toBeInTheDocument();
-    expect(useUiStore.getState().activeTab).toBe("progress");
+    expect(useUiStore.getState().activeTab).toBe("basic-info");
   });
   test("降级横幅如实转述 code/message/hint，可关闭", () => {
     useUiStore.getState().applyEvent({ event: "error", code: "flyai_unavailable", message: "数据源不可用", hint: "稍后重试" });
@@ -262,22 +262,18 @@ describe("Composer", () => {
   });
 });
 
-describe("右栏面板：ProgressPanel / InformantsPanel / KnowledgePanel", () => {
+describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () => {
   beforeEach(() => { useUiStore.getState().reset(); });
-  test("ProgressPanel 四阶段 + 当前阶段 + phase_history", () => {
+  test("BasicInfoPanel 编辑器回显快照 research_context 字段（阶段流转史已删）", () => {
     useProjectStore.getState().loadSnapshot(snapshot({
       phase: "itinerary_planning",
-      phase_history: [
-        { from: "", to: "research_positioning", at: "2026-10-15T09:00:00Z" },
-        { from: "field_site_profiles", to: "itinerary_planning", at: "2026-10-15T10:00:00Z" },
-      ],
+      research_context: { discipline: "社会学", budget: "2万" },
     }));
-    render(<ProgressPanel />);
-    expect(screen.getByText(/采集进度/)).toBeInTheDocument();
-    // 阶段清单与 phase_history 各出现一次「行程规划」（两处都是投影，故用 getAllByText）
-    expect(screen.getAllByText(/行程规划/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/阶段流转/)).toBeInTheDocument();
-    expect(screen.getAllByText(/2026-10-15/)).toHaveLength(2);
+    render(<BasicInfoPanel />);
+    expect(screen.getByText(/基本信息（可随时编辑）/)).toBeInTheDocument();
+    expect((screen.getByLabelText("学科背景") as HTMLInputElement).value).toBe("社会学");
+    expect((screen.getByLabelText("预算") as HTMLInputElement).value).toBe("2万");
+    expect(screen.queryByText(/阶段流转/)).not.toBeInTheDocument();
   });
   test("InformantsPanel 无报道人显示空状态", () => {
     render(<InformantsPanel />);
@@ -341,13 +337,13 @@ describe("右栏面板：ProgressPanel / InformantsPanel / KnowledgePanel", () =
 
 describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
   beforeEach(() => { useUiStore.getState().reset(); });
-  test("默认进度面板；点 Tab 渲染对应面板", () => {
+  test("默认基本信息面板；点 Tab 渲染对应面板", () => {
     useProjectStore.getState().loadSnapshot(snapshot({
       phase: "itinerary_planning",
       research_context: { discipline: "社会学" },
     }));
     render(<RightDock />);
-    expect(screen.getByText(/采集进度/)).toBeInTheDocument();
+    expect(screen.getByText(/基本信息（可随时编辑）/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "预算" }));
     expect(useUiStore.getState().activeTab).toBe("budget");
     expect(screen.getByText(/尚未生成行程预算/)).toBeInTheDocument();
@@ -362,10 +358,10 @@ describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
     useProjectStore.getState().loadSnapshot(snapshot({ phase: "field_site_profiles" }));
     useUiStore.getState().applyEvent({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" });
     const { rerender } = render(<RightDock />);
-    expect(useUiStore.getState().activeTab).toBe("progress"); // 不自动切
+    expect(useUiStore.getState().activeTab).toBe("basic-info"); // 不自动切
     fireEvent.click(screen.getByText("稍后"));
     expect(useUiStore.getState().pendingSuggestion).toBeNull();
-    expect(useUiStore.getState().activeTab).toBe("progress");
+    expect(useUiStore.getState().activeTab).toBe("basic-info");
 
     act(() => useUiStore.getState().applyEvent({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" }));
     rerender(<RightDock />);

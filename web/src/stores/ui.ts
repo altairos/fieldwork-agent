@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { SseEvent } from "../types/events";
 import type { ErrorEvent } from "../types/events";
 
-export type RightTab = "progress" | "sites" | "informants" | "budget" | "knowledge";
+export type RightTab = "basic-info" | "sites" | "informants" | "budget" | "knowledge";
 interface UiState {
   activeTab: RightTab;
   pendingSuggestion: { tab: RightTab; reason: string } | null;   // 切换建议(不自动切)
@@ -23,13 +23,13 @@ interface UiState {
   toggleRight: () => void;
   reset: () => void;
 }
-// 阶段 → 建议/查看 tab 映射（导出供 App 的 LeftRail onSelect 复用；A 阶段对应采集进度）
+// 阶段 → 建议/查看 tab 映射（导出供 App 的 LeftRail onSelect 复用；A/D 阶段对应基本信息）
 export const PHASE_TAB: Record<string, RightTab> = {
-  research_positioning: "progress",
-  field_site_profiles: "sites", itinerary_planning: "budget", proposal_generation: "progress",
+  research_positioning: "basic-info",
+  field_site_profiles: "sites", itinerary_planning: "budget", proposal_generation: "basic-info",
 };
 export const useUiStore = create<UiState>()((set, get) => ({
-  activeTab: "progress", pendingSuggestion: null, degradedBanner: null,
+  activeTab: "basic-info", pendingSuggestion: null, degradedBanner: null,
   leftCollapsed: true, rightCollapsed: true,
   composerDraft: null,
   applyEvent: (ev) => set(() => {
@@ -50,5 +50,5 @@ export const useUiStore = create<UiState>()((set, get) => ({
   dismissBanner: () => set({ degradedBanner: null }),
   toggleLeft: () => set((st) => ({ leftCollapsed: !st.leftCollapsed })),
   toggleRight: () => set((st) => ({ rightCollapsed: !st.rightCollapsed })),
-  reset: () => set({ activeTab: "progress", pendingSuggestion: null, degradedBanner: null, leftCollapsed: true, rightCollapsed: true, composerDraft: null }),
+  reset: () => set({ activeTab: "basic-info", pendingSuggestion: null, degradedBanner: null, leftCollapsed: true, rightCollapsed: true, composerDraft: null }),
 }));
