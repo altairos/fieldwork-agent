@@ -33,12 +33,13 @@ def capabilities() -> dict[str, CapabilityMeta]:
 
 
 def validate_tool_args(meta: CapabilityMeta, args: dict) -> tuple[dict | None, str]:
-    """``args_model`` 校验 + LLM 字符串化数组参数的定向救援。
+    """``args_model`` 校验 + LLM 字符串化容器参数的定向救援。
 
-    部分模型（如 qwen）偶发把 list 参数序列化成 JSON 字符串（实测
-    interests='["宗族祠堂", …]' 触发 "Input should be a valid list"）。救援
-    只在原本要失败的路径上动手：错误为 valid list 且字段值能 json.loads 出
-    list 时转换重试，正常路径零影响；救不回仍返回首条错误 msg。
+    部分模型（如 qwen）偶发把 list/dict 参数序列化成 JSON 字符串（实测
+    interests='["宗族祠堂", …]' 触发 "Input should be a valid list"；
+    site_profile/itinerary='{…}' 触发 "Input should be a valid dictionary"）。救援
+    只在原本要失败的路径上动手：错误为 valid list/valid dictionary 且字段值能
+    json.loads 出对应类型（list/dict）时转换重试，正常路径零影响；救不回仍返回首条错误 msg。
     返回 ``(validated, "")`` 成功，或 ``(None, 首条错误 msg)`` 失败。
     """
     try:
@@ -48,7 +49,12 @@ def validate_tool_args(meta: CapabilityMeta, args: dict) -> tuple[dict | None, s
         touched = False
         for err in exc.errors():
             loc = err.get("loc") or ()
-            if not loc or "valid list" not in str(err.get("msg", "")):
+            if not loc:
+                continue
+            msg = str(err.get("msg", ""))
+            want_list = "valid list" in msg
+            want_dict = "valid dictionary" in msg
+            if not (want_list or want_dict):
                 continue
             val = fixed.get(loc[0])
             if isinstance(val, str):
@@ -56,7 +62,8 @@ def validate_tool_args(meta: CapabilityMeta, args: dict) -> tuple[dict | None, s
                     parsed = json.loads(val)
                 except ValueError:
                     continue
-                if isinstance(parsed, list):
+                if (want_list and isinstance(parsed, list)) or \
+                        (want_dict and isinstance(parsed, dict)):
                     fixed[loc[0]] = parsed
                     touched = True
         if touched:

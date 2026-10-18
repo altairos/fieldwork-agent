@@ -19,7 +19,7 @@ from mcp import ClientSession
 from mcp.server.lowlevel import Server as LowLevelServer
 from mcp.shared.memory import create_client_server_memory_streams
 
-EXPECTED = 31   # 22 kernel 能力（含 amap 六原语 + plan_last_mile + estimate_living_cost）+ 9 状态工具
+EXPECTED = 32   # 23 kernel 能力（含 amap 六原语 + plan_last_mile + estimate_living_cost + search_literature）+ 9 状态工具
 
 
 @pytest.fixture

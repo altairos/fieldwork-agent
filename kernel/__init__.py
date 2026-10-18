@@ -22,6 +22,7 @@ from fieldwork_agent.kernel.registry import capabilities as CAPABILITIES
 from fieldwork_agent.kernel.sources import (
     amap,  # noqa: F401
     flyai,  # noqa: F401
+    openalex,  # noqa: F401
 )
 
 __all__ = ["CAPABILITIES", "build_tool_schemas"]

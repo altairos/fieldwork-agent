@@ -9,6 +9,8 @@ TOOL_GROUPS: dict[str, str] = {
     **{n: "search" for n in ("search_flights", "search_trains", "search_hotels",
                              "search_pois", "search_keyword", "search_ai",
                              "search_marriott_hotels", "search_marriott_packages")},
+    # 学术文献检索：同属 search 语义（只读+开放世界），自持出网不依赖 flyai client
+    "search_literature": "search",
     # amap 六原语：地理查询同属 search 语义（只读+开放世界），不另立 geo 组
     **{n: "search" for n in ("amap_geocode", "amap_regeocode", "amap_text_search",
                              "amap_around_search", "amap_direction_transit",

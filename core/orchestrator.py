@@ -72,6 +72,7 @@ from fieldwork_agent.kernel.sources.flyai import (
     search_pois,
     search_trains,
 )
+from fieldwork_agent.kernel.sources.openalex import search_literature
 from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import run_tool_loop
 from fieldwork_agent.runtime.state_tools import build_project_state_tools
@@ -92,6 +93,9 @@ _CAPABILITY_DISPATCH: dict[str, tuple[Callable[..., Any], str | tuple[str, ...]]
     "analyze_fieldwork_window": (analyze_fieldwork_window, ("client", "llm")),
     # 纯函数能力：无外部客户端注入（inject 为空串 → dispatch 不注入任何 kwargs）
     "estimate_living_cost": (estimate_living_cost, ""),
+    # 学术文献检索：自持出网（OpenAlexClient 读 env），形参名 openalex_client 非保留键，
+    # inject="" 确保 dispatch 不把 FlyAIClient 串味注入（同 estimate_living_cost 自持模式）
+    "search_literature": (search_literature, ""),
     "compose_proposal": (proposal_handler, "llm"),
     "compose_interview_guide": (guide_handler, "llm"),
     "suggest_informants": (suggest_informants, "llm"),
@@ -127,6 +131,10 @@ _TOOL_GUIDANCE = (
     "高德仅覆盖境内：amap_no_result（常见于境外地名）时，明确告知用户"
     "境外田野点的定位/周边/接驳功能正在开发中、后续版本将追加（不要静默跳过），"
     "并改用搜索工具补位。"
+    "学术文献检索（研究综述/理论对话/既有研究）用 search_literature（OpenAlex 开放学术图谱），"
+    "飞猪/高德等旅行类工具不覆盖文献（search_keyword/search_ai 只返回旅行商品，勿用于查论文）；"
+    "search_literature 以外文为主，中文期刊用其返回的国家哲社文献中心/PubScholar 深链补位，"
+    "只呈现检索到的真实条目、不臆造引用。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案、"
     "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。\n\n"
     "职责边界：本助手只服务田野调查研究方案的设计与产出。输出用途（海外申请/"

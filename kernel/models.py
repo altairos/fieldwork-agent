@@ -58,6 +58,54 @@ class ItemPage(BaseModel):
     dearest: float | None = None
 
 
+# ---------------------------------------------------------------- 学术文献（OpenAlex）
+
+
+class LiteratureItem(BaseModel):
+    """单条学术文献（OpenAlex /works 归一化产物）。
+
+    与 SearchItem 分道：文献字段（作者/年份/被引/DOI/摘要）与旅行供给（价格/图片/
+    跳转）语义不同，独立模型避免 extra 混装。``doi`` 剥 ``https://doi.org/`` 前缀存裸 DOI；
+    ``abstract`` 由 OpenAlex 的 inverted index 重建为纯文本（无摘要时空串）。
+    """
+
+    id: str = ""                       # OpenAlex ID（https://openalex.org/W…）
+    title: str = ""
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = None
+    doi: str = ""                      # 裸 DOI（不含 https://doi.org/ 前缀）
+    venue: str = ""                    # 期刊/出版社/会议名（primary_location.source）
+    cited_by_count: int = 0
+    abstract: str = ""
+    open_access_url: str | None = None
+    is_oa: bool = False
+
+
+class LiteratureSourceLink(BaseModel):
+    """中文社科文献检索深链（标签 + 可点击 URL）。
+
+    spike 实证（2026-10-19）：ncpssd 无 GET 检索深链（AJAX+登录，候选 URL 均 404），
+    仅主页可达；PubScholar（中科院公益学术平台、免登录、ncpssd 主页自推的外部资源）
+    ``/search?q=`` 为 SPA 路由、浏览器打开即渲染结果。故中文源以“平台入口 + 带 query 深链”呈现。
+    """
+
+    label: str = ""
+    url: str = ""
+
+
+class LiteraturePage(BaseModel):
+    """一页文献检索结果 + 中文社科检索深链。
+
+    ``total`` 直出 OpenAlex ``meta.count``（不加工）；``chinese_sources`` 是国家哲社
+    文献中心与 PubScholar 等中文社科平台的检索入口/深链，供助手呈现可点击链接
+    （OpenAlex 以外文为主，中文期刊需这些平台补位）。
+    """
+
+    items: list[LiteratureItem] = Field(default_factory=list)
+    total: int = 0
+    chinese_sources: list[LiteratureSourceLink] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- 地理空间（高德底座）
 
 

@@ -527,3 +527,50 @@ def test_orchestrator_dispatch_coerce_unparseable_still_fails(fake_config):
     env = agent.client_kernel_dispatch("profile_field_site", {
         "location": "晋江", "interests": "宗族祠堂、祭祀仪式"})
     assert env.ok is False and env.error.code == "invalid_arguments"
+
+
+# ------------------------------------------- 字典参数字符串化的定向救援（生产会话实测）
+# 生产 field_20261018_202833：suggest_informants 的 site_profile、compose_proposal 的
+# itinerary 被模型序列化成 JSON 字符串，触发 "Input should be a valid dictionary"，
+# 既有 list 救援不覆盖 dict → 连续失败、草稿无法生成。
+
+def test_orchestrator_dispatch_coerces_json_string_dict_site_profile(fake_config):
+    """suggest_informants 的 site_profile 传 JSON 字符串 → 救援成 dict 后进入 handler
+    （llm=None 走示范库降级，ok=True）；不再是 invalid_arguments。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    env = agent.client_kernel_dispatch("suggest_informants", {
+        "research_topic": "白族银器锻制技艺的代际传承",
+        "discipline": "人类学",
+        "site_profile": '{"site": "鹤庆新华村", "settlement_type": "village"}',
+    })
+    assert env.ok is True
+    assert env.error is None or env.error.code != "invalid_arguments"
+
+
+def test_orchestrator_dispatch_coerces_json_string_dict_itinerary(fake_config):
+    """compose_proposal 的 itinerary 传 JSON 字符串 → 救援成 dict 后成功产出 ProposalDoc。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+    from fieldwork_agent.kernel.models import ProposalDoc
+
+    agent = FieldAgent(fake_config)
+    env = agent.client_kernel_dispatch("compose_proposal", {
+        "ctx": {"discipline": "社会学", "topic": "宗族变迁", "target_location": "喜洲"},
+        "sites": [{"name": "喜洲", "confirmed": True}],
+        "itinerary": '{"legs": [{"from": "昆明", "to": "大理"}]}',
+        "informants": [{"code": "P1", "type": "村干部"}],
+        "knowledge": [],
+    })
+    assert env.ok is True
+    assert isinstance(env.data, ProposalDoc)
+
+
+def test_orchestrator_dispatch_dict_coerce_unparseable_still_fails(fake_config):
+    """救援不越界：非 JSON 字符串（解析不出 dict）仍按 invalid_arguments 拒绝。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+
+    agent = FieldAgent(fake_config)
+    env = agent.client_kernel_dispatch("suggest_informants", {
+        "research_topic": "白族银器", "site_profile": "site: 新华村"})
+    assert env.ok is False and env.error.code == "invalid_arguments"

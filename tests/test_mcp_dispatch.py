@@ -316,15 +316,17 @@ def test_non_envelope_result_is_wrapped(monkeypatch):
 
 
 def test_registry_fns_expose_injection_seams():
-    """裸导入即注册：22 能力全进分派表；文档能力声明 llm、flyai 系声明 client、
+    """裸导入即注册：23 能力全进分派表；文档能力声明 llm、flyai 系声明 client、
     amap 系六原语与聚合能力 plan_last_mile 声明 amap_client（注入接缝分道，
-    0c5b7bb 已落地）。"""
+    0c5b7bb 已落地）。search_literature 自持出网（openalex_client 非保留键）、
+    estimate_living_cost 纯函数，二者均无保留键注入接缝。"""
     fns = dispatch._CAPABILITY_FNS
-    assert len(fns) == 22 and DOCUMENT_TOOLS <= set(fns)
+    assert len(fns) == 23 and DOCUMENT_TOOLS <= set(fns)
     amap_tools = {n for n in fns if n.startswith(AMAP_TOOLS_PREFIX)} | {"plan_last_mile"}
     assert len(amap_tools) == 7
-    # 纯函数能力：无外部客户端注入接缝（estimate_living_cost 表驱动，无 I/O）
-    pure_tools = {"estimate_living_cost"}
+    # 无保留键注入接缝：estimate_living_cost（纯函数、无 I/O）+
+    # search_literature（自持 OpenAlexClient，形参名 openalex_client 刻意避开 client 保留键）
+    pure_tools = {"estimate_living_cost", "search_literature"}
     for name in DOCUMENT_TOOLS:
         assert "llm" in inspect.signature(fns[name]).parameters
     for name in amap_tools:
