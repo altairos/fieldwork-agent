@@ -1,7 +1,7 @@
 # tests/test_web_exports_api.py
 import pytest
+from conftest import OWNER
 from fieldwork_agent.web_host.app import create_app
-from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
@@ -10,7 +10,7 @@ def app(tmp_path):
     from fieldwork_agent.web_host.deps import init_deps
 
     repo = JsonRepository(projects_dir=tmp_path / "projects")
-    repo.create("p1")
+    repo.create("p1", owner=OWNER)
     repo.save_proposal("p1", "# 标题\n\n## 一、背景\n\n内容",
                        kind="proposal", version="draft")
     _app = create_app(config=None, repo=repo)
@@ -21,8 +21,9 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    from conftest import make_client
+
+    async with make_client(app) as c:
         yield c
 
 
@@ -173,3 +174,22 @@ async def test_list_created_at_uses_saved_at(client):
     items = r.json()
     assert any(i.get("id", "").startswith("prop_") and i.get("created_at")
                for i in items), f"prop_ 记录的 created_at 应来自 saved_at: {items}"
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：导出端点对非 owner 一律 404
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_exports_hidden_from_other_owner(app, client):
+    from conftest import OTHER_TOKEN, make_client
+
+    async with make_client(app, owner_token=OTHER_TOKEN) as other:
+        for path in ("/projects/p1/proposal",
+                     "/projects/p1/proposal/download",
+                     "/projects/p1/proposals",
+                     "/projects/p1/proposals/doc1",
+                     "/projects/p1/proposals/doc1/download"):
+            r = await other.get(path)
+            assert r.status_code == 404, path
+            assert r.json()["detail"] == "项目不存在: p1"

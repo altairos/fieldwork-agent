@@ -18,19 +18,25 @@
 
 from typing import Protocol, runtime_checkable
 
+# list_projects 的 owner 过滤哨兵：不传（全量）/ None（仅无主）/ str（仅该归属）
+_UNSET = object()
+
 
 @runtime_checkable
 class ProjectRepository(Protocol):
-    """项目状态与产物读写协议（28 个方法，全部以 dict 进出）。"""
+    """项目状态与产物读写协议（29 个方法，全部以 dict 进出）。"""
 
     # ---------------------------------------------------------------- 项目与阶段
 
-    def create(self, project_id: str) -> None:
-        """建项目（幂等：已存在则保留存量，顺带完成存量消息史规范化）。"""
+    def create(self, project_id: str, owner: str | None = None) -> None:
+        """建项目（幂等：已存在则保留存量，**不覆盖已有 owner**）。"""
         ...
 
-    def list_projects(self) -> list[dict]:
-        """项目摘要列表：``{"project_id", "phase", "created_at", "updated_at"}``。"""
+    def list_projects(self, owner=_UNSET) -> list[dict]:
+        """项目摘要列表：``{"project_id", "phase", "created_at", "updated_at"}``。
+
+        owner 三态：缺省全量 / None 仅无主 / str 仅该归属。
+        """
         ...
 
     def delete_project(self, pid: str) -> None:
@@ -188,4 +194,8 @@ class ProjectRepository(Protocol):
         """最近一次方案确认的五路依赖指纹与当前不一致，或确认后产生了新
         ``kind=proposal`` 文档（``subject`` 不再是最新 proposal id）→ ``True``；
         新增 ``interview_guide`` 不影响；无确认记录返回 ``False``。"""
+        ...
+
+    def set_owner(self, pid: str, owner: str | None) -> None:
+        """改写项目归属（账号认领迁移预留）；幂等；未知 pid KeyError；非法 owner ValueError。"""
         ...

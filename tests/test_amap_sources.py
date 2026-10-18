@@ -184,6 +184,23 @@ def test_direction_transit_cross_city_cityd_separate(monkeypatch):
     assert calls["params"]["cityd"] == "大理"  # 单 city 双填（同城）不破坏
 
 
+def test_direction_transit_date_in_query_only_when_set(monkeypatch):
+    """班次日期（N1）：date 非空进 query；空串不进（现有调用零影响）。"""
+    calls = {}
+
+    def fake_get(path, params):
+        calls["params"] = params
+        return {"infocode": "10000", "route": {"transits": []}}
+
+    client = AMapClient(api_key="k")
+    monkeypatch.setattr(client, "_get", fake_get)
+    client.direction_transit("100.16,25.60", "100.17,25.66", city="大理",
+                             date="2026-10-19")
+    assert calls["params"]["date"] == "2026-10-19"
+    client.direction_transit("100.16,25.60", "100.17,25.66", city="大理")
+    assert "date" not in calls["params"]  # 空串不进 query，老调用形状不变
+
+
 # ---------------------------------------------------------------- 天气
 
 

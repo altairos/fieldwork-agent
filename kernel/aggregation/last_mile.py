@@ -10,9 +10,13 @@
   配 Key 指引，不折 no_result（防默认无 Key 部署下 LLM 按换地名 hint 空转）；
 - transit 失败（无方案/服务不可用）不算整体失败：``ok=True`` + 空 ``options``
   + ``degraded`` 附言（末端接驳查不到 ≠ 出行不可行，建议班车/包车等公路方式）；
-- ``date_hint`` 占位入参：M4 不透传 v3 ``date``（班次日期过滤留给 PoC2）；
+- ``date_hint`` 透传（N1）：合法 YYYY-MM-DD 且 3 天内（含当日）→ v3 ``date``
+  班次日期；非法/超窗 → 忽略 + ``degraded`` 附言（调研行程常为未来数周，
+  透传是增强非承诺）；
 - ``compose_itinerary`` 行程级整合（leg 模型、预算联动）留给 PoC2，本能力即其数据探针。
 """
+from datetime import date, datetime, timedelta
+
 from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.sources.amap import AMapClient
@@ -26,13 +30,35 @@ class PlanLastMileArgs(BaseModel):
 
     hub: str = Field(description="枢纽城市名（如 昆明）")
     site: str = Field(description="田野点地名（如 喜洲）")
-    date_hint: str = Field(default="", description="出行日期提示（占位：PoC 不透传班次日期）")
+    date_hint: str = Field(default="",
+                           description="出行日期 YYYY-MM-DD（可选；高德班次仅支持 3 天内，"
+                                       "超窗自动按当日/实时班次查询并附言说明）")
 
 
 def _no_result(message: str) -> Envelope:
     """geocode 失败/异常的统一出口：amap_no_result 包络（双源回退信号）。"""
     return Envelope(ok=False, error=ToolError(
         code="amap_no_result", message=message, hint=_NO_RESULT_HINT))
+
+
+def _resolve_date_param(date_hint: str) -> tuple[str, str | None]:
+    """date_hint → (v3 date 参数, 降级附言)；空串零打扰。
+
+    v3 班次日期仅支持 3 天内（含当日），而调研行程常为未来数周——透传是
+    增强非承诺：仅合法且在窗内才透传（isoformat 规范零填充）；非法格式/
+    超窗一律忽略并附言说明（对照 itinerary 日期铁律：不拼串、不崩）。
+    """
+    if not date_hint:
+        return "", None
+    try:
+        d = datetime.strptime(date_hint, "%Y-%m-%d").date()
+    except ValueError:
+        return "", (f"出行日期提示 {date_hint} 无法解析（需 YYYY-MM-DD），"
+                    "已按当日/实时班次查询")
+    today = date.today()
+    if not (today <= d <= today + timedelta(days=2)):
+        return "", "高德班次日期仅支持 3 天内，已按当日/实时班次查询"
+    return d.isoformat(), None
 
 
 def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
@@ -60,15 +86,18 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
         return _no_result(f"田野点地名未能解析：{site}")
 
     hub_geo, site_geo = hub_env.data, site_env.data
+    date_param, date_note = _resolve_date_param(date_hint)
     # v3 跨城语义：city=出发城市、cityd=到达城市（同城时两者同值亦兼容）
     transit_env = amap_client.direction_transit(
         origin=hub_geo.location, destination=site_geo.location,
-        city=hub_geo.city, cityd=site_geo.city)
+        city=hub_geo.city, cityd=site_geo.city, date=date_param)
     if transit_env.ok and isinstance(transit_env.data, ItemPage):
         options, degraded = transit_env.data, None
     else:
         options = ItemPage(items=[], total=0)
         degraded = "末端公交接驳暂不可查（无方案或服务不可用），可考虑城际班车/包车等公路方式"
+    if date_note:  # date 降级附言与 transit 失败附言同时发生时合并呈现
+        degraded = date_note if degraded is None else f"{degraded}；{date_note}"
     return Envelope(ok=True,
                     data={"hub": hub_geo, "site": site_geo, "options": options},
                     degraded=degraded)

@@ -97,14 +97,19 @@ $env:FA_STORAGE = "sqlite"   # 切换后端（默认 json；未知值安全回�
 ```powershell
 fieldwork migrate --to-sqlite                              # 全部项目
 fieldwork migrate --to-sqlite --project-id my_research     # 单个项目
+fieldwork migrate --to-sqlite --force   # 同名存量项目：备份后覆盖重迁（R03）
 ```
 
-- **迁移范围**：7 类数据——项目/阶段（含 `phase_history`）、研究上下文、全量消息史
+- **迁移范围**：8 类数据——项目/阶段（含 `phase_history`）、研究上下文、全量消息史
   （`chat_history.jsonl`）、田野点、报道人、搜索缓存、知识库、提案文档（含旧
-  `proposal_draft`/`final_proposal` 单值键）。迁移后自动做行数与抽样字段校验，
-  不一致即报错终止，不留半迁移状态。
+  `proposal_draft`/`final_proposal` 单值键）、确认记录（`confirmations` +
+  `proposal_confirmed`）。迁移后自动做行数与抽样字段校验，不一致即报错终止，
+  不留半迁移状态。
 - **迁移期单写者**：迁移期间请停止对同一批项目的其他写入（只跑迁移进程），完成后再
   设 `FA_STORAGE=sqlite` 启动宿主，避免双后端并发写造成分叉。
+- **冲突保护**：SQLite 侧已存在同名项目且无迁移标记时，`migrate` 默认报错中止（不
+  清空存量）；`--force` 先用 sqlite3 Backup API 做滚动备份（`fieldwork.db.bak.1`
+  最新，共留 3 份）再整项目清空重导。
 - **JSON 只读回退**：迁移不删除、不改动 JSON 目录——不设 `FA_STORAGE`（或设回
   `json`）即回到 JSON 后端；SQLite 库（`~/.fieldwork_agent/fieldwork.db`）留存，
   可随时删除重迁，天然回滚。

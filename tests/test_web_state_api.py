@@ -1,8 +1,8 @@
 # tests/test_web_state_api.py
 """状态修正与确认 API（审计第二批 F03/F04）：修正/确认/采纳/方案确认+stale。"""
 import pytest
+from conftest import OWNER
 from fieldwork_agent.web_host.app import create_app
-from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
@@ -11,7 +11,7 @@ def app(tmp_path):
     from fieldwork_agent.web_host.deps import init_deps
 
     repo = JsonRepository(projects_dir=tmp_path / "projects")
-    repo.create("p1")
+    repo.create("p1", owner=OWNER)
     _app = create_app(config=None, repo=repo)
     # ASGITransport 不触发 lifespan，手动初始化依赖
     init_deps(_app, config=None, repo=repo)
@@ -20,8 +20,9 @@ def app(tmp_path):
 
 @pytest.fixture
 async def client(app):
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    from conftest import make_client
+
+    async with make_client(app) as c:
         yield c
 
 
@@ -144,3 +145,19 @@ async def test_r09_confirm_dep_hash_mismatch_409(client, app):
     r = await client.post("/projects/p1/proposal/confirm", json={"doc_id": did})
     assert r.status_code == 409
     assert "重新生成" in r.text
+
+
+# ────────────────────────────────────────────────────────────────
+# 归属隔离（spec §归属令牌）：写端点对非 owner 一律 404
+# ────────────────────────────────────────────────────────────────
+
+
+async def test_state_writes_hidden_from_other_owner(app, client):
+    from conftest import OTHER_TOKEN, make_client
+
+    async with make_client(app, owner_token=OTHER_TOKEN) as other:
+        r = await other.put("/projects/p1/research-context", json={"budget": "1万"})
+        assert r.status_code == 404
+        assert r.json()["detail"] == "项目不存在: p1"
+        r2 = await other.post("/projects/p1/proposal/confirm", json={"doc_id": "d1"})
+        assert r2.status_code == 404

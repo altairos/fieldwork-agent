@@ -110,7 +110,7 @@ export function parseLastEventId(raw: string | string[] | undefined): number {
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID, X-DashScope-Key, X-FlyAI-Key",
+  "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID, X-DashScope-Key, X-FlyAI-Key, X-Owner-Token",
 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -142,17 +142,28 @@ const FAKE_CONTEXT = {
   target_location: "大理",
 };
 
-function fakeProjectList() {
-  return [
-    {
-      project_id: "field_20261015_demo",
-      phase: "research_positioning",
-      created_at: "2026-10-15T09:00:00Z",
-      updated_at: "2026-10-15T09:30:00Z",
-      research_context: FAKE_CONTEXT,
-      counts: { sites: 1, informants: 0, proposals: 0 },
-    },
-  ];
+// ---------------------------------------------------------------- 归属存储（spec 对齐：创建需令牌 + 列表过滤 + 404 隔离）
+
+interface StoredProject { id: string; owner: string; }
+
+/** 内存项目登记：id → 归属（anon:<token>）。mock 轻量——只记归属，内容恒返回假数据。 */
+const projects = new Map<string, StoredProject>();
+
+/** 与后端 owner_from_request 同构：裸 token 归一化 anon:<token>；缺失/空 → null。 */
+function ownerFromHeaders(req: IncomingMessage): string | null {
+  const raw = String(req.headers["x-owner-token"] ?? "").trim();
+  return raw === "" ? null : `anon:${raw}`;
+}
+
+/** 项目归属守卫：不存在/归属不符/无令牌 → 404（不泄露存在性，与后端 checked_owned_project 同形）。 */
+function ownedProject(res: ServerResponse, req: IncomingMessage, projectId: string): boolean {
+  const owner = ownerFromHeaders(req);
+  const rec = projects.get(projectId);
+  if (!owner || !rec || rec.owner !== owner) {
+    sendJson(res, 404, { detail: `项目不存在: ${projectId}` });
+    return false;
+  }
+  return true;
 }
 
 function fakeSnapshot(projectId: string) {
@@ -272,6 +283,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
 
   if (method === "POST" && (m = RE_MESSAGES.exec(path))) {
     await readBody(req); // 请求体 {text, idempotency_key?} 对 mock 无实际作用
+    const projectId = decodeURIComponent(m[1]);
+    if (!ownedProject(res, req, projectId)) return;
     // 403 门（同构 turns.py::_resolve_clients）：服务端未配且请求头未带页面 key
     const pageKey = String(req.headers["x-dashscope-key"] ?? "").trim();
     if (!settingsState.dashscope_configured && !pageKey) {
@@ -283,7 +296,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
       });
       return;
     }
-    const projectId = decodeURIComponent(m[1]);
     const turnId = newTurnId();
     turns.set(turnId, { projectId, frames: buildScript(turnId), status: "running" });
     sendJson(res, 201, { turn_id: turnId, status: "running" });
@@ -291,6 +303,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   }
 
   if (method === "GET" && (m = RE_EVENTS.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const turnId = decodeURIComponent(m[2]);
     const record = turns.get(turnId);
     // 未知 tid 也现编一份脚本（演示容错，方便直接 GET 冒烟）
@@ -299,6 +312,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   }
 
   if (method === "POST" && (m = RE_CANCEL.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const turnId = decodeURIComponent(m[2]);
     const record = turns.get(turnId);
     if (!record) {
@@ -312,6 +326,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
 
   // GET /projects/:id/proposals → 版本列表（Task 8 rest.listProposals 消费）
   if (method === "GET" && (m = RE_PROPOSALS.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     sendJson(res, 200, [
       { id: "doc_1", kind: "proposal", version: "draft", created_at: "2026-10-15T09:00:00Z" },
       { id: "doc_2", kind: "proposal", version: "final", created_at: "2026-10-15T10:00:00Z" },
@@ -323,6 +338,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   // 路由顺序红线：必须在 RE_PROPOSAL（/proposal）之前匹配，否则被其截胡。
   // mock 职责边界：只复刻后端的状态码/响应头/文件名形状（docx 返回 PK 魔数、txt 轻量去标记），不引入 python-docx 逻辑。
   if (method === "GET" && (m = RE_DOWNLOAD.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const doc = fakeProposal();
     const format = url.searchParams.get("format") ?? "md";
     if (format === "docx") {
@@ -355,6 +371,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
 
   // GET /projects/:id/proposals/:docId/download → 三格式附件（by-id 端点，ProposalView 主入口）。
   if (method === "GET" && (m = RE_BY_ID_DOWNLOAD.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     const doc = fakeProposal();
     const format = url.searchParams.get("format") ?? "md";
     if (format === "docx") {
@@ -386,12 +403,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   }
 
   if (method === "GET" && (m = RE_PROPOSAL.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
     sendJson(res, 200, fakeProposal());
     return;
   }
 
   if (method === "GET" && path === "/projects") {
-    sendJson(res, 200, fakeProjectList());
+    const owner = ownerFromHeaders(req);
+    if (!owner) {
+      sendJson(res, 200, []);
+      return;
+    }
+    sendJson(res, 200, [...projects.values()].filter((p) => p.owner === owner).map((p) => ({
+      project_id: p.id,
+      phase: "research_positioning",
+      created_at: "2026-10-15T09:00:00Z",
+      updated_at: "2026-10-15T09:30:00Z",
+      research_context: FAKE_CONTEXT,
+      counts: { sites: 1, informants: 0, proposals: 0 },
+    })));
     return;
   }
 
@@ -402,13 +432,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     } catch {
       body = {};
     }
+    const owner = ownerFromHeaders(req);
+    if (!owner) {
+      sendJson(res, 400, {
+        detail: { code: "owner_token_required", message: "创建项目需携带 X-Owner-Token 头" },
+      });
+      return;
+    }
     const projectId = body.project_id || `field_${Date.now()}`;
+    projects.set(projectId, { id: projectId, owner });
     sendJson(res, 201, { project_id: projectId, phase: "research_positioning" });
     return;
   }
 
   if (method === "GET" && (m = RE_PROJECT.exec(path))) {
-    sendJson(res, 200, fakeSnapshot(decodeURIComponent(m[1])));
+    const pid = decodeURIComponent(m[1]);
+    if (!ownedProject(res, req, pid)) return;
+    sendJson(res, 200, fakeSnapshot(pid));
     return;
   }
 

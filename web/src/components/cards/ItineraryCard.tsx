@@ -47,6 +47,17 @@ function modeIcon(mode: string): ReactNode {
   return <IconCompass className="w-4 h-4" />;
 }
 
+/** 名称链接化（SearchResultCard.tsx L58-69 先例）：有预订链接时渲染外链，否则原样文本（防御性）。 */
+function linkName(name: string, url: string): ReactNode {
+  return url ? (
+    <a href={url} target="_blank" rel="noreferrer" className="text-indigo hover:underline">
+      {name}
+    </a>
+  ) : (
+    name
+  );
+}
+
 /** 日历天数（末日为退房/返程日 → +1）；日期不可解析时返回 null（不猜天数）。 */
 function spanDays(start: string, end: string): number | null {
   const s = Date.parse(start);
@@ -68,8 +79,8 @@ function Row({
   note,
 }: {
   icon: ReactNode;
-  main: string;
-  sub: string;
+  main: ReactNode;
+  sub: ReactNode;
   price: ReactNode;
   tail?: ReactNode;
   note?: string;
@@ -110,6 +121,17 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
   const budget = toBudget(rec.budget);
   const generatedAt = strOf(rec.generated_at);
   const inputsHash = strOf(rec.inputs_hash);
+
+  // 卡片内是否存在任一预订链接（chosen 或备选候选）——决定是否显示"下单前请以飞猪页面为准"
+  const hasAnyJump =
+    [...legs, ...stays].some(
+      (raw) => strOf(asRecord(asRecord(raw).chosen).jump_url) !== "",
+    ) ||
+    alternatives.some((raw) =>
+      asArray(asRecord(raw).items).some(
+        (c) => strOf(asRecord(c).jump_url) !== "",
+      ),
+    );
 
   const days = spanDays(startDate, endDate);
   const route = [departure, ...destinations].filter((s) => s !== "").join(" → ");
@@ -191,14 +213,21 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                   const leg = asRecord(raw);
                   const hasChosen = leg.chosen !== null && leg.chosen !== undefined;
                   const chosen = asRecord(leg.chosen);
-                  const sub = [
+                  const chosenName = hasChosen ? strOf(chosen.name) : "";
+                  const parts: ReactNode[] = [
                     DIRECTION[strOf(leg.direction)] ?? strOf(leg.direction),
                     strOf(leg.date),
-                    hasChosen ? strOf(chosen.name) : "",
+                    hasChosen && chosenName
+                      ? linkName(chosenName, strOf(chosen.jump_url))
+                      : "",
                     hasChosen ? extraLine(asRecord(chosen.extra), 2) : "",
-                  ]
+                  ];
+                  const sub = parts
                     .filter((s) => s !== "")
-                    .join(" · ");
+                    .reduce<ReactNode>(
+                      (acc, p, i) => (i === 0 ? p : <>{acc} · {p}</>),
+                      "",
+                    );
                   return (
                     <Row
                       key={`leg-${i}`}
@@ -243,7 +272,14 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                     <Row
                       key={`stay-${i}`}
                       icon={<IconBed className="w-4 h-4" />}
-                      main={(hasChosen && strOf(chosen.name)) || strOf(stay.dest) || "住宿"}
+                      main={
+                        hasChosen
+                          ? linkName(
+                              strOf(chosen.name) || strOf(stay.dest) || "住宿",
+                              strOf(chosen.jump_url),
+                            )
+                          : strOf(stay.dest) || "住宿"
+                      }
                       sub={sub}
                       tail={boolOf(stay.long_stay_unverified) ? <Chip tone="ochre">长住日价待核验</Chip> : undefined}
                       price={
@@ -285,7 +321,7 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                                 {modeIcon(mode)}
                               </span>
                               <span className="flex-1 min-w-0 truncate text-inksoft">
-                                {strOf(c.name) || "未命名候选"}
+                                {linkName(strOf(c.name) || "未命名候选", strOf(c.jump_url))}
                               </span>
                               {mode && <Chip tone="neutral">{mode}</Chip>}
                               <Price value={numOf(c.price)} source="search" raw={strOf(c.price_raw) || undefined} />
@@ -305,7 +341,8 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
 
           {(generatedAt || inputsHash) && (
             <div className="mt-3 flex items-center gap-2 text-[10.5px] text-inkfaint">
-              {generatedAt && <span className="num">{generatedAt}</span>}
+              {generatedAt && <span className="num">{generatedAt.slice(0, 10)}</span>}
+              {hasAnyJump && <span>下单前请以飞猪页面为准</span>}
               {inputsHash && <span className="num ml-auto">inputs {inputsHash}</span>}
             </div>
           )}

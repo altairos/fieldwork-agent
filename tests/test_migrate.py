@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from fieldwork_agent.core import migrate as migrate_mod
 from fieldwork_agent.core.migrate import migrate_to_sqlite
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.kernel.repository.sqlite_repo import SqliteRepository
@@ -56,6 +57,7 @@ def test_migrate_imports_all_seven_types(legacy_json_repo, tmp_path):
         assert ss["research_context"] == js["research_context"]
         assert ss["created_at"] == js["created_at"]   # 时间戳保形（M2）
         assert ss["updated_at"] == js["updated_at"]
+        assert ss["owner"] == js["owner"]   # 归属随迁（legacy fixture 无 owner 键，双侧 None）
         assert [m["content"] for m in sqlite.get_messages(pid, 0)] == \
                [m["content"] for m in legacy_json_repo.get_messages(pid, 0)]
         # 窗口（C1）：sqlite 侧现算窗口 == json 侧 backfill 后的全量消息史；
@@ -77,6 +79,40 @@ def test_migrate_imports_all_seven_types(legacy_json_repo, tmp_path):
     assert report["search_cache"] == 1
     assert report["knowledge"] == 1
     assert report["proposals"] == 1
+    assert report["confirmations"] == 0      # fixture 无确认记录
+    assert report["conflicts"] == 0 and report["backups"] == 0
+
+
+def test_migrate_pre_r09_list_record(tmp_path):
+    """R09 前保存的新式 proposals 列表记录（无 dep_hash 键）迁移读出仍须平价。
+
+    dep_hash 是 R09 新增：单值键分支已补空键（bfef02c），但列表记录走
+    _proposal_doc(dict(record)+content) 读出，旧记录无键则 json 侧 6 键 vs
+    sqlite 侧恒 7 键（dep_hash=""），_verify 全等校验必失败。真实存量
+    （R09 前用过 save_proposal 的项目）正是这种形状，fixture 未覆盖。
+    """
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    shutil.copytree(FIXTURE, projects / "legacy_project")
+    state_path = projects / "legacy_project" / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # 单值键提升为 R09 前的新式列表记录（有 id/kind/version，无 dep_hash）
+    legacy = state.pop("proposal_draft")
+    state["proposals"] = [{
+        "id": "prop_20260105101500_ab12cd34",
+        "kind": "proposal",
+        "version": "draft",
+        "filename": legacy["filename"],
+        "saved_at": legacy.get("saved_at", ""),
+    }]
+    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False),
+                          encoding="utf-8")
+
+    json_repo = JsonRepository(projects_dir=projects)
+    sqlite = SqliteRepository(db_path=tmp_path / "fieldwork.db")
+    migrate_to_sqlite(json_repo, sqlite)   # 缺补键时抛 RuntimeError（即红）
+    pid = "legacy_project"
+    assert sqlite.list_proposals(pid) == json_repo.list_proposals(pid)
 
 
 def test_migrate_idempotent(legacy_json_repo, tmp_path):
@@ -142,33 +178,120 @@ def test_migrate_two_legacy_projects_same_proposal_id(tmp_path):
     assert [r[0] for r in rows] == ["legacy_a", "legacy_b"]
 
 
-def test_migrate_pre_r09_list_record(tmp_path):
-    """R09 前保存的新式 proposals 列表记录（无 dep_hash 键）迁移读出仍须平价。
-
-    dep_hash 是 R09 新增：单值键分支已补空键（bfef02c），但列表记录走
-    _proposal_doc(dict(record)+content) 读出，旧记录无键则 json 侧 6 键 vs
-    sqlite 侧恒 7 键（dep_hash=""），_verify 全等校验必失败。真实存量
-    （R09 前用过 save_proposal 的项目）正是这种形状，fixture 未覆盖。
-    """
+def _legacy(tmp_path):
+    """拷 fixture 为单个 legacy_project 项目，返回 (json_repo, sqlite)。"""
     projects = tmp_path / "projects"
     projects.mkdir()
     shutil.copytree(FIXTURE, projects / "legacy_project")
-    state_path = projects / "legacy_project" / "state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    # 单值键提升为 R09 前的新式列表记录（有 id/kind/version，无 dep_hash）
-    legacy = state.pop("proposal_draft")
-    state["proposals"] = [{
-        "id": "prop_20260105101500_ab12cd34",
-        "kind": "proposal",
-        "version": "draft",
-        "filename": legacy["filename"],
-        "saved_at": legacy.get("saved_at", ""),
-    }]
-    state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False),
-                          encoding="utf-8")
+    return (JsonRepository(projects_dir=projects),
+            SqliteRepository(db_path=tmp_path / "fieldwork.db"))
 
+
+def test_migrate_conflict_rejected_without_force(tmp_path):
+    """R03：同名但未标迁移的项目 = 可能的原生存量，不得静默清空。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    sqlite.create("legacy_project")                       # 无 migrated: 标记的同名项目
+    sqlite.append_message("legacy_project", "user", "原生写入的消息")
+    with pytest.raises(RuntimeError, match="force"):
+        migrate_to_sqlite(json_repo, sqlite)
+    assert len(sqlite.get_messages("legacy_project", 0)) == 1   # 未被清空
+    assert sqlite.get_messages("legacy_project", 0)[0]["content"] == "原生写入的消息"
+
+
+def test_migrate_force_overwrites_with_backup(tmp_path):
+    json_repo, sqlite = _legacy(tmp_path)
+    sqlite.create("legacy_project")
+    sqlite.append_message("legacy_project", "user", "原生写入的消息")
+    report = migrate_to_sqlite(json_repo, sqlite, force=True)
+    assert report["conflicts"] == 1 and report["backups"] == 1
+    assert len(sqlite.get_messages("legacy_project", 0)) == 4   # 覆盖为 json 侧全量
+    bak = tmp_path / "fieldwork.db.bak.1"
+    assert bak.exists()
+    with sqlite3.connect(bak) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_backup_rolling_three(tmp_path):
+    """滚动 3 份且方向正确：bak.1 最新（marker-1..3）、逐级后移、超出丢弃。
+
+    内容敏感断言：各次备份前追加一条 marker，三代快照内容必须互异——
+    滚动方向写反（bak.1 变最旧）时本用例必红（终审 T4-M1）。
+    """
+    json_repo, sqlite = _legacy(tmp_path)          # json_repo 本用例不用，仅为建库副作用
+    del json_repo
+    sqlite.create("p1")
+    for n in (1, 2, 3):
+        sqlite.append_message("p1", "user", f"marker-{n}")
+        migrate_mod.backup(sqlite, keep=3)
+
+    def msgs(i: int) -> list[str]:
+        conn = sqlite3.connect(tmp_path / f"fieldwork.db.bak.{i}")
+        try:   # 显式关闭：with 只提交不关连接，句柄滞留会让第 4 轮滚动
+            rows = [r[0] for r in conn.execute(   # 的 os.replace 报 WinError 32
+                "SELECT content FROM messages")]
+        finally:
+            conn.close()
+        return rows
+
+    assert msgs(1) == ["marker-1", "marker-2", "marker-3"]   # bak.1 = 最新快照
+    assert msgs(2) == ["marker-1", "marker-2"]
+    assert msgs(3) == ["marker-1"]
+
+    migrate_mod.backup(sqlite, keep=3)              # 第 4 次：最旧一代被顶出，keep 上限
+    assert not (tmp_path / "fieldwork.db.bak.4").exists()
+    assert msgs(1) == ["marker-1", "marker-2", "marker-3"]  # 快照内容不变
+    assert msgs(3) == ["marker-1", "marker-2"]              # 原 bak.2 后移
+    assert not (tmp_path / "fieldwork.db.bak.tmp").exists() # tmp 不残留（联动 T4-M2）
+
+
+def test_backup_returns_none_when_db_absent(tmp_path):
+    repo = SqliteRepository(db_path=tmp_path / "fieldwork.db")
+    repo.create("p1")
+    (tmp_path / "fieldwork.db").unlink()          # 模拟首迁：库文件不存在
+    assert migrate_mod.backup(repo) is None
+
+
+def test_migrate_imports_confirmations(tmp_path):
+    """确认面（confirmations 列表 + proposal_confirmed）全量搬迁并进 _verify。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    pid = json_repo.list_projects()[0]["project_id"]
+    rid = json_repo.save_proposal(pid, "# 方案", version="final")
+    rec = json_repo.confirm_proposal(pid, rid)
+    report = migrate_to_sqlite(json_repo, sqlite)
+    assert report["confirmations"] == 1
+    js, ss = json_repo.get_state(pid), sqlite.get_state(pid)
+    assert ss["confirmations"] == js["confirmations"] == [rec]
+    assert ss["proposal_confirmed"] is True
+
+
+def test_verify_catches_confirmation_drift(tmp_path):
+    """_verify 盖到确认面：sqlite 侧确认表少一行 → 报错终止。"""
+    json_repo, sqlite = _legacy(tmp_path)
+    pid = json_repo.list_projects()[0]["project_id"]
+    rid = json_repo.save_proposal(pid, "# 方案", version="final")
+    json_repo.confirm_proposal(pid, rid)
+    with sqlite._connect() as conn:                 # 先标记已迁→跳过导入，只跑 _verify
+        conn.execute("INSERT INTO projects(project_id,created_at,updated_at,phase)"
+                     " VALUES(?,?,?,?)", (pid, "2026-01-01", "2026-01-02",
+                                          json_repo.get_phase(pid)))
+        conn.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES(?,?)",
+                     (f"migrated:{pid}", "json"))
+    with pytest.raises(RuntimeError, match="confirmations"):
+        migrate_to_sqlite(json_repo, sqlite)
+
+
+def test_migrate_carries_owner(tmp_path):
+    """归属随迁：json 侧有主项目迁移后 sqlite 侧 owner 一致；无主项目保持无主。"""
+    projects = tmp_path / "projects"
+    projects.mkdir()
     json_repo = JsonRepository(projects_dir=projects)
+    json_repo.create("p_owned", owner="anon:old-device")
+    json_repo.set_phase("p_owned", "field_site_profiles")
     sqlite = SqliteRepository(db_path=tmp_path / "fieldwork.db")
-    migrate_to_sqlite(json_repo, sqlite)   # 缺补键时抛 RuntimeError（即红）
-    pid = "legacy_project"
-    assert sqlite.list_proposals(pid) == json_repo.list_proposals(pid)
+    migrate_to_sqlite(json_repo, sqlite)
+    assert sqlite.get_state("p_owned")["owner"] == "anon:old-device"
+
+    json_repo.create("p_free")                       # 同库新增无主项目
+    migrate_to_sqlite(json_repo, sqlite)              # p_owned 已标记跳过，只迁 p_free
+    assert sqlite.get_state("p_free")["owner"] is None
+    assert sqlite.get_state("p_owned")["owner"] == "anon:old-device"   # 幂等重迁不丢归属

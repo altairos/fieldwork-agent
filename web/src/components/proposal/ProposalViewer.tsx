@@ -64,7 +64,8 @@ const COMPONENTS: Components = {
     </pre>
   ),
   a: ({ children, href }) => (
-    <a href={href} className="text-indigo underline decoration-indigo/30 hover:decoration-indigo">
+    <a href={href} target="_blank" rel="noreferrer"
+       className="text-indigo underline decoration-indigo/30 hover:decoration-indigo">
       {children}
     </a>
   ),

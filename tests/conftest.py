@@ -125,3 +125,50 @@ def _public_assets(tmp_path, monkeypatch):
     assets.reload(empty)
     yield
     assets.reload(empty)
+
+
+# ------------------------------------------------------- 归属令牌（ownership）
+# 裸令牌（X-Owner-Token 传输形态）与归一化归属值；OTHER_TOKEN 供“他人
+# 视角”用例（Task 7/8）。test_web_* 各文件经 make_client 默认携带 OWNER。
+OWNER_TOKEN = "e2e-owner-0000000000000000000000000000"
+OTHER_TOKEN = "e2e-other-00000000000000000000000000000"
+OWNER = f"anon:{OWNER_TOKEN}"
+
+
+def make_client(app, *, owner_token: str | None = OWNER_TOKEN,
+                headers: dict[str, str] | None = None):
+    """ASGI 测试客户端工厂：默认携带 X-Owner-Token（归属 = OWNER）。
+
+    owner_token=None → 无令牌客户端（POST /projects 400 / GET /projects
+    []）；headers 可叠加 X-App-Token 等，显式传入同名键可覆盖 owner 头。
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    merged = dict(headers or {})
+    if owner_token is not None:
+        merged.setdefault("X-Owner-Token", owner_token)
+    return AsyncClient(transport=ASGITransport(app=app),
+                       base_url="http://test", headers=merged)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_host_env(tmp_path, monkeypatch):
+    """隔离部署边界环境：宿主侧变量不泄入任何测试，测试也不碰真实用户目录。
+
+    根因（2026-10-18 web 401 批量失败排查）：共享开发 shell 里临时 export 的
+    FIELDWORK_APP_TOKEN（部署验证用）被 pytest 子进程继承，config=None 的
+    web 测试构造真实 Config() 读到令牌 → App Token 守卫拦掉全部 /projects
+    系请求（70 例 401）。CI/部署流水线复用 runner 时同理会无差别崩。
+    测试对部署边界变量必须不敏感：这里统一剥离，并仿 isolated_home 把
+    CONFIG_DIR/PROJECTS_DIR/Path.home 指向 tmp_path——真实 ~/.fieldwork_agent
+    （含 amap_api_key）与 ~/.flyai 不再被测试读写。
+    """
+    for var in ("FIELDWORK_APP_TOKEN", "DASHSCOPE_API_KEY",
+                "DASHSCOPE_HTTP_BASE_URL", "FLYAI_API_KEY", "AMAP_API_KEY",
+                "FA_DASHSCOPE_PLAN", "FA_INTERVIEW_MODEL",
+                "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL", "FA_STORAGE"):
+        monkeypatch.delenv(var, raising=False)
+    from fieldwork_agent.core import config as config_mod
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config_mod, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))

@@ -148,6 +148,41 @@ describe("ItineraryCard 时间线与预算", () => {
     expect(screen.getByText("¥13500")).toBeInTheDocument();    // budget.items[1].amount
     expect(screen.getByText("预算内")).toBeInTheDocument();      // coverage=complete 且未超支
   });
+  const PLAN_LINKED = {
+    ...PLAN,
+    legs: [{
+      ...PLAN.legs[0],
+      chosen: { ...PLAN.legs[0].chosen, jump_url: "https://flight.example/mu5843" },
+    }],
+    stays: [{
+      ...PLAN.stays[0],
+      chosen: { ...PLAN.stays[0].chosen, jump_url: "https://hotel.example/x" },
+    }],
+    alternatives: [{
+      from: "昆明", to: "喜洲",
+      items: [{ name: "G2937", price: 350, mode: "train", price_raw: "¥350", extra: {},
+                jump_url: "https://train.example/y" }],
+    }],
+  };
+  test("chosen/备选带 jump_url 时链接化并显示时效提示（A3+D11）", () => {
+    render(<ItineraryCard data={PLAN_LINKED} />);
+    const legLink = screen.getByRole("link", { name: "MU5843" });   // 交通腿 chosen 名称链接化（驻留项补盖）
+    expect(legLink).toHaveAttribute("href", "https://flight.example/mu5843");
+    expect(legLink).toHaveAttribute("target", "_blank");
+    const stayLink = screen.getByRole("link", { name: "喜洲客栈" });
+    expect(stayLink).toHaveAttribute("href", "https://hotel.example/x");
+    expect(stayLink).toHaveAttribute("target", "_blank");
+    fireEvent.click(screen.getByText("备选路线（1）"));   // 展开折叠区（jsdom 不自动展开 details）
+    const altLink = screen.getByRole("link", { name: "G2937" });
+    expect(altLink).toHaveAttribute("href", "https://train.example/y");
+    expect(screen.getByText("下单前请以飞猪页面为准")).toBeInTheDocument();
+  });
+  test("无链接 PLAN 不产生链接与时效提示；时戳只显日期", () => {
+    render(<ItineraryCard data={PLAN} />);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByText(/下单前请以飞猪页面为准/)).not.toBeInTheDocument();
+    expect(screen.getByText("2026-10-15")).toBeInTheDocument();   // generated_at 截 yyyy-mm-dd
+  });
 });
 
 describe("其余卡片", () => {

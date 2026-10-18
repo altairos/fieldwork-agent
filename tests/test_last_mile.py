@@ -6,8 +6,12 @@ direction_transit 记录入参返回固定方案页。断言三组语义：
 - 成功路径：transit 用两端正算坐标，v3 跨城语义 city=出发市、cityd=到达市；
 - 任一端 geocode 失败（amap_no_result 或抛异常）→ 统一 amap_no_result
   失败包络（message 指明哪一端），且不再发 transit；
-- transit 失败 → ok=True + 空 options + degraded（末端接驳查不到不算整体失败）。
+- transit 失败 → ok=True + 空 options + degraded（末端接驳查不到不算整体失败）；
+- date_hint 透传（N1）：合法 YYYY-MM-DD 且 3 天内 → v3 date；非法/超窗 →
+  忽略 + degraded 附言（行程规划常为未来数周，透传是增强非承诺）。
 """
+from datetime import date, timedelta
+
 from fieldwork_agent.kernel.aggregation.last_mile import plan_last_mile
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -56,10 +60,12 @@ class StubTransitClient:
             formatted_address=f"云南省{g['city']}{g['district']}", source="amap"))
 
     def direction_transit(self, origin: str, destination: str,
-                          city: str = "", cityd: str = "") -> Envelope:
+                          city: str = "", cityd: str = "",
+                          date: str = "") -> Envelope:
         self.calls.append(("direction_transit", {"origin": origin,
                                                  "destination": destination,
-                                                 "city": city, "cityd": cityd}))
+                                                 "city": city, "cityd": cityd,
+                                                 "date": date}))
         if self.fail_transit:
             return Envelope(ok=False, error=ToolError(
                 code="amap_error", message="服务不可用", hint="稍后重试"))
@@ -175,6 +181,47 @@ def test_transit_failure_degrades_to_empty_options():
     assert env.data["hub"].city == "昆明市"  # 两端正算结果照常返回
 
 
+# ---------------------------------------------------------------- date_hint 透传（N1）
+
+
+def test_date_hint_within_three_days_passed_to_transit():
+    """date_hint 合法且 3 天内（含当日）→ v3 date 透传进 transit，无降级。"""
+    geo = StubTransitClient()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    env = plan_last_mile("昆明", "喜洲", date_hint=tomorrow, amap_client=geo)
+    assert env.ok is True and env.degraded is None
+    transit = geo.calls[2][1]
+    assert transit["date"] == tomorrow
+
+
+def test_date_hint_beyond_three_days_not_passed_with_degraded():
+    """超 3 天窗（调研行程典型几周后）→ 不透传 + degraded 说明已按实时班次查。"""
+    geo = StubTransitClient()
+    far = (date.today() + timedelta(days=10)).isoformat()
+    env = plan_last_mile("昆明", "喜洲", date_hint=far, amap_client=geo)
+    assert env.ok is True
+    assert geo.calls[2][1]["date"] == ""          # 不透传
+    assert env.degraded and "3 天" in env.degraded
+
+
+def test_date_hint_invalid_format_ignored_with_degraded():
+    """非 YYYY-MM-DD（自然语言等）→ 忽略不透传 + degraded 提示格式（不拼串、不崩）。"""
+    geo = StubTransitClient()
+    env = plan_last_mile("昆明", "喜洲", date_hint="下周三", amap_client=geo)
+    assert env.ok is True
+    assert geo.calls[2][1]["date"] == ""
+    assert env.degraded and "YYYY-MM-DD" in env.degraded
+
+
+def test_date_note_merges_with_transit_failure_note():
+    """date 降级附言与 transit 失败附言同时发生 → 合并呈现（两条信息都不丢）。"""
+    geo = StubTransitClient(fail_transit=True)
+    far = (date.today() + timedelta(days=10)).isoformat()
+    env = plan_last_mile("昆明", "喜洲", date_hint=far, amap_client=geo)
+    assert env.ok is True
+    assert "3 天" in env.degraded and "公路" in env.degraded
+
+
 # ---------------------------------------------------------------- 注册面
 
 
@@ -185,3 +232,6 @@ def test_plan_last_mile_registered_in_schemas():
     props = tools["plan_last_mile"]["function"]["parameters"]["properties"]
     assert set(props) == {"hub", "site", "date_hint"}
     assert "amap_client" not in props
+    # N1：date_hint 不再是占位——description 钉死格式与 3 天窗语义
+    assert "YYYY-MM-DD" in props["date_hint"]["description"]
+    assert "3 天" in props["date_hint"]["description"]

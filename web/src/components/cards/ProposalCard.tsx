@@ -4,6 +4,7 @@ import { IconBook, IconCaret, IconDownload } from "../ui/icons";
 import { ApiError, rest } from "../../api/rest";
 import { useExportFormatStore } from "../../stores/exportFormat";
 import { authHeaders } from "../../lib/keys";
+import { ownerHeaders } from "../../lib/session";
 import { CardShell, NoData, Notice } from "./CardShell";
 import { asArray, asRecord, strOf } from "./data";
 import type { ToolCardProps } from "./types";
@@ -92,12 +93,13 @@ export function ProposalCard({ data, degraded, projectId }: ProposalCardProps) {
     : undefined;
 
   // 下载入口（终审#1）：/projects 前缀受 F02 令牌保护，静态锚点导航带不了 X-App-Token
-  // （启用令牌必 401）→ preventDefault 后 fetch + authHeaders()（点击时读取，新存令牌即时
-  // 生效）取 blob 走临时链下载。卡片无错误态 UI，失败仅 console.error 不打断时间线渲染。
+  // （启用令牌必 401）→ preventDefault 后 fetch + authHeaders()/ownerHeaders()（点击时
+  // 读取，新存令牌即时生效）取 blob 走临时链下载。卡片无错误态 UI，失败仅 console.error。
   async function downloadProposal(e: MouseEvent<HTMLAnchorElement>) {
     e.preventDefault();
     try {
-      const resp = await fetch(rest.proposalDownloadUrl(pid, format), { headers: authHeaders() });
+      const resp = await fetch(rest.proposalDownloadUrl(pid, format),
+        { headers: { ...authHeaders(), ...ownerHeaders() } });
       if (!resp.ok) throw new ApiError(resp.status, "下载失败");
       const url = URL.createObjectURL(await resp.blob());
       const a = Object.assign(document.createElement("a"), { href: url, download: "" });

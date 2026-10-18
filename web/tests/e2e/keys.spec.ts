@@ -33,10 +33,17 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   // 翻转 mock 为「服务端未配」，模拟无环境变量部署
   await setMockSettings({ dashscope_configured: false, flyai_configured: false });
 
-  // ① 工作台锁定（直接进已有项目；mock 项目列表里有 field_20261015_demo）
-  await page.goto("/p/field_20261015_demo");
-  // 可浏览：快照加载（Header 项目名来自 research_context.topic）
-  await expect(page.getByText("大理乡村旅居研究")).toBeVisible({ timeout: 10_000 });
+  // ① 工作台锁定：先 UI 创建项目（Task 9 注入 owner 头 → mock 归属登记；
+  //    直接 goto 固定 id 在归属化 mock 下会 404，故创建后复用本会话 URL）
+  await page.goto("/");
+  await page.locator("textarea").first().fill("研究大理乡村旅居，单人两周，预算一万元");
+  await page.getByRole("button", { name: "创建项目" }).click();
+  await expect(page).toHaveURL(/\/p\/[^/]+/, { timeout: 10_000 });
+  const projectUrl = page.url();
+  // 可浏览：快照加载（Header 项目名来自 research_context.topic；归属相符即 fakeSnapshot）。
+  //   getByText 会同时命中右栏「研究主题」textarea 的同值 value（Playwright 按 value 匹配），
+  //   scope 到 banner 消歧（目标断言就是 Header 项目名）
+  await expect(page.getByRole("banner").getByText("大理乡村旅居研究")).toBeVisible({ timeout: 10_000 });
   // 不可发：textarea 禁用 + 锁提示 + 发送键禁用
   await expect(page.getByLabel("消息输入")).toBeDisabled();
   await expect(page.getByTestId("composer-lock-hint")).toContainText("未配置百炼 API Key");
@@ -53,8 +60,8 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   await expect(page.getByText("已保存")).toBeVisible();
 
   // ③ 返回工作台：解锁（本地 key 优先生效，免查直通）→ 发送并断言鉴权头
-  await page.goto("/p/field_20261015_demo");
-  await expect(page.getByText("大理乡村旅居研究")).toBeVisible();
+  await page.goto(projectUrl);
+  await expect(page.getByRole("banner").getByText("大理乡村旅居研究")).toBeVisible();
   await expect(page.getByLabel("消息输入")).toBeEnabled();
 
   const headersSeen: Record<string, string> = {};
