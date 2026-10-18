@@ -22,6 +22,7 @@
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime
 from typing import Any
 
@@ -154,7 +155,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     by_tag: dict[str, list[tuple[str, ItemPage]]] = defaultdict(list)
     succeeded = 0
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(fn) for _, _, fn in tasks]
+        # N05：copy_context().run 使工作线程继承提交时 contextvar（当前调用实例）
+        futures = [pool.submit(copy_context().run, fn) for _, _, fn in tasks]
         for (tag, meta, _), fut in zip(tasks, futures, strict=True):
             env = fut.result()
             if env.ok and isinstance(env.data, ItemPage):
@@ -179,7 +181,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
                 location=geo.location, radius=FACILITY_RADIUS)
                 for kw in DEFAULT_FACILITY_KEYWORDS]
             with ThreadPoolExecutor(max_workers=5) as pool:
-                fac_envs = [fut.result() for fut in [pool.submit(t) for t in geo_tasks]]
+                fac_envs = [fut.result() for fut in
+                            [pool.submit(copy_context().run, t) for t in geo_tasks]]
             fac_items: list[SearchItem] = []
             seen_names: set[str] = set()
             any_around_ok = False

@@ -6,6 +6,7 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timedelta
 
 from fieldwork_agent.kernel.models import (
@@ -61,8 +62,9 @@ def _sample_curve(client, departure: str, destination: str,
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         for d in dates:
-            pool.submit(_one, "flight", d)
-            pool.submit(_one, "hotel", d)
+            # N05：copy_context().run 使采样线程继承提交时 contextvar（当前调用实例）
+            pool.submit(copy_context().run, _one, "flight", d)
+            pool.submit(copy_context().run, _one, "hotel", d)
 
     notes: list[str] = []
     if all(results.get(("flight", d)) is None for d in dates):

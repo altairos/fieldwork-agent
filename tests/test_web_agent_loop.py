@@ -514,6 +514,78 @@ def test_itinerary_quotes_bound_to_live_snapshots(env):
     assert old and all(c["id"] != stay_cid for c in old)
 
 
+class SeqHotelPriceFlyAI:
+    """N05：search_hotels 带日期时按调用序返回 11、22……（Lock 保护，行程
+    内部搜索走线程池）；无日期直查返回固定价。其余搜索固定价。"""
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self._n = 0
+
+    def search_hotels(self, *, dest_name="", check_in="", check_out="", **kw):
+        if not check_in:
+            price = 99.0
+        else:
+            with self._lock:
+                price = 11.0 * (self._n + 1)
+                self._n += 1
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name="客栈A", price=price)],
+            total=1, cheapest=price, dearest=price))
+
+    def __getattr__(self, name):
+        def stub(**kw):
+            price = 100.0 if name == "search_trains" else 300.0
+            return Envelope(ok=True, data=ItemPage(
+                items=[SearchItem(name=f"{name}X", price=price)],
+                total=1, cheapest=price, dearest=price))
+        return stub
+
+
+def test_n05_same_spec_two_itineraries_bind_own_snapshots(env):
+    """N05：同规格（同 dest/日期）连续两次 compose_itinerary，酒店价 11→22；
+    每份行程的住宿引用必须绑定自己那次的快照，而非都被后写覆盖成第二次。"""
+    repo, tm = env
+    itin_args = {"departure": "昆明", "destinations": ["大理"],
+                 "start_date": "2026-11-01", "duration_days": 3,
+                 "budget_total": 5000}
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_itinerary",
+                                          "arguments": dict(itin_args)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "compose_itinerary",
+                                          "arguments": dict(itin_args)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "排两次同样行程", tm,
+                         llm, SeqHotelPriceFlyAI()))
+    index = repo.list_cached_searches("p1")
+    itins = [c["id"] for c in index if c["tool"] == "compose_itinerary"]
+    assert len(itins) == 2, itins
+    stays = []
+    for cid in itins:
+        plan = repo.get_cached_search("p1", cid)["result"]
+        stay = next(b for b in plan["budget"]["items"]
+                    if b["name"].startswith("住宿"))
+        ref_cid = re.search(r"flyai 快照 ([^\s（]+)", stay["source_ref"]).group(1)
+        cheapest = repo.get_cached_search("p1", ref_cid)["result"]["cheapest"]
+        stays.append((stay["amount"], cheapest, ref_cid))
+    # 两份行程引用不同快照（未被后写覆盖成同一个）
+    assert len({c for _, _, c in stays}) == 2, stays
+    # 两份用了不同酒店价（11 与 22）
+    assert len({c for _, c, _ in stays}) == 2, stays
+    # 引用与实付一致：amount/cheapest 系数相同（= 夜数×房间数）；
+    # 若被错绑到另一次的快照，两份系数会不同（旧实现：11 价行程引 22 快照）
+    ratios = {round(amt / cheap, 6) for amt, cheap, _ in stays}
+    assert len(ratios) == 1, stays
+
+
 # ---------------------------------------------------------------- N5 amap 快照链（宿主侧）
 
 

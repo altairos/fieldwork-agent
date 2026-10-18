@@ -40,6 +40,7 @@
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -370,7 +371,10 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     hotel_cands: dict[int, list[dict]] = defaultdict(list)
     core_ok = 0
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(fn) for _, _, fn in tasks]
+        # N05：copy_context().run 使工作线程继承提交时的 contextvar（宿主标记的
+        # 当前调用实例 call_id）——每任务一份独立拷贝，不互相重入；使聚合内部
+        # 搜索经 recorder 时能带上调用实例标签（同规格多次调用按实例区分绑定）。
+        futures = [pool.submit(copy_context().run, fn) for _, _, fn in tasks]
         for (tag, meta, _), fut in zip(tasks, futures, strict=True):
             env = fut.result()
             if env.ok:

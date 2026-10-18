@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
@@ -31,6 +32,11 @@ _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降
 # 快捷选项标记：LLM 在枚举型提问末尾输出 [[options]]甲|乙|丙[[/options]]，
 # 轮末剥离标记、选项入消息 meta 与 turn_done payload（渐进增强：无标记则无选项）
 _OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
+
+# N05：当前工具调用实例 id（call_id）——_exec_tool 分派能力前置位，RecordingClient
+# 经 tag_provider 读取并写入每条记录的 sig["tag"]。asyncio.gather 为每个协程建独立
+# Task（各自 context 副本），to_thread 再拷贝当前 context，故并发调用互不串号。
+_CURRENT_CALL_ID: ContextVar[str] = ContextVar("fw_current_call_id", default="")
 
 
 def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
@@ -92,12 +98,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
-    recorder = RecordingClient(flyai_client) if flyai_client is not None else None
+    recorder = (RecordingClient(flyai_client, tag_provider=_CURRENT_CALL_ID.get)
+                if flyai_client is not None else None)
     # N5：amap 同款双包装（spec §5.1 快照链对高德原语同样成立）——聚合层
     # 经 dispatch 拿到的是 recorder 透传视图，实际调用被逐次记录
-    amap_recorder = (RecordingClient(amap_client)
+    amap_recorder = (RecordingClient(amap_client, tag_provider=_CURRENT_CALL_ID.get)
                      if amap_client is not None else None)
     live_refs: dict[str, str] = {}
+    # N05：按调用实例（call_id）分组的规格键→快照引用——避免整回合共享
+    # 一个可覆盖的规格→cid 字典（同规格多次调用时后者不覆盖前者的绑定）。
+    live_refs_by_call: dict[str, dict[str, str]] = {}
     snapshot_ids: list[str] = []
     drained = 0
     drained_amap = 0
@@ -285,12 +295,14 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
             # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
-                                       live_refs, drained)
+                                       live_refs, drained,
+                                       live_refs_by_call=live_refs_by_call)
             # 双 recorder 各自游标（合并视图会错位）；snapshot_ids/live_refs
             # 共享：turn_done 汇总全部快照，轮末替换按键前缀天然不冲突
             drained_amap = _drain_snapshots(repo, pid, amap_recorder,
                                             snapshot_ids, live_refs,
-                                            drained_amap, label="amap")
+                                            drained_amap, label="amap",
+                                            live_refs_by_call=live_refs_by_call)
 
     except Exception as exc:
         tm.append_event(pid, turn_id, "error",
@@ -416,7 +428,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                         if quick_replies else {})})
             buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
-                                  doc_ctx_provenance)
+                                  doc_ctx_provenance, live_refs_by_call)
             _apply_extractions(repo, pid, user_text)
             _maybe_autoname(repo, pid, llm)
             transition = check_and_advance(repo, pid)
@@ -518,7 +530,13 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
             env = Envelope(ok=False, error=ToolError(
                 code="internal_error", message=str(exc)))
     else:
-        env = await asyncio.to_thread(dispatch, name, args)
+        # N05：置位当前 call_id——to_thread 拷贝本 Task 的 context，聚合内部
+        # 经 recorder 的搜索调用均带上该 tag，供轮末按调用实例绑定快照
+        token = _CURRENT_CALL_ID.set(call_id)
+        try:
+            env = await asyncio.to_thread(dispatch, name, args)
+        finally:
+            _CURRENT_CALL_ID.reset(token)
     return (call_id, name, env)
 
 
@@ -581,14 +599,17 @@ def _resolve_live_refs(obj, live_refs: dict[str, str]):
 
 
 def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
-                          doc_ctx_provenance=None):
+                          doc_ctx_provenance=None, live_refs_by_call=None):
     """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。
 
     N04：``doc_ctx_provenance``（call_id → 生成时仓储依赖视图）供 compose_proposal
     落盘时作为 provenance_ctx 传给 save_proposal，使依赖指纹忠于生成时的
     仓储依赖版本而非保存时推测（并发外部修改时能正确判失效）。
+    N05：``live_refs_by_call``（call_id → 规格键→引用）使每份产物按自己的
+    调用实例解析快照（本调用优先，全局 live_refs 作跨调用回退）。
     """
     doc_ctx_provenance = doc_ctx_provenance or {}
+    live_refs_by_call = live_refs_by_call or {}
     events = tm.replay(pid, turn_id, after_seq=0)
     for ev in events:
         if ev.event != "tool_completed" or not ev.data.get("ok"):
@@ -600,7 +621,10 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
             continue
         data_dict = data if isinstance(data, dict) else (
             data.model_dump(mode="json") if hasattr(data, "model_dump") else {"value": data})
-        data_dict = _resolve_live_refs(data_dict, live_refs)
+        # N05：按调用实例解析——本调用记录的规格键优先（同规格不互相覆盖），
+        # 全局 live_refs 作跨调用回退（保障无 tag 历史产物仍能解析）
+        effective_refs = {**live_refs, **live_refs_by_call.get(call_id, {})}
+        data_dict = _resolve_live_refs(data_dict, effective_refs)
         if name == "profile_field_site":
             repo.save_field_site(pid, {"name": data_dict.get("location", ""),
                                        "confirmed": False, "profile": data_dict})
@@ -730,7 +754,7 @@ _AMAP_PARAMS = {
 
 
 def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
-                      label: str = "flyai") -> int:
+                      label: str = "flyai", live_refs_by_call=None) -> int:
     """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（R08 §6）。
 
     返回新游标（幂等，同一调用不会重复落盘）。flyai 路径仅记录带目的地
@@ -742,6 +766,8 @@ def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
     每次落盘同时按 ``_live_key`` 归并 规格键→快照引用（后写覆盖：同一键
     多次命中取最新），轮末 ``_persist_tool_results`` 据此替换聚合产出中
     的规格键；文案前缀随 label（flyai/amap 快照）。
+    N05：``live_refs_by_call`` 非 None 时，另按调用实例（sig["tag"] 即 call_id）
+    分组存一份规格键→引用，使同规格多次调用不会互相覆盖（“同规格≠同一次报价”）。
     recorder 为 None（宿主未注入对应客户端）时原样返回游标。
     """
     if recorder is None:
@@ -769,5 +795,10 @@ def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
         snapshot_ids.append(cid)
         key = _live_key(method, view)
         if key:
-            live_refs[key] = f"{label} 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+            ref = f"{label} 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+            live_refs[key] = ref   # 全局（后写覆盖，作跨调用回退）
+            if live_refs_by_call is not None:
+                # N05：按调用实例分组——同规格不同次调用各自绑定自己的快照
+                tag = sig.get("tag", "") or ""
+                live_refs_by_call.setdefault(tag, {})[key] = ref
     return len(recorder.calls)
