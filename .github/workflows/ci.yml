@@ -43,7 +43,7 @@ jobs:
   # 不混入 Python 矩阵；e2e 跑在扩展后的 mock server（纯 Node、确定性），
   # 无需 Python 后端 / DASHSCOPE_API_KEY / flyai。L4 不允许静默 skip（spec §6.CI）。
   frontend:
-    name: frontend (vitest + playwright L4)
+    name: frontend (tsc + vitest + playwright L4)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -59,6 +59,11 @@ jobs:
 
       - name: Install deps
         run: npm ci
+
+      # vitest 经 esbuild 转译不做类型校验，快照缺必填字段这类错误
+      # 只有 build 才暴露；门禁用 --noEmit 只查类型不出产物
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
 
       - name: Unit/component (vitest)
         run: npx vitest run
