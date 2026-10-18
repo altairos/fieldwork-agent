@@ -138,7 +138,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     # R4：用户消息即时持久化（F09 修正：先 build 后 append——
     # build_messages 读 history 后自行 append 当前消息，顺序颠倒会双发）
     messages = build_messages(repo, pid, user_text, phase)
-    repo.append_message(pid, "user", user_text)
+    # N12：用户消息绑定 turn_id（入 metadata）——retry 据此校验尾部归属，不误删他人轮
+    repo.append_message(pid, "user", user_text, {"turn_id": turn_id})
 
     iterations = 0
     total_calls = 0
@@ -440,7 +441,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         try:
             if accumulated_reply:
                 repo.append_message(pid, "assistant", accumulated_reply,
-                                    {"tool_calls": total_calls,
+                                    {"turn_id": turn_id,   # N12：绑定回合，retry 校验尾部归属
+                                     "tool_calls": total_calls,
                                      "finish_reason": finish_reason,
                                      **({"quick_replies": quick_replies}
                                         if quick_replies else {})})

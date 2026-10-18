@@ -114,12 +114,18 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
     repo = get_repo(request)
     checked_owned_project(project_id, repo, owner)
     tm = get_turn_manager(request)
+    # N11：幂等命中优先——同键已有回合则直接回其 turn_id/status（即便仍在执行），
+    # 绝不再排 run_turn；命中不受 is_writing 影响（运行中重试返回同一回合而非 409）。
+    hit = tm.lookup_idempotent(project_id, body.idempotency_key)
+    if hit is not None:
+        return {"turn_id": hit.turn_id, "status": hit.status}
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
     llm, flyai, amap = _resolve_clients(request)
-    turn = tm.create_turn(project_id, idempotency_key=body.idempotency_key)
-    background.add_task(_execute_turn, request.app, project_id,
-                        turn.turn_id, body.text, llm, flyai, amap)
+    turn, created = tm.try_create_turn(project_id, idempotency_key=body.idempotency_key)
+    if created:   # N11：仅新建才排后台执行；幂等命中（created=False）只回已有回合
+        background.add_task(_execute_turn, request.app, project_id,
+                            turn.turn_id, body.text, llm, flyai, amap)
     return {"turn_id": turn.turn_id, "status": turn.status}
 
 
@@ -129,6 +135,11 @@ async def _execute_turn(app, pid, tid, text, llm, flyai, amap):
     from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
     repo = get_repo_raw(app)
     tm = get_tm_raw(app)
+    # N11 第二层防护：回合已终态（幂等重排/重复调度/重启后误触发）→ 拒绝重跑，
+    # 不再产生模型调用与消息落盘等副作用
+    handle = tm.get_turn(pid, tid)
+    if handle is None or handle.status in TERMINAL_STATUSES:
+        return
     async with tm.acquire_write_lock(pid):
         await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap)
 
@@ -210,6 +221,9 @@ async def retry_turn(project_id: str, turn_id: str, request: Request,
 
     只允许终态回合且对话末尾必须是 [user, assistant]——先校验后弹出，
     任何一步失败都不改历史（否则弹完发现不可重试就丢消息）。
+    N12：尾部这对消息还须绑定被重试的 turn_id（run_turn 落消息时写入 metadata），
+    否则 409——杜绝「重试旧 turn_id 却弹掉并重放最新一轮」。校验与弹出同在
+    无 await 的同步段内（is_writing 已排除并发回合），构成同一原子边界。
     """
     repo = get_repo(request)
     checked_owned_project(project_id, repo, owner)
@@ -227,6 +241,15 @@ async def retry_turn(project_id: str, turn_id: str, request: Request,
         raise HTTPException(409, detail={
             "code": "retry_not_applicable",
             "message": "对话末尾不是「用户消息 + 助手回复」，无法重新生成",
+        })
+    # N12：绑定 turn_id——仅当尾部这对消息确属被重试的回合时才允许；否则
+    # （重试旧 turn_id 却会弹掉最新一轮）返回 409，绝不误删/重放他人回合的消息。
+    tail_turn_ids = {(tail[0].get("metadata") or {}).get("turn_id"),
+                     (tail[1].get("metadata") or {}).get("turn_id")}
+    if turn_id not in tail_turn_ids:
+        raise HTTPException(409, detail={
+            "code": "retry_not_latest",
+            "message": "该回合不是对话最新一轮，无法重新生成（仅最新回合可重试）",
         })
     llm, flyai, amap = _resolve_clients(request)
     repo.pop_last_message(project_id, role="assistant")

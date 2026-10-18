@@ -66,13 +66,24 @@ class TurnManager:
     # 回合生命周期
     # ------------------------------------------------------------------
 
-    def create_turn(self, pid: str, idempotency_key: str | None = None) -> TurnHandle:
-        """创建回合；幂等键命中时返回已有 handle。"""
-        if idempotency_key is not None:
-            idem_key = f"{pid}:{idempotency_key}"
-            existing_tid = self._idempotency.get(idem_key)
-            if existing_tid is not None:
-                return self._turns[f"{pid}:{existing_tid}"]
+    def lookup_idempotent(self, pid: str,
+                          idempotency_key: str | None) -> TurnHandle | None:
+        """N11：按幂等键查已有回合（纯查询、无副作用）；无键或未命中返回 None。"""
+        if idempotency_key is None:
+            return None
+        tid = self._idempotency.get(f"{pid}:{idempotency_key}")
+        return self._turns.get(f"{pid}:{tid}") if tid is not None else None
+
+    def try_create_turn(self, pid: str,
+                        idempotency_key: str | None = None) -> tuple[TurnHandle, bool]:
+        """创建回合，返回 ``(handle, created)``。
+
+        N11：``created=False`` 表示幂等命中已有回合——调用方据此只回已有
+        turn_id/status、绝不再排 run_turn（消除同键重复执行模型与重复落用户消息）。
+        """
+        existing = self.lookup_idempotent(pid, idempotency_key)
+        if existing is not None:
+            return existing, False
 
         tid = uuid.uuid4().hex[:16]
         handle = TurnHandle(turn_id=tid, pid=pid, idempotency_key=idempotency_key)
@@ -86,7 +97,11 @@ class TurnManager:
         turn_dir = self._root / pid / "turns" / tid
         turn_dir.mkdir(parents=True, exist_ok=True)
         self._write_meta(handle)
-        return handle
+        return handle, True
+
+    def create_turn(self, pid: str, idempotency_key: str | None = None) -> TurnHandle:
+        """创建回合；幂等键命中时返回已有 handle（兼容旧签名，仅需 handle）。"""
+        return self.try_create_turn(pid, idempotency_key)[0]
 
     def get_turn(self, pid: str, tid: str) -> TurnHandle | None:
         """按 pid+tid 查找内存中的 handle。"""
