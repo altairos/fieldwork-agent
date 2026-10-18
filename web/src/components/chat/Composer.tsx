@@ -112,9 +112,9 @@ export function Composer({
           aria-label="发送"
           disabled={!canSend}
           onClick={submit}
-          className="w-9 px-0 shrink-0"
+          className="w-9 !px-0 shrink-0"
         >
-          <IconSend className="w-5 h-5" />
+          <IconSend className="w-5 h-5 shrink-0" />
         </Button>
       </div>
 
