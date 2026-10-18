@@ -13,7 +13,7 @@ import type { ProjectSummary } from "../types/models";
  *   三个示例 chips（点击填入完整示例文案并聚焦输入框）。
  * 右上角唯一常驻入口：「密钥 / 登录」→ KeyDialog 弹层（仅密钥配置；导出格式/配色
  *   等偏好不放首页——导出格式在提案页下载区，配色走对话页 Header）。
- * 已有项目收进输入区下方低调折叠入口「继续上次 · 我的项目（N）」：默认收起、
+ * 已有项目收进输入区下方折叠入口「继续先前项目（N）」（朱砂描边按钮，较文本链更显眼）：默认收起、
  *   无项目不渲染；列表加载失败如实提示但绝不阻塞创建（输入区始终可用，不等列表）。
  * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
  *   首轮消息) → navigate(/p/:id?turn=…)，对话页接住回合订阅回放（不再「尚无对话」）；
@@ -269,9 +269,9 @@ export function ProjectHub() {
               type="button"
               aria-expanded={listOpen}
               onClick={() => setListOpen((v) => !v)}
-              className="text-[12.5px] text-inksoft hover:text-ink transition inline-flex items-center gap-1.5 cursor-pointer"
+              className="h-10 px-4 rounded-md border border-cinnabar/35 bg-cinnabarwash/60 text-cinnabar text-[13px] font-medium hover:bg-cinnabarwash hover:border-cinnabar/50 transition inline-flex items-center gap-2 cursor-pointer"
             >
-              继续上次 · 我的项目（{projects.length}）
+              继续先前项目（{projects.length}）
               <IconCaret className={`caret w-3.5 h-3.5 ${listOpen ? "rotate-90" : ""}`} />
             </button>
             {listOpen && (

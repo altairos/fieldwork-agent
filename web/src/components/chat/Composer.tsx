@@ -18,7 +18,7 @@ import { QuickReplies } from "./QuickReplies";
  *   发送键 line 520 `h-9 w-9 grid place-items-center rounded-md bg-cinnabar` → 复用 Task 5 `Button`
  *     primary（其配色即 line 520 的 bg-cinnabar / #F7EFE6 / hover #96382a，token 外值已在 Button 内注行号）
  *   底注 line 522-524：`flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint`
- *     「阶段推进由可验证条件判定，非模型自由发挥」
+ *     「所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。」
  *     （原右侧「模型可配置 · function calling」易被误读为可自选 LLM，已删除）
  *
  * 交互：回车发送 / Shift+Enter 换行 / 输入法组合中（isComposing）不发送；busy 时发送键禁用并显示「取消」；
@@ -150,7 +150,7 @@ export function Composer({
 
       {/* 底注：辅助说明（窄屏 flex-wrap 防挤溢） */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10.5px] text-inkfaint">
-        <span>阶段推进由可验证条件判定，非模型自由发挥</span>
+        <span>所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。</span>
       </div>
     </div>
   );

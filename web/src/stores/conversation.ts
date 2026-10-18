@@ -9,6 +9,10 @@ interface ConversationState {
   messages: ChatMessage[];
   streamBuffer: string;                  // 当前助手消息流式缓冲
   turnRunning: boolean;
+  /** 对话史是否已回填完毕（GET /messages → hydrate 落地）。
+   *  进入工作台先 reset 置 false，拉取完成 hydrate 置 true；
+   *  Timeline 据此区分「加载中」与「真·空会话」，避免加载窗口误显“尚无对话”。 */
+  hydrated: boolean;
   lastUsage: Record<string, unknown>;
   quickReplies: string[];                // 待作答的快捷选项（末条 assistant 携带；用户作答后清空）
   applyEvent: (ev: SseEvent) => void;
@@ -21,7 +25,7 @@ interface ConversationState {
   reset: () => void;
 }
 export const useConversationStore = create<ConversationState>()((set) => ({
-  messages: [], streamBuffer: "", turnRunning: false, lastUsage: {}, quickReplies: [],
+  messages: [], streamBuffer: "", turnRunning: false, hydrated: false, lastUsage: {}, quickReplies: [],
   applyEvent: (ev) => set((st) => {
     if (ev.event === "message_delta") {
       return { streamBuffer: st.streamBuffer + ev.text, turnRunning: true };
@@ -60,7 +64,7 @@ export const useConversationStore = create<ConversationState>()((set) => ({
       ...(m.quick_replies?.length ? { quickReplies: m.quick_replies } : {}),
     }));
     const last = messages[messages.length - 1];
-    return { messages, quickReplies: last?.role === "assistant" ? (last.quickReplies ?? []) : [] };
+    return { messages, hydrated: true, quickReplies: last?.role === "assistant" ? (last.quickReplies ?? []) : [] };
   }),
   beginTurn: () => set({ turnRunning: true, streamBuffer: "" }),
   // POST /messages 失败（含 409）时由 useTurn 调用：末条若是刚 push 的 user 消息则弹出，
@@ -82,5 +86,5 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     if (msgs.length && msgs[msgs.length - 1].role === "assistant") msgs.pop();
     return { messages: msgs, quickReplies: [] };
   }),
-  reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, lastUsage: {}, quickReplies: [] }),
+  reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, hydrated: false, lastUsage: {}, quickReplies: [] }),
 }));

@@ -10,7 +10,7 @@ import { IconCheck, IconCompass, IconLock } from "../ui/icons";
  *     进行中 → `bg-card border border-cinnabar/30 shadow-card` + 朱砂圆标 num 字母（line 411-413）
  *     未解锁 → `opacity-55` + 灰圆标 lock（line 415-417）+ cursor-not-allowed +
  *       title 解锁条件提示（可点性规范：锁定项不伪装可点，hover 明示“完成什么才解锁”）
- *   底部「返回项目集」按钮（line 421）。
+ *   底部「返回首页」按钮（line 421）。
  * 交互（红线：阶段推进由可验证条件判定，点击条目只切右栏查看对应面板，不推进阶段）：
  *   locked 或未传 onSelect → 点击不响应（aria-disabled + 对应 cursor）。
  */
@@ -109,7 +109,7 @@ export function LeftRail({
             className="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft hover:bg-cardsunk transition flex items-center justify-center gap-1.5"
           >
             <IconCompass className="w-4 h-4" />
-            返回项目集
+            返回首页
           </button>
         </div>
       )}

@@ -84,15 +84,18 @@ describe("Workspace 接线（App.tsx）", () => {
     const fn = stubFetch({ rest: SNAP });
     render(<App />);
 
-    // 中栏：Composer 输入框 + 时间线空态（尚无回合）
+    // 中栏：Composer 输入框就位；问题2——挂载瞬间对话史尚未回填，先显「加载中」而非误导性「尚无对话」
     expect(screen.getByRole("textbox", { name: "消息输入" })).toBeInTheDocument();
-    expect(screen.getByText(/尚无对话/)).toBeInTheDocument();
+    expect(screen.getByText(/加载中/)).toBeInTheDocument();
+    // getMessages（空史）落地 hydrate 后，hydrated=true 且无消息 → 转真空会话「尚无对话」
+    expect(await screen.findByText(/尚无对话/)).toBeInTheDocument();
     // 右栏：默认基本信息面板；红线①——快照/阶段到位也不自动切 Tab
     expect(screen.getByText(/基本信息（可随时编辑）/)).toBeInTheDocument();
     expect(useUiStore.getState().activeTab).toBe("basic-info");
 
-    // 快照加载完成后：Header 项目名取 research_context.topic
-    expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
+    // 快照加载完成后：Header 项目名取 research_context.topic。用 role=button 精确锚定 Header
+    // 改名按钮——右栏「研究主题」textarea（本地 draft 经 useEffect 同步）也含同文，纯 findByText 会多匹配。
+    expect(await screen.findByRole("button", { name: "白族村落宗族组织变迁" })).toBeInTheDocument();
     expect(fn.mock.calls.map((c) => c[0])).toContain("/projects/p1");
     expect(useProjectStore.getState().snapshot?.field_sites).toHaveLength(1);
     expect(useProjectStore.getState().phase).toBe("itinerary_planning");

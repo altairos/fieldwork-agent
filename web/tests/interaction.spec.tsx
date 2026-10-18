@@ -125,6 +125,7 @@ describe("PhaseBanner 尾文解锁条件提示", () => {
 
 describe("空对话示例 chips → Composer 草稿通道", () => {
   test("空态按当前阶段出题，点击写入输入框并聚焦：通道清空、不自动发送", () => {
+    useConversationStore.getState().hydrate([]);   // 已回填的空会话（非加载中），空态示例 chips 才渲染
     useProjectStore.getState().applyEvent({
       event: "phase_transition",
       from: "research_positioning",
@@ -151,6 +152,7 @@ describe("空对话示例 chips → Composer 草稿通道", () => {
   });
 
   test("未知阶段回落 A 阶段示例（研究定位）", () => {
+    useConversationStore.getState().hydrate([]);   // 已回填的空会话，空态示例 chips 才渲染
     useProjectStore.setState({ phase: "weird_phase" });
     render(<Timeline />);
     expect(

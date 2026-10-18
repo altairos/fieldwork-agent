@@ -278,9 +278,16 @@ describe("ToolActivityStrip 细节", () => {
 });
 
 describe("Timeline 工具结果卡（同源 tools store）", () => {
-  test("空会话显示空状态", () => {
+  test("空会话（对话史已回填）显示空状态", () => {
+    useConversationStore.getState().hydrate([]);   // 模拟 GET /messages 返回空史的回填完毕态
     render(<Timeline />);
     expect(screen.getByText(/尚无对话/)).toBeInTheDocument();
+  });
+  test("对话史回填中显示「加载中」+ 旋转 logo，不误显「尚无对话」（问题2）", () => {
+    render(<Timeline />);   // beforeEach reset 后 hydrated=false，即进入工作台的加载窗口
+    expect(screen.getByText(/加载中/)).toBeInTheDocument();
+    expect(screen.queryByText(/尚无对话/)).not.toBeInTheDocument();
+    expect(document.querySelector("img.animate-spin")).not.toBeNull();  // 不停旋转的 logo
   });
   test("collapsed 级工具（搜索原语）折叠为摘要条，点击展开原卡（C 节精简）", () => {
     const s = useToolsStore.getState();
@@ -383,9 +390,9 @@ describe("Composer", () => {
     expect(cancelled).toBe(1);
     expect(screen.getByText(/已有回合在执行/)).toBeInTheDocument();
   });
-  test("底部注明阶段推进由可验证条件判定", () => {
+  test("底部注明阶段推进文案（所需信息齐备后才进入下一阶段）", () => {
     render(<Composer turn={turnHandle()} />);
-    expect(screen.getByText(/阶段推进由可验证条件判定/)).toBeInTheDocument();
+    expect(screen.getByText(/所需信息齐备后，才会进入下一阶段/)).toBeInTheDocument();
   });
   test("快捷作答 chips：点选即发送、自定义聚焦输入框（B 节）", () => {
     const sent: string[] = [];

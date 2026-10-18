@@ -70,6 +70,7 @@ export function Timeline({
   const messages = useConversationStore((s) => s.messages);
   const streamBuffer = useConversationStore((s) => s.streamBuffer);
   const turnRunning = useConversationStore((s) => s.turnRunning);
+  const hydrated = useConversationStore((s) => s.hydrated);
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
   const phase = useProjectStore((s) => s.phase);
@@ -82,7 +83,11 @@ export function Timeline({
   // done 但数据为空的卡保留（NoData 对“成功但无数据”仍有信息量）。全部被过滤时不渲染外层缩进容器。
   const visible = settled.filter((call) =>
     (toolVisibility[call.tool] ?? "full") !== "hidden" && call.status !== "failed");
-  const empty = messages.length === 0 && settled.length === 0 && !streamBuffer && !turnRunning;
+  const idle = messages.length === 0 && settled.length === 0 && !streamBuffer && !turnRunning;
+  // 问题2：进入已有会话的工作台时，对话史回填（hydrate）需要时间；回填完成前的
+  // idle 窗口显示「加载中」+ 旋转 logo，而非误导性的「尚无对话」；hydrate 落地后仍空才是真空会话。
+  const loading = idle && !hydrated;
+  const empty = idle && hydrated;
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto scroll px-6 py-5 space-y-5">
@@ -137,6 +142,14 @@ export function Timeline({
             </button>
           )}
         </div>
+      )}
+
+      {loading && (
+        <EmptyState
+          icon={<img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 animate-spin" />}
+          title="加载中"
+          hint="正在恢复本项目的对话与上下文…"
+        />
       )}
 
       {empty && (

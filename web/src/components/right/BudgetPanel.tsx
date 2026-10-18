@@ -2,6 +2,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { IconWallet } from "../ui/icons";
 import { BudgetCard } from "../cards/registry";
 import { asArray, asRecord, strOf } from "../cards/data";
+import { formatDate } from "../../lib/datetime";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
 
 /**
@@ -60,7 +61,7 @@ export function BudgetPanel() {
         <div className="text-[12px] text-inkfaint mb-3">
           {route && <span className="block truncate">{route}</span>}
           {dateRange && <span className="num block">{dateRange}</span>}
-          {generatedAt && <span className="num block">{`方案生成于 ${generatedAt}`}</span>}
+          {generatedAt && <span className="num block">{`方案生成于 ${formatDate(generatedAt)}`}</span>}
         </div>
       )}
 
