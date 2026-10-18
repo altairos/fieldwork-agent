@@ -85,7 +85,10 @@ async def _client(service):
 
 
 async def test_stateless_http_roundtrip(service):
-    """initialize → tools/list（23 项）→ tools/call（create_project 往返）。"""
+    """initialize → tools/list（23 项）→ tools/call（create_project 往返）。
+
+    N01：共享 HTTP 模式强制归属，create_project 需携 X-Owner-Token。
+    """
     async with _client(service) as client:
         init = _result(await client.post("/", json=_rpc("initialize", {
             "protocolVersion": "2025-06-18",
@@ -101,7 +104,7 @@ async def test_stateless_http_roundtrip(service):
 
         called = _envelope(await client.post("/", json=_rpc("tools/call", {
             "name": "create_project", "arguments": {"project_id": "p1"},
-        }), headers=HEADERS))
+        }), headers={**HEADERS, "X-Owner-Token": "alice"}))
         assert called["ok"], called.get("error")
         assert called["data"]["project_id"] == "p1"
 
@@ -273,3 +276,138 @@ def test_web_mcp_degrades_without_sdk(tmp_path, fake_config, monkeypatch):
     assert getattr(app.state, "mcp_service", None) is None
     with TestClient(app) as tc:
         assert tc.get("/health").json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------- N01：HTTP MCP 项目归属边界
+
+
+async def _call_tool(client, name: str, arguments: dict, owner: str | None = None) -> dict:
+    """tools/call 便捷封装：owner 非 None 时携 X-Owner-Token。"""
+    headers = dict(HEADERS)
+    if owner is not None:
+        headers["X-Owner-Token"] = owner
+    resp = await client.post("/", json=_rpc("tools/call", {
+        "name": name, "arguments": arguments}), headers=headers)
+    return _envelope(resp)
+
+
+async def test_mcp_http_owner_isolation(service):
+    """N01 核心：alice 建项目后，无令牌/bob 令牌均看不到、改不动；owner 裸值不泄露。"""
+    async with _client(service) as client:
+        assert (await _call_tool(client, "create_project",
+                                 {"project_id": "pa"}, owner="alice"))["ok"]
+        assert (await _call_tool(client, "update_research_context",
+                                 {"project_id": "pa", "patch": {"topic": "alice_secret"}},
+                                 owner="alice"))["ok"]
+
+        # 无 Owner Token → list 空、get/update 一律 project_not_found（不泄露存在性）
+        no_tok_list = await _call_tool(client, "list_projects", {})
+        assert no_tok_list["ok"] and no_tok_list["data"] == []
+        no_tok_get = await _call_tool(client, "get_project", {"project_id": "pa"})
+        assert no_tok_get["ok"] is False
+        assert no_tok_get["error"]["code"] == "project_not_found"
+        no_tok_upd = await _call_tool(client, "update_research_context",
+                                      {"project_id": "pa", "patch": {"topic": "HACK"}})
+        assert no_tok_upd["ok"] is False
+        assert no_tok_upd["error"]["code"] == "project_not_found"
+
+        # bob 令牌 → 跨用户隔离，同样看不到 alice 的项目
+        bob_list = await _call_tool(client, "list_projects", {}, owner="bob")
+        assert bob_list["ok"] and bob_list["data"] == []
+        bob_get = await _call_tool(client, "get_project", {"project_id": "pa"}, owner="bob")
+        assert bob_get["ok"] is False and bob_get["error"]["code"] == "project_not_found"
+
+        # alice 自己 → 看得到、改得动；owner 裸值不在响应里
+        alice_list = await _call_tool(client, "list_projects", {}, owner="alice")
+        assert [p["project_id"] for p in alice_list["data"]] == ["pa"]
+        alice_get = await _call_tool(client, "get_project", {"project_id": "pa"}, owner="alice")
+        assert alice_get["ok"]
+        assert alice_get["data"]["research_context"]["topic"] == "alice_secret"
+        assert "owner" not in alice_get["data"]
+        # 未被无令牌/bob 的改写尝试污染
+        assert alice_get["data"]["research_context"]["topic"] != "HACK"
+
+
+async def test_mcp_http_create_does_not_overwrite_other_owner(service):
+    """N01/N02：bob 用 alice 的 pid create_project 不得覆盖归属（与不存在同形）。"""
+    async with _client(service) as client:
+        assert (await _call_tool(client, "create_project",
+                                 {"project_id": "shared"}, owner="alice"))["ok"]
+        bob_create = await _call_tool(client, "create_project",
+                                      {"project_id": "shared"}, owner="bob")
+        assert bob_create["ok"] is False
+        assert bob_create["error"]["code"] == "project_not_found"
+        # 归属仍是 alice：bob 改不动主题，alice 读回仍是自己的值
+        assert (await _call_tool(client, "update_research_context",
+                                 {"project_id": "shared", "patch": {"topic": "BOB"}},
+                                 owner="bob"))["ok"] is False
+        alice_get = await _call_tool(client, "get_project", {"project_id": "shared"}, owner="alice")
+        assert alice_get["ok"] and alice_get["data"]["research_context"].get("topic") != "BOB"
+
+
+async def test_mcp_http_create_requires_owner_token(service):
+    """N01：共享 HTTP 模式下 create_project 无令牌 → owner_token_required（不建无主项目）。"""
+    async with _client(service) as client:
+        out = await _call_tool(client, "create_project", {"project_id": "orphan"})
+        assert out["ok"] is False and out["error"]["code"] == "owner_token_required"
+
+
+async def test_mcp_http_resources_filtered_by_owner(service):
+    """N01：resources/list 按归属展开；read 项目资源过归属门；静态资源不受限。"""
+    async with _client(service) as client:
+        assert (await _call_tool(client, "create_project",
+                                 {"project_id": "ra"}, owner="alice"))["ok"]
+        alice_res = _result(await client.post("/", json=_rpc("resources/list"),
+                                              headers={**HEADERS, "X-Owner-Token": "alice"}))
+        alice_uris = {r["uri"] for r in alice_res["resources"]}
+        assert "fieldwork://project/ra/summary" in alice_uris
+
+        anon_res = _result(await client.post("/", json=_rpc("resources/list"), headers=HEADERS))
+        anon_uris = {r["uri"] for r in anon_res["resources"]}
+        assert "fieldwork://project/ra/summary" not in anon_uris   # 无令牌不展开项目
+        assert "fieldwork://guidance/phases" in anon_uris          # 静态资源仍在
+
+        # bob 直接 read alice 项目资源 → 错误（MCPError INVALID_PARAMS，不泄露内容）
+        bob_read = await client.post(
+            "/", json=_rpc("resources/read", {"uri": "fieldwork://project/ra/summary"}),
+            headers={**HEADERS, "X-Owner-Token": "bob"})
+        assert bob_read.json().get("error") is not None
+
+
+def test_cross_entry_rest_and_mcp_owner_isolation(tmp_path, fake_config):
+    """N01 跨入口验收：同一 app+repo，REST 以 alice 建项目，/mcp 以 bob/无令牌
+    访问被拒、以 alice 通过——不能只测两浏览器上下文的 GET。"""
+    from fastapi.testclient import TestClient
+    from fieldwork_agent.web_host.app import create_app
+
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    app = create_app(config=fake_config, repo=repo)
+    with TestClient(app) as tc:
+        # REST 入口：alice 建项目（带主题）
+        r = tc.post("/projects", json={"project_id": "cross1", "topic": "alice_only"},
+                    headers={"X-Owner-Token": "alice"})
+        assert r.status_code == 201, r.text
+        # REST 入口：bob 看不到（404）
+        assert tc.get("/projects/cross1",
+                      headers={"X-Owner-Token": "bob"}).status_code == 404
+
+        # MCP 入口（同 app /mcp，enforce_owner=True）：alice 读得到
+        alice = tc.post("/mcp", json=_rpc("tools/call", {
+            "name": "get_project", "arguments": {"project_id": "cross1"}}),
+            headers={**HEADERS, "X-Owner-Token": "alice"})
+        env = json.loads(alice.json()["result"]["content"][0]["text"])
+        assert env["ok"] and env["data"]["research_context"]["topic"] == "alice_only"
+        assert "owner" not in env["data"]   # N01：owner 裸值不泄露
+
+        # MCP 入口：bob 被拒
+        bob = tc.post("/mcp", json=_rpc("tools/call", {
+            "name": "get_project", "arguments": {"project_id": "cross1"}}),
+            headers={**HEADERS, "X-Owner-Token": "bob"})
+        benv = json.loads(bob.json()["result"]["content"][0]["text"])
+        assert benv["ok"] is False and benv["error"]["code"] == "project_not_found"
+
+        # MCP 入口：无令牌 list_projects 空
+        anon = tc.post("/mcp", json=_rpc("tools/call", {
+            "name": "list_projects", "arguments": {}}), headers=HEADERS)
+        aenv = json.loads(anon.json()["result"]["content"][0]["text"])
+        assert aenv["ok"] and aenv["data"] == []

@@ -215,13 +215,38 @@ def _build_static_resources() -> list[Resource]:
 
 STATIC_RESOURCES: list[Resource] = _build_static_resources()
 
+# N01：owner 缺省哨兵 = 不过滤（stdio 可信全量模式）；具体值（含 None）为
+# 共享 HTTP 强制模式：None=无令牌（拒绝一切项目），str=仅该归属。
+_UNSET = object()
+
+
+def _owned(repo: ProjectRepository, pid: str, owner: str | None) -> bool:
+    """归属判定（强制模式）：owner 非 None 且项目存在且 state.owner == owner。"""
+    if owner is None:
+        return False
+    try:
+        state = repo.get_state(pid)
+    except KeyError:
+        return False
+    return state.get("owner") == owner
+
 
 # ---------------------------------------------------------------- 公开接口
 
-def list_resources(repo: ProjectRepository) -> list[Resource]:
-    """静态资源 + 按 repo 存量展开项目类三件套。"""
+def list_resources(repo: ProjectRepository, owner: object = _UNSET) -> list[Resource]:
+    """静态资源 + 按 repo 存量展开项目类三件套。
+
+    N01 ``owner``：缺省 _UNSET 不过滤（可信全量）；具体值时仅展开该归属
+    项目（None → 无项目可展开）——与 state_tools.list_projects 同口径。
+    """
     items = list(STATIC_RESOURCES)
-    for summary in repo.list_projects():
+    if owner is _UNSET:
+        summaries = repo.list_projects()
+    elif owner is None:
+        summaries = []
+    else:
+        summaries = repo.list_projects(owner=owner)
+    for summary in summaries:
         pid = summary["project_id"]
         items.append(Resource(
             uri=f"fieldwork://project/{pid}/summary",
@@ -251,8 +276,14 @@ def _not_found(project_id: str) -> dict[str, Any]:
                 "先 create_project 或使用 list_projects 查已有项目")
 
 
-def read_resource(repo: ProjectRepository, uri: str) -> dict[str, Any]:
-    """按 URI 路由渲染资源文本；项目类 KeyError → project_not_found 包络。"""
+def read_resource(repo: ProjectRepository, uri: str,
+                  owner: object = _UNSET) -> dict[str, Any]:
+    """按 URI 路由渲染资源文本；项目类 KeyError → project_not_found 包络。
+
+    N01 ``owner``：缺省 _UNSET 不检查（可信全量）；具体值时项目类 URI
+    先过归属门，归属不符/无令牌/不存在均折 project_not_found（不泄露存在性）。
+    静态 guidance/templates 资源与项目无关，不受归属限制。
+    """
     # 静态 guidance 路由
     if uri == "fieldwork://guidance/phases":
         return {"ok": True, "text": _render_phases()}
@@ -287,6 +318,9 @@ def read_resource(repo: ProjectRepository, uri: str) -> dict[str, Any]:
             # 非法 → invalid_args 包络；合法再走原 KeyError→project_not_found 逻辑
             if (bad := guard_project_id(pid, repo)) is not None:
                 return bad
+            # N01：强制模式下先过归属门（不符/无令牌与不存在同形，不泄露）
+            if owner is not _UNSET and not _owned(repo, pid, owner):
+                return _not_found(pid)
             try:
                 if kind == "summary":
                     return {"ok": True, "text": _render_project_summary(repo, pid)}
