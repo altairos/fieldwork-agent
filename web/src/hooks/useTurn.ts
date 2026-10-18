@@ -128,6 +128,8 @@ export function useTurn(projectId: string) {
   const cancel = useCallback(async () => {
     abortRef.current?.abort();
     if (turnIdRef.current) await rest.cancelTurn(projectId, turnIdRef.current).catch(() => {});
+    // P2-9：abort 断流收不到终态事件，须主动复位流式态（残缺回复丢弃，user 消息保留）
+    useConversationStore.getState().cancelTurn();
     setBusy(false);
   }, [projectId]);
 

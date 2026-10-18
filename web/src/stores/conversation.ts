@@ -12,6 +12,7 @@ interface ConversationState {
   hydrate: (msgs: ChatMessage[]) => void; // 刷新回填：拉 GET /messages 后覆盖式灌入
   beginTurn: () => void;                 // 回合开始：turnRunning=true, 清 buffer
   failTurn: () => void;                  // 回合创建被拒：回滚乐观 UI（见实现处注释）
+  cancelTurn: () => void;                // 用户取消：复位流式态，不动 messages（见实现处注释）
   reset: () => void;
 }
 export const useConversationStore = create<ConversationState>()((set) => ({
@@ -49,5 +50,9 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     if (msgs.length && msgs[msgs.length - 1].role === "user") msgs.pop();
     return { messages: msgs, turnRunning: false, streamBuffer: "" };
   }),
+  // 用户取消（P2-9）：SSE 断开收不到终态事件，turnRunning/streamBuffer 须主动复位，
+  // 否则打字光标永久脉冲；残缺 streamBuffer 丢弃（对齐后端：取消的残缺回复不入史），
+  // messages 不动——user 消息已被后端接受，与 failTurn（回合被拒弹消息）语义相反。
+  cancelTurn: () => set({ turnRunning: false, streamBuffer: "" }),
   reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, lastUsage: {} }),
 }));

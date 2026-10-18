@@ -43,6 +43,21 @@ function hangingReader(signal?: AbortSignal) {
   return { read, cancel };
 }
 
+/** 先吐 chunks 再挂起：流式回合中途的真实形态（delta 已到、后续帧未到）。 */
+function deltaThenHang(chunks: string[], signal?: AbortSignal) {
+  const encoder = new TextEncoder();
+  const pending = chunks.map((c) => encoder.encode(c));
+  const cancel = vi.fn(async () => {});
+  const read = vi.fn(() => {
+    if (pending.length) return Promise.resolve({ value: pending.shift() as Uint8Array, done: false });
+    return new Promise<never>((_resolve, reject) => {
+      if (signal?.aborted) { reject(new Error("Aborted")); return; }
+      signal?.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+    });
+  });
+  return { read, cancel };
+}
+
 /** 双路由桩：POST …/messages 走 jsonResp，GET …/events 走 SSE 桩；SSE 的 signal 收集到 signals。 */
 function stubApi(post: unknown, ok: boolean, status: number, sse: { resp: unknown } | "hang") {
   const signals: AbortSignal[] = [];
@@ -199,8 +214,8 @@ describe("useTurn — 卸载/跨项目切换中止旧流（Fix #1）", () => {
 });
 
 describe("useTurn — R06a · turn_done 后回读项目快照", () => {
-  const SNAP = { project_id: "p1", phase: "informants", field_sites: [],
-                 informants: [], proposals: [], phase_history: [] };
+  const SNAP = { project_id: "p1", phase: "informants", research_context: {},
+                 field_sites: [], informants: [], proposals: [], phase_history: [] };
 
   test("首见 turn_done → 恰好一次 GET /projects/p1，快照载入 store，refreshError 保持 null", async () => {
     // 真实前置：进入项目页时快照已先载入 store（D1 守卫依赖 store.projectId 标识当前项目）
@@ -265,8 +280,8 @@ describe("useTurn — R06a · turn_done 后回读项目快照", () => {
       }
       return sse.resp;
     });
-    const SNAP_A = { project_id: "p1", phase: "informants", field_sites: [],
-                     informants: [], proposals: [], phase_history: [] };
+    const SNAP_A = { project_id: "p1", phase: "informants", research_context: {},
+                     field_sites: [], informants: [], proposals: [], phase_history: [] };
     // 真实前置：项目 A 快照已载入 store（D1 守卫依赖 store.projectId 标识当前项目）
     useProjectStore.getState().loadSnapshot(SNAP_A);
     vi.stubGlobal("fetch", fetchMock);
@@ -274,8 +289,8 @@ describe("useTurn — R06a · turn_done 后回读项目快照", () => {
     await act(async () => { await result.current.send("调研大理"); await tick(); });
 
     expect(snapGets).toHaveLength(1);                    // 回读已发起、仍挂起（竞态窗口内）
-    const SNAP_B = { project_id: "p2", phase: "preliminary_fieldwork", field_sites: [],
-                     informants: [], proposals: [], phase_history: [] };
+    const SNAP_B = { project_id: "p2", phase: "preliminary_fieldwork", research_context: {},
+                     field_sites: [], informants: [], proposals: [], phase_history: [] };
     useProjectStore.getState().reset();                  // 用户切换项目：store 先 reset
     useProjectStore.getState().loadSnapshot(SNAP_B);     // 再载入项目 B 的快照
     await act(async () => {                               // 项目 A 的慢回读此刻才返回
@@ -348,5 +363,42 @@ describe("useTurn — adopt（领养首页创建的首轮回合，轮 4）", () 
     expect(signals).toHaveLength(2);                  // 两次订阅各起一流
     expect(signals[0].aborted).toBe(true);           // 第二次领养先断第一次的流
     expect(signals[1].aborted).toBe(false);
+  });
+});
+
+describe("useTurn — cancel 复位 conversation store（P2-9）", () => {
+  test("流中取消：turnRunning/streamBuffer 复位、残缺回复不入史、user 消息保留、后端已通知", async () => {
+    const cancels: string[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/messages")) return jsonResp(CREATED, true, 200);
+      if (u.endsWith("/cancel")) {
+        cancels.push(u);
+        return jsonResp({ turn_id: "t1", status: "cancelled" }, true, 200);
+      }
+      // /events：先吐一帧 delta 再挂起（abort 前不再吐帧——SSE 断开收不到终态事件）
+      const sig = init?.signal as AbortSignal;
+      return {
+        ok: true, status: 200,
+        body: { getReader: () => deltaThenHang(
+          ['id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"部分回复"}\n\n'], sig) },
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { void result.current.send("帮我排行程"); await tick(); await tick(); });
+
+    // 取消前：流式进行中（delta 已入 buffer、打字光标脉冲）
+    expect(useConversationStore.getState().turnRunning).toBe(true);
+    expect(useConversationStore.getState().streamBuffer).toBe("部分回复");
+
+    await act(async () => { await result.current.cancel(); await tick(); });
+
+    expect(cancels).toHaveLength(1);                       // 后端已收到取消通知
+    expect(result.current.busy).toBe(false);
+    const st = useConversationStore.getState();
+    expect(st.turnRunning).toBe(false);                    // 不再永久脉冲
+    expect(st.streamBuffer).toBe("");                      // 残缺回复丢弃（对齐后端 P1-4）
+    expect(st.messages).toEqual([{ role: "user", content: "帮我排行程" }]);  // 已接受的消息不弹掉
   });
 });
