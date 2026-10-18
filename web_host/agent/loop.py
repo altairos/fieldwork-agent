@@ -430,7 +430,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                                   doc_ctx_provenance, live_refs_by_call)
             _apply_extractions(repo, pid, user_text)
-            _maybe_autoname(repo, pid, llm)
+            _schedule_autoname(repo, pid, llm)   # N09：后台任务卸载，不阻塞事件循环/主回合
             transition = check_and_advance(repo, pid)
             if transition:
                 tm.append_event(pid, turn_id, "phase_transition", transition)
@@ -702,13 +702,19 @@ def _maybe_autoname(repo, pid, llm):
     依最近对话生成 ≤30 字中文项目名；LLM 不可用走 topic/首条消息兑底。
 
     任一步失败（含 LLM 返回空）静默返回，下回合再试；title 已非空直接返回
-    （用户手动命名后永不覆盖）。写入走 update_research_context 浅合并，
-    仅覆盖 title 键。
+    （用户手动命名后永不覆盖）。写入走 update_research_context 浅合并，仅覆盖 title 键。
+
+    N09：本函数含阻塞的 ``llm.chat``，生产路径由 ``_schedule_autoname`` 经
+    ``asyncio.to_thread`` 卸载到线程、以 fire-and-forget 后台任务执行（不卡事件
+    循环、主回合先完成）。为防命名窗口内的用户改名/编辑被覆盖，耗时的 llm.chat
+    前后各核对一次 title 与项目版本（updated_at）：返回时 title 已非空或版本已变
+    则放弃写入。同步直调（测试）无并发，复核天然通过。
     """
     try:
         ctx = repo.get_research_context(pid)
         if str(ctx.get("title") or "").strip():
             return
+        version_before = repo.get_state(pid).get("updated_at")   # N09：命名前项目版本基线
         history = repo.get_messages(pid, limit=10)
         convo = [m for m in history if m.get("role") in ("user", "assistant")]
         if llm is None:
@@ -735,9 +741,52 @@ def _maybe_autoname(repo, pid, llm):
             name = lines[0].strip().strip('"“”‘’《》').strip()[:30] if lines else ""
         if not name.strip():
             return
+        # N09：返回时复核——title 仍空（用户未在窗口内命名）且项目版本未变（无并发
+        # 编辑）才写入，绝不覆盖命名窗口期间的用户改名/编辑。
+        if str(repo.get_research_context(pid).get("title") or "").strip():
+            return
+        if repo.get_state(pid).get("updated_at") != version_before:
+            return
         repo.update_research_context(pid, {"title": name})
     except Exception:
         return   # best-effort：失败不影响回合流程，下回合再试
+
+
+# N09：自动命名后台任务引用集——fire-and-forget 须持引用，防 GC 提前回收任务
+_AUTONAME_TASKS: set[asyncio.Task] = set()
+# 命名模型调用的短超时（秒）：超时即放弃，best-effort 不拖累 worker
+_AUTONAME_TIMEOUT = 8.0
+
+
+async def _autoname_async(repo, pid, llm):
+    """N09：把阻塞的 ``_maybe_autoname`` 卸载到线程并加短超时——事件循环不被命名
+    模型调用阻塞（心跳/其他请求/SSE/取消照常及时处理）。best-effort：超时或任何
+    异常静默放弃、下回合再试；CancelledError 属 BaseException，会正常传播（任务被
+    取消时干净终止，不吞取消）。
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(_maybe_autoname, repo, pid, llm),
+            timeout=_AUTONAME_TIMEOUT)
+    except Exception:
+        return
+
+
+def _schedule_autoname(repo, pid, llm):
+    """N09：轮末以 fire-and-forget 后台任务触发自动命名——主回合不等待、先完成。
+
+    ``create_task`` 不产生 await 点，轮末块「同步无 await、取消不中途插入」的不变量
+    得以保持；任务在 run_turn 返回、事件循环空闲后才跑，其版本基线天然晚于本轮全部
+    写入（append_message/抽取/阶段推进），故 updated_at 复核只反映外部并发编辑。
+    无运行中事件循环（同步直调/脚本）时静默跳过，下回合再试。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_autoname_async(repo, pid, llm))
+    _AUTONAME_TASKS.add(task)
+    task.add_done_callback(_AUTONAME_TASKS.discard)
 
 
 # amap client 方法形参序（N5）：RecordingClient 记录的位置参数按此并入

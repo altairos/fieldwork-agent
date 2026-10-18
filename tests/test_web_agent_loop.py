@@ -971,6 +971,74 @@ def test_autoname_existing_title_never_overwritten(env):
     assert llm.calls == []
 
 
+def test_autoname_does_not_overwrite_rename_during_window(env):
+    """N09：命名窗口内用户改名 → llm.chat 返回后复核 title 非空，放弃覆盖。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "我想去大理研究宗族变迁")
+
+    class RenamingLLM:
+        def chat(self, messages, **kw):
+            repo.update_research_context("p1", {"title": "用户手动改名"})   # 模拟并发改名
+            return {"content": "自动生成的名字"}
+
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", RenamingLLM())
+    assert repo.get_research_context("p1").get("title") == "用户手动改名"
+
+
+def test_autoname_skips_when_project_edited_during_window(env):
+    """N09：命名窗口内项目被编辑（updated_at 变、title 仍空）→ 放弃写入，
+    避免用过期上下文命名覆盖用户的后续意图。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "去大理研究宗族")
+
+    class EditingLLM:
+        def chat(self, messages, **kw):
+            repo.update_research_context("p1", {"topic": "白族本主信仰"})   # 改 topic，title 仍空
+            return {"content": "自动名字"}
+
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", EditingLLM())
+    assert not str(repo.get_research_context("p1").get("title") or "").strip()
+
+
+async def test_schedule_autoname_is_fire_and_forget(env):
+    """N09：_schedule_autoname 登记后台任务即返回、不同步命名——主回合不等待；
+    排空后台任务后 title 才落地。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "我想去大理研究宗族变迁")
+    llm = AutonameLLM(content="大理宗族调研")
+    from fieldwork_agent.web_host.agent import loop as loop_mod
+    loop_mod._schedule_autoname(repo, "p1", llm)
+    # 尚未 await：任务未执行 → title 仍空、llm 未被调用（证明非同步阻塞）
+    assert not str(repo.get_research_context("p1").get("title") or "").strip()
+    assert llm.calls == []
+    pending = list(loop_mod._AUTONAME_TASKS)
+    assert pending, "后台命名任务应已登记（持引用防 GC）"
+    await asyncio.gather(*pending)
+    assert repo.get_research_context("p1").get("title") == "大理宗族调研"
+
+
+async def test_autoname_offloads_to_thread(env):
+    """N09：阻塞的命名模型调用在 to_thread 工作线程执行，不占事件循环线程。"""
+    import threading
+    repo, tm = env
+    repo.append_message("p1", "user", "去大理研究宗族")
+    main_thread = threading.get_ident()
+    seen = {}
+
+    class ThreadProbeLLM:
+        def chat(self, messages, **kw):
+            seen["thread"] = threading.get_ident()
+            return {"content": "线程名字"}
+
+    from fieldwork_agent.web_host.agent import loop as loop_mod
+    loop_mod._schedule_autoname(repo, "p1", ThreadProbeLLM())
+    await asyncio.gather(*list(loop_mod._AUTONAME_TASKS), return_exceptions=True)
+    assert seen["thread"] != main_thread   # 在工作线程执行 → 未阻塞事件循环线程
+    assert repo.get_research_context("p1").get("title") == "线程名字"
+
+
 def test_autoname_llm_none_falls_back_to_topic(env):
     """任务1：降级模式（llm=None）→ topic 前 30 字兑底。"""
     repo, tm = env
