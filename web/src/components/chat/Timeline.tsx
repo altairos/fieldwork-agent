@@ -91,7 +91,7 @@ export function Timeline() {
         <EmptyState
           icon={<IconCompass className="w-4 h-4" />}
           title="尚无对话"
-          hint="在下方输入调研安排；罗盘按阶段推进，工具结果卡与右栏状态投影会随回合更新"
+          hint="在下方输入调研安排；罗盘按阶段推进，工具结果卡与右栏基本信息面板会随对话进展而更新"
         >
           <div className="flex flex-wrap justify-center gap-1.5 max-w-md">
             {(PHASE_EXAMPLES[phase] ?? PHASE_EXAMPLES.research_positioning).map((q) => (
