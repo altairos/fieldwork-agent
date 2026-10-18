@@ -1245,6 +1245,39 @@ def test_doc_tool_receives_repo_research_questions(env):
     assert "学科取向：社会学" in joined
 
 
+def test_doc_tool_sees_same_turn_staged_patch(env):
+    """M1（终审）：同轮先 update_research_context（进 F05 暂存）再
+    compose_interview_guide——入参合并必须读 buffer.staged_view() 合并视图，
+    guide prompt 用本轮新值而非轮前旧值（F01×F05 组合缺口）。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "title": "已命名", "topic": "仓储旧主题",
+        "research_questions": "RQ 旧", "discipline": "社会学"})
+    llm = RecordingGuideLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "update_research_context",
+                                          "arguments": {"patch": {"topic": "本轮新主题"},
+                                                        "reason": "用户确认主题"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "compose_interview_guide",
+                                          "arguments": {"topic": "",
+                                                        "informant_types": ["村干部"]}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "主题改了，出访谈提纲", tm,
+                         llm, FakeFlyAI()))
+    joined = "\n".join(m["content"] for m in llm.chat_messages)
+    assert "研究主题：本轮新主题" in joined
+    assert "仓储旧主题" not in joined
+    # F05 语义不破：轮末 commit 落盘新值
+    assert repo.get_research_context("p1")["topic"] == "本轮新主题"
+
+
 # ------------------------------- F05 取消保护 / F06 最终回答收敛 / F07 批前截断
 # （任务4：TurnPatchBuffer 回合级暂存 + has_final_answer 收敛 + 批量额度截断）
 

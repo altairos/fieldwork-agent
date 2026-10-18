@@ -199,7 +199,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
-                args = merge_doc_args(repo, pid, name, args)
+                # 终审 M1：文档工具入参合并读"仓储+暂存"合并视图——同轮先
+                # update_research_context 再调文档工具时立即看到新值（与
+                # get_project_brief 的 staged_view 语义一致）
+                args = merge_doc_args(repo, pid, name, args,
+                                      ctx_view=buffer.staged_view())
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
                 tm.append_event(pid, turn_id, "tool_started",

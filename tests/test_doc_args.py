@@ -75,3 +75,32 @@ def test_guide_model_focus_kept_when_nonempty(repo):
                             {"topic": "本轮聚焦主题", "informant_types": ["老人"]})
     assert merged["topic"] == "本轮聚焦主题"
     assert merged["research_questions"] == "仓储RQ"
+
+
+def test_proposal_ctx_view_overrides_repo(repo):
+    """M1：ctx_view（仓储+回合暂存合并视图）优先于直读仓储——web 同轮
+    update_research_context 后文档工具立即看到新值，不等轮末 commit。"""
+    repo.create("p")
+    pid = "p"
+    view = {"topic": "本轮暂存主题", "discipline": "社会学"}
+    merged = merge_doc_args(repo, pid, "compose_proposal",
+                            {"ctx": {"topic": ""}, "section": "methodology"},
+                            ctx_view=view)
+    assert merged["ctx"]["topic"] == "本轮暂存主题"
+    assert merged["ctx"]["discipline"] == "社会学"
+
+
+def test_guide_ctx_view_fills_empty_slots(repo):
+    """M1：guide 槽位补齐同样以 ctx_view 为底（暂存值覆盖仓储旧值）。"""
+    repo.create("p")
+    pid = "p"
+    ctx = repo.get_research_context(pid)
+    ctx.update({"topic": "仓储旧主题", "research_questions": "RQ 仓储",
+                "discipline": "社会学"})
+    repo.update_research_context(pid, ctx)
+    view = {**repo.get_research_context(pid), "topic": "本轮暂存主题"}
+    merged = merge_doc_args(repo, pid, "compose_interview_guide",
+                            {"topic": "", "informant_types": ["村干部"]},
+                            ctx_view=view)
+    assert merged["topic"] == "本轮暂存主题"
+    assert merged["research_questions"] == "RQ 仓储"
