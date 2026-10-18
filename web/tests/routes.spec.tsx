@@ -14,7 +14,7 @@ vi.mock("../src/api/rest");
 beforeEach(() => {
   vi.clearAllMocks();
   // ApiKeyCard 挂载即查 key 状态与健康探询：模块 mock 默认返 undefined 会崩 .then，补默认值
-  vi.mocked(rest.rest.settingsStatus).mockResolvedValue({ dashscope_configured: true, flyai_configured: true });
+  vi.mocked(rest.rest.settingsStatus).mockResolvedValue({ dashscope_configured: true, flyai_configured: true, amap_configured: true });
   vi.mocked(rest.rest.health).mockResolvedValue({ status: "ok", auth_required: false });
 });
 

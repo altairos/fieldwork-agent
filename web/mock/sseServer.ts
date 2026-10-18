@@ -256,9 +256,10 @@ function streamTurn(res: ServerResponse, req: IncomingMessage, turnId: string, f
 
 /** 模拟阿里云部署形态：服务端环境变量已配 key（GET /settings/status 消费）。
  *  e2e 用 POST /__test/settings 翻转后须恢复，不污染同进程后续用例。 */
-let settingsState: { dashscope_configured: boolean; flyai_configured: boolean } = {
+let settingsState: { dashscope_configured: boolean; flyai_configured: boolean; amap_configured: boolean } = {
   dashscope_configured: true,
   flyai_configured: true,
+  amap_configured: true,
 };
 
 // ---------------------------------------------------------------- 路由

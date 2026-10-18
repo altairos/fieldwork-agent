@@ -42,6 +42,7 @@ export function isAppTokenError(err: unknown): err is ApiError {
 export interface SettingsStatus {
   dashscope_configured: boolean;
   flyai_configured: boolean;
+  amap_configured: boolean;
 }
 
 /** GET /health 的返回（web_host/app.py：auth_required 表示服务端启用了 App Token）。 */

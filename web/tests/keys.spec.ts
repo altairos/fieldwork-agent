@@ -6,9 +6,9 @@ import { streamTurnEvents } from "../src/api/sse";
 describe("keys", () => {
   beforeEach(() => localStorage.clear());
 
-  it("saveKeys 三参写入并可读回（plan 未传不动，读回空）", () => {
+  it("saveKeys 三参写入并可读回（plan/amap 未传不动，读回空）", () => {
     saveKeys("sk-a", "fly-b", "tok-c");
-    expect(getKeys()).toEqual({ dashscope: "sk-a", flyai: "fly-b", appToken: "tok-c", plan: "" });
+    expect(getKeys()).toEqual({ dashscope: "sk-a", flyai: "fly-b", appToken: "tok-c", plan: "", amap: "" });
   });
 
   it("两参调用不动已存令牌（向后兼容）", () => {
@@ -25,10 +25,18 @@ describe("keys", () => {
     expect(authHeaders()).toEqual({});
   });
 
-  it("clearKeys 清全部（含套餐 plan）", () => {
-    saveKeys("sk-a", "fly-b", "tok-c", "coding");
+  it("clearKeys 清全部（含套餐 plan 与高德 amap）", () => {
+    saveKeys("sk-a", "fly-b", "tok-c", "coding", "ak-x");
     clearKeys();
-    expect(getKeys()).toEqual({ dashscope: "", flyai: "", appToken: "", plan: "" });
+    expect(getKeys()).toEqual({ dashscope: "", flyai: "", appToken: "", plan: "", amap: "" });
+  });
+
+  it("saveKeys 第五参写 amap 并注入 X-Amap-Key 头；未传不动已存值", () => {
+    saveKeys("sk-a", "fly-b", "tok-c", "", "ak-1");
+    expect(getKeys().amap).toBe("ak-1");
+    expect(authHeaders()["X-Amap-Key"]).toBe("ak-1");
+    saveKeys("sk-d", ""); // amap 未传（undefined）不动已存值
+    expect(getKeys().amap).toBe("ak-1");
   });
 
   it("streamTurnEvents 携带 App Token 头", async () => {

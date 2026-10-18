@@ -125,23 +125,81 @@ async def test_create_turn_with_page_key_headers(app, monkeypatch):
     assert app.state.llm is None  # 不动启动单例
 
 
+async def test_amap_page_key_builds_turn_level_client(app, monkeypatch):
+    """N4：X-Amap-Key 页面 key → 回合级 AMapClient 注入 run_turn（monkeypatch 录参）。
+
+    spy 掉 run_turn 不真跑回合（聚焦 key 解析链），录 amap_client 实参；
+    页面 key 构建的实例正是回合收到的实例，且不写回 app.state.amap。
+    """
+    import fieldwork_agent.web_host.agent.loop as loop_mod
+    from fieldwork_agent.web_host.api import turns as turns_mod
+
+    app.state.llm = FakeLLM()
+    built: list = []
+    got: list = []
+
+    class FakeAMapClient:
+        def __init__(self, api_key=""):
+            self.api_key = api_key
+            built.append(self)
+
+    async def spy_run_turn(repo, pid, turn_id, text, tm, llm, flyai, **kw):
+        got.append(kw.get("amap_client"))
+
+    monkeypatch.setattr(turns_mod, "AMapClient", FakeAMapClient)
+    monkeypatch.setattr(loop_mod, "run_turn", spy_run_turn)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        r = await c.post("/projects/p1/messages", json={"text": "hi"},
+                         headers={"X-Amap-Key": "ak-page"})
+        assert r.status_code == 201
+        await asyncio.sleep(0.3)  # 等后台任务执行 spy
+    assert len(built) == 1 and built[0].api_key == "ak-page"
+    assert got == [built[0]]              # 回合用的正是页面 key 构建的实例
+    assert app.state.amap is not built[0]  # 不动启动单例
+
+
+async def test_amap_missing_key_falls_back_to_singleton(app, monkeypatch):
+    """N4：无 X-Amap-Key 头 → run_turn 收到启动单例 app.state.amap。"""
+    import fieldwork_agent.web_host.agent.loop as loop_mod
+
+    app.state.llm = FakeLLM()
+    singleton = app.state.amap
+    got: list = []
+
+    async def spy_run_turn(repo, pid, turn_id, text, tm, llm, flyai, **kw):
+        got.append(kw.get("amap_client"))
+
+    monkeypatch.setattr(loop_mod, "run_turn", spy_run_turn)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        r = await c.post("/projects/p1/messages", json={"text": "hi"})
+        assert r.status_code == 201
+        await asyncio.sleep(0.3)
+    assert got == [singleton]
+
+
 async def test_settings_status_reports_configured_flags(app):
     """GET /settings/status 只回布尔状态（不回明文 key）。"""
     from types import SimpleNamespace
 
     app.state.llm = FakeLLM()  # 钉死，避免开发者本机 key 影响判定
-    app.state.config = SimpleNamespace(flyai_api_key="fk")
+    app.state.config = SimpleNamespace(flyai_api_key="fk", amap_api_key="ak")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/settings/status")
         assert r.status_code == 200
-        assert r.json() == {"dashscope_configured": True, "flyai_configured": True}
+        assert r.json() == {"dashscope_configured": True, "flyai_configured": True,
+                            "amap_configured": True}
 
     app.state.llm = None
-    app.state.config = SimpleNamespace(flyai_api_key="")
+    app.state.config = SimpleNamespace(flyai_api_key="", amap_api_key="")
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         r = await c.get("/settings/status")
-        assert r.json() == {"dashscope_configured": False, "flyai_configured": False}
+        assert r.json() == {"dashscope_configured": False, "flyai_configured": False,
+                            "amap_configured": False}
 
 
 async def test_cancel_turn(client):

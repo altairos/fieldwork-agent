@@ -16,4 +16,5 @@ async def settings_status(request: Request):
         # 单例非 None = 环境变量/配置文件 key 就绪（含 SDK 在位；二者缺一均构建失败 → None）
         "dashscope_configured": request.app.state.llm is not None,
         "flyai_configured": bool(getattr(cfg, "flyai_api_key", "")),
+        "amap_configured": bool(getattr(cfg, "amap_api_key", "")),
     }

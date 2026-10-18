@@ -2,10 +2,17 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from fieldwork_agent.web_host.api.guard import checked_owned_project, checked_turn_id
 from fieldwork_agent.web_host.api.owner import owner_from_request
-from fieldwork_agent.web_host.deps import get_flyai_raw, get_llm, get_repo, get_turn_manager
+from fieldwork_agent.web_host.deps import (
+    get_amap_raw,
+    get_flyai_raw,
+    get_llm,
+    get_repo,
+    get_turn_manager,
+)
 from fieldwork_agent.web_host.sse import (
     HEARTBEAT_INTERVAL,
     encode_event,
@@ -29,6 +36,8 @@ DASHSCOPE_HEADER = "X-DashScope-Key"
 FLYAI_HEADER = "X-FlyAI-Key"
 # 套餐类型（coding/token）：套餐 Key（sk-sp-）配专属 OpenAI 兼容端点，白名单映射
 DASHSCOPE_PLAN_HEADER = "X-DashScope-Plan"
+# 高德 Web 服务 Key（N4 多租户）：与 MCP 侧 AMAP_KEY_HEADER 同名同义
+AMAP_HEADER = "X-Amap-Key"
 
 
 def _header(request: Request, name: str) -> str:
@@ -48,8 +57,9 @@ def _resolve_clients(request: Request):
 
     - 百炼必填：无页面 key 且单例 None（服务端未配）→ 403 llm_key_required，
       不创建回合、不进入对话（不再降级为固定文案）；
-    - 飞猪可选：仅影响工具调用可用性，缺失时回落单例（可为空 key，工具内部降级）。
-    返回 (llm, flyai)，均为回合级实例，不写回 app.state。
+    - 飞猪可选：仅影响工具调用可用性，缺失时回落单例（可为空 key，工具内部降级）；
+    - 高德可选（N4）：同飞猪语义，页面 key 构建回合级 AMapClient。
+    返回 (llm, flyai, amap)，均为回合级实例，不写回 app.state。
     """
     llm = get_llm(request)
     page_key = _header(request, DASHSCOPE_HEADER)
@@ -68,7 +78,11 @@ def _resolve_clients(request: Request):
     flyai_key = _header(request, FLYAI_HEADER)
     if flyai_key:
         flyai = FlyAIClient(flyai_key)
-    return llm, flyai
+    amap = get_amap_raw(request.app)
+    amap_key = _header(request, AMAP_HEADER)
+    if amap_key:
+        amap = AMapClient(amap_key)  # 纯 key 构造无失败面（MCP 同惯例），不走 try/except
+    return llm, flyai, amap
 
 
 @router.get("/projects/{project_id}/messages")
@@ -102,20 +116,19 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
     tm = get_turn_manager(request)
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
-    llm, flyai = _resolve_clients(request)
+    llm, flyai, amap = _resolve_clients(request)
     turn = tm.create_turn(project_id, idempotency_key=body.idempotency_key)
     background.add_task(_execute_turn, request.app, project_id,
-                        turn.turn_id, body.text, llm, flyai)
+                        turn.turn_id, body.text, llm, flyai, amap)
     return {"turn_id": turn.turn_id, "status": turn.status}
 
 
-async def _execute_turn(app, pid, tid, text, llm, flyai):
-    """后台任务：获取写锁 → 执行 agent loop → 释放。"""
+async def _execute_turn(app, pid, tid, text, llm, flyai, amap):
+    """后台任务：获取写锁 → 执行 agent loop → 释放（amap 为回合级实例，N4）。"""
     from fieldwork_agent.web_host.agent.loop import run_turn
-    from fieldwork_agent.web_host.deps import get_amap_raw, get_repo_raw, get_tm_raw
+    from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
     repo = get_repo_raw(app)
     tm = get_tm_raw(app)
-    amap = get_amap_raw(app)
     async with tm.acquire_write_lock(pid):
         await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap)
 
