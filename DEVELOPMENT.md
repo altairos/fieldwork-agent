@@ -30,6 +30,7 @@ pip install -e ".[dev]"
 |------|------|-----------|
 | LLM 对话 | `pip install dashscope`（已含在依赖里） | 降级为规则回复 |
 | 旅行搜索 | `npm i -g @fly-ai/flyai-cli` | 跳过搜索，纯文本方案 |
+| 地理底座 | 无需安装（HTTP API），配置 `AMAP_API_KEY` | 高德原语统一返回 `amap_invalid_key`，画像/接驳降级 |
 
 FlyAI 密钥（`~/.flyai/config.json` 的 `key` 字段）由 `Config` 自动读取，见第 3 节。
 
@@ -56,10 +57,12 @@ tests/
 ├── test_migrate.py           # JSON→SQLite 存量搬迁：7 类全等 + 幂等 + schema_meta 标记
 ├── test_guidance.py          # 五阶段常量/提示词、check_advance 推进判定、extract 纯函数
 ├── test_models_registry.py   # 包络/模型与 registry 能力元数据契约
-├── test_registry_surface.py  # 生产态能力面：裸导入即注册 13 项 + registry handler 统一包络
+├── test_registry_surface.py  # 生产态能力面：裸导入即注册 21 项 + registry handler 统一包络
 ├── test_sources_flyai.py     # 8 搜索原语 argv 拼装 + 异常折进包络
+├── test_sources_amap.py      # AMapClient 6 原语参数拼装 + 包络折错 + 无 Key 短路不出网
 ├── test_itinerary.py         # compose_itinerary 聚合（legs/stays/budget coverage）
-├── test_site_profile.py      # profile_field_site 聚合分支
+├── test_last_mile.py         # plan_last_mile 聚合（双 geocode → 跨城 transit，端失败即止/降级语义）
+├── test_site_profile.py      # profile_field_site 聚合分支（含 amap geo/facilities 段）
 ├── test_documents.py         # compose_proposal 八章 / 访谈指南 / suggest_informants
 ├── test_llm_config.py        # LLMClient 与模型分档、能力降级
 └── test_loop_orchestrator.py # run_tool_loop 回合循环 + 宿主分派/降级/落盘
@@ -83,7 +86,10 @@ tests/
 - **DashScope / 模型**：环境变量初始化 → 若存在 `~/.fieldwork_agent/config.json` 则**覆盖** env。
   键：`DASHSCOPE_API_KEY`、`FA_CHAT_MODEL`(默认 `qwen-max`)、`FA_SYSTEM_MODEL`(默认 `qwen-turbo`)。
 - **FlyAI**：环境变量 `FLYAI_API_KEY` 优先；缺失时回退读取 `~/.flyai/config.json` 的 `key`。
-- **能力开关**：`dashscope_available` / `flyai_available` / `dingtalk_available` 供上层降级判断。
+- **高德**：环境变量 `AMAP_API_KEY` 初始化 → `~/.fieldwork_agent/config.json` 的
+  `amap_api_key` 同样覆盖 env。`AMapClient(api_key="")` 无 Key 时所有原语在 `_call`
+  统一短路返回 `amap_invalid_key` 包络（不出网），宿主无需额外判断。
+- **能力开关**：`dashscope_available` / `flyai_available` / `amap_available` / `dingtalk_available` 供上层降级判断。
 
 设置 flyai 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：
 
@@ -106,7 +112,10 @@ CLI (core/cli.py)
        ├─ runtime/loop.py                   run_tool_loop — CLI/Web 共用回合循环（LLM↔工具多轮）
        ├─ kernel/registry.py                能力注册表 + build_tool_schemas（工具 schema 单一来源）
        ├─ kernel/sources/flyai.py           FlyAIClient — 8 搜索原语 → 归一化 Envelope
-       ├─ kernel/aggregation/               profile_field_site / compose_itinerary 本地聚合
+       ├─ kernel/sources/amap.py            AMapClient — 高德 6 原语（geocode/regeocode/around/
+       │                                    text/transit/weather）→ 归一化 Envelope，无 Key 短路
+       ├─ kernel/aggregation/               本地聚合：profile_field_site / compose_itinerary /
+       │                                    plan_last_mile（末端接驳）/ analyze_fieldwork_window
        ├─ kernel/documents/                 compose_proposal / compose_interview_guide / suggest_informants
        ├─ kernel/guidance/                  五阶段常量·提示词·check_advance + extract 纯函数
        ├─ kernel/repository/                ProjectRepository 协议 + JsonRepository 持久化
@@ -147,7 +156,8 @@ A→B 看必填定位字段；B→C 需 confirmed 田野点 + ≥1 访谈对象�
 2. `registry.build_tool_schemas()` 自动生成宿主/MCP 共用 schema，**无需手写 schema**；
    在 `tests/test_sources_flyai.py`（argv 拼装）或对应聚合测试文件补契约断言。
 3. 宿主侧在 `core/orchestrator.py` 的 `_CAPABILITY_DISPATCH` 绑定实现与注入方式
-   （`client` = 注入 FlyAIClient，`llm` = 注入 LLMClient）。
+   （`client` = 注入 FlyAIClient，`amap_client` = 注入 AMapClient，`llm` = 注入 LLMClient）。
+   MCP/Web 宿主同源：MCP 分派表内 amap 六原语与 `plan_last_mile` 声明 `amap_client` 注入接缝。
 
 ### 5.2 工具决策与意图路由
 已无关键词路由——`DialogueEngine.decide_tool_calls` 随旧核心删除，**工具决策移交宿主 LLM
@@ -237,6 +247,8 @@ Windows job 专门回归 emoji/UTF-8 输出路径（见第 7 节）。
 - [x] 聚合策略分支测试（`kernel/aggregation`：`profile_field_site` / `compose_itinerary`）
 - [x] `proposal_generation` 结构化输出模板（八章 compose_proposal + mode 回退声明）
 - [x] MCP Server / Web 宿主（FastAPI + SSE 实时事件流 + 回合管理）
+- [x] 高德地理底座 PoC：`kernel/sources/amap.py` 六原语 + 画像 geo/facilities 段 + `plan_last_mile` 末端接驳聚合（设计见 `docs/plans/2026-10-18-amap-poc-design.md`，真 Key 冒烟 7/7 通过，存档 `tools/spike_amap.py`）
+- [ ] 高德 PoC2：`plan_last_mile` 班次日期透传（当前 `date_hint` 占位不透传）等扩展
 - [ ] `orchestrator` 与 `kernel/llm` 的流式输出测试（需 mock `Generation`）
 - [ ] 集成测试：以 fake flyai stub 跑通五阶段端到端
 - [ ] 钉钉同步（`sync dingtalk`）的测试覆盖
