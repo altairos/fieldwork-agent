@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from fieldwork_agent.kernel.repository.guard import (
+    owner_violation,
     path_id_violation,
     project_id_violation,
     turn_id_violation,
@@ -73,3 +74,31 @@ def test_turn_id_violation():
     assert turn_id_violation("0123456789ABCDEF") != ""    # 大写拒绝
     assert turn_id_violation("0123456789abcdef\n") != ""   # 尾部换行拒绝（fullmatch）
     assert turn_id_violation(123) != ""
+
+# ---------------------------------------------------------------- owner 归属标识（归属隔离）
+
+def test_owner_violation_accepts_none():
+    assert owner_violation(None) == ""
+
+
+@pytest.mark.parametrize("owner", [
+    "anon:abc123",
+    "anon:" + "x" * 127,   # 标识上限 127
+    "user_01:uid-123",
+])
+def test_owner_violation_valid(owner):
+    assert owner_violation(owner) == ""
+
+
+@pytest.mark.parametrize("owner", [
+    "anon",              # 无冒号
+    "anon:",             # 标识为空
+    "anon:a b",          # 标识含空白
+    "anon:a:b",          # 标识含冒号
+    "Anon:abc",          # 命名空间大写
+    "1abc:uid",          # 命名空间数字开头
+    "a" * 33 + ":uid",   # 命名空间超长（上限 32）
+    " anon:abc",         # 前导空白
+])
+def test_owner_violation_invalid(owner):
+    assert owner_violation(owner) != ""
