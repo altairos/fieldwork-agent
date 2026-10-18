@@ -91,7 +91,7 @@ function ProjectRow({ p, onOpen, onDelete }: { p: ProjectSummary; onOpen: () => 
       >
         <span className={`dot shrink-0 ${DOT_BG[p.phase] ?? "bg-inkfaint"}`} aria-hidden="true" />
         <span className="text-[13px] text-ink truncate min-w-0 flex-1">
-          {p.research_context?.topic || p.project_id}
+          {p.research_context?.title || p.research_context?.topic || "未命名项目"}
         </span>
         {meta && <span className="text-[11.5px] text-inksoft shrink-0">{meta.label}中</span>}
         <span className="flex items-center gap-1 text-[11px] text-inkfaint shrink-0">
@@ -111,7 +111,7 @@ function ProjectRow({ p, onOpen, onDelete }: { p: ProjectSummary; onOpen: () => 
       ) : (
         <button
           type="button"
-          aria-label={`删除项目 ${p.research_context?.topic || p.project_id}`}
+          aria-label={`删除项目 ${p.research_context?.title || p.research_context?.topic || "未命名项目"}`}
           title="删除项目"
           onClick={armConfirm}
           className="shrink-0 w-7 h-7 grid place-items-center rounded-md text-inkfaint hover:text-cinnabar hover:bg-cinnabarwash/50 transition cursor-pointer"

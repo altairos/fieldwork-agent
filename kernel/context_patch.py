@@ -7,12 +7,14 @@ Web 回合工具（``web_host/agent/state_tools.py``）、MCP
 任一字段非法即整次拒绝（原子语义），绝不部分写入。kernel 只依赖标准库。
 """
 
+# title（任务1）：项目显示名——用户改名（REST）与 agent 自动命名共用此白名单入口
 
 def _nonempty(v) -> bool:
     return isinstance(v, str) and v.strip()
 
 
 ALLOWED_CONTEXT_FIELDS = (
+    "title",
     "discipline", "topic", "site_status", "scale", "budget",
     "time_window", "departure_city", "target_location", "travel_date",
     "purpose", "research_questions", "interviews_not_applicable",

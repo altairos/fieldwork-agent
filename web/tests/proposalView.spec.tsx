@@ -174,4 +174,39 @@ describe("ProposalView 版本/kind 加载与方案确认", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认方案" }));
     expect(await screen.findByText(/请重新生成方案/)).toBeTruthy();
   });
+
+  // ── 任务1：项目显示链 title || topic || 未命名项目 + Header 就地改名 ──
+  it("题头显示链 title 优先 + Header 改名走 PUT /research-context（任务1）", async () => {
+    const calls = stubFetch({
+      ...SNAP,
+      research_context: { topic: "宗族变迁", title: "宗族调研手记" },
+    });
+    mount();
+    // title 优先于 topic：Header（可改名 button）与左栏题头两处同源
+    // （projectName 来自异步 getProject，初载先显「未命名项目」，故用 findBy 等待）
+    expect(await screen.findByRole("button", { name: "宗族调研手记" })).toBeTruthy();
+    expect(screen.getAllByText("宗族调研手记").length).toBe(2);
+    // 就地改名：点击 → 编辑 → Enter 提交（PUT title）→ 重拉快照回读
+    fireEvent.click(screen.getByRole("button", { name: "宗族调研手记" }));
+    const input = screen.getByLabelText("项目名称");
+    fireEvent.change(input, { target: { value: "宗族组织调研" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    const puts = calls.filter((c) => c.url === "/projects/p1/research-context");
+    expect(puts).toHaveLength(1);
+    expect((puts[0].init as RequestInit).method).toBe("PUT");
+    expect(JSON.parse(String((puts[0].init as RequestInit).body)))
+      .toEqual({ title: "宗族组织调研" });
+    // 改名后重拉快照（stub 静态返回旧 title，只验证回读调用发生）
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url === "/projects/p1").length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("无 title 且无 topic：题头兑底「未命名项目」，projectId 永不作显示名（任务1）", async () => {
+    stubFetch({ ...SNAP, research_context: {} });
+    mount();
+    // Header 与左栏题头两处兑底；字母+数字的 project_id 不面向用户
+    expect(await screen.findAllByText("未命名项目")).toBeTruthy();
+    expect(screen.getAllByText("未命名项目").length).toBe(2);
+    expect(screen.queryByText(/p1/)).toBeNull();
+  });
 });

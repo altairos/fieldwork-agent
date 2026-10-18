@@ -18,7 +18,9 @@
       try {
         var t = localStorage.getItem("fieldwork.theme");
         document.documentElement.dataset.theme =
-          ["indigo", "bamboo", "wordblue"].indexOf(t) >= 0 ? t : "cinnabar";
+          ["indigo", "bamboo", "wordblue", "obsidian", "vscode"].indexOf(t) >= 0
+            ? t
+            : "cinnabar";
       } catch (e) {
         document.documentElement.dataset.theme = "cinnabar";
       }

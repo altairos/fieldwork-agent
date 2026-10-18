@@ -21,6 +21,7 @@ class ContextPatch(BaseModel):
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
+    title: str | None = None
     discipline: str | None = None
     topic: str | None = None
     site_status: str | None = None

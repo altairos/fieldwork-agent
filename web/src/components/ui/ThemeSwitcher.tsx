@@ -4,12 +4,13 @@ import { useThemeStore } from "../../stores/theme";
 import { IconCheck, IconPalette } from "./icons";
 
 /**
- * ThemeSwitcher — 界面配色切换（四套主题：朱砂/靛青/青衿/Word蓝白）。
+ * ThemeSwitcher — 界面配色切换（六套主题：朱砂/靛青/Word蓝白/素笺/缥囊/缃帙）。
  * 触发按钮样式与 Header 导出按钮同规格（hairline bg-card h-8）。
  * 弹层：role=menu + menuitemradio（aria-checked）；
  *   选中态 = 实边框 + IconCheck 勾选（交互规范）；
  *   色板预览用 inline style 硬编码 hex（CSS 变量在同一 data-theme 下同色，
- *   无法同屏展示四套，值与 lib/theme.ts 的 swatch 一一对应）；
+ *   无法同屏展示六套，值与 lib/theme.ts 的 swatch 一一对应）；
+ *   六项时弹层加 max-h + overflow-y-auto，防小屏溢出；
  *   点击外部 / Escape 关闭；全部项 cursor-pointer（preflight）+ hover +
  *   focus-visible 反馈。
  */
@@ -53,7 +54,7 @@ export function ThemeSwitcher() {
         <div
           role="menu"
           aria-label="界面配色"
-          className="absolute right-0 mt-2 w-64 z-50 rounded-lg hairline bg-card shadow-pop p-1.5"
+          className="absolute right-0 mt-2 w-64 z-50 rounded-lg hairline bg-card shadow-pop p-1.5 max-h-[70vh] overflow-y-auto"
         >
           {THEMES.map((t) => {
             const selected = t.id === theme;

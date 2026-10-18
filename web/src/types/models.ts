@@ -124,6 +124,8 @@ export interface ItineraryPlan {
 
 /** 研究定位槽位；空字符串表示未填，extras 收野生字段。 */
 export interface ResearchContext {
+  /** 项目显示名（任务1：用户可改 / agent 自动生成，≤30 字；空串 = 未命名，显示层回退 topic）。 */
+  title: string;
   discipline: string;
   topic: string;
   site_status: string;

@@ -1,15 +1,20 @@
-/* themes.css — 用户可选的四套界面配色（2026-10-16 评审后落地）。
+/* themes.css — 用户可选的六套界面配色（2026-10-16 评审后落地四套，
+ * 2026-10-18 追加素笺/缃帙）。
  *
  * 来源：docs/frontend/design-board.html（A0 朱砂 · 默认）与 make_variants.py
- * 确定性生成的三个变体 — A1 靛青（design-board-indigo.html）、A2 青衿
- * （design-board-bamboo.html）、A3 Word蓝白（design-board-wordblue.html）。
+ * 确定性生成的三个变体 — A1 靛青（design-board-indigo.html）、A2 缥囊
+ * （design-board-bamboo.html，设计板仍为旧「青衿」原稿）、A3 Word蓝白
+ * （design-board-wordblue.html）。
+ * A4 素笺（仿 Obsidian 灰白 + 烟墨点睛）、A5 缃帙（仿 VS Code 赭黄 +
+ * 米纸正文）为运行时追加，暂无设计板变体。
  * 评审记录：docs/reviews/2026-10-16-前端设计评审.md。
  *
  * 机制：html[data-theme] 切换 CSS 变量；tailwind.config.ts 以
  * rgb(var(--fw-*) / <alpha-value>) 引用（支持 /25 /40 等透明度修饰符），
  * 故颜色变量值为空格分隔 RGB 三元组；纸纹 / 阴影 / 滚动条为非颜色变量。
- * A1/A2 主色族自定 + 纸色族换冷调（蓝灰/青绿，2026-10-18），ink/inksoft 沿用
- * :root 暖墨，其余回落；A3 全套替换（白底冷灰 + Fluent 蓝）。
+ * A1/A2 主色族自定 + 纸色族换冷调（蓝灰/青绿，2026-10-18）；A1 沿用 :root
+ * 暖墨，A2 换冷墨，其余回落；A3 全套替换（白底冷灰 + Fluent 蓝）；A4 冷中性灰
+ * 全量替换；A5 暖赭全量替换（ochre 警示色偏橙，与主赭拉开）。
  * 红线：lg-mio #A8412F 为静态 SVG 品牌资产不受影响；danger 始终为语义红。
  */
 
@@ -69,26 +74,30 @@ html[data-theme="indigo"] {
   --fw-thumb: #C3CEDA;
 }
 
-/* A2 青衿 — 深青绿主色，bamboo 提亮拉开明度差 */
+/* A2 缥囊 — 淡青 + 白丝绸：冷调青白纸面、青绿主色（2026-10-18 自青衿
+ * 更名换色；id 沿用 bamboo 以兼容已存 localStorage 与设计板选择器）。 */
 html[data-theme="bamboo"] {
-  /* 纸色族（2026-10-18）：暖米纸改绿调青纸与青衿主色同温；ink/inksoft 沿用 :root 暖墨 */
-  --fw-paper: 242 245 238;      /* #F2F5EE */
-  --fw-paperdeep: 230 237 224;  /* #E6EDE0 */
-  --fw-card: 247 250 244;       /* #F7FAF4 */
-  --fw-cardsunk: 235 241 230;   /* #EBF1E6 */
-  --fw-inkfaint: 136 146 128;   /* #889280 */
-  --fw-hairline: 207 218 199;   /* #CFDAC7 */
-  --fw-hairsoft: 220 228 213;   /* #DCE4D5 */
-  --fw-cinnabar: 70 104 58;     /* #46683A */
-  --fw-cinnabarsoft: 122 148 104; /* #7A9468 */
-  --fw-cinnabarwash: 232 239 227; /* #E8EFE3 */
-  --fw-bamboo: 107 138 87;      /* #6B8A57（提亮） */
-  --fw-bamboowash: 238 243 232; /* #EEF3E8 */
-  --fw-ontint: 241 245 236;     /* #F1F5EC */
-  --fw-tintpress: 56 82 46;     /* #38522E */
-  --fw-tintline: 212 224 204;   /* #D4E0CC */
-  --fw-grain1: rgba(94, 122, 78, 0.012);
-  --fw-thumb: #C4CFBA;
+  --fw-paper: 244 249 246;      /* #F4F9F6 青白纸 */
+  --fw-paperdeep: 228 240 233;  /* #E4F0E9 淡青工作台 */
+  --fw-card: 251 254 252;       /* #FBFEFC */
+  --fw-cardsunk: 236 245 240;   /* #ECF5F0 */
+  --fw-ink: 40 46 43;           /* #282E2B 冷墨 */
+  --fw-inksoft: 89 100 94;      /* #59645E */
+  --fw-inkfaint: 150 163 155;   /* #96A39B */
+  --fw-hairline: 207 227 216;   /* #CFE3D8 */
+  --fw-hairsoft: 223 238 230;   /* #DFEEE6 */
+  --fw-cinnabar: 58 118 97;     /* #3A7661 青绿主色（白字对比 5.2:1） */
+  --fw-cinnabarsoft: 111 175 149; /* #6FAF95 淡青 */
+  --fw-cinnabarwash: 233 244 239; /* #E9F4EF */
+  --fw-indigo: 58 92 116;       /* #3A5C74 */
+  --fw-bamboo: 92 156 128;      /* #5C9C80 完成色提亮 */
+  --fw-bamboowash: 234 246 240; /* #EAF6F0 */
+  --fw-ontint: 242 250 246;     /* #F2FAF6 主色底上的文字 */
+  --fw-tintpress: 47 99 83;     /* #2F6353 */
+  --fw-tintline: 207 228 216;   /* #CFE4D8 */
+  --fw-grain1: rgba(90, 150, 125, 0.012);
+  --fw-shadow: 48 58 52;
+  --fw-thumb: #C6D9CE;
 }
 
 /* A3 Word蓝白 — 纯白底 + Fluent 蓝 + Office 习惯辅助色（全量替换） */
@@ -120,4 +129,68 @@ html[data-theme="wordblue"] {
   --fw-grain2: rgba(43, 87, 154, 0.014);
   --fw-shadow: 0 0 0;
   --fw-thumb: #C8C6C4;
+}
+
+/* A4 素笺 — 仿 Obsidian 灰白：冷中性纸面全量替换，主色槽为烟墨深灰 #4A4A4A
+ * （2026-10-18 去紫毫，改纯灰无彩；主按钮近白字对比 8.9:1）；靛蓝退为冷调链接/数据色。 */
+html[data-theme="obsidian"] {
+  --fw-paper: 250 250 250;      /* #FAFAFA */
+  --fw-paperdeep: 240 240 240;  /* #F0F0F0 侧栏灰 */
+  --fw-card: 255 255 255;       /* #FFFFFF */
+  --fw-cardsunk: 243 243 243;   /* #F3F3F3 */
+  --fw-ink: 30 30 30;           /* #1E1E1E */
+  --fw-inksoft: 85 85 85;       /* #555555 */
+  --fw-inkfaint: 154 154 154;   /* #9A9A9A */
+  --fw-hairline: 224 224 224;   /* #E0E0E0 */
+  --fw-hairsoft: 236 236 236;   /* #ECECEC */
+  --fw-cinnabar: 74 74 74;      /* #4A4A4A 烟墨（主色语义位） */
+  --fw-cinnabarsoft: 138 138 138; /* #8A8A8A */
+  --fw-cinnabarwash: 240 240 240; /* #F0F0F0 */
+  --fw-indigo: 62 107 158;      /* #3E6B9E 冷调链接/数据 */
+  --fw-indigowash: 234 241 248; /* #EAF1F8 */
+  --fw-bamboo: 62 125 85;       /* #3E7D55 */
+  --fw-bamboowash: 234 243 237; /* #EAF3ED */
+  --fw-ochre: 176 128 31;       /* #B0801F */
+  --fw-ochrewash: 248 242 227;  /* #F8F2E3 */
+  --fw-danger: 192 57 43;       /* #C0392B */
+  --fw-ontint: 247 247 247;     /* #F7F7F7 烟墨底上的文字 */
+  --fw-tintpress: 56 56 56;     /* #383838 */
+  --fw-onindigo: 240 245 250;   /* #F0F5FA */
+  --fw-tintline: 214 214 214;   /* #D6D6D6 */
+  --fw-grain1: rgba(60, 60, 60, 0.012);
+  --fw-grain2: rgba(60, 60, 60, 0.010);
+  --fw-shadow: 40 40 45;
+  --fw-thumb: #C9C9C9;
+}
+
+/* A5 缃帙 — 仿 VS Code 赭黄：赭黄工作台 + 米纸正文全量替换，主色槽为深赭
+ * #7E5E16（主按钮近白字对比 5.6:1，AA）；ochre 警示改偏橙 #B0651C 与主赭拉开。 */
+html[data-theme="vscode"] {
+  --fw-paper: 252 249 242;      /* #FCF9F2 米纸正文 */
+  --fw-paperdeep: 240 231 206;  /* #F0E7CE 赭黄工作台（与正文拉开，向 VS Code 三栏对比靠拢） */
+  --fw-card: 255 253 247;       /* #FFFDF7 */
+  --fw-cardsunk: 246 239 221;   /* #F6EFDD */
+  --fw-ink: 43 38 32;           /* #2B2620 */
+  --fw-inksoft: 95 87 72;       /* #5F5748 */
+  --fw-inkfaint: 154 143 120;   /* #9A8F78 */
+  --fw-hairline: 224 213 186;   /* #E0D5BA */
+  --fw-hairsoft: 234 225 202;   /* #EAE1CA */
+  --fw-cinnabar: 126 94 22;     /* #7E5E16 深赭（主色语义位） */
+  --fw-cinnabarsoft: 176 140 58; /* #B08C3A */
+  --fw-cinnabarwash: 246 238 219; /* #F6EEDB */
+  --fw-indigo: 74 107 138;      /* #4A6B8A */
+  --fw-indigowash: 235 240 245; /* #EBF0F5 */
+  --fw-bamboo: 94 122 78;       /* #5E7A4E */
+  --fw-bamboowash: 236 241 230; /* #ECF1E6 */
+  --fw-ochre: 176 101 28;       /* #B0651C 警示偏橙 */
+  --fw-ochrewash: 250 236 219;  /* #FAECDB */
+  --fw-danger: 158 47 38;       /* #9E2F26 */
+  --fw-ontint: 252 248 238;     /* #FCF8EE 赭底上的文字 */
+  --fw-tintpress: 104 76 14;    /* #684C0E */
+  --fw-onindigo: 240 245 249;   /* #F0F5F9 */
+  --fw-tintline: 232 216 184;   /* #E8D8B8 */
+  --fw-grain1: rgba(126, 94, 22, 0.014);
+  --fw-grain2: rgba(184, 146, 55, 0.012);
+  --fw-shadow: 58 48 30;
+  --fw-thumb: #D6C7A5;
 }

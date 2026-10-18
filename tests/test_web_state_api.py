@@ -147,6 +147,17 @@ async def test_r09_confirm_dep_hash_mismatch_409(client, app):
     assert "重新生成" in r.text
 
 
+async def test_update_research_context_title(client):
+    """任务1：PUT 带 title 写入成功（sanitize strip）、项目快照带出——
+    Header 改名（前端 rest.updateResearchContext）的后端链路。"""
+    r = await client.put("/projects/p1/research-context",
+                         json={"title": "  宗族变迁调研  "})
+    assert r.status_code == 200
+    assert r.json()["research_context"]["title"] == "宗族变迁调研"
+    snap = (await client.get("/projects/p1")).json()
+    assert snap["research_context"]["title"] == "宗族变迁调研"
+
+
 # ────────────────────────────────────────────────────────────────
 # 归属隔离（spec §归属令牌）：写端点对非 owner 一律 404
 # ────────────────────────────────────────────────────────────────

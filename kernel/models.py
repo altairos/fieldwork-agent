@@ -232,6 +232,9 @@ class WindowAnalysis(BaseModel):
 class ResearchContext(BaseModel):
     """研究定位槽位；空字符串表示未填，``extras`` 收野生字段。"""
 
+    # 任务1：项目显示名（用户可改 / agent 自动生成，≤30 字）；
+    # 必须声明为正式槽位——宿主经 model_validate(repo dict) 构造，未声明键会被丢弃
+    title: str = ""
     discipline: str = ""
     topic: str = ""
     site_status: str = ""

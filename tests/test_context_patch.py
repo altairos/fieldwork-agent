@@ -99,3 +99,19 @@ def test_r05_hint_lists_all_fields():
     hint = context_fields_hint()
     for field in ALLOWED_CONTEXT_FIELDS:
         assert field in hint
+
+
+# ------------------------------------------- title 槽位（任务1：项目显示名）
+
+
+def test_title_whitelisted_and_stripped():
+    """任务1：title 进白名单——用户改名（REST）与 agent 自动命名共用此入口。"""
+    assert "title" in ALLOWED_CONTEXT_FIELDS
+    out = sanitize_context_patch({"title": "  宗族变迁调研  "})
+    assert out == {"title": "宗族变迁调研"}
+
+
+def test_title_blank_rejected_like_other_strings():
+    """任务1：空白 title 与其它字符串字段同样拒绝（改名不允许清空）。"""
+    with pytest.raises(ValueError, match="title 不得为空白字符串"):
+        sanitize_context_patch({"title": "   "})

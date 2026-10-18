@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Chip } from "../ui/Chip";
 import { ThemeSwitcher } from "../ui/ThemeSwitcher";
 import { IconMenu } from "../ui/icons";
@@ -26,6 +27,7 @@ export function Header({
   view = "workspace",
   onNavigate,
   onMenu,
+  onRename,
 }: {
   projectName?: string;
   /** 当前阶段 id（research_positioning 等，对齐 DEFAULT_PHASES） */
@@ -34,8 +36,18 @@ export function Header({
   onNavigate?: (view: WorkspaceView) => void;
   /** 移动端汉堡钮（触发 Workspace 左栏抽屉）；不传则不渲染（如 ProposalView 无抽屉） */
   onMenu?: () => void;
+  /** 项目名就地改名提交（任务1：trim 非空且变化才上行）；不传则项目名纯展示 */
+  onRename?: (name: string) => void;
 }) {
   const meta = DEFAULT_PHASES.find((p) => p.id === phase);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  // 提交口径：trim 非空且与当前名不同才上行；Esc 取消；blur 与 Enter 同一道提交
+  const commitRename = () => {
+    const name = draft.trim();
+    if (name !== "" && name !== projectName) onRename?.(name);
+    setEditing(false);
+  };
   const views: { id: WorkspaceView; label: string }[] = [
     { id: "workspace", label: "工作台" },
     { id: "proposal", label: "方案草稿" },
@@ -62,11 +74,38 @@ export function Header({
           </div>
         </div>
         <div className="h-6 w-px bg-hairline hidden md:block" aria-hidden="true" />
-        {/* 项目名 + 阶段徽标 */}
+        {/* 项目名 + 阶段徽标（任务1：项目名可就地改名——提供 onRename 时点击进编辑，
+            Enter/失焦提交（IME 组合中的 Enter 不触发）、Esc 取消；否则纯展示） */}
         <div className="flex items-center gap-2 min-w-0">
-          {projectName && (
+          {editing ? (
+            <input
+              aria-label="项目名称"
+              value={draft}
+              maxLength={30}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) commitRename();
+                else if (e.key === "Escape") setEditing(false);
+              }}
+              onBlur={commitRename}
+              className="font-serif text-[14px] font-semibold hairline rounded-md px-1.5 py-0.5 bg-cardsunk outline-none focus:border-cinnabar w-40 shrink-0"
+            />
+          ) : projectName && (onRename ? (
+            <button
+              type="button"
+              title="点击修改项目名称"
+              onClick={() => {
+                setDraft(projectName);
+                setEditing(true);
+              }}
+              className="font-serif text-[14px] font-semibold truncate hover:text-cinnabar transition cursor-text"
+            >
+              {projectName}
+            </button>
+          ) : (
             <span className="font-serif text-[14px] font-semibold truncate">{projectName}</span>
-          )}
+          ))}
           {meta && (
             <Chip tone="cinnabar" className="shrink-0">
               <span className="dot bg-cinnabar" aria-hidden="true" />

@@ -90,7 +90,7 @@ export function ProposalView() {
       .getProject(projectId)
       .then((snap) => {
         if (!alive) return;
-        setProjectName(snap.research_context?.topic || "");
+        setProjectName(snap.research_context?.title || snap.research_context?.topic || "");
         setPhase(snap.phase);
         setConfirmed(!!snap.proposal_confirmed);
         setStale(!!snap.proposal_confirmation_stale);
@@ -202,7 +202,7 @@ export function ProposalView() {
     try {
       const res = await rest.confirmProposal(projectId, doc.id);
       const snap = await rest.getProject(projectId);
-      setProjectName(snap.research_context?.topic || "");
+      setProjectName(snap.research_context?.title || snap.research_context?.topic || "");
       setPhase(snap.phase);
       setConfirmed(!!snap.proposal_confirmed);
       setStale(!!snap.proposal_confirmation_stale);
@@ -234,9 +234,22 @@ export function ProposalView() {
   return (
     <div className="h-full flex flex-col">
       <Header
-        projectName={projectName || projectId}
+        projectName={projectName || "未命名项目"}
         phase={phase}
         view="proposal"
+        onRename={(name) => {
+          // 任务1：改名 → PUT title → 重拉快照回读（题头 projectName 本地 state 同步）
+          void (async () => {
+            try {
+              await rest.updateResearchContext(projectId, { title: name });
+              const snap = await rest.getProject(projectId);
+              setProjectName(snap.research_context?.title || snap.research_context?.topic || "");
+            } catch (e) {
+              // 改名失败保持原名（无全局 toast 通道；用户重试即可）
+              console.warn("rename failed:", e);
+            }
+          })();
+        }}
         onNavigate={(v) => {
           if (v === "workspace") navigate(`/p/${projectId}`);
         }}
@@ -247,7 +260,7 @@ export function ProposalView() {
           <div className="px-4 py-3.5 border-b border-hairline">
             <div className="text-[10.5px] tracking-[.16em] text-inkfaint num">RESEARCH PROPOSAL</div>
             <div className="font-serif text-[14px] font-semibold leading-tight mt-0.5">
-              {projectName || projectId}
+              {projectName || "未命名项目"}
             </div>
           </div>
           <div className="px-4 py-3 border-b border-hairline">
