@@ -1004,6 +1004,16 @@ def test_normalize_cjk_quotes_unit():
     assert _normalize_cjk_quotes(
         '代码外"归一"\n```python\nprint("中文提示")\n```\n完'
     ) == '代码外“归一”\n```python\nprint("中文提示")\n```\n完'
+    # B4（终审 Parked）：行内```（非行首围栏）不参与配对——split 全文会把
+    # 它当围栏使后续配对奇偶错位，把真代码段误当块外转换
+    assert _normalize_cjk_quotes('用"两个"```围起来，像"这样"') \
+        == "用“两个”```围起来，像“这样”"
+    assert _normalize_cjk_quotes(
+        '先说用```标记\n然后"这句"在围栏外\n```\nx = "中文"\n```'
+    ) == '先说用```标记\n然后“这句”在围栏外\n```\nx = "中文"\n```'
+    # 未闭合行首围栏：其后内容按代码块内保守处理（宁漏转正文，不误转代码）
+    assert _normalize_cjk_quotes('前"话"\n```python\nx = 1') \
+        == '前“话”\n```python\nx = 1'
 
 
 def test_cjk_quotes_normalized_in_persisted_reply(env):
@@ -1115,6 +1125,39 @@ def test_length_truncated_reply_continues_and_merges(env):
     assert done.data["finish_reason"] == "stop"      # 续写后的最终终止
 
 
+class SecondStreamBrokenLLM(FakeLLM):
+    """主流正常（length 截断帧）；续写流 yield 一个 delta 后异常中断。"""
+
+    def chat_stream(self, messages, **kw):
+        self.calls.append((list(messages), kw))
+        if len(self.calls) == 1:
+            return iter(self.script.pop(0))
+
+        def _gen():
+            yield {"delta": "已流出的续写片段"}
+            raise RuntimeError("续写流中断")
+        return _gen()
+
+
+def test_broken_continuation_deltas_still_persisted(env):
+    """B3（终审 Parked）：续写流异常中断——已发 message_delta 的文本前端已
+    看到，必须兑底落库；不随 except 静默蒸发导致刷新后消失。回合照常 completed。"""
+    repo, tm = env
+    llm = SecondStreamBrokenLLM([
+        [{"delta": "先问最实际的："},
+         {"content": "先问最实际的：", "tool_calls": None,
+          "finish_reason": "length", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert deltas == "先问最实际的：已流出的续写片段"
+    assistant = next(m for m in repo.get_messages("p1") if m["role"] == "assistant")
+    assert assistant["content"] == "先问最实际的：已流出的续写片段"
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
 def test_preamble_and_truncation_rules():
     from fieldwork_agent.web_host.agent.loop import _looks_like_preamble, _looks_truncated
 
@@ -1126,6 +1169,11 @@ def test_preamble_and_truncation_rules():
     assert _looks_truncated("先问最实际的：", "stop") is False
     assert _looks_truncated("价格约 ¥65×", "stop") is True
     assert _looks_truncated("完整回答。", "length") is True
+    # B2（终审 Parked）：闭合引号是完整结构、省略号是语气收尾——
+    # 恰好停在它们之上的回复不是截断，误判会白打一次续写并拼接重复内容
+    assert _looks_truncated('他说"就到这儿"', "stop") is False
+    assert _looks_truncated("大概这些…", "stop") is False
+    assert _looks_truncated("总之“先这样”", "stop") is False
 
 
 def test_preamble_twice_falls_back_and_marks_incomplete(env):

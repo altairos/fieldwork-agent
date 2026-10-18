@@ -50,20 +50,40 @@ def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
 
 
 # 中文全角引号归一（问题3）：LLM 输出的成对半角双引号在内容含中文时
-# 归一为全角“”；纯西文内容保持半角；代码块（``` 围栏内）不动
+# 归一为全角“”；纯西文内容保持半角；代码块（行首 ``` 围栏内）不动。
+# 围栏判定用行首配对（终审 B4）：split("```") 会把行内 ``` 误当围栏，
+# 奇偶错位后把真代码块内的引号误转全角。
 _HALF_QUOTED_RE = re.compile(r'"([^"\n]*)"')
 _CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
+_FENCE_LINE_RE = re.compile(r"(?m)^[ \t]*```[^\n]*$")
+
+
+def _quote_outside_code(seg: str) -> str:
+    """正文段的半角双引号归一：成对、同行、内容含中文才转全角。"""
+    return _HALF_QUOTED_RE.sub(
+        lambda m: f"“{m.group(1)}”" if _CJK_CHAR_RE.search(m.group(1))
+        else m.group(0),
+        seg)
 
 
 def _normalize_cjk_quotes(text: str) -> str:
-    """成对、同行、无嵌套的半角双引号对：内容含中文才转全角，否则原样。"""
-    parts = text.split("```")
-    for i in range(0, len(parts), 2):  # 偶数段在代码块外
-        parts[i] = _HALF_QUOTED_RE.sub(
-            lambda m: f"“{m.group(1)}”" if _CJK_CHAR_RE.search(m.group(1))
-            else m.group(0),
-            parts[i])
-    return "```".join(parts)
+    """成对、同行、无嵌套的半角双引号对：内容含中文才转全角，否则原样。
+
+    行首 ``` 围栏按出现顺序配对翻转 in_code，行内 ``` 不构成围栏；
+    未闭合围栏后的尾部按代码块内处理（宁漏转正文，不误转代码）。
+    """
+    out: list[str] = []
+    pos = 0
+    in_code = False
+    for fence in _FENCE_LINE_RE.finditer(text):
+        seg = text[pos:fence.start()]
+        out.append(seg if in_code else _quote_outside_code(seg))
+        out.append(fence.group(0))  # 围栏行原样
+        in_code = not in_code
+        pos = fence.end()
+    tail = text[pos:]
+    out.append(tail if in_code else _quote_outside_code(tail))
+    return "".join(out)
 
 
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
@@ -273,6 +293,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                          + accumulated_reply[-300:]
                          + "\n请紧接着上述末尾继续写完剩余内容：直接续写正文，"
                            "不要重复已写出的内容，不要重新开头，写完即止。"})
+        cont_deltas = ""  # 续写流已流出增量：终帧空/报错/流异常三路兜底（终审 B3）
         try:
             stream = llm.chat_stream(messages, tools=None, slot="interview")
             iterations += 1
@@ -281,19 +302,24 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：同主流，停止消费与发射
                 if "delta" in chunk and chunk["delta"]:
+                    cont_deltas += chunk["delta"]
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})
                 elif "content" in chunk:
                     final_resp = chunk
             if final_resp and not final_resp.get("error"):
                 cont = final_resp.get("content", "") or ""
-                if cont:
-                    accumulated_reply += cont
-                    finish_reason = (str(final_resp.get("finish_reason") or "")
-                                     or finish_reason)
-                    usage_total = final_resp.get("usage", {}) or usage_total
+                # 终帧正文空（只发 delta 不发终帧正文的实现）同样以增量兜底
+                accumulated_reply += cont or cont_deltas
+                finish_reason = (str(final_resp.get("finish_reason") or "")
+                                 or finish_reason)
+                usage_total = final_resp.get("usage", {}) or usage_total
+            else:
+                # 无终帧/终帧报错：已流出的续写增量照样拼入，绝不丢
+                accumulated_reply += cont_deltas
         except Exception:
-            pass  # 续写失败保留原文，不丢已流出的内容
+            # 流中断：同上兜底（终审 B3），不丢已流出的内容
+            accumulated_reply += cont_deltas
 
     # 最终回答收敛（对齐 CLI runtime/loop.py 的触顶收敛；F06 收敛条件整体
     # 替换为 not has_final_answer）：主循环退出但没拿到最终回答（预算触顶
@@ -395,10 +421,12 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         tm.finish(pid, turn_id, "completed")
 
 
-# 未完标点/开引号/截断算式：非空正文以其结尾几乎必为句中截断（服务端异常终止），
-# 触发一次续写兑底；句号/问号/叹号/引号闭合等完整结尾不在此列。
+# 未完标点/截断算式：非空正文以其结尾几乎必为句中截断（服务端异常终止），
+# 触发一次续写兑底；句号/问号/叹号等完整结尾不在此列。
 # 冒号移出本表：以冒号结尾多为「前导语」，走带工具重问（见 _looks_like_preamble）。
-_INCOMPLETE_TAIL_CHARS = '，,、；;—…"“‘\'×÷≈+-='
+# 引号/省略号移出本表（终审 B2）：闭合引号是完整结构、省略号是语气收尾——
+# 误触发续写会在完整句后拼出续貂文本；漏判代价仅保留原文，可接受。
+_INCOMPLETE_TAIL_CHARS = '，,、；;—×÷≈+-='
 
 # 前导语尾字符 + 承诺词：无 tool_calls 且命中任一 → 不是最终回答
 _PREAMBLE_TAIL_CHARS = "：:，,、；;—…"
