@@ -206,11 +206,14 @@ class AMapClient:
         return _pois_page(payload)
 
     def direction_transit(self, origin: str, destination: str,
-                          city: str = "", cityd: str = "") -> Envelope:
+                          city: str = "", cityd: str = "",
+                          date: str = "") -> Envelope:
         """公交路径规划：枢纽→田野点的末端接驳方案（每条 transit 归一为一个条目）。
 
         v3 语义（M4 修正）：``city``=出发城市、``cityd``=到达城市（跨城必填
         cityd）；只给 ``city`` 时双填兼容（同城场景，M1 行为不变）。
+        ``date``（N1）=班次日期 YYYY-MM-DD，v3 仅支持 3 天内——窗口守卫在
+        聚合层 ``plan_last_mile``；空串不进 query（现有调用零影响）。
         """
         params: dict[str, Any] = {"origin": origin, "destination": destination}
         if city:
@@ -218,6 +221,8 @@ class AMapClient:
             params["cityd"] = cityd or city
         elif cityd:
             params["cityd"] = cityd
+        if date:
+            params["date"] = date
         payload, err = self._call("/v3/direction/transit/integrated", params)
         if err:
             return err
