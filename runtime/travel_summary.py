@@ -35,6 +35,8 @@ def brief_item(item: dict) -> dict:
             legs.extend({k: line[k] for k in ("name", "departure_stop", "arrival_stop", "start_time", "end_time", "station_start_time", "station_end_time") if k in line} for line in lines[:2])
         if legs:
             out["schedule"]["segments"] = legs
+        if len(segments) > 4:
+            out["schedule"]["omitted_segments"] = len(segments) - 4
     if isinstance(item.get("evidence"), dict) and item["evidence"].get("source_ref"):
         out["evidence"] = item["evidence"]
     for key in ("constraints", "connection", "selection_reason"):
@@ -57,10 +59,15 @@ def compact(value: Any, depth: int = 0) -> Any:
             return compact(brief_item(value), depth + 1)
         if isinstance(value.get("items"), list):
             return {"total": value.get("total"), "returned_count": len(value["items"]),
+                "omitted_count": max(0, len(value["items"]) - 3),
                 "raw_count": value.get("raw_count"), "entity_count": value.get("entity_count"),
                 "items": [compact(brief_item(it), depth + 1) for it in value["items"][:3] if isinstance(it, dict)]}
-        return {k: compact(v, depth + 1) for k, v in value.items()
-                if k not in ("pic_url", "jump_url", "polyline", "inputs_hash")}
+        result = {k: compact(v, depth + 1) for k, v in value.items()
+                  if k not in ("pic_url", "jump_url", "polyline", "inputs_hash")}
+        omitted = {k: len(v) - 3 for k, v in value.items() if isinstance(v, list) and len(v) > 3}
+        if omitted:
+            result["omitted_counts"] = omitted
+        return result
     return value
 
 

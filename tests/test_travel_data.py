@@ -86,6 +86,14 @@ def test_large_result_summary_is_valid_bounded_json():
     assert parsed["ok"] and parsed["summary_omitted"]
 
 
+def test_structured_summary_declares_omitted_legs_and_missing_conditions():
+    env = Envelope(ok=True, data={"legs": [{"from": str(i), "to": str(i+1)} for i in range(6)],
+        "budget": {"uncovered": [f"缺项{i}" for i in range(5)]}})
+    fields = json.loads(_tool_content("compose_itinerary", env))["fields"]
+    assert len(fields["legs"]) == 3 and fields["omitted_counts"]["legs"] == 3
+    assert fields["budget"]["omitted_counts"]["uncovered"] == 2
+
+
 def test_model_cannot_promote_tourism_dates_into_confirmed_festival():
     class LLM:
         def chat(self, **kw):
