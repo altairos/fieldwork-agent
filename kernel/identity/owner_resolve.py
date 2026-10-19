@@ -11,7 +11,7 @@ class SessionExpired(Exception):
         super().__init__("session expired or invalid")
 
 
-def resolve_owner(raw: str, user_store) -> str | None:
+def resolve_owner(raw: str, user_store) -> str:
     """调用方已对 raw 过 X-Owner-Token 形状校验。
 
     - `sess_` 前缀：会话命中 → `user:<id>`；失效/无 store → 抛 SessionExpired（不静默折 None）；
