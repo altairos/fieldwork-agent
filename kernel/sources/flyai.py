@@ -14,6 +14,8 @@
   ``FlyAIClient()``（搜索类是开放世界：``read_only=True, open_world=True``，
   对照 spec §2.4 annotations 约定）。
 """
+import contextvars
+import inspect
 import json
 import os
 import shutil
@@ -579,13 +581,36 @@ register(CapabilityMeta(
     read_only=True, open_world=True))
 
 
+# 当前工具调用 id（web_host loop._exec_tool 置位；RecordingClient 记录时读取，
+# 供快照 parent_call_id 跨层配对——kernel 不 import 宿主，变量定义在 kernel 侧，
+# 宿主置位，公理 1 不破）。默认空串：CLI/MCP 宿主不置位时快照无配对键（前端降级路径）。
+current_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "fw_current_call_id", default="")
+
+
+def _normalized_view(target: Any, args: tuple, kwargs: dict) -> dict:
+    """实际调用 → 完整命名参数视图（R17）：bind 位置转名 + apply_defaults 补签名默认值。
+
+    直通 dispatch（工具层已补默认）与聚合内部调用（常省略默认）经此归一后，
+    等效查询必得同键。bind 失败（理论签名漂移）降级为 kwargs 原样，绝不抛。
+    """
+    try:
+        bound = inspect.signature(target).bind(*args, **kwargs)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    bound.apply_defaults()
+    return dict(bound.arguments)
+
+
 class RecordingClient:
     """包装任意 client、逐次记录方法调用的替身（spec §5.1 快照链捕获件）。
 
     纯内存、不碰 repository（公理 1）：web 宿主在回合级用它包住自持
     ``FlyAIClient``，轮末由宿主侧消费 ``calls`` 落盘为快照证据；
     kernel 自身不持久化。记录项为
-    ``(方法名, {"args": [...], "kwargs": {...}}, 返回包络)``；
+    ``(方法名, {"args": [...], "kwargs": {...}, "view": {...}, "call_id": "..."},
+    返回包络)``——``view`` 为归一化命名参数视图（R17），``call_id`` 为记录时
+    ``current_call_id`` 值（快照 parent_call_id 配对键，R13）；
     非可调用属性（如 ``api_key``）经 ``__getattr__`` 原样透传、不留痕。
     """
 
@@ -601,7 +626,9 @@ class RecordingClient:
 
         def _recorded(*args: Any, **kwargs: Any) -> Any:
             result = target(*args, **kwargs)
-            self.calls.append((name, {"args": list(args), "kwargs": dict(kwargs)}, result))
+            self.calls.append((name, {"args": list(args), "kwargs": dict(kwargs),
+                                      "view": _normalized_view(target, args, kwargs),
+                                      "call_id": current_call_id.get("")}, result))
             return result
 
         return _recorded
