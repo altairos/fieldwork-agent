@@ -1727,3 +1727,44 @@ def test_dangling_completion_dead_ends_incomplete(env):
     assert done.data["incomplete"] is True
     deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
     assert "清单如下：" in deltas and "甲乙丙。" in deltas   # 已流出内容不丢
+
+
+def test_completion_cancel_during_hangfix_keeps_cancelled(env):
+    """终审 W1（P1-4/F05）：悬挂补完流的 await 窗口内用户取消——
+    TurnManager.cancel 已立即 finish("cancelled") 置终态，run_turn 跑完
+    补完流后必须刷新取消快照：轮末不落 assistant 消息、不 commit 暂存、
+    不发 turn_done，终态保持 cancelled（不被改写 completed）。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    handle = tm.get_turn("p1", turn.turn_id)
+
+    def _hangfix_gen():
+        yield {"delta": "补充如下。"}
+        # 首个 delta 已被消费（await 窗口打开）——此刻模拟 TurnManager.cancel
+        # 的完整行为：cancel_event.set() + finish("cancelled") 置终态
+        handle.cancel_event.set()
+        tm.finish("p1", turn.turn_id, "cancelled")
+        yield {"content": "补充如下。完整收尾。", "tool_calls": None,
+               "finish_reason": "stop", "usage": {}}
+
+    llm = FakeLLM([
+        [{"delta": "我先查场地："},
+         {"content": "我先查场地：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 前导语 → 带工具重问
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 又冒号收尾，不再重问 → break
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 收敛：产出仍冒号收尾
+        _hangfix_gen(),                                     # 悬挂补完：中途取消
+    ])
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "缺什么", tm, llm, FakeFlyAI()))
+    # 终态 cancelled 未被改写（轮末二次 finish("cancelled") 幂等无害）
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    # P1-4：取消即中止本轮全部状态变更——无 assistant 消息 append
+    assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
+    # 无 turn_done（cancelled 终态不发完成事件）
+    types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
+    assert "turn_done" not in types

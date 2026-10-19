@@ -463,6 +463,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             accumulated_reply += comp_deltas  # 流中断：已流出内容绝不丢
             recovery_failed = True  # R18
 
+    # 悬挂补完块的 await 窗口内 cancel 可能已置位（TurnManager.cancel 会
+    # 立即 finish("cancelled")）——刷新快照，防已取消回合被改写 completed
+    cancelled = handle.cancel_event.is_set() or cancelled
     if not cancelled:
         # 统一终检门（R8/R16/R18）：所有恢复路径走完后的最后一道防线——
         # 无答案 / 最近一次恢复失败 / 仍截断 / 仍悬挂，任一命中即 incomplete。
