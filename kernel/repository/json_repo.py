@@ -17,12 +17,16 @@
   消息补写进 jsonl（按 ts+role+content 去重，重复打开不会二次写入）；
 - **读时补齐/归一**：新增状态键自动补默认值；旧缓存文件的 ``source_tool`` 读作 ``tool``；
   旧 ``proposal_draft`` / ``final_proposal`` 单值键并入 ``list_proposals``；
-- **不写旧键**：新文档只进 ``proposals[]``，不再回写 ``proposal_draft``（避免双轨真源）。
+- **不写旧键**：新文档只进 ``proposals[]``，不再回写 ``proposal_draft``（避免双轨真源）；
+- **per-pid 进程内锁（R11）**：同一项目的所有「读-改-写」变更方法在 ``_lock_for(pid)``
+  内串行完成 load→改→save，防并发整份写回把他人已保存的字段（如 owner）回退为旧
+  快照值；纯读方法与 ``create``/``delete_project`` 不包裹（非既有 state 的读改写）。
 """
 
 import json
 import os
 import shutil
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -99,6 +103,22 @@ class JsonRepository:
 
     def __init__(self, projects_dir: Path | str):
         self._projects_dir = Path(projects_dir)
+        # R11：per-pid 进程内锁表（每项目一把，随实例生存；项目数有界，不清理）
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
+
+    def _lock_for(self, pid: str) -> threading.Lock:
+        """取（并惰性建）该项目的进程内互斥锁：同 pid 恒返回同一把。
+
+        所有「读-改-写整份 state」的变更方法必须持锁完成 load→改→save，
+        保证同一 pid 的写串行（R11）。锁不可重入：被包裹的方法之间不得
+        相互调用（现有代码只调私有工具与纯读公开方法，安全）。
+        """
+        with self._locks_guard:
+            lock = self._locks.get(pid)
+            if lock is None:
+                lock = self._locks[pid] = threading.Lock()
+            return lock
 
     # ------------------------------------------------------------------ 内部工具
 
@@ -278,11 +298,12 @@ class JsonRepository:
         reason = owner_violation(owner)
         if reason:
             raise ValueError(f"非法 owner（{reason}）: {owner}")
-        state = self._load(pid)
-        if state.get("owner") == owner:
-            return
-        state["owner"] = owner
-        self._save(pid, state)
+        with self._lock_for(pid):
+            state = self._load(pid)
+            if state.get("owner") == owner:
+                return
+            state["owner"] = owner
+            self._save(pid, state)
 
     def get_state(self, pid: str) -> dict:
         return self._load(pid)
@@ -293,20 +314,22 @@ class JsonRepository:
     def set_phase(self, pid: str, phase: str) -> None:
         if phase not in PHASES:
             raise ValueError(f"未知阶段: {phase}")
-        state = self._load(pid)
-        current = state["phase"]
-        if current == phase:
-            return
-        state["phase_history"].append({"from": current, "to": phase, "at": _now()})
-        state["phase"] = phase
-        self._save(pid, state)
+        with self._lock_for(pid):
+            state = self._load(pid)
+            current = state["phase"]
+            if current == phase:
+                return
+            state["phase_history"].append({"from": current, "to": phase, "at": _now()})
+            state["phase"] = phase
+            self._save(pid, state)
 
     # ------------------------------------------------------------------ 研究上下文
 
     def update_research_context(self, pid: str, patch: dict) -> None:
-        state = self._load(pid)
-        state["research_context"].update(patch)
-        self._save(pid, state)
+        with self._lock_for(pid):
+            state = self._load(pid)
+            state["research_context"].update(patch)
+            self._save(pid, state)
 
     def get_research_context(self, pid: str) -> dict:
         return dict(self._load(pid)["research_context"])
@@ -314,14 +337,15 @@ class JsonRepository:
     # ------------------------------------------------------------------ 消息史
 
     def append_message(self, pid: str, role: str, content: str, meta: dict | None = None) -> None:
-        state = self._load(pid)
-        self._backfill_chat_log(pid, state)
-        entry = {"role": role, "content": content, "ts": _now(), "metadata": dict(meta or {})}
-        self._write_chat_lines(pid, [entry])
-        window = state["dialogue_context"]
-        window.append(entry)
-        del window[:-MESSAGE_WINDOW]  # 超出窗口的旧条目只存在于 jsonl
-        self._save(pid, state)
+        with self._lock_for(pid):
+            state = self._load(pid)
+            self._backfill_chat_log(pid, state)
+            entry = {"role": role, "content": content, "ts": _now(), "metadata": dict(meta or {})}
+            self._write_chat_lines(pid, [entry])
+            window = state["dialogue_context"]
+            window.append(entry)
+            del window[:-MESSAGE_WINDOW]  # 超出窗口的旧条目只存在于 jsonl
+            self._save(pid, state)
 
     def get_messages(self, pid: str, limit: int = 30) -> list[dict]:
         self._require(pid)
@@ -332,41 +356,44 @@ class JsonRepository:
 
     def pop_last_message(self, pid: str, role: str | None = None) -> dict | None:
         """弹出最近一条（可按 role 过滤）：jsonl 整表重写 + state 窗口同步弹出。"""
-        state = self._load(pid)
-        self._backfill_chat_log(pid, state)
-        entries = self._read_chat_log(pid)
-        index = next((i for i in range(len(entries) - 1, -1, -1)
-                      if role is None or entries[i].get("role") == role), None)
-        if index is None:
-            return None
-        popped = entries.pop(index)
-        self._rewrite_chat_lines(pid, entries)
-        window = state["dialogue_context"]
-        key = (popped.get("ts"), popped.get("role"), popped.get("content"))
-        for i in range(len(window) - 1, -1, -1):
-            w = window[i]
-            if (w.get("ts"), w.get("role"), w.get("content")) == key:
-                del window[i]
-                break
-        self._save(pid, state)
-        return popped
+        with self._lock_for(pid):
+            state = self._load(pid)
+            self._backfill_chat_log(pid, state)
+            entries = self._read_chat_log(pid)
+            index = next((i for i in range(len(entries) - 1, -1, -1)
+                          if role is None or entries[i].get("role") == role), None)
+            if index is None:
+                return None
+            popped = entries.pop(index)
+            self._rewrite_chat_lines(pid, entries)
+            window = state["dialogue_context"]
+            key = (popped.get("ts"), popped.get("role"), popped.get("content"))
+            for i in range(len(window) - 1, -1, -1):
+                w = window[i]
+                if (w.get("ts"), w.get("role"), w.get("content")) == key:
+                    del window[i]
+                    break
+            self._save(pid, state)
+            return popped
 
     # ------------------------------------------------------------------ 田野点与报道人
 
     def save_field_site(self, pid: str, record: dict) -> str:
-        state = self._load(pid)
-        entry = self._upsert_record(state["field_sites"], record, "site")
-        self._save(pid, state)
-        return entry["id"]
+        with self._lock_for(pid):
+            state = self._load(pid)
+            entry = self._upsert_record(state["field_sites"], record, "site")
+            self._save(pid, state)
+            return entry["id"]
 
     def list_field_sites(self, pid: str) -> list[dict]:
         return [dict(s) for s in self._load(pid)["field_sites"]]
 
     def save_informant(self, pid: str, record: dict) -> str:
-        state = self._load(pid)
-        entry = self._upsert_record(state["informants"], record, "inf")
-        self._save(pid, state)
-        return entry["id"]
+        with self._lock_for(pid):
+            state = self._load(pid)
+            entry = self._upsert_record(state["informants"], record, "inf")
+            self._save(pid, state)
+            return entry["id"]
 
     def list_informants(self, pid: str) -> list[dict]:
         return [dict(i) for i in self._load(pid)["informants"]]
@@ -374,21 +401,22 @@ class JsonRepository:
     # ------------------------------------------------------------------ 搜索缓存
 
     def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
-        self._require(pid)
-        cid = _new_id("srch", self._cache_dir(pid))
-        cached_at = _now()
-        serialized = json.dumps(result, ensure_ascii=False)
-        payload = {"id": cid, "query": query, "tool": tool, "cached_at": cached_at}
-        if len(serialized.encode("utf-8")) > CACHE_LIMIT_BYTES:
-            # 超限：整体替换为截断标记，preview 按 UTF-8 字节截断（不产生半个字符）
-            preview = serialized.encode("utf-8")[:CACHE_LIMIT_BYTES].decode(
-                "utf-8", errors="ignore"
-            )
-            payload["result"] = {"truncated": True, "preview": preview}
-        else:
-            payload["result"] = result
-        self._write_json(self._cache_dir(pid) / f"{cid}.json", payload)
-        return cid
+        with self._lock_for(pid):
+            self._require(pid)
+            cid = _new_id("srch", self._cache_dir(pid))
+            cached_at = _now()
+            serialized = json.dumps(result, ensure_ascii=False)
+            payload = {"id": cid, "query": query, "tool": tool, "cached_at": cached_at}
+            if len(serialized.encode("utf-8")) > CACHE_LIMIT_BYTES:
+                # 超限：整体替换为截断标记，preview 按 UTF-8 字节截断（不产生半个字符）
+                preview = serialized.encode("utf-8")[:CACHE_LIMIT_BYTES].decode(
+                    "utf-8", errors="ignore"
+                )
+                payload["result"] = {"truncated": True, "preview": preview}
+            else:
+                payload["result"] = result
+            self._write_json(self._cache_dir(pid) / f"{cid}.json", payload)
+            return cid
 
     def list_cached_searches(self, pid: str) -> list[dict]:
         """缓存索引以文件为唯一真源（旧 state 里的 ``search_results`` 索引不再参与）。"""
@@ -444,18 +472,19 @@ class JsonRepository:
         tags: list[str] | None = None,
         category: str = "general",
     ) -> str:
-        self._require(pid)
-        entry = {
-            "id": _new_id("know", self._knowledge_dir(pid)),
-            "title": title,
-            "content": content,
-            "source": source,
-            "tags": list(tags or []),
-            "category": category,
-            "created_at": _now(),
-        }
-        self._write_json(self._knowledge_dir(pid) / f"{entry['id']}.json", entry)
-        return entry["id"]
+        with self._lock_for(pid):
+            self._require(pid)
+            entry = {
+                "id": _new_id("know", self._knowledge_dir(pid)),
+                "title": title,
+                "content": content,
+                "source": source,
+                "tags": list(tags or []),
+                "category": category,
+                "created_at": _now(),
+            }
+            self._write_json(self._knowledge_dir(pid) / f"{entry['id']}.json", entry)
+            return entry["id"]
 
     def list_knowledge(self, pid: str) -> list[dict]:
         self._require(pid)
@@ -491,9 +520,10 @@ class JsonRepository:
         violation = path_id_violation(entry_id, field="entry_id")
         if violation:
             raise ValueError(f"非法知识条目 id（{violation}）: {entry_id!r}")
-        path = self._knowledge_dir(pid) / f"{entry_id}.json"
-        if path.exists():
-            path.unlink()
+        with self._lock_for(pid):
+            path = self._knowledge_dir(pid) / f"{entry_id}.json"
+            if path.exists():
+                path.unlink()
 
     def update_knowledge(
         self,
@@ -507,17 +537,18 @@ class JsonRepository:
         violation = path_id_violation(entry_id, field="entry_id")
         if violation:
             raise ValueError(f"非法知识条目 id（{violation}）: {entry_id!r}")
-        self._require(pid)
-        path = self._knowledge_dir(pid) / f"{entry_id}.json"
-        entry = self._read_json(path)
-        if entry is None:
-            raise KeyError(entry_id)
-        if title is not None:
-            entry["title"] = title
-        if content is not None:
-            entry["content"] = content
-        self._write_json(path, entry)
-        return entry
+        with self._lock_for(pid):
+            self._require(pid)
+            path = self._knowledge_dir(pid) / f"{entry_id}.json"
+            entry = self._read_json(path)
+            if entry is None:
+                raise KeyError(entry_id)
+            if title is not None:
+                entry["title"] = title
+            if content is not None:
+                entry["content"] = content
+            self._write_json(path, entry)
+            return entry
 
     # ------------------------------------------------------------------ 提案文档
 
@@ -525,30 +556,31 @@ class JsonRepository:
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
         *, provenance_ctx: dict | None = None,
     ) -> str:
-        state = self._load(pid)
-        uid = uuid.uuid4().hex[:8]
-        record = {
-            "id": f"prop_{datetime.now():%Y%m%d%H%M%S}_{uid}",
-            "kind": kind,
-            "version": version,
-            "filename": f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md",
-            "saved_at": _now(),
-            # 审计二 R09：保存时落五路依赖指纹，确认时校验。
-            # N04：provenance_ctx 非 None 时用生成时实际使用的 ctx 算指纹
-            # （而非保存时按当前仓储推测），防止正文旧、指纹新的错配。
-            "dep_hash": self._current_confirm_hash(
-                pid, state, provenance_ctx=provenance_ctx),
-        }
-        path = self._output_dir(pid) / record["filename"]
-        if path.exists():
-            # 同秒重复保存：追加随机后缀，绝不覆盖既有文档（版本累积是契约要求）
-            record["filename"] = record["filename"][:-3] + f"_{uid}.md"
+        with self._lock_for(pid):
+            state = self._load(pid)
+            uid = uuid.uuid4().hex[:8]
+            record = {
+                "id": f"prop_{datetime.now():%Y%m%d%H%M%S}_{uid}",
+                "kind": kind,
+                "version": version,
+                "filename": f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md",
+                "saved_at": _now(),
+                # 审计二 R09：保存时落五路依赖指纹，确认时校验。
+                # N04：provenance_ctx 非 None 时用生成时实际使用的 ctx 算指纹
+                # （而非保存时按当前仓储推测），防止正文旧、指纹新的错配。
+                "dep_hash": self._current_confirm_hash(
+                    pid, state, provenance_ctx=provenance_ctx),
+            }
             path = self._output_dir(pid) / record["filename"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(markdown, encoding="utf-8")
-        state["proposals"].append(record)
-        self._save(pid, state)
-        return record["id"]
+            if path.exists():
+                # 同秒重复保存：追加随机后缀，绝不覆盖既有文档（版本累积是契约要求）
+                record["filename"] = record["filename"][:-3] + f"_{uid}.md"
+                path = self._output_dir(pid) / record["filename"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(markdown, encoding="utf-8")
+            state["proposals"].append(record)
+            self._save(pid, state)
+            return record["id"]
 
     def _proposal_doc(self, pid: str, record: dict) -> dict:
         doc = dict(record)
@@ -594,14 +626,15 @@ class JsonRepository:
 
     def confirm_field_site(self, pid: str, site_id: str) -> bool:
         """按记录 id 把田野点置为已确认；未知 id 返回 False（幂等）。"""
-        state = self._load(pid)
-        for site in state["field_sites"]:
-            if site.get("id") == site_id:
-                site["confirmed"] = True
-                state["updated_at"] = _now()
-                self._save(pid, state)
-                return True
-        return False
+        with self._lock_for(pid):
+            state = self._load(pid)
+            for site in state["field_sites"]:
+                if site.get("id") == site_id:
+                    site["confirmed"] = True
+                    state["updated_at"] = _now()
+                    self._save(pid, state)
+                    return True
+            return False
 
     def _current_confirm_hash(self, pid: str, state: dict, *,
                               provenance_ctx: dict | None = None) -> str:
@@ -635,34 +668,35 @@ class JsonRepository:
         类型非 proposal ``wrong_kind``、缺依赖指纹 ``dep_hash_missing``（legacy
         文档）、指纹不一致 ``dep_hash_mismatch``（五路依赖已变化）。
         """
-        state = self._load(pid)
-        if not doc_id:
-            # P2-1：取“最新一份 proposal”，筛掉 interview_guide 等其他 kind（对齐 sqlite）
-            proposals = [r for r in state.get("proposals") or []
-                         if r.get("kind", "proposal") == "proposal"]
-            doc_id = proposals[-1]["id"] if proposals else ""
-        record = next(
-            (r for r in state.get("proposals") or [] if r.get("id") == doc_id), None)
-        if record is None:
-            raise ProposalConfirmError(
-                f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
-        if record.get("kind", "proposal") != "proposal":
-            raise ProposalConfirmError(
-                f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
-        current = self._current_confirm_hash(pid, state)
-        if not record.get("dep_hash"):
-            raise ProposalConfirmError(
-                "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
-        if record["dep_hash"] != current:
-            raise ProposalConfirmError(
-                "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
-        rec = ConfirmationRecord(
-            kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
-        state.setdefault("confirmations", []).append(rec.model_dump(mode="json"))
-        state["proposal_confirmed"] = True
-        state["updated_at"] = rec.confirmed_at
-        self._save(pid, state)
-        return rec.model_dump(mode="json")
+        with self._lock_for(pid):
+            state = self._load(pid)
+            if not doc_id:
+                # P2-1：取“最新一份 proposal”，筛掉 interview_guide 等其他 kind（对齐 sqlite）
+                proposals = [r for r in state.get("proposals") or []
+                             if r.get("kind", "proposal") == "proposal"]
+                doc_id = proposals[-1]["id"] if proposals else ""
+            record = next(
+                (r for r in state.get("proposals") or [] if r.get("id") == doc_id), None)
+            if record is None:
+                raise ProposalConfirmError(
+                    f"文档不存在: {doc_id or '（尚无文档）'}", "not_found")
+            if record.get("kind", "proposal") != "proposal":
+                raise ProposalConfirmError(
+                    f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
+            current = self._current_confirm_hash(pid, state)
+            if not record.get("dep_hash"):
+                raise ProposalConfirmError(
+                    "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
+            if record["dep_hash"] != current:
+                raise ProposalConfirmError(
+                    "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
+            rec = ConfirmationRecord(
+                kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+            state.setdefault("confirmations", []).append(rec.model_dump(mode="json"))
+            state["proposal_confirmed"] = True
+            state["updated_at"] = rec.confirmed_at
+            self._save(pid, state)
+            return rec.model_dump(mode="json")
 
     def get_proposal_by_id(self, pid: str, doc_id: str) -> dict | None:
         """按记录 id 取文档（含 content 正文，兼容 legacy_ 前缀）；不存在返回 None。"""
