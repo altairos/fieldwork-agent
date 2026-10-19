@@ -11,6 +11,8 @@ repo_factory`` 即继承全部用例；``REPO_FACTORIES`` 已双跑 Json/Sqlite�
   与 ``tests/test_sqlite_repo.py``。
 """
 
+import threading
+
 import pytest
 from fieldwork_agent.kernel.guidance.phases import PHASES
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
@@ -411,3 +413,31 @@ class TestContract:
             repo.create("p_bad", owner="no-namespace")
         with pytest.raises(ValueError):
             repo.set_owner("p1", "Anon:UPPER")
+
+    def test_set_owner_if_cas_semantics(self, repo):
+        repo.create("c1", owner="anon:tok")
+        # expected 命中 → 改写并 True
+        assert repo.set_owner_if("c1", "anon:tok", "user:u1") is True
+        assert repo.get_state("c1")["owner"] == "user:u1"
+        # expected 不符 → 不改写并 False（防并发覆盖，R2）
+        assert repo.set_owner_if("c1", "anon:tok", "user:u2") is False
+        assert repo.get_state("c1")["owner"] == "user:u1"
+        # 未知 pid → KeyError
+        with pytest.raises(KeyError):
+            repo.set_owner_if("nope", "anon:tok", "user:u1")
+
+    def test_set_owner_if_concurrent_only_one_wins(self, repo):
+        repo.create("c2", owner="anon:tok")
+        results = []
+        barrier = threading.Barrier(2, timeout=5)
+
+        def claim(uid):
+            barrier.wait()
+            results.append(repo.set_owner_if("c2", "anon:tok", f"user:{uid}"))
+
+        ts = [threading.Thread(target=claim, args=("a",)),
+              threading.Thread(target=claim, args=("b",))]
+        for t in ts: t.start()
+        for t in ts: t.join()
+        assert sorted(results) == [False, True]   # 恰好一个成功
+        assert repo.get_state("c2")["owner"] in ("user:a", "user:b")

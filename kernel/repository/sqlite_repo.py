@@ -397,6 +397,21 @@ class SqliteRepository:
                 "UPDATE projects SET owner=?, updated_at=? WHERE project_id=?",
                 (owner, _now(), pid))
 
+    def set_owner_if(self, pid: str, expected: str | None, new: str | None) -> bool:
+        for o in (expected, new):
+            reason = owner_violation(o)
+            if reason:
+                raise ValueError(f"非法 owner（{reason}）: {o}")
+        with self._connect(immediate=True) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM projects WHERE project_id=?", (pid,)).fetchone()
+            if row is None:
+                raise KeyError(f"未知项目: {pid}")
+            cur = conn.execute(
+                "UPDATE projects SET owner=?, updated_at=? WHERE project_id=? AND owner IS ?",
+                (new, _now(), pid, expected))
+            return cur.rowcount == 1
+
     def get_state(self, pid: str) -> dict:
         """完整状态 dict（键序对齐 JsonRepository._default_state），每次现读、全新副本。"""
         self._require(pid)

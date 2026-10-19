@@ -305,6 +305,21 @@ class JsonRepository:
             state["owner"] = owner
             self._save(pid, state)
 
+    def set_owner_if(self, pid: str, expected: str | None, new: str | None) -> bool:
+        for o in (expected, new):
+            reason = owner_violation(o)
+            if reason:
+                raise ValueError(f"非法 owner（{reason}）: {o}")
+        with self._lock_for(pid):
+            state = self._load(pid)          # _load 对未知 pid 抛 KeyError
+            if state.get("owner") != expected:
+                return False
+            if state.get("owner") == new:
+                return True
+            state["owner"] = new
+            self._save(pid, state)
+            return True
+
     def get_state(self, pid: str) -> dict:
         return self._load(pid)
 
