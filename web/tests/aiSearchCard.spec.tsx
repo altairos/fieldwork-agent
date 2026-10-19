@@ -16,4 +16,17 @@ describe("AiSearchCard", () => {
     render(<AiSearchCard data={null} />);
     expect(screen.getByText("工具未返回数据")).toBeTruthy();
   });
+  it("dict 形态（itemList）无 answer 有条目 → 回退 PoiCard 列表渲染，不落 NoData（终审 W2，A3/A4）", () => {
+    render(
+      <AiSearchCard
+        data={{ items: [{ name: "古城民宿", price: 150 }, { name: "喜洲客栈", price: 180 }],
+               total: 2, cheapest: 150, dearest: 180 }}
+      />,
+    );
+    expect(screen.getByText("古城民宿")).toBeTruthy();          // PoiCard 路径渲染条目
+    expect(screen.getByText("喜洲客栈")).toBeTruthy();
+    expect(screen.getByText("最低 ¥150 · 最高 ¥180")).toBeTruthy();  // SearchResultCard 摘要行
+    expect(screen.queryByText("工具未返回数据")).toBeNull();    // 不落 NoData
+    expect(screen.queryByText("本次 AI 检索未返回答案文本。")).toBeNull();
+  });
 });
