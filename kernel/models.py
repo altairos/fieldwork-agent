@@ -56,6 +56,8 @@ class ItemPage(BaseModel):
     total: int = 0
     cheapest: float | None = None
     dearest: float | None = None
+    # AI 语义搜索（ai-search）直答文本（Markdown）；平铺/深层路径恒 None（spec A1，R1）
+    answer: str | None = None
 
 
 # ---------------------------------------------------------------- 地理空间（高德底座）
