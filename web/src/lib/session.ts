@@ -20,6 +20,7 @@ function readKey(key: string): string {
   catch { return memoryFallback.get(key) ?? ""; }
 }
 function writeKey(key: string, val: string): void {
+  val = val.trim();   // 与读侧对称（keys.ts saveKeys 同法）：空白串视同空值删 key
   try { if (val) localStorage.setItem(key, val); else localStorage.removeItem(key); }
   catch { if (val) memoryFallback.set(key, val); else memoryFallback.delete(key); }
 }
