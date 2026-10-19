@@ -23,6 +23,9 @@ import { test, expect, type BrowserContext } from "@playwright/test";
  * workers:1 全局串行（playwright.config），不与 keys.spec 的 settingsState 翻转并发。
  */
 test("匿名建项 → 注册认领 → 跨上下文隔离", async ({ page, browser }) => {
+  // 三段剧本实测 25~31s（mock/dev server 冷启动波动），全局 30s 裕度窄会偶发红：
+  // 单测级放宽到 60s（config 的 timeout: 30_000 全局默认不动）
+  test.setTimeout(60_000);
   // ① ctxA 匿名建项目（textarea 一句话 → POST /projects 带懒生成 anon_token → mock 登记 owner）
   await page.goto("/");
   await page.locator("textarea").first().fill("研究大理乡村旅居");
