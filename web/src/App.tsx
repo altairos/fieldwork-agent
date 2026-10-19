@@ -1,6 +1,7 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { isAppTokenError, rest } from "./api/rest";
+import { AuthDialog } from "./components/auth/AuthDialog";
 import { Composer } from "./components/chat/Composer";
 import { PhaseBanner } from "./components/chat/PhaseBanner";
 import { Timeline } from "./components/chat/Timeline";
@@ -66,6 +67,7 @@ function Workspace() {
   const [searchParams] = useSearchParams();
   const [composerLocked, setComposerLocked] = useState(false);
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);   // 登录/注册弹窗（账号隔离一期）
   const [authRetry, setAuthRetry] = useState(0);   // 401 弹层保存新令牌后 +1 → 重拉数据
   const tokenBeforeDialog = useRef("");             // 弹层打开前的令牌快照（关闭时比对）
   // P3 右栏拖拽调宽：宽度状态由 Workspace 持有（--right-w 须设在 grid 祖先容器，
@@ -216,6 +218,7 @@ function Workspace() {
         phase={phase}
         view="workspace"
         onMenu={toggleLeft}
+        onOpenAuth={() => setAuthDialogOpen(true)}
         onRename={(name) => {
           // 任务1：Header 改名 → PUT title → 重拉快照（Header 经 store 回读新名）
           void (async () => {
@@ -319,6 +322,8 @@ function Workspace() {
       </div>
       {/* 401 就地弹密钥层：保存新令牌后关闭即带新令牌重拉（免整页刷新） */}
       <KeyDialog open={keyDialogOpen} onClose={closeKeyDialog} />
+      {/* 登录/注册弹窗（账号隔离一期）：Header「登录」钮打开，成功即关 */}
+      <AuthDialog open={authDialogOpen} onClose={() => setAuthDialogOpen(false)} />
     </div>
   );
 }
