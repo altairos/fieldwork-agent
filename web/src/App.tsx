@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { isAppTokenError, rest } from "./api/rest";
 import { Composer } from "./components/chat/Composer";
+import { EvidencePanel } from "./components/chat/EvidencePanel";
 import { PhaseBanner } from "./components/chat/PhaseBanner";
 import { Timeline } from "./components/chat/Timeline";
 import { Header } from "./components/layout/Header";
@@ -9,13 +10,14 @@ import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
 import { RightResizeHandle, loadRightWidth, RIGHT_W_KEY } from "./components/layout/RightResizeHandle";
 import { KeyDialog } from "./components/settings/KeyDialog";
+import { Tabs } from "./components/ui/Tabs";
 import { IconCaret } from "./components/ui/icons";
 import { useTurn } from "./hooks/useTurn";
 import { getKeys, hasDashScopeKey } from "./lib/keys";
 import { useConversationStore } from "./stores/conversation";
 import { useProjectStore } from "./stores/project";
 import { useToolsStore } from "./stores/tools";
-import { useUiStore, PHASE_TAB } from "./stores/ui";
+import { useUiStore, PHASE_TAB, type MiddleTab } from "./stores/ui";
 import { ProjectHub } from "./routes/ProjectHub";
 import { ProposalView } from "./routes/ProposalView";
 
@@ -59,6 +61,9 @@ function Workspace() {
   const rightCollapsed = useUiStore((s) => s.rightCollapsed);
   const toggleLeft = useUiStore((s) => s.toggleLeft);
   const toggleRight = useUiStore((s) => s.toggleRight);
+  const middleTab = useUiStore((s) => s.middleTab);
+  const evidenceHint = useUiStore((s) => s.evidenceHint);
+  const setMiddleTab = useUiStore((s) => s.setMiddleTab);
   // 发送链路守卫 401 → 就地弹密钥层（免回首页）；箭头体延迟求值 openKeyDialog
   // （其 const 定义在下方，此处直引会碰 TDZ）。
   const turn = useTurn(projectId, { onAuthError: () => openKeyDialog() });
@@ -262,12 +267,29 @@ function Workspace() {
         </div>
         <main className="flex flex-col bg-paper/40 min-w-0 min-h-0">
           <PhaseBanner />
-          <Timeline
-            onRetry={() => { void turn.retry(); }}
-            canRetry={turn.canRetry}
-            retrying={turn.busy}
-            incomplete={turn.incomplete}
-          />
+          <div className="px-4 pt-3 shrink-0">
+            {/* 中栏双 tab（spec C1）：对话 / 检索结果；红点=evidenceHint，绝不自动切（红线） */}
+            <Tabs
+              cols={2}
+              active={middleTab}
+              onChange={(id) => setMiddleTab(id as MiddleTab)}
+              tabs={[
+                { id: "chat", label: "对话" },
+                { id: "evidence", label: "检索结果", dot: evidenceHint || undefined },
+              ]}
+            />
+          </div>
+          {middleTab === "chat" ? (
+            // 保留既有全部 props 注入（onRetry/canRetry/retrying/incomplete 等），一字不改，只移动位置
+            <Timeline
+              onRetry={() => { void turn.retry(); }}
+              canRetry={turn.canRetry}
+              retrying={turn.busy}
+              incomplete={turn.incomplete}
+            />
+          ) : (
+            <EvidencePanel projectId={projectId} />
+          )}
           <Composer
             turn={turn}
             locked={composerLocked}
