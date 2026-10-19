@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "../types/events";
 import { authHeaders } from "../lib/keys";
 import { ownerHeaders } from "../lib/session";
+import { ApiError, notifySessionExpiredIfAny } from "./rest";
 
 export interface ParseResult { frames: EventEnvelope[]; rest: string; }
 
@@ -65,6 +66,15 @@ export async function streamTurnEvents(
       const headers: Record<string, string> = { Accept: "text/event-stream", ...authHeaders(), ...ownerHeaders() };
       if (lastId > 0) headers["Last-Event-ID"] = String(lastId);
       const resp = await fetch(url, { headers, signal: opts.signal });
+      if (resp.status === 401) {
+        // 401 是确定性认证失败（会话/令牌失效），退避重连不可能自愈：不走重连循环，
+        // 构造 ApiError 走会话失效判定——命中则触发 R15 钩子（清会话+标失效，与 REST 通道同语义），
+        // 无论何种 401 都立即 onError 终止。
+        const err = new ApiError(401, await resp.text().catch(() => ""));
+        notifySessionExpiredIfAny(err);
+        opts.onError?.(err);
+        return;
+      }
       if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`);
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();

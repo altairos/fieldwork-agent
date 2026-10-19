@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
 import { parseSseFrames, streamTurnEvents } from "../src/api/sse";
+import { ApiError, setOnSessionExpired } from "../src/api/rest";
 import { dispatchEvent } from "../src/lib/dispatch";
 import { useToolsStore } from "../src/stores/tools";
 import { useConversationStore } from "../src/stores/conversation";
@@ -221,5 +222,33 @@ describe("streamTurnEvents 终止/出错时释放连接", () => {
     });
     expect(reader.cancel).toHaveBeenCalledTimes(1);
     expect(errors.map((e) => e.message)).toEqual(["socket hang up"]);
+  });
+
+  test("401 不重连：命中 session_expired 触发会话失效钩子并立即 onError", async () => {
+    // SSE 通道 401 是确定性认证失败（会话/令牌失效），退避重连不可能自愈——
+    // 断言 fetch 仅一次（无重连）、onError 恰一次（ApiError status 401）、
+    // 经 setOnSessionExpired 注册的 R15 钩子被触发（本文件未 import stores/auth，
+    // 钩子初始为 null：测完恢复为无操作，不依赖模块内未导出的原值）。
+    const fetchMock = vi.fn(async () => ({
+      ok: false, status: 401, body: null,
+      text: async () => '{"detail":{"code":"session_expired","message":"x"}}',
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const hook = vi.fn();
+    setOnSessionExpired(hook);
+    const errors: Error[] = [];
+    try {
+      await streamTurnEvents("p1", "t1", {
+        onEvent: () => {},
+        onError: (e) => errors.push(e),
+      });
+    } finally {
+      setOnSessionExpired(() => {});          // 恢复：覆盖 spy，防泄漏到同文件后续用例
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);   // 401 不进重连循环
+    expect(errors).toHaveLength(1);               // 立即 onError 终止（恰一次）
+    expect(errors[0]).toBeInstanceOf(ApiError);
+    expect((errors[0] as ApiError).status).toBe(401);
+    expect(hook).toHaveBeenCalledTimes(1);        // R15 钩子（清会话+标失效）被触发
   });
 });

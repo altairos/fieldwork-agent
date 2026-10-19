@@ -54,6 +54,11 @@ export function isSessionExpiredError(err: unknown): err is ApiError {
 let _onSessionExpired: (() => void) | null = null;
 export function setOnSessionExpired(fn: () => void): void { _onSessionExpired = fn; }
 
+/** 非 req 通道（如 SSE）收到 401 时复用：命中 session_expired 体则触发全局 R15 钩子。 */
+export function notifySessionExpiredIfAny(err: unknown): void {
+  if (isSessionExpiredError(err) && _onSessionExpired) _onSessionExpired();
+}
+
 /** GET /settings/status 的返回（web_host/api/settings.py）。
  *  JS Key 两字段是文档化例外（settings.py docstring）：高德 JS API 2.0 要求
  *  前端持有 key + securityJsCode，防滥用靠控制台域名白名单，非服务端代理可解。 */
@@ -79,7 +84,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   });
   if (!resp.ok) {
     const err = new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
-    if (isSessionExpiredError(err) && _onSessionExpired) _onSessionExpired();
+    notifySessionExpiredIfAny(err);
     throw err;
   }
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
