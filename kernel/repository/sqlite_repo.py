@@ -136,6 +136,16 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY, email_norm TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL, salt TEXT NOT NULL,
+    iterations INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 # 跨版本增量列（存量行由 DEFAULT 值补齐，不改任何既有语义）：
