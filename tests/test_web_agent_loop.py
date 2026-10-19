@@ -439,6 +439,36 @@ def test_search_snapshot_persisted_and_turn_done_carries_ids(env):
     assert done.data["snapshot_ids"] == [cached[0]["id"]]
 
 
+def test_snapshot_carries_query_key_and_parent_call_id(env):
+    """R9/R13/R14：快照落盘带归一化 query_key 与产生它的工具 call_id。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    entries = repo.list_cached_searches("p1")
+    assert entries, "search_hotels 成功调用应落快照"
+    e = entries[0]
+    assert e["turn_id"] == turn.turn_id
+    assert e["parent_call_id"]            # 非空：来自 tool_started 的 call_id
+    assert e["query_key"].startswith("search_hotels|{")
+    # 归一化：query_key 的参数含签名默认值（FakeFlyAI.search_hotels 的默认形参）
+
+
+def test_query_key_canonical_helper():
+    from fieldwork_agent.web_host.agent.loop import _query_key
+    k1 = _query_key("search_hotels", {"dest_name": "大理", "check_in": ""})
+    k2 = _query_key("search_hotels", {"check_in": "", "dest_name": "大理"})
+    assert k1 == k2 == 'search_hotels|{"check_in": "", "dest_name": "大理"}'
+
+
 class TwoPriceFlyAI:
     """R08 测试桩：search_hotels 按是否带 check_in 返回 11.0/22.0 两档价。
 
@@ -576,7 +606,7 @@ def test_amap_drain_snapshots_position_args_and_label(env):
     rec.weather(city="大理")
     snapshot_ids, live_refs = [], {}
     cursor = _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs,
-                              0, label="amap")
+                              0, turn_id="t1", label="amap")
     index = repo.list_cached_searches("p1")
     assert {c["tool"] for c in index} == \
         {"amap_geocode", "amap_around_search", "amap_weather"}
@@ -587,7 +617,8 @@ def test_amap_drain_snapshots_position_args_and_label(env):
         .startswith("amap 快照")
     assert not any(k.startswith("@live:amap_weather") for k in live_refs)
     assert len(snapshot_ids) == 3 and cursor == len(rec.calls)
-    _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs, cursor, label="amap")
+    _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs, cursor,
+                     turn_id="t1", label="amap")
     assert len(repo.list_cached_searches("p1")) == 3  # 幂等不重复落盘
 
 

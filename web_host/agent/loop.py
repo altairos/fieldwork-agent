@@ -9,7 +9,7 @@ from typing import Any
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
-from fieldwork_agent.kernel.sources.flyai import RecordingClient
+from fieldwork_agent.kernel.sources.flyai import RecordingClient, current_call_id
 from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
@@ -263,7 +263,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 if name == "analyze_fieldwork_window" and env.ok:
                     dest = str(call_args_map.get(call_id, {}).get("destination", ""))
                     cid = repo.cache_search(pid, f"time_window::{dest}",
-                                            "analyze_fieldwork_window", data)
+                                            "analyze_fieldwork_window", data,
+                                            parent_call_id=call_id, turn_id=turn_id,
+                                            query_key=_query_key(
+                                                "time_window", {"dest": dest}))
                     snapshot_ids.append(cid)
                     # F03：推荐时窗与用户约束分离——写 candidate_windows
                     # （候选，未经用户确认），time_window 只留用户确认值
@@ -280,12 +283,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
             # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
-                                       live_refs, drained)
+                                       live_refs, drained, turn_id=turn_id)
             # 双 recorder 各自游标（合并视图会错位）；snapshot_ids/live_refs
             # 共享：turn_done 汇总全部快照，轮末替换按键前缀天然不冲突
             drained_amap = _drain_snapshots(repo, pid, amap_recorder,
                                             snapshot_ids, live_refs,
-                                            drained_amap, label="amap")
+                                            drained_amap, turn_id=turn_id,
+                                            label="amap")
 
     except Exception as exc:
         tm.append_event(pid, turn_id, "error",
@@ -500,26 +504,42 @@ async def _async_iter(sync_gen):
 
 
 async def _exec_tool(dispatch, name, args, call_id, local_handlers):
-    if name in local_handlers:
-        # 能力工具走 dispatch（args_model 校验折 invalid_arguments）；
-        # state tools 无 args_model，此前 ``(**args)`` 缺参/多参的 TypeError
-        # 直接炸穿 gather → 整轮 error+failed，已流出的正文全部丢失且 LLM
-        # 无从自救（轮 4 实测：update_research_context 漏 patch）。对齐
-        # dispatch 语义：签名不匹配折 invalid_arguments（LLM 可补参重试），
-        # 其余异常折 internal_error，均不外抛。
-        try:
-            env = local_handlers[name](**args)
-        except TypeError as exc:
-            env = Envelope(ok=False, error=ToolError(
-                code="invalid_arguments", message=f"参数调用失败：{exc}",
-                hint="请按工具 schema 补齐必填参数（去掉未知参数）后重试"))
-        except Exception as exc:
-            env = Envelope(ok=False, error=ToolError(
-                code="internal_error", message=str(exc)))
-    else:
-        env = await asyncio.to_thread(dispatch, name, args)
-    return (call_id, name, env)
+    # R13：整段置位 call_id 上下文——asyncio.to_thread 传播 contextvars
+    # （聚合内部线程池经 copy_context().run 继续），RecordingClient 记录
+    # 时取值，快照 parent_call_id 与工具调用配对
+    token = current_call_id.set(call_id)
+    try:
+        if name in local_handlers:
+            # 能力工具走 dispatch（args_model 校验折 invalid_arguments）；
+            # state tools 无 args_model，此前 ``(**args)`` 缺参/多参的 TypeError
+            # 直接炸穿 gather → 整轮 error+failed，已流出的正文全部丢失且 LLM
+            # 无从自救（轮 4 实测：update_research_context 漏 patch）。对齐
+            # dispatch 语义：签名不匹配折 invalid_arguments（LLM 可补参重试），
+            # 其余异常折 internal_error，均不外抛。
+            try:
+                env = local_handlers[name](**args)
+            except TypeError as exc:
+                env = Envelope(ok=False, error=ToolError(
+                    code="invalid_arguments", message=f"参数调用失败：{exc}",
+                    hint="请按工具 schema 补齐必填参数（去掉未知参数）后重试"))
+            except Exception as exc:
+                env = Envelope(ok=False, error=ToolError(
+                    code="internal_error", message=str(exc)))
+        else:
+            env = await asyncio.to_thread(dispatch, name, args)
+        return (call_id, name, env)
+    finally:
+        current_call_id.reset(token)
 
+
+
+def _query_key(tool: str, view: dict) -> str:
+    """同题分组键（R14）：工具名 + 归一化参数 canonical JSON（键排序；不可序列化值 str 降级）。
+
+    与 RecordingClient 的 view（bind+apply_defaults，R17）同源——直通与聚合等效查询同键。
+    """
+    canonical = json.dumps(view, ensure_ascii=False, sort_keys=True, default=str)
+    return f"{tool}|{canonical}"
 
 
 def _live_key(method: str, kwargs: dict) -> str:
@@ -598,7 +618,11 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
                                        "confirmed": False, "profile": data_dict})
         elif name == "compose_itinerary":
             dests = ",".join(data_dict.get("destinations", []) or [])
-            repo.cache_search(pid, f"itinerary::{dests}", "compose_itinerary", data_dict)
+            parent = next((cid for cid, n in call_name_map.items()
+                           if n == "compose_itinerary"), "")
+            repo.cache_search(pid, f"itinerary::{dests}", "compose_itinerary", data_dict,
+                              parent_call_id=parent, turn_id=turn_id,
+                              query_key=_query_key("itinerary", {"dests": dests}))
         elif name == "compose_proposal":
             markdown = data_dict.get("markdown", "")
             if markdown:
@@ -719,15 +743,18 @@ _AMAP_PARAMS = {
 
 
 def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
-                      label: str = "flyai") -> int:
+                      turn_id: str, label: str = "flyai") -> int:
     """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（R08 §6）。
 
-    返回新游标（幂等，同一调用不会重复落盘）。flyai 路径仅记录带目的地
-    语义的调用（destination/dest_name/city_name 任一命中）；amap 路径
-    （label="amap"）六原语全为地理查询，全部落盘且快照 tool 名带
-    ``amap_`` 前缀区分来源，位置参数按 ``_AMAP_PARAMS`` 并入参数视图。
-    query 为可读的 ``工具名 {参数 JSON}``；analyze_fieldwork_window 内部的
-    多日期采样同样经 recorder 被捕获——它们正是价格曲线的原始依据。
+    返回新游标（幂等，同一调用不会重复落盘）。参数视图优先取 ``sig["view"]``
+    （RecordingClient 归一化视图，R17），缺失时回落旧拼装（amap 位置参数按
+    ``_AMAP_PARAMS`` 并入）。flyai 路径仅记录带目的地语义的调用
+    （destination/dest_name/city_name 任一命中）；amap 路径（label="amap"）
+    六原语全为地理查询，全部落盘且快照 tool 名带 ``amap_`` 前缀区分来源。
+    query 为可读的 ``工具名 {完整参数视图 JSON}``；analyze_fieldwork_window
+    内部的多日期采样同样经 recorder 被捕获——它们正是价格曲线的原始依据。
+    落盘携带 ``parent_call_id``（产生该查询的工具 call_id，R13）、
+    ``turn_id``（当前回合 id，必选参）与 ``query_key``（同题分组键，R14）。
     每次落盘同时按 ``_live_key`` 归并 规格键→快照引用（后写覆盖：同一键
     多次命中取最新），轮末 ``_persist_tool_results`` 据此替换聚合产出中
     的规格键；文案前缀随 label（flyai/amap 快照）。
@@ -738,23 +765,35 @@ def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
     for method, sig, env in recorder.calls[start:]:
         if not getattr(env, "ok", False):
             continue
+        view = sig.get("view")
+        if view is None:
+            # 防御：view 缺失（理论不达——RecordingClient 同版本必写）回落旧拼装
+            if label == "amap":
+                view = dict(zip(_AMAP_PARAMS.get(method, ()),
+                                sig.get("args") or [], strict=False))
+                view.update(sig.get("kwargs") or {})
+            else:
+                view = dict(sig.get("kwargs") or {})
+        # R17：**kw-only 委托客户端（测试替身/动态代理）兜底——bind 对 **kw 形态产生
+        # {"kw": {...}} 单键包裹，解包还原；真客户端 8 原语全具体形参不受影响。
+        if set(view) == {"kw"} and isinstance(view["kw"], dict):
+            view = view["kw"]
         if label == "amap":
-            view = dict(zip(_AMAP_PARAMS.get(method, ()),
-                             sig.get("args") or [], strict=False))
-            view.update(sig.get("kwargs") or {})
             tool = f"amap_{method}"
         else:
-            view = sig.get("kwargs") or {}
             dest = (view.get("destination") or view.get("dest_name")
                     or view.get("city_name") or "")
             if not dest:
                 continue
             tool = method
-        query = f"{tool} {json.dumps(view, ensure_ascii=False)}"
+        query = f"{tool} {json.dumps(view, ensure_ascii=False, default=str)}"
         data = env.data
         if hasattr(data, "model_dump"):
             data = data.model_dump(mode="json")
-        cid = repo.cache_search(pid, query, tool, data)
+        cid = repo.cache_search(pid, query, tool, data,
+                                parent_call_id=str(sig.get("call_id") or ""),
+                                turn_id=turn_id,
+                                query_key=_query_key(tool, view))
         snapshot_ids.append(cid)
         key = _live_key(method, view)
         if key:
