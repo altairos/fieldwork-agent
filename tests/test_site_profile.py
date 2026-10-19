@@ -428,3 +428,52 @@ def test_geo_invalid_key_degraded_unified_framework():
     assert env.ok is True
     assert env.degraded == "地理底座：未配置高德 API Key，已回退纯 FlyAI 文本链路"
     assert env.data.live_refs == []
+
+
+# ────────────────────────────────────────────────────────────────
+# Task 3（spec A5，R1）：search_ai 的 answer-only 结果入 hints —
+# 住宿段合并只并 items，answer 若不单独收进 hints 会被静默丢弃
+# ────────────────────────────────────────────────────────────────
+
+
+def test_ai_answer_only_survives_in_hints():
+    """R1：search_ai 只回 answer 无 items——聚合不得静默丢弃（旧路径只并 items）。"""
+    class _FlyAI:
+        def search_hotels(self, **kw):
+            return Envelope(ok=False, error=ToolError(code="x", message="x"))
+        def search_keyword(self, query):
+            return Envelope(ok=False, error=ToolError(code="x", message="x"))
+        def search_pois(self, *a, **kw):
+            return Envelope(ok=False, error=ToolError(code="x", message="x"))
+        def search_ai(self, query):
+            return Envelope(ok=True, data=ItemPage(answer="## 便宜民宿\n推荐甲处"))
+
+    class _AMap:
+        def geocode(self, address):
+            return Envelope(ok=False, error=ToolError(code="amap_no_result", message="x"))
+
+    env = profile_field_site(location="大理", client=_FlyAI(), amap_client=_AMap())
+    assert env.ok
+    assert "推荐甲处" in env.data.summary.hints["accommodation_ai"]
+
+
+def test_no_answer_no_hint_key():
+    # 全部失败仅 answer 缺失时 hints 不出现 accommodation_ai 键（不臆造）
+    class _FlyAI:
+        def search_hotels(self, **kw):
+            return Envelope(ok=False, error=ToolError(code="x", message="x"))
+        def search_keyword(self, query):
+            # search_ai 也失败时 succeeded==0 会整体失败——补一个成功页保证 succeeded>0
+            return Envelope(ok=True, data=ItemPage(items=[SearchItem(name="节庆活动")], total=1))
+        def search_pois(self, *a, **kw):
+            return Envelope(ok=False, error=ToolError(code="x", message="x"))
+        def search_ai(self, query):
+            return Envelope(ok=False, error=ToolError(code="x", message="x"))
+
+    class _AMap:
+        def geocode(self, address):
+            return Envelope(ok=False, error=ToolError(code="amap_no_result", message="x"))
+
+    env = profile_field_site(location="大理", client=_FlyAI(), amap_client=_AMap())
+    assert env.ok
+    assert "accommodation_ai" not in env.data.summary.hints
