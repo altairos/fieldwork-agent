@@ -7,9 +7,9 @@ import { normalizeCjkQuotes } from "../../lib/cjkQuotes";
  *
  * 设计板同源：
  *   user lines 436-440：`flex justify-end` 外层 + 气泡
- *     `max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-onindigo px-4 py-2.5
- *      text-[13.5px] leading-relaxed shadow-card`
- *     （设计板 line 437 的 token 外用值 #EDF1F4 已主题化为 onindigo —— 靛蓝底上的气泡文字色）
+ *     `max-w-[78%] rounded-lg rounded-br-sm px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card`
+ *     底色原为深静蓝（bg-indigo + onindigo 反白文字；用户反馈深底过重），
+ *     2026-10-19 改浅洗底 indigowash + 墨色文字 ink + indigo/25 描边——与 Chip indigo tone 同族。
  *   assistant lines 451-462：`flex gap-3` + 头像 `w-6 h-6 shrink-0 mt-0.5`（line 452）+
  *     `min-w-0 flex-1` 内嵌宋体 markdown（复用 MarkdownBody，与流式缓冲同一渲染口径）
  *
@@ -22,7 +22,7 @@ export function MessageBubble({ role, content }: { role: "user" | "assistant"; c
   if (role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[78%] rounded-lg rounded-br-sm bg-indigo text-onindigo px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card whitespace-pre-wrap break-words">
+        <div className="max-w-[78%] rounded-lg rounded-br-sm bg-indigowash text-ink border border-indigo/25 px-4 py-2.5 text-[13.5px] leading-relaxed shadow-card whitespace-pre-wrap break-words">
           {content}
         </div>
       </div>

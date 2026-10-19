@@ -11,16 +11,18 @@ import type { QuickReplyGroup } from "../../types/events";
  * - **多组或带标签**：逐组渲染一行（带 label 小标题）chips，组内单选、可点已选取消；
  *   底部「发送答案」把各选中项拼成 `标签：选项`（无标签则仅选项）多行一条消息发出，
  *   从而一次回答多个问题（问题①：不再只覆盖其中一个）。
- * 「自定义」始终聚焦输入框转入打字。
+ * 「其他（在下方输入）」始终聚焦输入框转入打字。
  * B1 样式：选项按钮走朱砂主色（浅洗底 + 主色描边，hover/选中实心），
- * 「自定义」保持 hairline 次级样式区分主次。
+ * 「其他」保持 hairline 次级样式区分主次。
+ * 圆角/高度：不用 .chip 的 9999px 大圆角与 py-1.5 高桩，改 rounded-md + py-1 紧凑档，
+ * 与页面按钮（Header tab / Timeline 按钮）同族（用户反馈：圆角过大、高度过高）。
  */
-const CHIP = "chip px-3 py-1.5 cursor-pointer transition";
+const CHIP = "inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border cursor-pointer transition";
 const CHIP_IDLE =
   "bg-cinnabarwash text-cinnabar border-cinnabar/50 hover:bg-cinnabar hover:text-ontint hover:border-cinnabar";
 const CHIP_ACTIVE = "bg-cinnabar text-ontint border-cinnabar";
 const CHIP_SECONDARY =
-  "chip hairline px-3 py-1.5 bg-card text-inksoft hover:bg-cardsunk hover:text-ink cursor-pointer transition";
+  "inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink cursor-pointer transition";
 
 export function QuickReplies({
   groups,
@@ -51,7 +53,7 @@ export function QuickReplies({
           </button>
         ))}
         <button type="button" className={CHIP_SECONDARY} onClick={onCustom}>
-          自定义
+          其他（在下方输入）
         </button>
       </div>
     );
@@ -102,13 +104,13 @@ export function QuickReplies({
           type="button"
           data-testid="quick-reply-send"
           disabled={!composed}
-          className="chip px-3 py-1.5 bg-cinnabar text-ontint border-cinnabar cursor-pointer transition disabled:opacity-40 disabled:cursor-not-allowed"
+          className="inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border bg-cinnabar text-ontint border-cinnabar cursor-pointer transition disabled:opacity-40 disabled:cursor-not-allowed"
           onClick={() => composed && onSend(composed)}
         >
           发送答案
         </button>
         <button type="button" className={CHIP_SECONDARY} onClick={onCustom}>
-          自定义
+          其他（在下方输入）
         </button>
       </div>
     </div>

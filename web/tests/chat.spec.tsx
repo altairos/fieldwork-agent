@@ -122,9 +122,11 @@ function turnHandle(patch: Partial<TurnHandle> = {}): TurnHandle {
 }
 
 describe("MessageBubble / AssistantStream", () => {
-  test("user 气泡右对齐 indigo（设计板 436-440）", () => {
+  test("user 气泡右对齐浅靛蓝洗底（问题3：深底改浅）", () => {
     render(<MessageBubble role="user" content="我从昆明出发" />);
-    expect(screen.getByText("我从昆明出发").className).toContain("bg-indigo");
+    // 断言用完整 bg-indigowash：bg-indigo 是其子串，含旧类名会误通过
+    expect(screen.getByText("我从昆明出发").className).toContain("bg-indigowash");
+    expect(screen.getByText("我从昆明出发").className).toContain("text-ink");
   });
   test("assistant 正文走 markdown（列表/加粗）", () => {
     render(<MessageBubble role="assistant" content={"分三段推进：\n\n- **适应期** 9 天\n- 深入期 45 天"} />);
@@ -404,14 +406,20 @@ describe("Composer", () => {
     render(<Composer turn={turnHandle()} />);
     expect(screen.getByText(/所需信息齐备后，才会进入下一阶段/)).toBeInTheDocument();
   });
-  test("快捷作答 chips（单组无标签）：点选即发送、自定义聚焦输入框", () => {
+  test("点击输入壳空白聚焦 textarea（问题4：点空白无反应）", () => {
+    render(<Composer turn={turnHandle()} />);
+    const shell = screen.getByRole("textbox").closest("div"); // 输入壳（textarea 直接父级）
+    fireEvent.click(shell!);
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
+  });
+  test("快捷作答 chips（单组无标签）：点选即发送、其他（在下方输入）聚焦输入框", () => {
     const sent: string[] = [];
     useConversationStore.setState({ quickReplyGroups: [{ label: "", options: ["是", "换个方向"] }] });
     render(<Composer turn={turnHandle({ send: (t: string) => { sent.push(t); } })} />);
     fireEvent.click(screen.getByRole("button", { name: "是" }));
     expect(sent).toEqual(["是"]); // 单组无标签：直调 send，不经输入框
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "自定义" }));
+    fireEvent.click(screen.getByRole("button", { name: "其他（在下方输入）" }));
     expect(document.activeElement).toBe(screen.getByRole("textbox")); // 转入打字
   });
   test("多组带标签：逐组选择 + 发送拼成多行一条消息（问题①）", () => {
@@ -609,6 +617,15 @@ describe("Timeline — 重新生成", () => {
     const onRetry = vi.fn();
     render(<Timeline onRetry={onRetry} canRetry incomplete />);
     expect(screen.getByText(/本轮生成中断/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新生成" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  test("失败态（canRetry 单独成立）：显示本轮生成失败，无中断措辞（问题1）", () => {
+    const onRetry = vi.fn();
+    render(<Timeline onRetry={onRetry} canRetry />);
+    expect(screen.getByText("本轮生成失败。")).toBeInTheDocument();
+    expect(screen.queryByText(/本轮生成中断/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "重新生成" }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });

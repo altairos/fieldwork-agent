@@ -159,6 +159,7 @@ describe("useTurn — SSE 阶段（消息已被接受，绝不回滚）", () => 
     expect(useUiStore.getState().degradedBanner?.code).toBe("internal_error");
     expect(useUiStore.getState().degradedBanner?.message).toBe("上游超时");
     expect(result.current.busy).toBe(false);
+    expect(result.current.canRetry).toBe(true);       // 失败终态：给重试入口（问题1）
     expect(sse.cancel).toHaveBeenCalledTimes(1);      // error 终止后同样释放连接（Fix #2）
   });
 
@@ -180,6 +181,7 @@ describe("useTurn — SSE 阶段（消息已被接受，绝不回滚）", () => 
     expect(useConversationStore.getState().turnRunning).toBe(false);
     expect(useConversationStore.getState().lastUsage).toEqual({ total_tokens: 12 });
     expect(result.current.busy).toBe(false);
+    expect(result.current.canRetry).toBe(false);      // 正常完成：不给重试入口（问题1）
     expect(sse.cancel).toHaveBeenCalledTimes(1);
     expect(useUiStore.getState().degradedBanner).toBeNull();
   });
@@ -479,6 +481,7 @@ describe("useTurn — 重新生成", () => {
     expect(useConversationStore.getState().messages.map((m) => m.content))
       .toEqual(["帮我排行程"]);
     expect(sseTwo.cancel).toHaveBeenCalled();
+    expect(result.current.canRetry).toBe(false); // 新回合正常完成：重试入口关闭（问题1）
   });
 
   test("retry 被拒（409）→ 如实上屏，不动本地消息", async () => {

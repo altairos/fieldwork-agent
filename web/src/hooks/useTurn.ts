@@ -103,13 +103,22 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
           const prev = seenRef.current;
           seenRef.current = dispatchEvent(env, seenRef.current);
+          // 「重新生成」只在失败/卡住时给出（用户反馈）：正常完成的回合不给重试入口。
+          // turn_done.incomplete=true → 正文未收敛/截断；error → 回合失败终态
+          // （后端失败不发 turn_done，只发 error 后关流）。
           if (env.event === "turn_done") {
             if (seenRef.current !== prev) void refreshSnapshot();
-            setRetryable(true);
+            setRetryable(env.data.incomplete === true);
             setIncomplete(env.data.incomplete === true);
+          } else if (env.event === "error") {
+            setRetryable(true);
           }
         },
-        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
+        onError: () => {
+          useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" });
+          // 断线重连耗尽（卡住）：留重试入口；若后端仍在跑，retry 会 409 并如实提示
+          setRetryable(true);
+        },
         onClose: () => { setBusy(false); },
       });
     } catch (err) {
@@ -138,12 +147,18 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
         signal: ctrl.signal,
         onEvent: (env: EventEnvelope) => {
           seenRef.current = dispatchEvent(env, seenRef.current);
+          // 与 send 同口径：重试入口只在 incomplete / error（失败终态）时给出
           if (env.event === "turn_done") {
-            setRetryable(true);
+            setRetryable(env.data.incomplete === true);
             setIncomplete(env.data.incomplete === true);
+          } else if (env.event === "error") {
+            setRetryable(true);
           }
         },
-        onError: () => { useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" }); },
+        onError: () => {
+          useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" });
+          setRetryable(true); // 断线重连耗尽（卡住）：留重试入口
+        },
         onClose: () => { setBusy(false); },
       });
     } catch (err) {

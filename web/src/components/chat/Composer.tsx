@@ -11,7 +11,9 @@ import { QuickReplies } from "./QuickReplies";
  *
  * 设计板同源：中栏 Composer lines 516-526
  *   外框 line 517 `border-t border-hairline bg-card px-6 py-3.5`
- *   输入壳 line 518 `hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition`
+ *   输入壳 line 518 `hairline rounded-lg bg-paper/60 p-2.5 flex items-start gap-3 focus-within:border-cinnabar/50 transition`
+ *     （items-start：单行时光标/文字贴左上——用户反馈 items-end 会把首行压到底部；
+ *     点击壳内空白（target 直达壳体）聚焦 textarea；取消/发送钮 self-end 贴底对齐）
  *   textarea line 519 `flex-1 bg-transparent resize-none outline-none text-[13.5px] leading-relaxed placeholder:text-inkfaint`
  *     （rows=1 + 随内容自增高，上限 160px，避免长文把时间线挤没；
  *     移动端批次 C：粗指针设备提到 16px，防 iOS Safari 聚焦自动缩放）
@@ -99,7 +101,12 @@ export function Composer({
           />
         </div>
       )}
-      <div className="hairline rounded-lg fw-glass g3 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
+      <div
+        className="hairline rounded-lg fw-glass g3 p-2.5 flex items-start gap-3 focus-within:border-cinnabar/50 transition"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) areaRef.current?.focus();
+        }}
+      >
         <textarea
           ref={areaRef}
           rows={1}
@@ -117,7 +124,7 @@ export function Composer({
           placeholder={locked ? "配置百炼 API Key 后可开始对话…" : "继续描述你的调研安排，或让罗盘细化某一段行程…"}
         />
         {api.busy && (
-          <Button variant="outline" size="sm" onClick={() => void api.cancel()} className="shrink-0">
+          <Button variant="outline" size="sm" onClick={() => void api.cancel()} className="shrink-0 self-end">
             取消
           </Button>
         )}
@@ -126,7 +133,7 @@ export function Composer({
           aria-label="发送"
           disabled={!canSend}
           onClick={submit}
-          className="w-9 !px-0 shrink-0"
+          className="w-9 !px-0 shrink-0 self-end"
         >
           <IconSend className="w-5 h-5 shrink-0" />
         </Button>

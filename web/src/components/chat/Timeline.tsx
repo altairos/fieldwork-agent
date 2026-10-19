@@ -125,18 +125,22 @@ export function Timeline({
         </div>
       )}
 
-      {/* 回合中断：正文残缺/未收敛 → 给「重新生成」而不让用户自己重写问题 */}
+      {/* 回合异常收场才给「重新生成」（用户反馈：重试入口只在失败/卡住时有意义）：
+          incomplete=正文残缺/未收敛（卡住）；canRetry 单独成立=回合失败（error 事件）。
+          正常完成的回合不渲染。 */}
       {(incomplete || canRetry) && (
         <div className="pl-9 flex items-center gap-2 flex-wrap text-[11.5px]">
-          {incomplete && (
+          {incomplete ? (
             <span className="text-ochre">本轮生成中断：正文可能在句中被截断，或未给出结论。</span>
+          ) : (
+            <span className="text-ochre">本轮生成失败。</span>
           )}
           {canRetry && onRetry && (
             <button
               type="button"
               onClick={onRetry}
               disabled={retrying}
-              className="chip hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition disabled:opacity-50"
+              className="inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition disabled:opacity-50"
             >
               {retrying ? "正在重新生成…" : "重新生成"}
             </button>
@@ -164,7 +168,7 @@ export function Timeline({
                 key={q}
                 type="button"
                 onClick={() => useUiStore.getState().setComposerDraft(q)}
-                className="chip hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition"
+                className="inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition"
               >
                 {q}
               </button>
