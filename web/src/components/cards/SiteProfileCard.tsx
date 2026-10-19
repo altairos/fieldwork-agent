@@ -7,6 +7,7 @@ import { AmapMapPanel, type MapMarker } from "./AmapMapPanel";
 import { ItemList } from "./SearchResultCard";
 import { asArray, asRecord, numOf, strOf, toItemPage } from "./data";
 import type { ToolCardProps } from "./types";
+import { LodgingComparison } from "./LodgingComparison";
 
 /**
  * SiteProfileCard — 田野点画像卡（`profile_field_site` → FieldSiteProfile）。
@@ -236,6 +237,7 @@ export function SiteProfileCard({ data, degraded }: ToolCardProps) {
             <ItemList items={amenities.items} limit={3} emptyText="未取得配套条目" />
           </Block>
 
+          <LodgingComparison data={rec.lodging_comparison} />
           {/* 分节计数 + 生成时间（可复核元信息） */}
           <div className="flex flex-wrap items-center gap-1.5">
             {Object.entries(counts).map(([key, value]) => (

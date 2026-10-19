@@ -30,6 +30,7 @@ from fieldwork_agent.kernel.aggregation.amap_refs import (
     live_around_ref,
     live_geocode_ref,
 )
+from fieldwork_agent.kernel.aggregation.lodging import LodgingComparisonRequest, compare_lodging
 from fieldwork_agent.kernel.models import (
     Envelope,
     FieldSiteProfile,
@@ -68,6 +69,7 @@ class ProfileFieldSiteArgs(BaseModel):
     departure_city: str = ""
     travel_date: str = ""
     max_items_per_section: int = 5
+    comparison: LodgingComparisonRequest | None = None
 
 
 def _safe_call(fn: Callable, *args: Any, **kwargs: Any) -> Envelope:
@@ -103,7 +105,8 @@ def _min_price(items: list[SearchItem]) -> float | None:
 def profile_field_site(location: str, budget_per_night: float = 200,
                        interests: list[str] | None = None,
                        departure_city: str = "", travel_date: str = "",
-                       max_items_per_section: int = 5, *,
+                       max_items_per_section: int = 5,
+                       comparison: dict | LodgingComparisonRequest | None = None, *,
                        client: FlyAIClient | None = None,
                        amap_client: AMapClient | None = None) -> Envelope:
     """聚合目的地田野点画像：住宿/交通/文化/活动四段 + 高德 geo/facilities 段。
@@ -117,6 +120,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         amap_client = AMapClient()
     if interests is None:
         interests = DEFAULT_INTERESTS
+    comparison_request = (comparison if isinstance(comparison, LodgingComparisonRequest)
+                          else LodgingComparisonRequest.model_validate(comparison) if comparison else None)
 
     # 每个任务 = (段名, 段内元信息, 无参调用)，并行提交到线程池
     tasks: list[tuple[str, str, Callable[[], Envelope]]] = [
@@ -146,6 +151,11 @@ def profile_field_site(location: str, budget_per_night: float = 200,
             client.search_trains, origin=departure_city, destination=location,
             dep_date=travel_date)))
 
+    if comparison_request and comparison_request.hub_location:
+        tasks.append(("accommodation", "hub", lambda: _safe_call(client.search_hotels,
+            dest_name=comparison_request.hub_location, check_in=travel_date,
+            max_price=str(int(budget_per_night * BUDGET_MARKUP)))))
+
     # 并行执行；_safe_call 保证任务不抛异常，fut.result() 安全
     by_tag: dict[str, list[tuple[str, ItemPage]]] = defaultdict(list)
     succeeded = 0
@@ -155,6 +165,10 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         for (tag, meta, _), fut in zip(tasks, futures, strict=True):
             env = fut.result()
             if env.ok and isinstance(env.data, ItemPage):
+                if tag == "accommodation":
+                    for item in env.data.items:
+                        item.extra = {**item.extra, "base_kind": "hub" if meta == "hub" else "field",
+                            "base_city": comparison_request.hub_location if meta == "hub" else location}
                 succeeded += 1
                 by_tag[tag].append((meta, env.data))
 
@@ -274,6 +288,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         live_refs=live_refs,
         summary=summary,
         generated_at=datetime.now().isoformat(),
+        lodging_comparison=compare_lodging(visible_page(acc_filtered, len(acc_filtered)).items, geo, comparison_request, travel_date, amap_client)
+            if comparison_request and geo and accommodation else [],
     )
     return Envelope(ok=True, data=profile, degraded=degraded)
 

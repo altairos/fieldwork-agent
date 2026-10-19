@@ -11,7 +11,7 @@ export function travelDetails(raw: unknown): string {
     [strOf(s.arr_date), strOf(s.arr_time), strOf(s.arrival_place)].filter(Boolean).join(" "),
   ].filter(Boolean);
   const timing = parts.join(" → ");
-  const status = strOf(asRecord(item.constraints).status);
+  const status = strOf(asRecord(item.connection).status) || strOf(asRecord(item.constraints).status);
   return [timing, duration === null ? "" : `${duration} 分钟`,
     status === "unknown" ? "接续条件待核实" : status === "failed" ? "不满足出行条件" : "",
     strOf(e.fetched_at) ? `${e.cache_hit ? "缓存采样" : "采样"} ${strOf(e.fetched_at)}` : "",

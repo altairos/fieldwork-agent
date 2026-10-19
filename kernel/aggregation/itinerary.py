@@ -48,12 +48,19 @@ from fieldwork_agent.kernel.aggregation.amap_refs import (
     live_geocode_ref,
     live_transit_ref,
 )
+from fieldwork_agent.kernel.aggregation.last_mile import _resolve_date_param
 from fieldwork_agent.kernel.aggregation.living_cost import (
     BOARD_MODES,
     MAX_DAYS,
     MAX_PEOPLE,
     SETTLEMENT_TYPES,
     estimate_living_cost,
+)
+from fieldwork_agent.kernel.aggregation.travel_decisions import (
+    TravelConstraints,
+    arrival_datetime,
+    candidate_constraints,
+    transit_connection,
 )
 from fieldwork_agent.kernel.models import (
     BudgetBreakdown,
@@ -103,6 +110,8 @@ class ComposeItineraryArgs(BaseModel):
     budget_total: float
     researcher_count: int = 1
     rooms: int = 0  # 0 = 按 2 人/间假设自动推导
+    night_allocation: list[int] | None = Field(default=None, max_length=12, description="按目的地顺序分配住宿夜数，总和须为天数减一；仅采用用户明确安排")
+    constraints: TravelConstraints | None = None
     settlement_type: str | None = Field(
         default=None, description="聚落类型 village/town/county/city；驻村通常 village")
     board_mode: str | None = Field(
@@ -208,12 +217,14 @@ def _candidates(items: list[SearchItem], mode: str, guesthouse: bool = False) ->
             for i in items]
 
 
-def _select(cands: list[dict], prefer_key: str | None = None
+def _select(cands: list[dict], prefer_key: str | None = None, preference: str = "cost"
             ) -> tuple[dict | None, list[dict]]:
     """最低价优先；``prefer_key`` 仅用于同价定序（同价优先民宿）。无可用价时 chosen=None。"""
     priced = sorted(
-        [c for c in cands if c["price"] is not None],
-        key=lambda c: (c["price"], 0 if prefer_key and c.get(prefer_key) else 1),
+        [c for c in cands if c["price"] is not None and (c.get("constraints") or {}).get("status") != "failed"],
+        key=lambda c: (0 if (c.get("constraints") or {}).get("status") == "passed" else 1,
+                       ((c.get("schedule") or {}).get("duration_minutes") or float("inf")) if preference == "time" else c["price"],
+                       c["price"], 0 if prefer_key and c.get(prefer_key) else 1),
     )
     unpriced = [c for c in cands if c["price"] is None]
     chosen = priced[0] if priced else None
@@ -244,19 +255,20 @@ _OVERSEAS_NOTE = "境外田野点的接驳功能正在开发中，后续版本�
 
 
 def _memo_geocode(amap_client: AMapClient, address: str,
-                  memo: dict[str, GeoLocation]) -> tuple[GeoLocation | None, ToolError | None]:
+                  memo: dict[str, GeoLocation], city: str = "") -> tuple[GeoLocation | None, ToolError | None]:
     """地名级 geocode 复用：同地名跨腿只解析一次；失败不缓存（下次仍重试）。"""
     if address in memo:
         return memo[address], None
-    env = _safe_call(amap_client.geocode, address, city=address)
+    env = _safe_call(amap_client.geocode, address, city=city or address)
     if env.ok and isinstance(env.data, GeoLocation):
         memo[address] = env.data
         return env.data, None
-    return None, env.error
+    return None, env.error or ToolError(code="amap_no_result", message="地名返回形状无效")
 
 
 def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
-                        memo: dict[str, GeoLocation]) -> tuple[dict[str, Any], bool, bool, bool]:
+                        memo: dict[str, GeoLocation], candidate: dict | None = None,
+                        constraints: TravelConstraints | None = None) -> tuple[dict[str, Any], bool, bool, bool]:
     """单腿末端接驳（PoC2 §3.2）：前一城市→到达点的公交方案。
 
     返回 ``(last_mile, queried, has_price, invalid_key)``；``invalid_key`` 由调用方
@@ -266,7 +278,9 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
     时附（有无报价快照均真实，宿主登记所有 ok 调用）。
     """
     refs: list[str] = []
-    hub_geo, hub_err = _memo_geocode(amap_client, hop["from"], memo)
+    actual_hub = ((candidate or {}).get("schedule") or {}).get("arrival_place")
+    hub = actual_hub or hop["from"]
+    hub_geo, hub_err = _memo_geocode(amap_client, hub, memo, city=hop["to"] if actual_hub else "")
     if hub_err is not None and hub_err.code == "amap_invalid_key":
         return {"hub_geo": None, "site_geo": None, "options": None,
                 "note": "未配置高德 API Key，接驳查询已停用",
@@ -277,7 +291,7 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
             note += f"；{_OVERSEAS_NOTE}"
         return {"hub_geo": None, "site_geo": None, "options": None,
                 "note": note, "live_refs": refs}, True, False, False
-    refs.append(live_geocode_ref(hop["from"]))
+    refs.append(live_geocode_ref(hub))
     site_geo, site_err = _memo_geocode(amap_client, hop["to"], memo)
     if site_err is not None and site_err.code == "amap_invalid_key":
         return {"hub_geo": None, "site_geo": None, "options": None,
@@ -290,12 +304,18 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
         return {"hub_geo": hub_geo, "site_geo": None, "options": None,
                 "note": note, "live_refs": refs}, True, False, False
     refs.append(live_geocode_ref(hop["to"]))
+    if hub_geo.ambiguous or site_geo.ambiguous:
+        return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
+                "note": "地名存在多个匹配，接驳待核实", "live_refs": refs,
+                "connection": {"status": "unknown", "missing_fields": ["唯一地点匹配"]}}, True, False, False
+    arrival = arrival_datetime((candidate or {}).get("schedule") or {}, hop["date"])
+    date_param, date_note = _resolve_date_param(arrival.date().isoformat() if arrival else hop["date"])
     transit_env = _safe_call(
         amap_client.direction_transit, origin=hub_geo.location,
-        destination=site_geo.location, city=hub_geo.city, cityd=site_geo.city)
+        destination=site_geo.location, city=hub_geo.city, cityd=site_geo.city, date=date_param)
     page = transit_env.data if transit_env.ok and isinstance(transit_env.data, ItemPage) else None
     if page is not None:
-        refs.append(live_transit_ref(hub_geo.location, site_geo.location))
+        refs.append(live_transit_ref(hub_geo.location, site_geo.location, date_param))
     if page is None:
         detail = transit_env.error.message if transit_env.error else "无公交方案"
         return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
@@ -305,8 +325,17 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
         return {"hub_geo": hub_geo, "site_geo": site_geo, "options": None,
                 "note": "接驳公交无可用报价，预算未计该条",
                 "live_refs": refs}, True, False, False
-    return {"hub_geo": hub_geo, "site_geo": site_geo, "options": page,
-            "note": "", "live_refs": refs}, True, True, False
+    anchored = bool(actual_hub and site_geo.level and site_geo.level not in ("国家", "省", "市", "区县") and hub_geo.level)
+    connection, checked = transit_connection(candidate or {}, page, hop["date"], constraints or TravelConstraints(), date_param, anchored)
+    note = date_note or ""
+    if not anchored:
+        note += "；地名级参考路线，尚未形成实际枢纽到访问点的完整接续"
+    if connection["status"] == "failed":
+        return {"hub_geo": hub_geo, "site_geo": site_geo, "options": checked, "note": "接驳不满足约束",
+                "connection": connection, "route_date": date_param, "live_refs": refs}, True, False, False
+    return {"hub_geo": hub_geo, "site_geo": site_geo, "options": checked,
+            "connection": connection, "route_date": date_param,
+            "note": note.lstrip("；"), "live_refs": refs}, True, bool(checked and checked.cheapest is not None), False
 
 
 # ---------------------------------------------------------------- 能力实现
@@ -318,6 +347,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       board_mode: str | None = None,
                       include_local_transport: bool = True,
                       meals_local_per_person_day: float | None = None,
+                      night_allocation: list[int] | None = None,
+                      constraints: dict | TravelConstraints | None = None,
                       *, client: FlyAIClient | None = None,
                       amap_client: AMapClient | None = None) -> Envelope:
     """组合多目的地调研行程：交通对比、滚动住宿、节奏缓冲与可复核预算（日期只用 timedelta）。"""
@@ -330,6 +361,14 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     if bad is not None:
         return bad
     try:
+        decision_constraints = constraints if isinstance(constraints, TravelConstraints) else TravelConstraints.model_validate(constraints or {})
+    except ValueError as exc:
+        return _error("bad_constraints", str(exc), "按约束字段说明提供值")
+    if night_allocation is not None and (len(night_allocation) != len(destinations)
+            or any(type(n) is not int or n < 0 for n in night_allocation)
+            or sum(night_allocation) != duration_days - 1):
+        return _error("bad_night_allocation", "住宿夜数须与目的地一一对应且合计等于天数减一", "使用用户明确的活动安排分配夜数")
+    try:
         start_dt = datetime.strptime(start_date, DATE_FMT)
     except ValueError:
         return _error("bad_start_date", f"start_date 不是 YYYY-MM-DD 格式：{start_date!r}",
@@ -337,7 +376,7 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
 
     # 1) 先把日历算完（纯算术，无 I/O）：末日退房返程，故总夜数 = 天数 - 1
     end_dt = start_dt + timedelta(days=duration_days - 1)
-    nights = _split_nights(duration_days - 1, len(destinations))
+    nights = night_allocation if night_allocation is not None else _split_nights(duration_days - 1, len(destinations))
     windows: list[dict[str, Any]] = []
     cursor = start_dt
     for dest, n in zip(destinations, nights, strict=True):
@@ -406,7 +445,10 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     geo_memo: dict[str, GeoLocation] = {}  # 地名级 geocode 复用：同地名跨腿零重复
     amap_disabled = False  # 无 Key 首败即全程停用（增强缺席，不惩罚核心口径）
     for idx, hop in enumerate(hops):
-        chosen, alts = _select(transport_cands.get(idx, []))
+        candidates = transport_cands.get(idx, [])
+        for candidate in candidates:
+            candidate["constraints"] = candidate_constraints(candidate, hop["date"], decision_constraints)
+        chosen, alts = _select(candidates, preference=decision_constraints.preference)
         if chosen is None:
             notes.append(f"交通（{hop['from']}→{hop['to']}）无可用价格，预算未计该条")
         if amap_disabled:
@@ -415,8 +457,16 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                          "live_refs": []}
             leg_queried = leg_priced = leg_no_key = False
         else:
-            last_mile, leg_queried, leg_priced, leg_no_key = \
-                _plan_leg_last_mile(amap_client, hop, geo_memo)
+            for _ in range(3):
+                last_mile, leg_queried, leg_priced, leg_no_key = _plan_leg_last_mile(amap_client, hop, geo_memo, chosen, decision_constraints)
+                if not chosen or last_mile.get("connection", {}).get("status") != "failed":
+                    break
+                chosen["constraints"] = last_mile["connection"]
+                chosen, alts = _select(candidates, preference=decision_constraints.preference)
+            else:
+                chosen = None
+            if chosen:
+                chosen["connection"] = last_mile.get("connection")
             if leg_no_key:
                 amap_disabled = True
         # 查过但无价与交通同口径进 uncovered；无 Key 停用属环境缺席，不计缺口
@@ -424,7 +474,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
             uncovered.append(f"接驳（{hop['from']}→{hop['to']}）")
         lm_queried.append(leg_queried)
         lm_priced.append(leg_priced)
-        legs.append({**hop, "chosen": chosen, "alternatives": alts,
+        rejected = [c for c in candidates if c.get("constraints", {}).get("status") == "failed"]
+        legs.append({**hop, "chosen": chosen, "alternatives": alts, "rejected_candidates": rejected,
                      "note": "" if chosen else "无可用价格：数据源失败或结果未含报价，"
                                                "预算未计该条，请人工核验",
                      "last_mile": last_mile})
@@ -578,6 +629,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
             "settlement_type": settlement_type or DEFAULT_SETTLEMENT,
             "board_mode": board_mode or DEFAULT_BOARD_MODE,
             "include_local_transport": include_local_transport,
+            **({"night_allocation": night_allocation} if night_allocation is not None else {}),
+            **({"constraints": decision_constraints.model_dump()} if constraints is not None else {}),
             }),
     )
     return Envelope(ok=True, data=plan, degraded="；".join(notes) if notes else None)
@@ -585,7 +638,8 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
 
 register(CapabilityMeta(
     name="compose_itinerary",
-    description="组合多目的地调研行程：去回程交通取最低价并留备选、住宿按天数滚动分段"
+    description="组合多目的地调研行程：先检查交通约束与实际枢纽接续，再按费用或时间选择并保留备选；"
+                "可按明确研究活动指定night_allocation，住宿按天数滚动分段"
                 "（日期一律 strptime+timedelta）、30/50/20 调研节奏与缓冲日、"
                 "预算条目带币种/单位/数量/报价时间/来源引用，coverage 标记完整性"
                 "（仅 complete 才允许超支结论）、长住日价标待核验；单腿无价只降级不报错。",

@@ -2,8 +2,17 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import { SearchItemRow } from "../src/components/cards/SearchResultCard";
 import { WindowCard } from "../src/components/cards/WindowCard";
+import { LodgingComparison } from "../src/components/cards/LodgingComparison";
 
 describe("旅行证据展示", () => {
+  test("住宿比较明确展示情景估算、通勤时间及待核实条件", () => {
+    render(<LodgingComparison data={[{ name: "近舍", cost_estimate: 864,
+      commute_minutes_per_visit_day: 20, quote_coverage: "estimate",
+      constraints: { status: "unknown", missing_fields: ["连续房态"] } }]} />);
+    expect(screen.getByText(/房费与通勤合计情景估算/)).toBeVisible();
+    expect(screen.getByText(/每日往返约 20 分钟/)).toBeVisible();
+    expect(screen.getByText("连续房态")).toBeVisible();
+  });
   test("显示来源实际返回的到达时间、枢纽和缓存采样时间", () => {
     render(<ul><SearchItemRow item={{
       name: "班次", price: 100, price_raw: null, jump_url: null, pic_url: null, extra: {},

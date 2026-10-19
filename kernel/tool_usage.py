@@ -1,6 +1,7 @@
 """工具用途说明与明确跨领域误用的出网前检查；不替模型做通用意图分类。"""
 import re
 
+from fieldwork_agent.kernel.guidance.travel import TRAVEL_GUIDANCE
 from fieldwork_agent.kernel.models import Envelope, ToolError
 
 TOOL_USAGE_GUIDANCE = """工具分工与证据边界（优先于阶段资产中笼统的“用搜索工具”）：
@@ -27,6 +28,8 @@ TOOL_USAGE_GUIDANCE = """工具分工与证据边界（优先于阶段资产中�
 面向用户直接给可执行的回应，不输出<thinking>等内部草稿标签或展开内部工具选择推演。
 tool_domain_mismatch说明所选工具不适用，应改用提示中的工具，不能换个模糊关键词继续撞同一源。
 """
+
+TOOL_USAGE_GUIDANCE += "\n" + TRAVEL_GUIDANCE
 
 _ACADEMIC = re.compile(
     r"论文|文献|民族志|学术(?:材料|研究|资料)|参考书目|期刊文章|"

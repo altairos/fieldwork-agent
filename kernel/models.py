@@ -201,6 +201,7 @@ class FieldSiteProfile(BaseModel):
     live_refs: list[str] = Field(default_factory=list)
     summary: SummaryHints = Field(default_factory=SummaryHints)
     generated_at: str = ""
+    lodging_comparison: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 行程与预算
