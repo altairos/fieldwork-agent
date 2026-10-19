@@ -56,3 +56,17 @@ async def test_short_password_400(app):
     async with make_client(app, owner_token=None) as c:
         r = await c.post("/auth/register", json={"email": "a@b.com", "password": "x"})
         assert r.status_code == 400
+
+
+async def test_register_reject_invalid_anon_token(app):
+    # 非法形状（含误传 anon: 归一化值）→ 400，且先于建用户副作用：同邮箱仍可 201
+    async with make_client(app, owner_token=None) as c:
+        for bad in (f"anon:{OWNER_TOKEN}", "bad token"):
+            r = await c.post("/auth/register",
+                             json={"email": "a@b.com", "password": "s3cret-pass",
+                                   "anon_token": bad})
+            assert r.status_code == 400
+            assert r.json()["detail"]["code"] == "invalid_anon_token"
+        r = await c.post("/auth/register",
+                         json={"email": "a@b.com", "password": "s3cret-pass"})
+        assert r.status_code == 201
