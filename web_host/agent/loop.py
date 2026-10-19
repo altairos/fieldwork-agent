@@ -30,23 +30,39 @@ _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降
 
 # 快捷选项标记：LLM 在枚举型提问末尾输出 [[options]]甲|乙|丙[[/options]]，
 # 轮末剥离标记、选项入消息 meta 与 turn_done payload（渐进增强：无标记则无选项）
-_OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
+_OPTIONS_TAG_RE = re.compile(
+    r"\[\[options(?::([^\]]*))?\]\](.*?)\[\[/options\]\]", re.S)
+_MAX_OPTION_GROUPS = 3        # 一次至多问 3 个可枚举问题（对齐 prompt “2-3 个问题”）
+_MAX_OPTIONS_PER_GROUP = 4
+_MAX_OPTION_LEN = 20
+_MAX_LABEL_LEN = 12
 
 
-def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
-    """剥离尾部 [[options]] 标记；返回 (干净正文, 选项列表)。
+def _extract_quick_replies(reply: str) -> tuple[str, list[dict]]:
+    """剥离所有 [[options[:标签]]] 标记块；返回 (干净正文, groups)。
 
-    选项按 | 切分、strip、滤空，最多取 4 个，每项截断 20 字；
-    标记缺失或解析不出有效选项 → (原文, [])。
+    每个块 → 一组 ``{"label": str, "options": list[str]}``：options 按 | 切分、
+    strip、滤空，每组最多 4 项、每项截 20 字；label 为可选的 ``:标签``（截 12
+    字，无标签则 ""）。无有效选项的块跳过（不产出空组）；组数上限 3。
+    一个可枚举问题对应一组，多组时正文剥离全部块；无任何有效组 → (原文, [])
+    （标记原样保留，与历史行为一致）。
     """
-    match = _OPTIONS_TAG_RE.search(reply)
-    if not match:
+    matches = list(_OPTIONS_TAG_RE.finditer(reply))
+    if not matches:
         return reply, []
-    options = [opt.strip()[:20] for opt in match.group(1).split("|")]
-    options = [opt for opt in options if opt][:4]
-    if not options:
+    groups: list[dict] = []
+    for m in matches:
+        options = [opt.strip()[:_MAX_OPTION_LEN] for opt in m.group(2).split("|")]
+        options = [opt for opt in options if opt][:_MAX_OPTIONS_PER_GROUP]
+        if not options:
+            continue
+        label = (m.group(1) or "").strip()[:_MAX_LABEL_LEN]
+        groups.append({"label": label, "options": options})
+        if len(groups) >= _MAX_OPTION_GROUPS:
+            break
+    if not groups:
         return reply, []
-    return reply[:match.start()].rstrip(), options
+    return _OPTIONS_TAG_RE.sub("", reply).rstrip(), groups
 
 
 # 中文全角引号归一（问题3）：LLM 输出的成对半角双引号在内容含中文时
@@ -381,18 +397,22 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
     cancelled = handle.cancel_event.is_set()
-    quick_replies: list[str] = []
+    quick_reply_groups: list[dict] = []
     if not cancelled and accumulated_reply:
-        accumulated_reply, quick_replies = _extract_quick_replies(accumulated_reply)
+        accumulated_reply, quick_reply_groups = _extract_quick_replies(accumulated_reply)
         accumulated_reply = _normalize_cjk_quotes(accumulated_reply)
+    # 旧扁平 quick_replies 仅单组时携带；多组时为空，避免只覆盖其中一个问题的误导性子集
+    quick_replies: list[str] = (quick_reply_groups[0]["options"]
+                                if len(quick_reply_groups) == 1 else [])
     if not cancelled:
         try:
             if accumulated_reply:
-                repo.append_message(pid, "assistant", accumulated_reply,
-                                    {"tool_calls": total_calls,
-                                     "finish_reason": finish_reason,
-                                     **({"quick_replies": quick_replies}
-                                        if quick_replies else {})})
+                meta = {"tool_calls": total_calls, "finish_reason": finish_reason}
+                if quick_replies:
+                    meta["quick_replies"] = quick_replies
+                if quick_reply_groups:
+                    meta["quick_reply_groups"] = quick_reply_groups
+                repo.append_message(pid, "assistant", accumulated_reply, meta)
             buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
             _apply_extractions(repo, pid, user_text)
@@ -416,6 +436,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                         {"reply_id": turn_id, "usage": usage_total,
                          "snapshot_ids": snapshot_ids,
                          "quick_replies": quick_replies,
+                         "quick_reply_groups": quick_reply_groups,
                          "finish_reason": finish_reason,
                          "incomplete": incomplete})
         tm.finish(pid, turn_id, "completed")

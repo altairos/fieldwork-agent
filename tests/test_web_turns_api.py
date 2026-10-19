@@ -309,7 +309,37 @@ async def test_list_messages_returns_quick_replies(app):
             "role": "assistant",
             "content": "先校准研究问题吗？",
             "quick_replies": ["是", "否，换个方向"],
+            "quick_reply_groups": [{"label": "", "options": ["是", "否，换个方向"]}],
         }
+
+
+async def test_list_messages_returns_multi_group_quick_replies(app):
+    """GET /messages（多组）：assistant metadata.quick_reply_groups 含两组时
+    原样回传该键；多组时旧 quick_replies 为空不回传。前端据此恢复多行 chips。"""
+
+    class MultiOptionsLLM:
+        def chat_stream(self, messages, **kw):
+            reply = ("先定两件事：\n"
+                     "[[options:用途]]开题|申报[[/options]]\n"
+                     "[[options:学科]]人类学|社会学[[/options]]")
+            return iter([
+                {"delta": reply},
+                {"content": reply, "tool_calls": None,
+                 "finish_reason": "stop", "usage": {}},
+            ])
+
+    app.state.llm = MultiOptionsLLM()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-Owner-Token": OWNER_TOKEN}) as c:
+        await c.post("/projects/p1/messages", json={"text": "hi"})
+        await asyncio.sleep(0.5)
+        data = (await c.get("/projects/p1/messages")).json()
+        assert "quick_replies" not in data[1]          # 多组时旧字段不回传
+        assert data[1]["quick_reply_groups"] == [
+            {"label": "用途", "options": ["开题", "申报"]},
+            {"label": "学科", "options": ["人类学", "社会学"]},
+        ]
 
 
 # ------------------------------------------------ 套餐端点（X-DashScope-Plan）

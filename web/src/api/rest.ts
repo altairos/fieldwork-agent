@@ -1,4 +1,4 @@
-import type { CreateTurnResponse } from "../types/events";
+import type { CreateTurnResponse, QuickReplyGroup } from "../types/events";
 import type {
   FieldSiteRecord, InformantRecord, ProjectSnapshot, ProjectSummary,
   ProposalDoc, ResearchContext,
@@ -108,9 +108,9 @@ export const rest = {
   getProject: (id: string) => req<ProjectSnapshot>(`/projects/${id}`),
   // 删除即整域清除（后端先取消活动回合再删数据；204 无 body）
   deleteProject: (id: string) => req<void>(`/projects/${id}`, { method: "DELETE" }),
-  // 元素可选携带 quick_replies（assistant 消息 meta 里的快捷作答选项，B 节；无则键缺省）
+  // 元素可选携带 quick_reply_groups（多组快捷作答）与旧 quick_replies（assistant meta；无则键缺省）
   getMessages: (id: string) =>
-    req<{ role: "user" | "assistant"; content: string; quick_replies?: string[] }[]>(`/projects/${id}/messages`),
+    req<{ role: "user" | "assistant"; content: string; quick_replies?: string[]; quick_reply_groups?: QuickReplyGroup[] }[]>(`/projects/${id}/messages`),
   createTurn: (id: string, text: string, idempotencyKey?: string) =>
     req<CreateTurnResponse>(`/projects/${id}/messages`,
       { method: "POST", body: JSON.stringify({ text, idempotency_key: idempotencyKey }) }),

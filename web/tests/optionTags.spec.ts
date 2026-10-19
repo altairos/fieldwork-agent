@@ -20,7 +20,17 @@ describe("stripOptionTags", () => {
   test("正文尾部空白一并清理（与后端 rstrip 口径一致）", () => {
     expect(stripOptionTags("正文 \n [[options]]甲|乙[[/options]]")).toBe("正文");
   });
-  test("标记居中（模型违约）：与后端口径一致——标记及之后全部丢弃", () => {
-    expect(stripOptionTags("前半[[options]]甲|乙[[/options]]后半")).toBe("前半");
+  test("标记居中（模型违约）：与后端 sub 口径一致——仅删除标记块、保留两侧正文", () => {
+    expect(stripOptionTags("前半[[options]]甲|乙[[/options]]后半")).toBe("前半后半");
+  });
+  test("多组带标签：剥离全部块、保留问题正文（与后端多组抽取对齐）", () => {
+    expect(
+      stripOptionTags("用途？[[options:用途]]甲|乙[[/options]]学科？[[options:学科]]丙|丁[[/options]]"),
+    ).toBe("用途？学科？");
+  });
+  test("流式多组半截：已闭合组剥离、未闭合组从起始截断", () => {
+    expect(
+      stripOptionTags("问1？[[options:用途]]甲|乙[[/options]]问2？[[options:学科]]丙"),
+    ).toBe("问1？问2？");
   });
 });

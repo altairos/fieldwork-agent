@@ -29,8 +29,8 @@ import { QuickReplies } from "./QuickReplies";
  * turn 句柄由 App 的 `useTurn(projectId)` 注入（单一回合所有者）；仅传 projectId 时组件自建句柄，
  * 便于独立渲染/测试。两者取其一，绝不并存两个活动回合。
  *
- * 快捷作答（B 节问题 4）：末条 assistant 携带选项时输入壳上方渲染 QuickReplies chips；
- * 点选即发送、自定义聚焦输入框；用户作答（pushUser）/回合运行中/锁定时不显示。
+ * 快捷作答（多组）：末条 assistant 携带选项时输入壳上方渲染 QuickReplies chips；
+ * 单组无标签点选即发送、多组逐组选择后一次发送、自定义聚焦输入框；用户作答（pushUser）/回合运行中/锁定时不显示。
  */
 export interface TurnHandle {
   send: (text: string) => void | Promise<void>;
@@ -59,7 +59,7 @@ export function Composer({
   const api: TurnHandle = turn ?? own;
   const [text, setText] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
-  const quickReplies = useConversationStore((s) => s.quickReplies);
+  const quickReplyGroups = useConversationStore((s) => s.quickReplyGroups);
 
   // 自增高：先归零再取 scrollHeight（jsdom 下 scrollHeight=0，退化为单行高度，无副作用）
   useEffect(() => {
@@ -90,11 +90,11 @@ export function Composer({
 
   return (
     <div className="border-t border-hairline bg-card px-4 sm:px-6 py-3.5">
-      {quickReplies.length > 0 && !api.busy && !locked && (
+      {quickReplyGroups.length > 0 && !api.busy && !locked && (
         <div className="mb-2">
           <QuickReplies
-            options={quickReplies}
-            onPick={(opt) => void api.send(opt)}
+            groups={quickReplyGroups}
+            onSend={(text) => void api.send(text)}
             onCustom={() => areaRef.current?.focus()}
           />
         </div>

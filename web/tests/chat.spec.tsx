@@ -324,6 +324,16 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
     expect(screen.queryByText(/update_research_context/)).not.toBeInTheDocument();
     expect(screen.queryByText(/boom/)).not.toBeInTheDocument(); // 失败也不显示（正文自会解释）
   });
+  test("hidden 级（get_project_brief）不进时间线：不出「未适配的结构化视图」兑底卡（问题②）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "get_project_brief", args: {}, purpose: "" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: true,
+      data: { brief: "项目摘要：…" }, degraded: null });
+    render(<Timeline />);
+    expect(screen.queryByText(/未适配的结构化视图/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/get_project_brief/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/项目摘要/)).not.toBeInTheDocument();
+  });
   test("运行中的调用不提前渲染结果卡（不误报「未返回数据」）", () => {
     useToolsStore.getState().applyEvent({ event: "tool_started", call_id: "c1", tool: "search_flights", args: {}, purpose: "交通" });
     render(<Timeline />);
@@ -394,20 +404,49 @@ describe("Composer", () => {
     render(<Composer turn={turnHandle()} />);
     expect(screen.getByText(/所需信息齐备后，才会进入下一阶段/)).toBeInTheDocument();
   });
-  test("快捷作答 chips：点选即发送、自定义聚焦输入框（B 节）", () => {
+  test("快捷作答 chips（单组无标签）：点选即发送、自定义聚焦输入框", () => {
     const sent: string[] = [];
-    useConversationStore.setState({ quickReplies: ["是", "换个方向"] });
+    useConversationStore.setState({ quickReplyGroups: [{ label: "", options: ["是", "换个方向"] }] });
     render(<Composer turn={turnHandle({ send: (t: string) => { sent.push(t); } })} />);
     fireEvent.click(screen.getByRole("button", { name: "是" }));
-    expect(sent).toEqual(["是"]); // 直调 send，不经输入框
+    expect(sent).toEqual(["是"]); // 单组无标签：直调 send，不经输入框
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     fireEvent.click(screen.getByRole("button", { name: "自定义" }));
     expect(document.activeElement).toBe(screen.getByRole("textbox")); // 转入打字
   });
-  test("quickReplies 为空或 busy 时不渲染 chips（渐进增强）", () => {
+  test("多组带标签：逐组选择 + 发送拼成多行一条消息（问题①）", () => {
+    const sent: string[] = [];
+    useConversationStore.setState({ quickReplyGroups: [
+      { label: "用途", options: ["高校开题", "基金申报"] },
+      { label: "学科", options: ["人类学", "社会学"] },
+    ] });
+    render(<Composer turn={turnHandle({ send: (t: string) => { sent.push(t); } })} />);
+    // 未选时发送禁用
+    expect((screen.getByTestId("quick-reply-send") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "高校开题" }));
+    fireEvent.click(screen.getByRole("button", { name: "人类学" }));
+    fireEvent.click(screen.getByTestId("quick-reply-send"));
+    expect(sent).toEqual(["用途：高校开题\n学科：人类学"]); // 两组答案合成一条
+  });
+  test("多组：允许只选部分组发送；点已选 chip 可取消选择", () => {
+    const sent: string[] = [];
+    useConversationStore.setState({ quickReplyGroups: [
+      { label: "用途", options: ["开题", "申报"] },
+      { label: "学科", options: ["人类学", "社会学"] },
+    ] });
+    render(<Composer turn={turnHandle({ send: (t: string) => { sent.push(t); } })} />);
+    fireEvent.click(screen.getByRole("button", { name: "开题" }));
+    fireEvent.click(screen.getByTestId("quick-reply-send"));
+    expect(sent).toEqual(["用途：开题"]);           // 只选一组也能发
+    fireEvent.click(screen.getByRole("button", { name: "社会学" }));
+    fireEvent.click(screen.getByRole("button", { name: "社会学" })); // 再点取消
+    fireEvent.click(screen.getByTestId("quick-reply-send"));
+    expect(sent).toEqual(["用途：开题", "用途：开题"]); // 学科未选，仍只发用途
+  });
+  test("quickReplyGroups 为空或 busy 时不渲染 chips（渐进增强）", () => {
     const { rerender } = render(<Composer turn={turnHandle()} />);
     expect(screen.queryByTestId("quick-replies")).not.toBeInTheDocument(); // 无选项不出现
-    useConversationStore.setState({ quickReplies: ["是"] });
+    useConversationStore.setState({ quickReplyGroups: [{ label: "", options: ["是"] }] });
     rerender(<Composer turn={turnHandle({ busy: true })} />);
     expect(screen.queryByTestId("quick-replies")).not.toBeInTheDocument(); // 回合运行中退场
     rerender(<Composer turn={turnHandle()} />);

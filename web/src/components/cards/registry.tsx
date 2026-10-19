@@ -80,7 +80,8 @@ export function getToolCard(tool: string): ComponentType<ToolCardProps> {
  * - collapsed：过程性检索（8 搜索原语），折叠为单行摘要条，点击展开原卡；
  * - hidden：内部状态写入，时间线不显示（成功与失败均不显示，正文自会解释）；
  * 未注册工具（Fallback 卡）默认 full（新能力优先保证可见，再人工分级）。
- * 键集与上方注册表同源（update_research_context 为宿主层状态工具，同样列入）。
+ * 键集大体与上方注册表同源；例外：get_project_brief 为 hidden 只读工具，永不
+ * 渲染卡片，故只列入本可见性表、不入注册表（update_research_context 虽 hidden 但有专属卡）。
  */
 export type ToolVisibility = "full" | "collapsed" | "hidden";
 export const toolVisibility: Record<string, ToolVisibility> = {
@@ -102,8 +103,11 @@ export const toolVisibility: Record<string, ToolVisibility> = {
   search_pois: "collapsed",
   search_keyword: "collapsed",
   search_ai: "collapsed",
-  // hidden：内部状态写入
+  // hidden：内部状态读写（每回合由 build_state_tools 注入，非用户交付物，正文自会解释）
+  // update_research_context 有专属卡（列于上方注册表）；get_project_brief 是只读上下文
+  // 刷新、hidden 后永不渲染，故只登记可见性、不建卡片（不建死代码）。
   update_research_context: "hidden",
+  get_project_brief: "hidden",
 };
 
 /** Task 7 右栏「预算」面板复用同一份 BudgetBreakdown 视图（同源，不另写一套）。 */
