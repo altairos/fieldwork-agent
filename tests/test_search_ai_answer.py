@@ -29,3 +29,21 @@ def test_dict_data_path_unchanged():
 def test_string_data_no_crash_without_system_message():
     env = _page_envelope({"status": 0, "data": "纯文本答案"})
     assert env.ok and env.degraded is None
+
+
+def test_summarize_carries_answer_to_llm():
+    """R1：answer 必须进 LLM 工具摘要——旧路径 items 分支提前 return 丢弃 answer，
+    agent 只看到 total=0/top_items=[]，无法引用 AI 答案。"""
+    from fieldwork_agent.kernel.models import Envelope, ItemPage
+    from fieldwork_agent.runtime.loop import _summarize
+    s = _summarize("search_ai", Envelope(ok=True, data=ItemPage(answer="## 答案", items=[])))
+    assert s["answer"] == "## 答案"
+    assert s["total"] == 0 and s["top_items"] == []
+
+
+def test_summarize_without_answer_unchanged():
+    from fieldwork_agent.kernel.models import Envelope, ItemPage, SearchItem
+    from fieldwork_agent.runtime.loop import _summarize
+    s = _summarize("search_hotels", Envelope(ok=True, data=ItemPage(
+        items=[SearchItem(name="客栈", price=180.0)], total=1)))
+    assert "answer" not in s and s["total"] == 1
