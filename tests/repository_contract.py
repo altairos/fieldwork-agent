@@ -437,7 +437,9 @@ class TestContract:
 
         ts = [threading.Thread(target=claim, args=("a",)),
               threading.Thread(target=claim, args=("b",))]
-        for t in ts: t.start()
-        for t in ts: t.join()
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
         assert sorted(results) == [False, True]   # 恰好一个成功
         assert repo.get_state("c2")["owner"] in ("user:a", "user:b")
