@@ -1602,3 +1602,128 @@ def test_convergence_length_truncation_marks_incomplete(env):
     events = tm.replay("p1", turn.turn_id, after_seq=0)
     done = next(e for e in events if e.event == "turn_done")
     assert done.data["incomplete"] is True
+
+
+# ---------- Task 14：统一续流预算 + 悬挂补完（spec B，R2/R6/R18） ----------
+
+def test_continuation_budget_caps_llm_calls(env):
+    """R2：四类续流共用 MAX_CONTINUATIONS 预算——酷刑脚本（每帧冒号收尾）
+    不得无限续流：LLM 调用总数封顶，终态 incomplete 如实上报。"""
+    repo, tm = env
+    frame = [{"delta": "缺："},
+             {"content": "缺：", "tool_calls": None, "finish_reason": "stop",
+              "usage": {}}]
+    llm = FakeLLM([[dict(f) for f in frame] for _ in range(20)])   # 帧给足，防 pop 空
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn, MAX_CONTINUATIONS
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "查一下", tm, llm, FakeFlyAI()))
+    assert len(llm.calls) <= 1 + MAX_CONTINUATIONS
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    # 主循环×2 + 收敛 + 悬挂补完各流出一次：补完确实发生过且被计数
+    assert deltas.count("缺：") == 4
+
+
+def test_dangling_completion_appends_options(env):
+    """R6：收敛产出冒号收尾的悬挂回复 → 悬挂补完追加完整结尾（含选项块）；
+    已流出正文全部保留；轮末剥离出 quick_reply_groups；incomplete=False。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查场地："},
+         {"content": "我先查场地：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 前导语 → 带工具重问
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 又冒号收尾，不再重问 → break
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 收敛：产出仍冒号收尾
+        [{"delta": "补充如下。[[options:补充]]场地|联系方式[[/options]]"},
+         {"content": "补充如下。[[options:补充]]场地|联系方式[[/options]]",
+          "tool_calls": None, "finish_reason": "stop", "usage": {}}],  # 悬挂补完
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "缺什么", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is False
+    groups = done.data["quick_reply_groups"]
+    assert groups and groups[0]["options"] == ["场地", "联系方式"]
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "我先查场地：" in deltas and "补充如下。" in deltas   # 已流出正文绝不丢
+
+
+def test_recovery_failed_cleared_after_success(env):
+    """R18：recovery_failed 是「最近一次恢复」语义——截断续流失败置位后，
+    悬挂补完成功清除，终检门不因早期失败误标 incomplete；失败续流已流出
+    的增量照样保留。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "内容，"},
+         {"content": "内容，", "tool_calls": None, "finish_reason": "length",
+          "usage": {}}],                                    # 截断 → 续写触发
+        [{"delta": "清单如下："}],                           # 续写流无终帧 → recovery_failed=True
+        [{"delta": "三点。"},
+         {"content": "三点。", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],                                    # 悬挂补完成功 → 清除
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "给我清单", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is False
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "清单如下：" in deltas and "三点。" in deltas      # 失败续流的增量不丢
+
+
+def test_completion_frame_truncated_marks_incomplete(env):
+    """R8：悬挂补完帧自身 finish_reason=length、停在「地点和」（非冒号）——
+    补完块一次性不再回补，终检门 _looks_truncated 兜住 → incomplete=True。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查场地："},
+         {"content": "我先查场地：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 前导语 → 带工具重问
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 又冒号收尾，不再重问 → break
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 收敛：产出仍冒号收尾
+        [{"delta": "推荐三个地点和"},
+         {"content": "推荐三个地点和", "tool_calls": None,
+          "finish_reason": "length", "usage": {}}],          # 悬挂补完被 length 截断
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "缺什么", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True   # 终检门 _looks_truncated 捕获（R8）
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "推荐三个地点和" in deltas   # 已流出内容不丢
+
+
+def test_dangling_completion_dead_ends_incomplete(env):
+    """R18 后半：悬挂补完流无终帧且预算内无后续恢复 → recovery_failed 终值
+    True → 终检门 incomplete=True；两次续流已流出的增量都保留。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "内容，"},
+         {"content": "内容，", "tool_calls": None, "finish_reason": "length",
+          "usage": {}}],                                    # 截断 → 续写触发
+        [{"delta": "清单如下："}],                           # 续写流无终帧 → recovery_failed=True
+        [{"delta": "甲乙丙。"}],                             # 悬挂补完同样无终帧 → 保持 True
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "给我清单", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "清单如下：" in deltas and "甲乙丙。" in deltas   # 已流出内容不丢

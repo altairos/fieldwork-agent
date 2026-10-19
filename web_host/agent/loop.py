@@ -144,6 +144,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     incomplete = False          # 回合未收敛出正文 → turn_done.incomplete
     has_final_answer = False
     recovery_failed = False     # 最近一次续流失败（R18：成功清除，非粘滞标记）
+    continuations = 0           # 已用续流预算（R2：四类续流共用）
     finish_reason = ""
     usage_total: dict = {}
     call_name_map: dict[str, str] = {}
@@ -204,12 +205,14 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 finish_reason = str(final_resp.get("finish_reason") or "")
                 answer = raw.strip()
                 if (answer and finish_reason != "length" and not preamble_retried
+                        and continuations < MAX_CONTINUATIONS
                         and _looks_like_preamble(raw)):
                     # 前导语（"我这就去查…"/"先问最实际的："）不是最终回答：文本
                     # 已流出，记入前缀；带工具重问一次让它真正动手。length 不走此
                     # 分支（截断续写仍然 tools=None，保持既有语义）。
                     preamble_retried = True
                     stream_prefix += raw
+                    continuations += 1  # R2：计入统一续流预算
                     messages.append({"role": "assistant", "content": raw})
                     messages.append({"role": "system", "content": _PREAMBLE_NUDGE})
                     continue
@@ -308,8 +311,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：续写与轮末的写入目标均已消失
     if (llm is not None and accumulated_reply
-            and not handle.cancel_event.is_set()
+            and not _stop_requested(handle, start, max_wall_seconds)
+            and continuations < MAX_CONTINUATIONS
             and _looks_truncated(accumulated_reply, finish_reason)):
+        continuations += 1  # R2：计入统一续流预算
         messages.append({"role": "system", "content":
                          "你的上一条回复在句中被截断了，已输出内容的末尾如下：\n"
                          + accumulated_reply[-300:]
@@ -355,7 +360,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：收敛与轮末的写入目标均已消失
     if (llm is not None and not has_final_answer
-            and not handle.cancel_event.is_set()):
+            and not _stop_requested(handle, start, max_wall_seconds)
+            and continuations < MAX_CONTINUATIONS):
+        continuations += 1  # R2：计入统一续流预算
         limit_hit = (iterations >= max_iters or total_calls >= max_tool_calls
                      or time.monotonic() - start > max_wall_seconds)
         reason = ("本回合已达到处理上限。" if limit_hit
@@ -414,6 +421,48 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
     cancelled = handle.cancel_event.is_set()
+    # 悬挂补完（R6）：以冒号/空选项块收尾的半截话不是可交付答案——
+    # 生产实录回合「先问最实际的：」后无下文。追加一次无工具续流让模型
+    # 把话补完；预算/墙钟/取消三重闸门；失败保留原文（已流出内容绝不丢）。
+    if (not cancelled and llm is not None and accumulated_reply
+            and continuations < MAX_CONTINUATIONS
+            and not _stop_requested(handle, start, max_wall_seconds)
+            and _looks_dangling(accumulated_reply)):
+        continuations += 1
+        messages.append({"role": "system", "content":
+                         "你的上一条回复以冒号或空选项块收尾，话还没说完。"
+                         "已输出内容的末尾如下：\n" + accumulated_reply[-120:]
+                         + "\n请紧接着上述末尾把话说完：直接续写正文；若在等待"
+                           "对方选择，用 [[options:标签]]选项A|选项B[[/options]] "
+                           "格式给出选项；不要重复已写出的内容，写完即止。"})
+        comp_deltas = ""  # 补完流已流出增量：与截断续写同款三路兜底
+        try:
+            stream = llm.chat_stream(messages, tools=None, slot="interview")
+            iterations += 1
+            comp_resp = None
+            async for chunk in _async_iter(stream):
+                if tm.get_turn(pid, turn_id) is None:
+                    return  # 项目删除竞态：同截断续写
+                if "delta" in chunk and chunk["delta"]:
+                    comp_deltas += chunk["delta"]
+                    tm.append_event(pid, turn_id, "message_delta",
+                                    {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    comp_resp = chunk
+            if comp_resp and not comp_resp.get("error"):
+                accumulated_reply += ((comp_resp.get("content", "") or "")
+                                      or comp_deltas)
+                finish_reason = (str(comp_resp.get("finish_reason") or "")
+                                 or finish_reason)
+                usage_total = comp_resp.get("usage", {}) or usage_total
+                recovery_failed = False  # R18：补完成功即清除
+            else:
+                accumulated_reply += comp_deltas
+                recovery_failed = True  # R18：无终帧/终帧报错
+        except Exception:
+            accumulated_reply += comp_deltas  # 流中断：已流出内容绝不丢
+            recovery_failed = True  # R18
+
     if not cancelled:
         # 统一终检门（R8/R16/R18）：所有恢复路径走完后的最后一道防线——
         # 无答案 / 最近一次恢复失败 / 仍截断 / 仍悬挂，任一命中即 incomplete。
@@ -483,6 +532,16 @@ _PROMISE_MARKERS = ("我这就", "马上", "我先", "接下来", "下面", "让
 _PREAMBLE_NUDGE = ("你上一条回复只是前导语（说明接下来要做什么），尚未给出结果。"
                    "请立即调用合适的工具获取真实数据，拿到结果后再给出完整回答；"
                    "不要再输出「我这就去查」这类前导语。")
+
+
+# 续流统一预算（R2）：前导语重问 / 截断续写 / 收敛兜底 / 悬挂补完共用
+# 一个计数——任一回合最坏情形封顶 MAX_CONTINUATIONS 次额外 LLM 调用。
+MAX_CONTINUATIONS = 3
+
+
+def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
+    """续流前统一闸门：取消或墙钟触顶（命名对齐 main 分支 N13，便于合并）。"""
+    return handle.cancel_event.is_set() or time.monotonic() - start > max_wall_seconds
 
 
 def _looks_like_preamble(text: str) -> bool:
