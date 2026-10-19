@@ -60,6 +60,14 @@ class Config:
         self.storage_backend: str = os.getenv("FA_STORAGE", "json").lower()
         self.sqlite_path: Path = CONFIG_DIR / "fieldwork.db"
 
+        # 账号体系（第一期）：账号存储目录 + 会话/口令策略 + 注册开关
+        # R1：默认取 projects_dir 的兄弟目录，绝不在 projects_dir 子树内
+        self.user_store_dir: Path = Path(
+            os.getenv("FA_USER_STORE_DIR", str(CONFIG_DIR / "accounts")))
+        self.session_ttl_days: int = int(os.getenv("FA_SESSION_TTL_DAYS", "30"))
+        self.pbkdf2_iterations: int = int(os.getenv("FA_PBKDF2_ITERATIONS", "600000"))
+        self.registration_open: bool = os.getenv("FA_REGISTRATION_OPEN", "1") != "0"
+
         # 云同步（钉钉）
         self.dingtalk_webhook: str = ""
         self.dingtalk_enabled: bool = False
