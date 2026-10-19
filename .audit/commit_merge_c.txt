@@ -1,8 +1,0 @@
-merge web_frontend(ba8ec10): 前端三修复合回 main（问题1/2/3前端）
-
-- B1 QuickReplies 朱砂主色按钮样式（明显可点击）
-- B2 loose list 空行修复（li 容器去 pre-wrap，块间空白折叠）
-- B3 前端全角引号渲染（lib/cjkQuotes，与后端 _normalize_cjk_quotes 对齐）
-
-web_frontend 侧自 de494c9 起仅动 web/ 前端与前端测试，与 main 任务4/5/6
-（kernel/web_host 后端）无文件交集，预期无冲突。
