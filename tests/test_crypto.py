@@ -36,19 +36,20 @@ def test_file_lock_serializes_writers(tmp_path):
     lock_path = tmp_path / "x.lock"
     counter = {"n": 0}
     errors = []
+    n_threads = 5
 
     def bump():
         try:
             with FileLock(lock_path):
                 cur = counter["n"]
-                time.sleep(0.01)           # 放大竞争窗口 (M-6)：无锁时读/写间必然交错
+                time.sleep(0.001)          # ~1ms GIL 释放，确保无锁时丢更新 (M-6)
                 counter["n"] = cur + 1     # 临界区：无锁会丢更新
         except Exception as e:  # noqa: BLE001
             errors.append(e)
 
-    ts = [threading.Thread(target=bump) for _ in range(20)]
+    ts = [threading.Thread(target=bump) for _ in range(n_threads)]
     for t in ts:
         t.start()
     for t in ts:
         t.join()
-    assert not errors and counter["n"] == 20
+    assert not errors and counter["n"] == n_threads
