@@ -291,7 +291,7 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
     expect(screen.queryByText(/尚无对话/)).not.toBeInTheDocument();
     expect(document.querySelector("img.animate-spin")).not.toBeNull();  // 不停旋转的 logo
   });
-  test("collapsed 级工具（搜索原语）折叠为摘要条，点击展开原卡（C 节精简）", () => {
+  test("collapsed 级工具移出对话时间线（Task 10 中间态，证据 tab 由 Task 12 接线）", () => {
     const s = useToolsStore.getState();
     s.applyEvent({ event: "tool_started", call_id: "c1", tool: "search_hotels", args: {}, purpose: "住宿" });
     s.applyEvent({
@@ -299,13 +299,8 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
       data: { items: [{ name: "大理古城客栈", price: 180, price_raw: "¥180", jump_url: null, pic_url: null, extra: {} }], total: 1, cheapest: 180, dearest: 180 },
     });
     render(<Timeline />);
-    const bar = screen.getByTestId("collapsed-tool-card");
-    expect(bar.textContent).toContain("酒店搜索");        // 中文显示名（非原始工具名）
-    expect(bar.textContent).toContain("1 条 · ¥180–180"); // 摘要数字直出（ItemPage 形状）
-    expect(screen.queryByText("大理古城客栈")).not.toBeInTheDocument(); // 折叠态不露原始结果（15KB 刷屏的源头）
-    fireEvent.click(screen.getByRole("button", { name: /酒店搜索/ }));
-    expect(screen.getByText("大理古城客栈")).toBeInTheDocument();        // 展开渲染注册表原卡
-    expect(screen.getByText("¥180")).toBeInTheDocument();
+    expect(screen.queryByTestId("collapsed-tool-card")).not.toBeInTheDocument(); // 折叠条移出对话时间线（spec C4）
+    expect(screen.queryByText("大理古城客栈")).not.toBeInTheDocument();          // 原始结果不露出（证据 tab 接线前的过渡态）
   });
   test("full 级工具原样整卡直渲（compose_itinerary 结果卡不折叠）", () => {
     const s = useToolsStore.getState();

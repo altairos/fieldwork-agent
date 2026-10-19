@@ -20,6 +20,9 @@ export interface ToolStarted {
   tool: string;
   args: Record<string, unknown>;
   purpose: string;
+  /** 封套平铺字段（EventEnvelope → data 整包 spread）：回合归属与同回合平局裁决用（R15） */
+  turn_id?: string;
+  seq?: number;
 }
 
 /** 工具失败时的机器可读错误三元组（对齐 web_host ToolCompleted.error；旧事件无此字段）。 */
