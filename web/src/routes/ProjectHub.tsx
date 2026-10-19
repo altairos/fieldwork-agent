@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { rest } from "../api/rest";
+import { AuthDialog } from "../components/auth/AuthDialog";
 import { DEFAULT_PHASES } from "../components/layout/LeftRail";
 import { KeyDialog } from "../components/settings/KeyDialog";
 import { IconCaret, IconClock, IconLock, IconSend, IconTrash } from "../components/ui/icons";
+import { useAuthStore } from "../stores/auth";
 import type { ProjectSummary } from "../types/models";
 
 /**
@@ -11,8 +13,9 @@ import type { ProjectSummary } from "../types/models";
  * 视觉中央一句话输入：kicker + 品牌「田野罗盘」+ 提示语「描述你的田野调研想法」+
  *   大输入框（Enter 创建 / Shift+Enter 换行 / IME 组合中的 Enter 不触发）+
  *   三个示例 chips（点击填入完整示例文案并聚焦输入框）。
- * 右上角唯一常驻入口：「密钥 / 登录」→ KeyDialog 弹层（仅密钥配置；导出格式/配色
- *   等偏好不放首页——导出格式在提案页下载区，配色走对话页 Header）。
+ * 右上角常驻入口：「密钥」钮 → KeyDialog 弹层（仅密钥配置；导出格式/配色等偏好
+ *   不放首页——导出格式在提案页下载区，配色走对话页 Header）+ 账户区（未登录
+ *   「登录」→ AuthDialog 注册/登录；已登录邮箱 + 退出，账号隔离一期 Ruling P-1/P-2）。
  * 已有项目收进输入区下方低调折叠入口「继续上次 · 我的项目（N）」：默认收起、
  *   无项目不渲染；列表加载失败如实提示但绝不阻塞创建（输入区始终可用，不等列表）。
  * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
@@ -132,8 +135,11 @@ export function ProjectHub() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [keyOpen, setKeyOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
 
   useEffect(() => {
     let alive = true;
@@ -187,16 +193,38 @@ export function ProjectHub() {
 
   return (
     <div className="min-h-full flex flex-col">
-      {/* 顶栏：唯一常驻入口——密钥/登录 */}
-      <div className="flex justify-end px-4 sm:px-6 py-4">
+      {/* 顶栏：常驻入口——密钥钮 + 账户区（未登录「登录」/已登录邮箱+退出） */}
+      <div className="flex justify-end items-center gap-2 px-4 sm:px-6 py-4">
         <button
           type="button"
           onClick={() => setKeyOpen(true)}
           className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
         >
           <IconLock className="w-4 h-4" />
-          密钥 / 登录
+          密钥
         </button>
+        {user ? (
+          <>
+            <span title={user.email} className="max-w-[14ch] truncate text-[12.5px] text-inksoft">
+              {user.email}
+            </span>
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
+            >
+              退出
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAuthOpen(true)}
+            className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
+          >
+            登录
+          </button>
+        )}
       </div>
 
       {/* 中央输入区：不等项目列表，挂载即可输入 */}
@@ -294,6 +322,7 @@ export function ProjectHub() {
       </div>
 
       <KeyDialog open={keyOpen} onClose={() => setKeyOpen(false)} />
+      <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );
 }

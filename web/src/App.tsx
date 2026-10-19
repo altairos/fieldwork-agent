@@ -286,7 +286,7 @@ function Workspace() {
                 </button>
                 ，或回
                 <Link to="/" className="text-indigo underline underline-offset-2 mx-0.5">
-                  首页「密钥 / 登录」
+                  首页「密钥」
                 </Link>
                 填写并保存后返回本页。
               </span>

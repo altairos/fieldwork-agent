@@ -51,7 +51,7 @@ describe("ProjectHub（极简首页）", () => {
     expect(screen.getByRole("button", { name: "非遗传承调查" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "乡村教育民族志" })).toBeInTheDocument();
     // 密钥入口与发送按钮
-    expect(screen.getByRole("button", { name: "密钥 / 登录" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "密钥" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建项目" })).toBeInTheDocument();
     // 旧版冗余信息不再出现：学科 chips / 导出格式 / 新建卡四阶段说明 / 侧栏学术纵深
     expect(screen.queryByText("社会学")).toBeNull();
@@ -99,19 +99,19 @@ describe("ProjectHub（极简首页）", () => {
     await waitFor(() => expect(vi.mocked(rest.rest.createProject)).toHaveBeenCalled());
   });
 
-  test("密钥弹层：默认隐藏，点「密钥 / 登录」打开，关闭钮与 Escape 收起", async () => {
+  test("密钥弹层：默认隐藏，点「密钥」打开，关闭钮与 Escape 收起", async () => {
     vi.mocked(rest.rest.listProjects).mockResolvedValue([] as any);
     renderHome();
     await screen.findByRole("heading", { name: "田野罗盘" });
     // 默认未挂载：密钥表单不在文档中
     expect(screen.queryByText(/API 密钥/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "密钥 / 登录" }));
+    fireEvent.click(screen.getByRole("button", { name: "密钥" }));
     expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("sk-…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     // 再次打开后 Escape 收起
-    fireEvent.click(screen.getByRole("button", { name: "密钥 / 登录" }));
+    fireEvent.click(screen.getByRole("button", { name: "密钥" }));
     fireEvent.keyDown(await screen.findByRole("dialog", { name: "密钥与登录" }), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
