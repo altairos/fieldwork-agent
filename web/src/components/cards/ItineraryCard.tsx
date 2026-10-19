@@ -8,6 +8,7 @@ import { CardShell, NoData } from "./CardShell";
 import { AmapMapPanel } from "./AmapMapPanel";
 import { asArray, asRecord, boolOf, extraLine, numOf, strOf } from "./data";
 import type { ToolCardProps } from "./types";
+import { travelDetails } from "./travelDetails";
 
 /**
  * ItineraryCard — 行程方案卡（`compose_itinerary` → ItineraryPlan）。
@@ -228,7 +229,7 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                     hasChosen && chosenName
                       ? linkName(chosenName, strOf(chosen.jump_url))
                       : "",
-                    hasChosen ? extraLine(asRecord(chosen.extra), 2) : "",
+                    hasChosen ? [extraLine(asRecord(chosen.extra), 2), travelDetails(chosen)].filter(Boolean).join(" · ") : "",
                   ];
                   const sub = parts
                     .filter((s) => s !== "")

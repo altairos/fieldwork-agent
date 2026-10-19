@@ -111,7 +111,8 @@ def test_score_windows_hand_computed():
     curve = _curve(dates, [700.0, 680.0, 650.0, 560.0, 600.0],
                   [180.0, 170.0, 160.0, 130.0, 150.0])
     torch = FestivalInfo(name="彝族火把节", approx_start="2026-07-20",
-                         approx_end="2026-07-22", relevance="西南民族志核心节庆")
+                         approx_end="2026-07-22", relevance="西南民族志核心节庆",
+                         date_status="confirmed_by_user", basis="用户提供活动安排", source_ref="user:fixture")
     windows = _score_windows(curve, [torch], "2026-07-01", "2026-07-29",
                              duration_days=10, budget_total=5000.0, sample_step=7)
     assert len(windows) == 3  # 下一个 start=07-22 > last_start=07-20，恰三个
@@ -134,7 +135,8 @@ def test_score_windows_cap_by_festival_presence():
               duration_days=2, budget_total=5000.0, sample_step=7)
     no_fest = _score_windows(curve, [], **kw)
     far = [FestivalInfo(name="赶秋节", approx_start="2026-07-03",
-                        approx_end="2026-07-04", relevance="x")]
+                        approx_end="2026-07-04", relevance="x", date_status="verified_source",
+                        basis="已核验材料夹具", source_ref="fixture:event")]
     with_fest = _score_windows(curve, far, **kw)
     # 窗口 [07-08,07-09]：avg_w=250，avg_all=375，d=1/3 → 60·(1/3)/0.3=66.7 触顶
     assert no_fest[0].evidence["price_score"] == pytest.approx(60.0)
@@ -212,7 +214,8 @@ def test_extract_festivals_happy_path():
     festivals, degraded = _extract_festivals(
         llm, "西昌", "2026-07-01", "2026-07-29",
         ["西昌火把节 7 月下旬开幕", "彝族风情周活动日历"])
-    assert degraded is None and len(festivals) == 1
+    assert degraded and len(festivals) == 1
+    assert festivals[0].date_status == "unverified" and festivals[0].approx_start == ""
     assert llm.calls[0]["slot"] == "interview"
     assert llm.calls[0]["temperature"] == 0.3
     assert "西昌" in llm.calls[0]["messages"][0]["content"]
@@ -260,11 +263,11 @@ def test_analyze_fieldwork_window_happy():
                                    sample_step=7, client=stub, llm=llm)
     assert env.ok and isinstance(env.data, WindowAnalysis)
     assert env.data.windows[0].start == "2026-07-15"
-    assert env.data.windows[0].score == pytest.approx(29.97, abs=0.01)
+    assert env.data.windows[0].score == pytest.approx(18.82, abs=0.01)
     assert len(env.data.windows) == 3
     assert env.data.festivals[0].name == "彝族火把节"
-    assert env.data.budget_feasible is True
-    assert env.data.degraded is None
+    assert env.data.budget_feasible is None
+    assert env.data.degraded and env.data.festivals[0].approx_start == ""
     assert any("节庆" in q for q in stub.kw_queries)
     assert env.data.price_curve.flight_min[0] == 700.0
 

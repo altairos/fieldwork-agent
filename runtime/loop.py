@@ -94,12 +94,8 @@ def _brief(value: Any) -> Any:
 def _item_brief(item: dict) -> dict:
     """条目 → {name + price/rating 关键标量（有值才带）：给 LLM 真数据可引，
     防零工具轮把极值线索膨胀成编造的“实测数据”（店名/评分幻觉）。"""
-    out = {"name": item.get("name") or item.get("type") or item.get("title") or ""}
-    for k in ("price", "rating"):
-        v = item.get(k)
-        if v is not None:
-            out[k] = v
-    return out
+    from fieldwork_agent.runtime.travel_summary import brief_item
+    return brief_item(item)
 
 
 def _error_dict(env: Envelope) -> dict | None:
@@ -127,10 +123,18 @@ def _summarize(name: str, env: Envelope) -> dict:
     if hasattr(data, "model_dump"):
         data = data.model_dump(mode="json")
 
+    from fieldwork_agent.runtime.travel_summary import TRAVEL_TOOLS, compact
+    if name in TRAVEL_TOOLS and not (isinstance(data, dict) and isinstance(data.get("items"), list)):
+        out["fields"] = compact(data)
+        return out
+
     # 搜索分页（ItemPage）：给极值与 top_items（name+price/rating），丢弃字段级噪声
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         items = data["items"]
         out["total"] = data.get("total", len(items))
+        out["returned_count"] = len(items)
+        out["raw_count"] = data.get("raw_count")
+        out["entity_count"] = data.get("entity_count")
         if data.get("cheapest") is not None:
             out["cheapest"] = data["cheapest"]
         if data.get("dearest") is not None:
@@ -181,11 +185,11 @@ def _tool_content(name: str, env: Envelope) -> str:
                 "code": "literature_summary_too_large", "message": "检索元数据过长，请缩小矩阵。"}},
                 ensure_ascii=False)
         return dumped
-    dumped = json.dumps(_summarize(name, env), ensure_ascii=False, default=str)
-    content = dumped[:TOOL_CONTENT_LIMIT]
+    from fieldwork_agent.runtime.travel_summary import TRAVEL_TOOLS, bounded_json
+    summary = _summarize(name, env)
     if env.degraded or not env.ok:
-        content += _DEGRADED_FOLLOWUP
-    return content
+        summary["instruction"] = _DEGRADED_FOLLOWUP
+    return bounded_json(summary, 6000 if name in TRAVEL_TOOLS else TOOL_CONTENT_LIMIT)
 
 
 def _coerce_args(raw: Any) -> dict:

@@ -306,7 +306,9 @@ def test_journeys_shape_normalized():
     assert first.name == "东方航空 MU5703 08:30-10:05"
     assert first.price == 620.0
     assert first.schedule == Schedule(dep_time="08:30", arr_time="10:05",
-                                      duration_minutes=95, stops=0, cabin="经济舱")
+                                      duration_minutes=95, stops=0, cabin="经济舱",
+                                      departure_place="昆明长水", arrival_place="西昌青山",
+                                      segments=payload["data"]["journeys"][0]["segments"], stops_kind="connections")
     # 中转：segments 拼接，stops=1，取末段到达
     assert second.name == "祥鹏航空 8L9751 14:10-18:10"
     assert second.schedule is not None and second.schedule.stops == 1

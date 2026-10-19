@@ -13,6 +13,7 @@ interface Curve {
 interface Festival {
   name?: string; approx_dates?: string;
   approx_start?: string; approx_end?: string; relevance?: string;
+  date_status?: string;
 }
 interface Analysis {
   windows?: WindowItem[] | null;
@@ -89,6 +90,7 @@ export function WindowCard({ data, degraded }: ToolCardProps) {
           {(a.festivals ?? []).map((f, i) => (
             <div key={i} className="text-[12px] text-inksoft">
               <span className="text-ink">{f.name}</span>
+              {f.date_status === "unverified" ? " · 活动线索，日期待核实" : ""}
               {f.approx_dates ? ` · ${f.approx_dates}` : ""}
               {f.relevance ? ` — ${f.relevance}` : ""}
             </div>

@@ -116,6 +116,9 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
                    meal_daily: float = 150.0) -> list[RecommendedWindow]:
     """滑动窗口枚举 + 三维确定性评分（spec §4.2，LLM 不参与）。"""
     dates = curve.dates
+    # 模型从商品抽取的日期不能升级为已确认活动。只有有依据的显式记录可参与评分。
+    festivals = [f for f in festivals if f.date_status in ("confirmed_by_user", "verified_source")
+                 and f.basis and f.source_ref and f.approx_start and f.approx_end]
     f_all = [v for v in curve.flight_min if v is not None]
     h_all = [v for v in curve.hotel_min if v is not None]
     avg_flight, avg_hotel = _avg(f_all), _avg(h_all)
@@ -162,7 +165,7 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
         reasons.extend(f"覆盖「{f.name}」（{f.approx_start}~{f.approx_end}）" for f in hits)
         if r is not None:
             verdict = "预算内" if r <= 1 else "超预算"
-            reasons.append(f"{verdict}：估算 ¥{est:.0f} / 预算 ¥{budget_total:.0f}")
+            reasons.append(f"粗筛{verdict}：估算 ¥{est:.0f} / 预算 ¥{budget_total:.0f}；尚未核验返程及连续入住报价")
         elif uncovered:
             reasons.append(f"已知小计 ¥{estimate_known:.0f}"
                            f"（缺 {'/'.join(uncovered)} 报价，预算可行性待核验）")
@@ -177,6 +180,8 @@ def _score_windows(curve: PriceCurve, festivals: list[FestivalInfo],
                       "coverage": coverage, "uncovered": uncovered,
                       "estimate": round(est, 2) if est is not None else None,
                       "estimate_known": round(estimate_known, 2),
+                      "estimate_kind": "sampled_prices_not_full_quote",
+                      "quote_coverage": "unverified",
                       "festivals": [f.name for f in hits]},
         ))
         cur += timedelta(days=sample_step)
@@ -203,12 +208,15 @@ def _parse_festival_json(text: str) -> list[FestivalInfo]:
             continue
         name = str(entry.get("name") or "").strip()
         s, e = str(entry.get("approx_start") or ""), str(entry.get("approx_end") or "")
-        try:
-            sd = datetime.strptime(s, DATE_FMT).date()
-            ed = datetime.strptime(e, DATE_FMT).date()
-        except ValueError:
-            continue
-        if not name or sd > ed:
+        if s or e:
+            try:
+                sd = datetime.strptime(s, DATE_FMT).date()
+                ed = datetime.strptime(e, DATE_FMT).date()
+            except ValueError:
+                continue
+            if sd > ed:
+                continue
+        if not name:
             continue
         out.append(FestivalInfo(name=name, approx_start=s, approx_end=e,
                                 approx_dates=str(entry.get("approx_dates") or ""),
@@ -221,23 +229,32 @@ def _extract_festivals(llm, destination: str, range_start: str, range_end: str,
     """LLM 从关键词搜索条目抽取节庆（spec §4.3：失败整体降级，不影响评分）。"""
     if llm is None:
         return [], "LLM 未注入，节庆维度降级为空"
+    if not hints:
+        return [], "没有实际活动线索，不推测当地节庆"
     lines = "\n".join(f"- {h}" for h in hints) or "-（无搜索结果）"
     prompt = (
         f"你在为田野调研挑选时间窗口。目的地：{destination}；"
         f"调研区间：{range_start} 至 {range_end}。\n"
         f"以下是旅游平台关键词搜索的原始条目：\n{lines}\n\n"
-        "请从中抽取调研区间内（含跨界）将举办的当地节庆/民俗/大型活动，"
+        "只从这些条目提取待核实的活动线索，不判断实际举办日期。商品有效期不是社区活动日期。"
         '仅输出 JSON 数组，每项形如 {"name":"节庆名","approx_start":"YYYY-MM-DD",'
         '"approx_end":"YYYY-MM-DD","approx_dates":"日期的原文人类可读表述（如 农历六月廿四），无则空串",'
         '"relevance":"一句话调研价值"}；'
-        "日期不确定就给最可能的估计区间。没有可抽取项时输出 []。不要输出其他文字。"
+        "approx_start/approx_end 必须为空串，不估计日期，不做农历换算。没有可抽取项时输出 []。不要输出其他文字。"
     )
     env = llm.chat(messages=[{"role": "user", "content": prompt}],
                    slot="interview", temperature=0.3)
     content = str(env.get("content") or "")
     if env.get("error") or not content.strip():
         return [], "节庆抽取失败，节庆维度降级为空"
-    return _parse_festival_json(content), None
+    festivals = _parse_festival_json(content)
+    for festival in festivals:
+        # 即使模型忽略提示词也不采纳估计日期。
+        festival.approx_start = festival.approx_end = ""
+        festival.approx_dates = "日期待核实"
+        festival.date_status = "unverified"
+        festival.basis = "旅游商品标题线索：" + "；".join(hints)[:500]
+    return festivals, "旅游商品中的活动仅作待核实线索，不参与确定节庆评分"
 
 
 # ── Task 8 主函数 + 注册（M2 收口，能力面 13→14）──────────
@@ -301,14 +318,13 @@ def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
         degraded.append(f"区间采样点超 {MAX_SAMPLES}，步进自动放大")
     top = windows[:3]
     best = top[0] if top else None
-    best_est = best.evidence.get("estimate") if best else None
     if best is not None and best.evidence.get("uncovered"):
         degraded.append(f"最优窗口缺 {'/'.join(best.evidence['uncovered'])} 报价，预算可行性待核验")
     analysis = WindowAnalysis(
         windows=top,
         price_curve=curve,
         festivals=festivals,
-        budget_feasible=bool(best_est <= budget_total) if best_est is not None else None,
+        budget_feasible=None,  # 采样最低价不是去返程与连续入住的完整报价
         degraded="；".join(degraded) or None,
     )
     return Envelope(ok=True, data=analysis, degraded=analysis.degraded)

@@ -20,6 +20,26 @@ export interface Envelope<T = unknown> {
   data?: T | null;
   error?: ToolError | null;
   degraded?: string | null;
+  evidence?: SourceEvidence | null;
+}
+
+export interface SourceEvidence {
+  source: string;
+  source_item_id: string;
+  query_conditions: Record<string, unknown>;
+  fetched_at: string;
+  source_updated_at: string;
+  cache_hit: boolean;
+  source_ref: string;
+  references: string[];
+  missing_fields: string[];
+}
+
+export interface Schedule {
+  dep_time?: string; arr_time?: string; dep_date?: string; arr_date?: string;
+  departure_place?: string; arrival_place?: string; timezone?: string;
+  duration_minutes?: number | null; stops?: number; stops_kind?: string; cabin?: string;
+  arrival_day_offset?: number | null; segments?: Record<string, unknown>[];
 }
 
 // ---------------------------------------------------------------- 检索与行情
@@ -32,6 +52,8 @@ export interface SearchItem {
   jump_url: string | null;
   pic_url: string | null;
   extra: Record<string, unknown>;
+  schedule?: Schedule | null;
+  evidence?: SourceEvidence;
 }
 
 /** 一页搜索结果 + 极值摘要，供预算与节奏判断直接取用。 */
@@ -40,6 +62,8 @@ export interface ItemPage {
   total: number;
   cheapest: number | null;
   dearest: number | null;
+  raw_count?: number | null;
+  entity_count?: number | null;
 }
 
 // ---------------------------------------------------------------- 田野点画像

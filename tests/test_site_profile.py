@@ -250,7 +250,8 @@ class StubGeoClient:
         # "银行"与"快递"命中同名条目，钉跨关键词合并去重；其余按词命名
         name = "喜洲邮政所" if keywords in ("银行", "快递") else f"{keywords}点"
         return Envelope(ok=True, data=ItemPage(
-            items=[SearchItem(name=name), SearchItem(name=f"{keywords}·备")], total=2))
+            items=[SearchItem(name=name, extra={"id": name}),
+                   SearchItem(name=f"{keywords}·备", extra={"id": f"{keywords}·备"})], total=2))
 
 
 def test_geo_and_facilities_sections_populated():

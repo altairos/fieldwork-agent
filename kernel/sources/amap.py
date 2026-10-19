@@ -2,14 +2,13 @@
 
 与 FlyAI 的分工：FlyAI 强在旅行供给（海外+港澳台），高德强在地理空间底座
 （国内村级 POI / 行政区划 / 公交路线 / 天气）。``amap_no_result``（常见于海外
-地名 geocode 落空）是宿主的双源回退信号——转 FlyAI 关键词/语义搜索。
+地名 geocode 落空）时说明定位缺口；飞猪只可补充旅行商品供给。
 
 传输层用 urllib（kernel 只依赖标准库 + pydantic 的约束不破）；出网前必检
 ``api_key``，无 Key 直接 ``amap_invalid_key`` 包络，不出网。
 
 读缓存（PoC2 §4.1 C1）：实例级 TTL 缓存六原语成功包络（行政区划 24h /
-天气 1h / 检索与公交 10min），键含方法名与排序参数；Envelope 不加缓存
-标注字段，新鲜度由 TTL 语义对调用方透明。
+天气 1h / 检索与公交 10min），键含方法名与排序参数；证据保留实际取数时间与命中标记。
 """
 import functools
 import inspect
@@ -30,6 +29,7 @@ from fieldwork_agent.kernel.models import (
     ToolError,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.travel import finite_price, stamp_evidence
 from pydantic import BaseModel, Field
 
 BASE_URL = "https://restapi.amap.com"
@@ -58,7 +58,7 @@ _HINTS = {
     "amap_no_result": (
         "高德仅覆盖境内：境外田野点的定位/周边/接驳功能正在开发中"
         "（后续版本将追加）；境内生僻地名请改用标准写法（省+市+乡镇）；"
-        "当前可改用 FlyAI 搜索（search_keyword / search_ai）了解位置与交通。"),
+        "飞猪仅可补充交通/住宿商品供给，不能替代地理位置或设施事实；位置请补充标准地址或坐标。"),
     "amap_timeout": "高德接口超时：请稍后重试。",
     "parse_error": "高德返回了非 JSON 内容：请重试；持续出现请查看 https://lbs.amap.com 服务公告。",
     "amap_error": "高德服务异常：请到 https://lbs.amap.com 查看错误码文档排查。",
@@ -111,7 +111,7 @@ def _to_int(value: Any) -> int | None:
 
 def _to_float(value: Any) -> float | None:
     try:
-        return float(str(value))
+        return finite_price(value)
     except (TypeError, ValueError):
         return None
 
@@ -138,9 +138,11 @@ def _cached(ttl_seconds: float):
                 hit = self._cache.get(key)
                 if hit is not None and hit[0] > time.monotonic():
                     self.stats["cache_hit"] += 1
-                    return hit[1].model_copy(deep=True)
+                    return stamp_evidence(hit[1].model_copy(deep=True), "amap",
+                                          {"method": fn.__name__, **params}, cache_hit=True)
             env = fn(self, *args, **kwargs)
             if env.ok:
+                stamp_evidence(env, "amap", {"method": fn.__name__, **params})
                 with self._cache_lock:
                     self._cache[key] = (time.monotonic() + ttl_seconds, env)
                 return env.model_copy(deep=True)
@@ -218,6 +220,11 @@ class AMapClient:
             township=_first(g.get("township")),
             adcode=_first(g.get("adcode")),
             formatted_address=_first(g.get("formatted_address")),
+            level=_first(g.get("level")),
+            candidates=[{k: _first(candidate.get(k)) for k in
+                         ("location", "province", "city", "district", "adcode", "formatted_address", "level")}
+                        for candidate in geos if isinstance(candidate, dict)],
+            ambiguous=len(geos) > 1,
             source="amap"))
 
     @_cached(_TTL_STABLE)
@@ -286,7 +293,7 @@ class AMapClient:
 
     @_cached(_TTL_WEATHER)
     def weather(self, city: str, extensions: str = "all") -> Envelope:
-        """天气：all=4 日预报（casts）/ base=实况（lives），city 支持名称或 adcode。"""
+        """天气：以实际 casts.date 为覆盖范围，保留 reporttime，不硬编码预报天数。"""
         payload, err = self._call("/v3/weather/weatherInfo",
                                   {"city": city, "extensions": extensions})
         if err:
@@ -298,7 +305,9 @@ class AMapClient:
             return Envelope(ok=True, data=lives)
         casts: list[dict[str, Any]] = []
         for forecast in payload.get("forecasts") or []:
-            casts.extend(forecast.get("casts") or [])
+            casts.extend({**cast, "reporttime": forecast.get("reporttime", ""),
+                          "adcode": forecast.get("adcode", ""), "city": forecast.get("city", "")}
+                         for cast in forecast.get("casts") or [] if isinstance(cast, dict))
         if not casts:
             return _no_result_envelope()
         return Envelope(ok=True, data=casts)
@@ -335,10 +344,14 @@ def _transits_page(payload: dict[str, Any]) -> Envelope:
         items.append(SearchItem(
             name=" → ".join(lines) or "公交方案",
             price=_to_float(t.get("cost")),
-            extra={"walking_distance": _to_int(t.get("walking_distance"))},
+            extra={"walking_distance": _to_int(t.get("walking_distance")),
+                   "origin": (payload.get("route") or {}).get("origin", ""),
+                   "destination": (payload.get("route") or {}).get("destination", ""),
+                   "segments": t.get("segments") or []},
             schedule=Schedule(
                 duration_minutes=duration // 60 if duration is not None else None,
-                stops=max(len(lines) - 1, 0))))
+                stops=max(len(lines) - 1, 0), stops_kind="transfers",
+                segments=t.get("segments") or [])))
     prices = [i.price for i in items if i.price is not None]
     return Envelope(ok=True, data=ItemPage(
         items=items, total=len(items),

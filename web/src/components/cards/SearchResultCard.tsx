@@ -6,6 +6,7 @@ import { Price } from "../ui/Price";
 import { CardShell, Notice } from "./CardShell";
 import { asRecord, extraLine, LIST_LIMIT, strOf, toItemPage, yuan } from "./data";
 import type { ToolCardProps } from "./types";
+import { travelDetails } from "./travelDetails";
 
 /**
  * SearchResultCard — ItemPage 形状（8 个飞猪搜索原语的统一返回）的通用结果卡。
@@ -37,6 +38,7 @@ export function SearchItemRow({
   unitSuffix?: string;
 }) {
   const extra = extraLine(item.extra);
+  const travel = travelDetails(item);
   const name = item.name || "未命名条目";
   return (
     <li className="flex items-center gap-2.5">
@@ -69,6 +71,7 @@ export function SearchItemRow({
           )}
         </div>
         {extra && <div className="text-[10.5px] text-inkfaint truncate">{extra}</div>}
+        {travel && <div className="text-[10.5px] text-inkfaint">{travel}</div>}
       </div>
       <span className="shrink-0 inline-flex items-baseline gap-1">
         <Price value={item.price} source={source} raw={item.price_raw ?? undefined} />

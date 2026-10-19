@@ -42,6 +42,7 @@ from fieldwork_agent.kernel.models import (
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from fieldwork_agent.kernel.travel import visible_page
 from pydantic import BaseModel
 
 # 默认文化兴趣（search_pois 的 category 值），每项发起一次 POI 搜索
@@ -90,13 +91,7 @@ def _safe_call(fn: Callable, *args: Any, **kwargs: Any) -> Envelope:
 
 def _build_page(items: list[SearchItem], limit: int) -> ItemPage:
     """把筛选后的条目组成一页：截断到 ``limit``，total 记截断前条数与极值。"""
-    prices = [i.price for i in items if i.price is not None]
-    return ItemPage(
-        items=items[:limit],
-        total=len(items),
-        cheapest=min(prices) if prices else None,
-        dearest=max(prices) if prices else None,
-    )
+    return visible_page(items, limit)
 
 
 def _min_price(items: list[SearchItem]) -> float | None:
@@ -184,15 +179,13 @@ def profile_field_site(location: str, budget_per_night: float = 200,
                 fac_envs = [fut.result() for fut in
                             [pool.submit(copy_context().run, t) for t in geo_tasks]]
             fac_items: list[SearchItem] = []
-            seen_names: set[str] = set()
             any_around_ok = False
             for fac_env, fac_kw in zip(fac_envs, DEFAULT_FACILITY_KEYWORDS, strict=True):
                 if fac_env.ok and isinstance(fac_env.data, ItemPage):
                     any_around_ok = True
                     live_refs.append(live_around_ref(fac_kw, geo.location))
                     for item in fac_env.data.items:  # 跨关键词同名去重，首见保留
-                        if item.name not in seen_names:
-                            seen_names.add(item.name)
+                        if item.name:
                             # N6 地图面板：附命中关键词（五类色分数据源，前端不猜
                             # 语义）；extra.location 的 POI 坐标随条目透传。
                             item.extra = {**item.extra, "facility_kind": fac_kw}

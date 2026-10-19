@@ -202,7 +202,9 @@ def _candidates(items: list[SearchItem], mode: str, guesthouse: bool = False) ->
     ``jump_url``/``pic_url``（A3：预订链接与图片随 chosen/alternatives 进交付物）。"""
     return [{"name": i.name, "price": i.price, "mode": mode, "guesthouse": guesthouse,
              "price_raw": i.price_raw, "extra": i.extra,
-             "jump_url": i.jump_url, "pic_url": i.pic_url}
+             "jump_url": i.jump_url, "pic_url": i.pic_url,
+             "schedule": i.schedule.model_dump() if i.schedule else None,
+             "evidence": i.evidence.model_dump()}
             for i in items]
 
 

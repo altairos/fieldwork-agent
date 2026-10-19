@@ -25,6 +25,20 @@ class ToolError(BaseModel):
     hint: str = ""
 
 
+class SourceEvidence(BaseModel):
+    """查询证据与新鲜度；查询命中不等于实际可订或已完成现场核验。"""
+
+    source: str = ""
+    source_item_id: str = ""
+    query_conditions: dict[str, Any] = Field(default_factory=dict)
+    fetched_at: str = ""
+    source_updated_at: str = ""
+    cache_hit: bool = False
+    source_ref: str = ""
+    references: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+
+
 class Envelope(BaseModel):
     """所有能力函数的统一返回包络。"""
 
@@ -32,6 +46,7 @@ class Envelope(BaseModel):
     data: Any = None
     error: ToolError | None = None
     degraded: str | None = None
+    evidence: SourceEvidence | None = None
 
 
 # ---------------------------------------------------------------- 检索与行情
@@ -47,6 +62,7 @@ class SearchItem(BaseModel):
     pic_url: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
     schedule: Schedule | None = None    # 航班/火车深层结构；平铺路径恒 None
+    evidence: SourceEvidence = Field(default_factory=SourceEvidence)
 
 
 class ItemPage(BaseModel):
@@ -56,6 +72,9 @@ class ItemPage(BaseModel):
     total: int = 0
     cheapest: float | None = None
     dearest: float | None = None
+    raw_count: int | None = None
+    entity_count: int | None = None
+    evidence: SourceEvidence = Field(default_factory=SourceEvidence)
 
 
 # ---------------------------------------------------------------- 学术文献（OpenAlex）
@@ -148,6 +167,10 @@ class GeoLocation(BaseModel):
     adcode: str = ""
     formatted_address: str = ""
     source: str = "amap"
+    level: str = ""
+    candidates: list[dict[str, str]] = Field(default_factory=list)
+    ambiguous: bool = False
+    evidence: SourceEvidence = Field(default_factory=SourceEvidence)
 
 
 # ---------------------------------------------------------------- 田野点画像
@@ -221,6 +244,14 @@ class Schedule(BaseModel):
     duration_minutes: int | None = None # 全程分钟数（缺省未知）
     stops: int = 0                      # 中转/经停次数（segments-1）
     cabin: str = ""                     # 舱位/席别
+    departure_place: str = ""
+    arrival_place: str = ""
+    dep_date: str = ""
+    arr_date: str = ""
+    timezone: str = ""                  # 仅保留来源明确提供的时区
+    arrival_day_offset: int | None = None
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    stops_kind: str = ""                # transfers / connections，区别途经站数
 
 
 class BudgetBreakdown(BaseModel):
@@ -266,13 +297,16 @@ class ItineraryPlan(BaseModel):
 
 
 class FestivalInfo(BaseModel):
-    """LLM 抽取的节庆信息（农历→公历换算由 LLM 完成，内核只做区间求交）。"""
+    """活动线索；商品标题与有效期不能证明实际举办日期。"""
 
     name: str = ""                 # "彝族火把节"
     approx_dates: str = ""         # "农历六月廿四，约7月下旬"（人类可读原文）
     approx_start: str = ""         # ISO 日期 "2027-07-26"
     approx_end: str = ""           # ISO 日期 "2027-07-28"
     relevance: str = ""            # 对研究主题的观察价值
+    date_status: Literal["unverified", "confirmed_by_user", "verified_source"] = "unverified"
+    source_ref: str = ""
+    basis: str = ""
 
 
 class PriceCurve(BaseModel):

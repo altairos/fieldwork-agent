@@ -24,6 +24,7 @@ from typing import Any
 from fieldwork_agent.kernel.models import Envelope, ItemPage, Schedule, SearchItem, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
 from fieldwork_agent.kernel.tool_usage import check_tool_domain
+from fieldwork_agent.kernel.travel import finite_price, stamp_evidence
 from pydantic import BaseModel, Field
 
 # normalize_items 消费的候选键（命中即不进入 extra，避免同一信息两处表达）
@@ -53,7 +54,7 @@ def parse_price(raw: str | None) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        return finite_price(text)
     except ValueError:
         return None
 
@@ -87,6 +88,7 @@ def normalize_items(raw_list: list[dict]) -> list[SearchItem]:
             price_raw=raw_price if isinstance(raw_price, str) else None,
             pic_url=_first(entry, _PIC_KEYS) or _first(info, _PIC_KEYS),
             jump_url=_first(entry, _JUMP_KEYS) or _first(info, _JUMP_KEYS),
+            schedule=_journey_item(entry).schedule if any(entry.get(k) for k in (*_DEP_KEYS, *_ARR_KEYS)) else None,
             extra={k: v for k, v in entry.items() if k not in _MAPPED_KEYS},
         ))
     return items
@@ -95,6 +97,8 @@ def normalize_items(raw_list: list[dict]) -> list[SearchItem]:
 def _journey_item(journey: dict[str, Any]) -> SearchItem:
     """单条 journey（segments 嵌套）归一为 SearchItem；无 segments 时 journey 本身当一段。"""
     segs = journey.get("segments")
+    if isinstance(segs, list):
+        segs = [s for s in segs if isinstance(s, dict)]
     if not isinstance(segs, list) or not segs:
         segs = [journey]
     first, last = segs[0], segs[-1]
@@ -110,16 +114,31 @@ def _journey_item(journey: dict[str, Any]) -> SearchItem:
              *_CARRIER_KEYS, *_TRAIN_NO_KEYS, *_TICKET_PRICE_KEYS, "segments"}
     return SearchItem(
         name=f"{carrier} {no} {dep_time}-{arr_time}".strip(),
-        price=parse_price(price_raw if isinstance(price_raw, str) else None),
+        price=parse_price(price_raw),
         schedule=Schedule(
             dep_time=dep_time,
             arr_time=arr_time,
             duration_minutes=int(duration_raw) if isinstance(duration_raw, (int, float)) else None,
             stops=max(0, len(segs) - 1),
             cabin=str(_first(journey, _CABIN_KEYS) or _first(first, _CABIN_KEYS) or ""),
+            departure_place=_place(first, "depAirport", "depStation", "departureStation", "departureAirport"),
+            arrival_place=_place(last, "arrAirport", "arrStation", "arrivalStation", "arrivalAirport"),
+            dep_date=str(first.get("depDate") or journey.get("depDate") or ""),
+            arr_date=str(last.get("arrDate") or journey.get("arrDate") or ""),
+            timezone=str(journey.get("timezone") or ""),
+            arrival_day_offset=journey.get("arrivalDayOffset") if isinstance(journey.get("arrivalDayOffset"), int) else None,
+            segments=segs,
+            stops_kind="connections",
         ),
         extra={k: v for k, v in journey.items() if k not in known},
     )
+
+
+def _place(segment: dict, *keys: str) -> str:
+    value = _first(segment, keys)
+    if isinstance(value, dict):
+        return str(value.get("name") or "")
+    return str(value or "")
 
 
 # 每日共享配额（5000 次赠送额度用完后每日限 100 次）用尽的宽匹配标记：
@@ -286,7 +305,11 @@ class FlyAIClient:
                 message = str(payload.get("error") or payload.get("message")
                               or "flyai 调用失败")
             return _error_envelope(message or "flyai 调用失败")
-        return _page_envelope(payload)
+        conditions = {"command": args[0]} if args else {}
+        for index, arg in enumerate(args[1:], 1):
+            if str(arg).startswith("--") and index + 1 < len(args):
+                conditions[str(arg)[2:]] = args[index + 1]
+        return stamp_evidence(_page_envelope(payload), "flyai", conditions)
 
     # ══════════════════════════════════════════
     # 大交通
