@@ -237,7 +237,8 @@ def iso_app(tmp_path):
     repo = JsonRepository(projects_dir=tmp_path / "projects")
     _app = create_app(config=None, repo=repo, web_dist=tmp_path / "nonexistent")
     init_deps(_app, config=SimpleNamespace(
-        projects_dir=tmp_path / "projects", flyai_api_key=""), repo=repo)
+        projects_dir=tmp_path / "projects", flyai_api_key="",
+        user_store_dir=tmp_path / "accounts"), repo=repo)
     return _app
 
 
