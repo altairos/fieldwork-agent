@@ -255,10 +255,31 @@ Windows job 专门回归 emoji/UTF-8 输出路径（见第 7 节）。
 - [x] `proposal_generation` 结构化输出模板（八章 compose_proposal + mode 回退声明）
 - [x] MCP Server / Web 宿主（FastAPI + SSE 实时事件流 + 回合管理）
 - [x] 高德地理底座 PoC：`kernel/sources/amap.py` 六原语 + 画像 geo/facilities 段 + `plan_last_mile` 末端接驳聚合（设计见 `docs/plans/2026-10-18-amap-poc-design.md`，真 Key 冒烟 7/7 通过，存档 `tools/spike_amap.py`）
-- [ ] 高德 PoC2：`plan_last_mile` 班次日期透传（当前 `date_hint` 占位不透传）等扩展
-- [ ] `orchestrator` 与 `kernel/llm` 的流式输出测试（需 mock `Generation`）
-- [ ] 集成测试：以 fake flyai stub 跑通五阶段端到端
+- [x] 高德 PoC2：`plan_last_mile` 班次日期透传（`date_hint` 已实现并有测试；其他扩展另行规划）
+- [x] 流式输出测试：`kernel/llm` 接口与 Web Agent loop 已有 mock 测试覆盖
+- [x] 集成测试：以 fake FlyAI stub 跑通五阶段主流程（`tests/test_web_mainline_e2e.py`）
 - [ ] 钉钉同步（`sync dingtalk`）的测试覆盖
+
+### 9.1 当前产品与工程待办
+
+- [ ] CLI REPL 接入 `FA_STORAGE=sqlite`，与 Web/MCP 共用仓储工厂；来源：[README 存储后端说明](README.md#存储后端与迁移)。
+- [ ] 建立钉钉同步 `sync dingtalk` 的成功、未配置、无方案及网络失败测试；来源：本节测试盲区。
+- [ ] 完成“中栏证据双 Tab 与检索修复”计划：搜索答案传递、证据与缓存关联、证据面板及回合恢复治理；该计划对应改动当前在工作区，尚待合并和验收。详见 [`2026-10-19-middle-column-evidence-tabs-and-search-fixes.md`](docs/superpowers/plans/2026-10-19-middle-column-evidence-tabs-and-search-fixes.md)。
+- [ ] 核验并完成 Tier S 生产上线：先确认多组快捷回复代码已部署，再启用私有资产并验证无标记泄漏；详见 [`2026-10-19-multigroup-tierS-rollout-plan.md`](docs/plans/2026-10-19-multigroup-tierS-rollout-plan.md)。上线状态应在执行前重新核对。
+
+### 9.2 后续能力规划（尚未排期）
+
+- [ ] **可追溯学术知识检索（RAG，M0–M5）**：先冻结研究背景字段与评测基线，再实现版本化资料、审核知识卡、中文混合检索、主动证据准备、方案引用依赖、CLI/Web/MCP 与来源界面，最后完成固定评测、部署和恢复验收。详细任务与门槛见 [`2026-10-17-rag-development-plan.md`](docs/plans/2026-10-17-rag-development-plan.md) 和 [`2026-10-19-rag-knowledge-corpus-plan.md`](docs/plans/2026-10-19-rag-knowledge-corpus-plan.md)。
+- [ ] **海外地理与交通供应商**：确定首批地区和真实样例，定义通用 provider 契约，接入一个海外 REST 服务，再完成末端接驳、缓存与来源、配置诊断、三宿主接线和在线覆盖/费用验证。详细任务 G01–G12 见 [`2026-10-18-overseas-geodata-provider-plan.md`](docs/plans/2026-10-18-overseas-geodata-provider-plan.md)。高德目前仍是境内底座；境外能力尚无替代供应商链路。
+- [ ] **Web 账号与身份一期**：实现用户/会话存储（JSON 与 SQLite）、注册登录退出、会话失效处理、匿名项目认领、owner 运行时透传及前端登录流程，并完成双仓储契约和浏览器隔离验收。详细步骤见 [`2026-10-19-user-account-identity-phase1.md`](docs/superpowers/plans/2026-10-19-user-account-identity-phase1.md)。
+- [ ] **开题与基金方案体例**：在现有英美式八章体例之外，按既定决策分别深化高校开题版和国社科基金版的章节、研究进度/预算视图、伦理提示与文献格式；实施前需按当前有效规范复核。调研和原始行动项见 [`DEEP_RESEARCH_社科research-proposal体例核验.md`](docs/research/DEEP_RESEARCH_社科research-proposal体例核验.md)；该方向此前被决定暂缓深挖。
+- [ ] **文献检索质量评测**：基于真实研究主题建立人工相关性判断集，评估 OpenAlex 多路检索词、候选排序、中文来源补检与证据边界；详见 [`openalex-search-design.md`](docs/research/openalex-search-design.md)。近期已有检索能力改进提交，评测集与人工质量基线仍需单独确认。
+
+### 9.3 规划范围说明
+
+- `docs/reviews/2026-10-19-项目开发现状全面复审.md` 中的 N01–N15 修复已由 `d946b18` 合入；复审中的历史问题不再作为当前待办重复列出。后续若复审发现新问题，按新证据更新本路线图。
+- 研究写作 Agent v1 文档明确标注为历史方向草案，当前不作为实施计划；只有重新确认产品方向并编写新规格后再纳入路线图。
+- 各计划文档记录的是设计或阶段任务，不代表其全部内容都已排期；实施前应先核对当前代码、分支和实际部署状态。
 
 ## 10. 资产分级与 secrets 维护
 
