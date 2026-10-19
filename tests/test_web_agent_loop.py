@@ -1549,3 +1549,56 @@ def test_f07_web_batch_truncated_before_dispatch(env):
     started = [e.data["call_id"] for e in events if e.event == "tool_started"]
     assert started == ["c1"]                              # 被截断者不再启动
     assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+# ---------- Task 13：悬挂判定 + 统一终检门（spec B，R6/R8/R16/R18） ----------
+
+@pytest.mark.parametrize("text,expected", [
+    ("先问最实际的：", True),               # 全角冒号收尾（R6 生产实录形态）
+    ("先问最实际的:", True),                # 半角冒号同样悬挂
+    ("想了解哪方面？[[options:补充]]场地|联系方式[[/options]]", False),  # 有效选项块收尾
+    ("想了解哪方面？[[options:补充]] [[/options]]", True),               # 空选项块收尾
+    ("想了解哪方面？[[options:补充]] | | [[/options]]", True),           # 仅空白/竖线选项
+    ("前文有块[[options:a]]甲|乙[[/options]]\n结尾再问：", True),        # 只看收尾：尾部冒号仍悬挂
+    ("完整回答，句号收尾。", False),
+    ("块后有正文[[options:q]]甲|乙[[/options]]\n以上，请选择。", False),  # 块后还有正文：不悬挂
+    ("", False),                            # 空串不悬挂
+])
+def test_looks_dangling(text, expected):
+    """R6：悬挂判定只看收尾结构——冒号收尾，或无有效选项的 options 块收尾。"""
+    from fieldwork_agent.web_host.agent.loop import _looks_dangling
+    assert _looks_dangling(text) is expected
+
+
+def test_rule_reply_not_incomplete(env):
+    """R16 回归护栏：无 LLM 规则降级文案即最终答案，终检门不得误标 incomplete。
+
+    （现状已通过——防终检门引入回归：若实现后失败，说明规则分支漏置
+    has_final_answer。文案尾部实测安全：_DEGRADED_NOTE 以"。）"收尾。）"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "你好", tm, None, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is not True
+
+
+def test_convergence_length_truncation_marks_incomplete(env):
+    """R16 回归：主循环空回复触发收敛，收敛帧自身 length 截断——
+    旧代码不接管收敛帧 finish_reason 且无终检门，终态 completed 伪装完整。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],                                   # 主循环空回复 → 触发收敛
+        [{"delta": "开头，"},
+         {"content": "开头，", "tool_calls": None, "finish_reason": "length",
+          "usage": {}}],                                   # 收敛帧：逗号结尾 + length
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "帮我查大理的场地", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True

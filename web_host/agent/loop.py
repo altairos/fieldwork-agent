@@ -143,6 +143,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     preamble_retried = False    # 只重问一次，防无限循环
     incomplete = False          # 回合未收敛出正文 → turn_done.incomplete
     has_final_answer = False
+    recovery_failed = False     # 最近一次续流失败（R18：成功清除，非粘滞标记）
     finish_reason = ""
     usage_total: dict = {}
     call_name_map: dict[str, str] = {}
@@ -166,6 +167,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 reply = rule_based_reply(phase) + _DEGRADED_NOTE
                 tm.append_event(pid, turn_id, "message_delta", {"text": reply})
                 accumulated_reply = reply
+                has_final_answer = True  # R16：规则文案即降级路径的最终答案
                 break
 
             # 流式 LLM
@@ -334,12 +336,15 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 finish_reason = (str(final_resp.get("finish_reason") or "")
                                  or finish_reason)
                 usage_total = final_resp.get("usage", {}) or usage_total
+                recovery_failed = False  # R18：恢复成功即清除
             else:
                 # 无终帧/终帧报错：已流出的续写增量照样拼入，绝不丢
                 accumulated_reply += cont_deltas
+                recovery_failed = True  # R18：最近一次恢复失败
         except Exception:
             # 流中断：同上兜底（终审 B3），不丢已流出的内容
             accumulated_reply += cont_deltas
+            recovery_failed = True  # R18
 
     # 最终回答收敛（对齐 CLI runtime/loop.py 的触顶收敛；F06 收敛条件整体
     # 替换为 not has_final_answer）：主循环退出但没拿到最终回答（预算触顶
@@ -371,12 +376,20 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 elif "content" in chunk:
                     final_resp = chunk
             if final_resp and not final_resp.get("error"):
+                # R16：接管收敛帧自身的 finish_reason——收敛产出以 length/
+                # 未完标点收尾时，旧代码沿用主循环的 stop，终态伪装完整。
+                finish_reason = (str(final_resp.get("finish_reason") or "")
+                                 or finish_reason)
+                recovery_failed = False  # R18：恢复成功即清除
                 if (final_resp.get("content") or "").strip():
                     accumulated_reply = stream_prefix + final_resp["content"]
                     has_final_answer = True  # 收敛成功即最终回答，三分支不再追加提示
                 usage_total = final_resp.get("usage", {}) or usage_total
+            else:
+                recovery_failed = True  # R18：收敛帧缺失/报错（此前无此分支，静默）
         except Exception:
             accumulated_reply = ""  # 收敛重试失败不改变回合结果，走兑底文案
+            recovery_failed = True  # R18：收敛流中断
         if not accumulated_reply:
             incomplete = True
             fallback = ("（已达本回合处理上限，未能基于现有信息生成完整回答；"
@@ -401,6 +414,15 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
     cancelled = handle.cancel_event.is_set()
+    if not cancelled:
+        # 统一终检门（R8/R16/R18）：所有恢复路径走完后的最后一道防线——
+        # 无答案 / 最近一次恢复失败 / 仍截断 / 仍悬挂，任一命中即 incomplete。
+        # 检查的是提取 quick_replies 之前的原始 accumulated_reply（有效选项
+        # 块收尾不算悬挂，见 _looks_dangling）。
+        if ((not has_final_answer) or recovery_failed
+                or _looks_truncated(accumulated_reply, finish_reason)
+                or _looks_dangling(accumulated_reply)):
+            incomplete = True
     quick_reply_groups: list[dict] = []
     if not cancelled and accumulated_reply:
         accumulated_reply, quick_reply_groups = _extract_quick_replies(accumulated_reply)
@@ -480,6 +502,33 @@ def _looks_truncated(reply: str, finish_reason: str) -> bool:
         return True
     tail = reply.rstrip()
     return bool(tail) and tail[-1] in _INCOMPLETE_TAIL_CHARS
+
+
+# 悬挂尾字符（R6）：以全/半角冒号收尾 = 话没说完。冒号不在
+# _INCOMPLETE_TAIL_CHARS（前导语走带工具重问），此处是轮末最后一道判停。
+_DANGLING_TAIL = "：:"
+
+
+def _looks_dangling(reply: str) -> bool:
+    """悬挂判定（R6）：只看收尾结构，不做全文豁免。
+
+    ① rstrip 后以冒号收尾；② 以 options 块收尾（块后无正文）且块内无有效
+    选项——复用 _OPTIONS_TAG_RE 与解析器同源（按 | 切分、strip、滤空）。
+    完整句、有效选项块均不算悬挂；前文出现过完整 options 块不影响判定
+    （只看最后一个块之后的收尾）。
+    """
+    body = reply.rstrip()
+    if not body:
+        return False
+    if body[-1] in _DANGLING_TAIL:
+        return True
+    matches = list(_OPTIONS_TAG_RE.finditer(body))
+    if matches:
+        last = matches[-1]
+        if not body[last.end():].strip():
+            inner = (last.group(2) or "").strip()
+            return not [opt for opt in inner.split("|") if opt.strip()]
+    return False
 
 
 _SENTINEL = object()
