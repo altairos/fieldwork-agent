@@ -42,11 +42,17 @@ describe("keys", () => {
   it("streamTurnEvents 携带 App Token 头", async () => {
     saveKeys("", "", "secret-token");
     const inits: Array<RequestInit | undefined> = [];
+    // N14：非终态 EOF 会按断线恢复重连，故桩流需吐一个终态帧（turn_done）才会正常关闭；
+    // 本用例只关心首连请求头，终态帧让 streamTurnEvents 走完一次连接即返回。
+    const encoder = new TextEncoder();
+    const chunks = [encoder.encode('id: 1\nevent: turn_done\ndata: {"turn_id":"t","seq":1,"reply_id":"t","usage":{}}\n\n')];
     const resp = {
       ok: true,
       body: {
         getReader: () => ({
-          read: async () => ({ value: undefined, done: true }),
+          read: async () => chunks.length
+            ? { value: chunks.shift() as Uint8Array, done: false }
+            : { value: undefined, done: true },
           cancel: async () => {},
         }),
       },

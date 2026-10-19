@@ -522,7 +522,8 @@ class JsonRepository:
     # ------------------------------------------------------------------ 提案文档
 
     def save_proposal(
-        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft"
+        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
+        *, provenance_ctx: dict | None = None,
     ) -> str:
         state = self._load(pid)
         uid = uuid.uuid4().hex[:8]
@@ -532,8 +533,11 @@ class JsonRepository:
             "version": version,
             "filename": f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md",
             "saved_at": _now(),
-            # 审计二 R09：保存时落五路依赖指纹，确认时校验
-            "dep_hash": self._current_confirm_hash(pid, state),
+            # 审计二 R09：保存时落五路依赖指纹，确认时校验。
+            # N04：provenance_ctx 非 None 时用生成时实际使用的 ctx 算指纹
+            # （而非保存时按当前仓储推测），防止正文旧、指纹新的错配。
+            "dep_hash": self._current_confirm_hash(
+                pid, state, provenance_ctx=provenance_ctx),
         }
         path = self._output_dir(pid) / record["filename"]
         if path.exists():
@@ -599,10 +603,16 @@ class JsonRepository:
                 return True
         return False
 
-    def _current_confirm_hash(self, pid: str, state: dict) -> str:
-        """当前五路依赖指纹（审计二 R09）：ctx/田野点/报道人/知识库/最新行程快照。"""
+    def _current_confirm_hash(self, pid: str, state: dict, *,
+                              provenance_ctx: dict | None = None) -> str:
+        """当前五路依赖指纹（审计二 R09）：ctx/田野点/报道人/知识库/最新行程快照。
+
+        N04：``provenance_ctx`` 非 None 时，ctx 路用生成时实际值（文档正文所本），
+        其余四路仍取当前仓储——使指纹忠于“正文实际依赖”而非保存时推测。
+        """
         return compute_confirm_hash(
-            state.get("research_context") or {},
+            provenance_ctx if provenance_ctx is not None
+            else (state.get("research_context") or {}),
             self.list_field_sites(pid),
             self.list_informants(pid),
             self.list_knowledge(pid),

@@ -156,10 +156,45 @@ describe("useTurn — SSE 阶段（消息已被接受，绝不回滚）", () => 
     await act(async () => { await result.current.send("帮我排行程"); });
 
     expect(useConversationStore.getState().messages).toEqual([{ role: "user", content: "帮我排行程" }]);
+    expect(useConversationStore.getState().turnRunning).toBe(false);   // N14：error 帧统一结束 conversation
     expect(useUiStore.getState().degradedBanner?.code).toBe("internal_error");
     expect(useUiStore.getState().degradedBanner?.message).toBe("上游超时");
     expect(result.current.busy).toBe(false);
     expect(sse.cancel).toHaveBeenCalledTimes(1);      // error 终止后同样释放连接（Fix #2）
+  });
+
+  test("N14：SSE 流在终态前反复截断（重连耗尽）→ onError 复位 conversation（turnRunning=false）", async () => {
+    // 回归点：旧实现非终态 EOF 走 onClose（只改 busy），conversation 永远 turnRunning=true。
+    // 修复后：流层失败（onError）主动 cancelTurn，与 error 帧终态一致。
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const fetchMock = vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.endsWith("/messages")) return jsonResp(CREATED, true, 200);
+        // /events：每次都吐同一 seq 的 delta 后 EOF（服务端未按 Last-Event-ID 推进）→ 无新进展，重连耗尽
+        const queue = [encoder.encode('id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"半截"}\n\n')];
+        return { ok: true, status: 200, body: { getReader: () => ({
+          read: vi.fn(async () => queue.length
+            ? { value: queue.shift() as Uint8Array, done: false }
+            : { value: undefined, done: true }),
+          cancel: vi.fn(async () => {}),
+        }) } };
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(() => useTurn("p1"));
+      await act(async () => {
+        void result.current.send("帮我排行程");
+        await vi.advanceTimersByTimeAsync(60_000);   // 越过 5 次退避（2+4+8+8+8s）直至重连耗尽
+      });
+      expect(useConversationStore.getState().turnRunning).toBe(false);   // 不再永久脉冲
+      expect(useConversationStore.getState().streamBuffer).toBe("");     // 残缺丢弃
+      expect(useConversationStore.getState().messages).toEqual([{ role: "user", content: "帮我排行程" }]);
+      expect(useUiStore.getState().degradedBanner?.code).toBe("stream_error");
+      expect(result.current.busy).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("正常回合：delta 拼接 + turn_done 定格，busy 复位且连接释放", async () => {
@@ -304,17 +339,24 @@ describe("useTurn — R06a · turn_done 后回读项目快照", () => {
 });
 
 describe("useTurn — adopt（领养首页创建的首轮回合，轮 4）", () => {
-  /** 独立 fetch 桩：/events → SSE；GET /messages → 后端事实史（adopt 结束后 re-hydrate 用）。 */
-  function stubAdopt(sse: { resp: unknown }, history: unknown[]) {
+  /** 独立 fetch 桩：/events → SSE；GET /messages → 后端事实史（adopt 结束后 re-hydrate 用）；
+   *  GET /projects/p1 → 项目快照（N10：adopt 终态也回读快照）。 */
+  function stubAdopt(sse: { resp: unknown }, history: unknown[], snap: unknown = {}) {
+    const snapGets: string[] = [];
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (String(url).endsWith("/events")) return sse.resp;
-      if (String(url) === "/projects/p1/messages" && init?.method !== "POST") {
+      const u = String(url);
+      if (u.endsWith("/events")) return sse.resp;
+      if (u === "/projects/p1/messages" && init?.method !== "POST") {
         return jsonResp(history, true, 200);
+      }
+      if (/\/projects\/[^/]+$/.test(u)) {          // N10：adopt 终态回读项目快照
+        snapGets.push(u);
+        return jsonResp(snap, true, 200);
       }
       throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    return { fetchMock };
+    return { fetchMock, snapGets };
   }
 
   test("不 POST 创建回合；回放事件进 store；结束后 re-hydrate 对齐后端事实史（含首问）", async () => {
@@ -363,6 +405,62 @@ describe("useTurn — adopt（领养首页创建的首轮回合，轮 4）", () 
     expect(signals).toHaveLength(2);                  // 两次订阅各起一流
     expect(signals[0].aborted).toBe(true);           // 第二次领养先断第一次的流
     expect(signals[1].aborted).toBe(false);
+  });
+
+  test("N10：adopt 首见 turn_done → 回读项目快照（修复漏刷致确认按钮为 0）", async () => {
+    // 真实前置：进入项目页时快照已先载入 store（守卫依赖 store.projectId 标识当前项目）；
+    // 首页首轮画像落盘前 field_sites 为空 → 「确认」按钮为 0
+    useProjectStore.getState().loadSnapshot({
+      project_id: "p1", phase: "field_site_profiles", research_context: {},
+      field_sites: [], informants: [], proposals: [], phase_history: [],
+    });
+    const sse = sseResp([
+      'id: 1\nevent: message_delta\ndata: {"turn_id":"t9","seq":1,"text":"画像完成"}\n\n',
+      'id: 2\nevent: turn_done\ndata: {"turn_id":"t9","seq":2,"reply_id":"t9","usage":{}}\n\n',
+    ]);
+    const savedSnap = {
+      project_id: "p1", phase: "field_site_profiles", research_context: {},
+      field_sites: [{ id: "site_1", name: "大理", confirmed: false, profile: {} }],
+      informants: [], proposals: [], phase_history: [],
+    };
+    const { snapGets } = stubAdopt(sse, [{ role: "user", content: "研究宗族" }], savedSnap);
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { await result.current.adopt("t9"); });
+    await act(async () => { await tick(); });
+
+    expect(snapGets).toHaveLength(1);                       // adopt 也回读快照（此前漏刷）
+    expect(snapGets[0]).toContain("/projects/p1");
+    // 轮末落盘的田野点已进 store → 首页首轮即出现「确认」按钮，无需 reload
+    expect(useProjectStore.getState().snapshot).toEqual(savedSnap);
+  });
+
+  test("N10：adopt 收尾 hydrate 带代次守卫——切换项目后旧响应不写新页 store", async () => {
+    // GET /messages 挂起：手动控制慢 hydrate 的返回时刻，模拟 await 期间用户已切换项目
+    let resolveMsgs!: (resp: unknown) => void;
+    const msgsPending = new Promise((r) => { resolveMsgs = r; });
+    const sse = sseResp([
+      'id: 1\nevent: turn_done\ndata: {"turn_id":"t9","seq":1,"reply_id":"t9","usage":{}}\n\n',
+    ]);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/events")) return sse.resp;
+      if (u === "/projects/p1/messages" && init?.method !== "POST") return msgsPending;
+      return jsonResp({}, true, 200);   // /projects/p1 快照
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, rerender } = renderHook(({ pid }: { pid: string }) => useTurn(pid),
+      { initialProps: { pid: "p1" } });
+    await act(async () => { void result.current.adopt("t9"); await tick(); });
+    // hydrate 仍挂起时切换项目：cleanup 递增代次 + abort 旧流
+    useConversationStore.getState().reset();
+    await act(async () => { rerender({ pid: "p2" }); await tick(); });
+    // 旧项目 p1 的慢 hydrate 此刻才返回（含 p1 的首问）
+    await act(async () => {
+      resolveMsgs(jsonResp([{ role: "user", content: "p1 的首问" }], true, 200));
+      await tick(); await tick();
+    });
+    // 代次已变 → 旧响应弃置，不把 p1 的消息写进（已切到 p2 的）store
+    expect(useConversationStore.getState().messages).toEqual([]);
   });
 });
 

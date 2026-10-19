@@ -47,5 +47,11 @@ test("跨上下文隔离：他人 URL 404 降级横幅，原 context 畅通", as
   // ③ ctxA 不受影响：同 owner 畅通（续聊 → 两步式回合回放 → 住宿卡条目）
   await page.getByLabel("消息输入").fill("帮我搜一下大理的住宿");
   await page.getByLabel("消息输入").press("Enter");
-  await expect(page.getByText("大理古城客栈").first()).toBeVisible({ timeout: 15_000 });
+  // C 节：搜索原语默认折叠，「大理古城客栈」在未展开内容里——先断言折叠摘要条（含
+  // ¥180–180 价格，不失真）再点击展开，与 fieldwork.spec 同款；直接等条目名会因折叠而超时。
+  // 不删归属/价格断言，只补展开步骤（N15b）。
+  const collapsedHotel = page.getByRole("button", { name: /酒店搜索 1 条 · ¥180–180/ });
+  await expect(collapsedHotel).toBeVisible({ timeout: 15_000 });
+  await collapsedHotel.click();
+  await expect(page.getByText("大理古城客栈").first()).toBeVisible();
 });

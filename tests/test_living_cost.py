@@ -49,6 +49,15 @@ def test_enums_and_bounds_rejected():
         assert env.error.hint and "village" in env.error.hint
 
 
+def test_bounds_upper_edge_accepted():
+    """N08：上限边界（365 天 / 20 人）本身合法，人均日区间线性外推不拒绝。"""
+    env = estimate_living_cost("village", "mixed", days=365, people=20)
+    assert env.ok is True
+    items = {i["name"]: i for i in env.data["items"]}
+    assert items["餐饮"]["amount_low"] == 18.0 * 20 * 365   # village+mixed 下沿×人数×天数
+    assert env.data["people"] == 20 and env.data["days"] == 365
+
+
 def test_city_eat_out_far_above_village_self_cook():
     cheap = estimate_living_cost("village", "self_cook", days=10)
     dear = estimate_living_cost("city", "eat_out", days=10)

@@ -70,12 +70,15 @@ def _text_payload(payload: dict) -> CallToolResult:
 
 
 def create_server(config: "Config | None" = None,
-                  repo: "ProjectRepository | None" = None) -> LowLevelServer:
+                  repo: "ProjectRepository | None" = None, *,
+                  enforce_owner: bool = False) -> LowLevelServer:
     """组装低层 MCP Server：30 tools（21 能力 + 9 状态）+ 资源面 + 2 prompts。
 
     - ``config=None``：无 LLM（文档能力自然模板降级）、FlyAIClient 默认实例
       （无 CLI/key 时搜索走 flyai_unavailable 体验降级）——L3 契约测试即此路径；
-    - ``repo=None``：按 ``FA_STORAGE`` 经 ``make_repository`` 选后端（默认 json）。
+    - ``repo=None``：按 ``FA_STORAGE`` 经 ``make_repository`` 选后端（默认 json）；
+    - ``enforce_owner=True``（N01）：共享 HTTP 模式——状态工具/项目资源按请求级
+      X-Owner-Token 做归属隔离；stdio 可信全量模式缺省 False（行为不变）。
     """
     cfg: Any = config
     if repo is None:
@@ -143,7 +146,7 @@ def create_server(config: "Config | None" = None,
         elif dispatch._declares(parameters, "client"):   # dispatch 注释明许 server 组装时注入
             dispatch._CLIENTLESS_SINGLETONS[cap_name] = functools.partial(meta.fn, client=client)
 
-    handlers = state_tools.build_handlers(repo)
+    handlers = state_tools.build_handlers(repo, enforce_owner=enforce_owner)
     tools = capability_tools() + state_tools.STATE_TOOLS   # 21 + 9 = 30（单一来源，不手抄）
 
     srv = LowLevelServer(SERVER_NAME, version=SERVER_VERSION)
@@ -176,11 +179,19 @@ def create_server(config: "Config | None" = None,
 
     async def _list_resources(ctx: ServerRequestContext,
                               params: PaginatedRequestParams | None) -> ListResourcesResult:
+        # N01：强制模式下按请求级归属过滤项目资源；可信全量模式不过滤
+        if enforce_owner:
+            return ListResourcesResult(
+                resources=res_mod.list_resources(repo, owner=request_ctx.resolved_owner()))
         return ListResourcesResult(resources=res_mod.list_resources(repo))
 
     async def _read_resource(ctx: ServerRequestContext,
                              params: ReadResourceRequestParams) -> ReadResourceResult:
-        out = res_mod.read_resource(repo, str(params.uri))
+        if enforce_owner:
+            out = res_mod.read_resource(repo, str(params.uri),
+                                        owner=request_ctx.resolved_owner())
+        else:
+            out = res_mod.read_resource(repo, str(params.uri))
         if not out["ok"]:
             # 对齐 SDK MCPServer._handle_read_resource 错误路径：找不到 → INVALID_PARAMS
             raise MCPError(code=INVALID_PARAMS, message=out["error"]["message"],

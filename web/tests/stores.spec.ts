@@ -68,6 +68,27 @@ describe("conversation store 流式拼接", () => {
   });
 });
 
+describe("conversation store error 终态（N14：残缺文字的保存/展示规则）", () => {
+  test("error 事件复位 turnRunning + 丢弃残缺 streamBuffer，user 消息保留", () => {
+    const s = useConversationStore.getState();
+    s.pushUser("帮我排行程");
+    s.beginTurn();
+    s.applyEvent(ev({ event: "message_delta", text: "正在核" }));   // 半截回复
+    expect(useConversationStore.getState().turnRunning).toBe(true);
+    s.applyEvent(ev({ event: "error", code: "internal_error", message: "上游超时", hint: "请重试" }));
+    const after = useConversationStore.getState();
+    expect(after.turnRunning).toBe(false);            // 打字光标停止、发送按钮解禁
+    expect(after.streamBuffer).toBe("");              // 残缺文字丢弃（对齐后端：出错回合半截回复不入史）
+    expect(after.messages).toEqual([{ role: "user", content: "帮我排行程" }]);  // user 已被接受，保留
+  });
+  test("error 前无 delta（空 buffer）同样复位运行态，幂等不抛错", () => {
+    useConversationStore.getState().beginTurn();
+    useConversationStore.getState().applyEvent(ev({ event: "error", code: "internal_error", message: "boom", hint: "" }));
+    expect(useConversationStore.getState().turnRunning).toBe(false);
+    expect(useConversationStore.getState().streamBuffer).toBe("");
+  });
+});
+
 describe("conversation store failTurn（回合创建被拒时回滚乐观 UI）", () => {
   test("弹出刚 push 的 user 消息 + turnRunning=false + 清 buffer（光标不再永久脉冲）", () => {
     useConversationStore.getState().pushUser("帮我排行程");

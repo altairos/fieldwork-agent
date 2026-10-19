@@ -12,14 +12,14 @@ Windows 绝对路径/盘符整体替换基路径）；规则实现已下沉 kern
 （审计 F01 单一来源），本模块薄壳折 MCP 错误包络。
 """
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
-from fieldwork_agent.kernel.repository.guard import project_id_violation
+from fieldwork_agent.kernel.repository.guard import new_project_id, project_id_violation
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
+from fieldwork_agent.mcp_server import request_ctx
 from mcp.types import Tool, ToolAnnotations
 
 ITINERARY_STATE_KEYS = ("itinerary", "travel_plan")   # 兼容旧键
@@ -57,31 +57,83 @@ def guard_project_id(project_id: Any, repo: Any = None) -> dict | None:
                 PID_RULE_HINT)
 
 
-def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
-    """按注入的 repository 组装 9 个状态工具 handler（键 = 工具名，值 = 收具名参数的函数）。"""
+def _strip_owner(state: dict) -> dict:
+    """N01：剔除状态副本里的 owner 裸值（可直接用作 REST 身份凭据）。
+
+    get_project 回显整份状态时调用；owner 仅供服务端归属判定，不应回到
+    普通响应里被冒用。返回新 dict，不改入参（repo.get_state 已给副本，双保险）。
+    """
+    out = dict(state)
+    out.pop("owner", None)
+    return out
+
+
+def build_handlers(repo: ProjectRepository, *,
+                   enforce_owner: bool = False) -> dict[str, Callable[..., dict]]:
+    """按注入的 repository 组装 9 个状态工具 handler（键 = 工具名，值 = 收具名参数的函数）。
+
+    N01 ``enforce_owner``：共享 HTTP 模式下恒 True——每个收 project_id 的 handler
+    先过归属门（请求级 X-Owner-Token 解析自 request_ctx），归属不符/无令牌/
+    项目不存在一律折 ``project_not_found``（与 REST 404 同形，不泄露存在性）；
+    list_projects 按归属过滤，create_project 写入归属且拒绝覆盖他人同名项目。
+    stdio 可信全量模式（缺省 False）行为不变。
+    """
+
+    def _ownership_gate(project_id: str) -> dict | None:
+        """归属门（仅强制模式）：无令牌/归属不符/不存在 → project_not_found 包络；
+        否则 None。非强制模式恒 None（可信全量）。project_id 净化已在前置完成。"""
+        if not enforce_owner:
+            return None
+        owner = request_ctx.resolved_owner()
+        if owner is None:
+            return _not_found(project_id)
+        try:
+            state = repo.get_state(project_id)
+        except KeyError:
+            return _not_found(project_id)
+        if state.get("owner") != owner:
+            return _not_found(project_id)
+        return None
 
     def create_project(project_id: str | None = None) -> dict:
-        pid = project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
-        # 自动生成 id（field_<时间戳>）天然合法；统一走守卫更简单（终审 C1 修法 4）
+        pid = project_id or new_project_id()
+        # 自动生成 id（field_<时间戳>_<随机>）天然合法；统一走守卫更简单（终审 C1 修法 4）
         if (bad := guard_project_id(pid, repo)) is not None:
             return bad
-        repo.create(pid)   # 幂等：已存在则保留存量
+        owner = request_ctx.resolved_owner() if enforce_owner else None
+        if enforce_owner and owner is None:
+            return _err("owner_token_required", "创建项目需携带 X-Owner-Token 头",
+                        "共享 HTTP 模式下项目归属为必需项")
+        repo.create(pid, owner=owner)   # 幂等：已存在则保留存量 owner，不覆盖
+        # N02 竞争安全复核（与 REST 同源）：create 后归属仍非本人 → 已存在
+        # 他人项目/并发落败，与不存在同形拒绝（不覆盖、不泄露）。
+        if enforce_owner and repo.get_state(pid).get("owner") != owner:
+            return _not_found(pid)
         return _ok({"project_id": pid})
 
     def list_projects() -> dict:
+        if enforce_owner:
+            owner = request_ctx.resolved_owner()
+            # 无令牌 → 空列表（与 REST GET /projects 一致）；有令牌 → 仅该归属
+            return _ok([] if owner is None else repo.list_projects(owner=owner))
         return _ok(repo.list_projects())
 
     def get_project(project_id: str) -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
-            return _ok(repo.get_state(project_id))
+            # N01：普通响应不回显可作凭据的 owner 裸值
+            return _ok(_strip_owner(repo.get_state(project_id)))
         except KeyError:
             return _not_found(project_id)
 
     def update_research_context(project_id: str, patch: dict) -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
             # 审计二 R05：与 Web 工具/REST 同一校验来源，原子拒绝非法 patch
             clean = sanitize_context_patch(
@@ -97,6 +149,8 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
     def save_field_site(project_id: str, record: dict) -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
             return _ok({"id": repo.save_field_site(project_id, record)})
         except KeyError:
@@ -105,6 +159,8 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
     def save_informant(project_id: str, record: dict) -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
             return _ok({"id": repo.save_informant(project_id, record)})
         except KeyError:
@@ -115,6 +171,8 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
                             category: str = "general") -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
             entry_id = repo.add_knowledge(project_id, title, content,
                                           source=source, tags=tags,
@@ -132,6 +190,8 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
     def search_knowledge(project_id: str, text: str) -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
             return _ok(repo.search_knowledge(project_id, text))
         except KeyError:
@@ -140,6 +200,8 @@ def build_handlers(repo: ProjectRepository) -> dict[str, Callable[..., dict]]:
     def check_phase_advance(project_id: str) -> dict:
         if (bad := guard_project_id(project_id, repo)) is not None:
             return bad
+        if (denied := _ownership_gate(project_id)) is not None:
+            return denied
         try:
             state = repo.get_state(project_id)
             ctx = ResearchContext.model_validate(repo.get_research_context(project_id))

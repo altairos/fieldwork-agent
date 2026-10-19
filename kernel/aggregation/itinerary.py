@@ -40,6 +40,7 @@
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -49,6 +50,8 @@ from fieldwork_agent.kernel.aggregation.amap_refs import (
 )
 from fieldwork_agent.kernel.aggregation.living_cost import (
     BOARD_MODES,
+    MAX_DAYS,
+    MAX_PEOPLE,
     SETTLEMENT_TYPES,
     estimate_living_cost,
 )
@@ -149,12 +152,12 @@ def _validate(departure: str, destinations: list[str], duration_days: int,
         problems.append("departure 不能为空")
     if not destinations:
         problems.append("destinations 不能为空")
-    if duration_days < 1:
-        problems.append("duration_days 必须 ≥ 1")
+    if not 1 <= duration_days <= MAX_DAYS:
+        problems.append(f"duration_days 必须在 1-{MAX_DAYS} 之间（生活成本估算上限）")
     if budget_total <= 0:
         problems.append("budget_total 必须 > 0")
-    if researcher_count < 1:
-        problems.append("researcher_count 必须 ≥ 1")
+    if not 1 <= researcher_count <= MAX_PEOPLE:
+        problems.append(f"researcher_count 必须在 1-{MAX_PEOPLE} 之间（生活成本估算上限）")
     if settlement_type and settlement_type not in SETTLEMENT_TYPES:
         problems.append(f"settlement_type 必须是 {'/'.join(SETTLEMENT_TYPES)} 之一")
     if board_mode and board_mode not in BOARD_MODES:
@@ -370,7 +373,10 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     hotel_cands: dict[int, list[dict]] = defaultdict(list)
     core_ok = 0
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = [pool.submit(fn) for _, _, fn in tasks]
+        # N05：copy_context().run 使工作线程继承提交时的 contextvar（宿主标记的
+        # 当前调用实例 call_id）——每任务一份独立拷贝，不互相重入；使聚合内部
+        # 搜索经 recorder 时能带上调用实例标签（同规格多次调用按实例区分绑定）。
+        futures = [pool.submit(copy_context().run, fn) for _, _, fn in tasks]
         for (tag, meta, _), fut in zip(tasks, futures, strict=True):
             env = fut.result()
             if env.ok:
@@ -495,7 +501,18 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
     living = estimate_living_cost(settlement_type=st, board_mode=bm,
                                   days=duration_days, people=researcher_count,
                                   include_local_transport=include_local_transport)
-    data = living.data if isinstance(living.data, dict) else {}
+    if not living.ok:
+        # N08：子能力失败绝不当零费用——把餐饮/市内交通显式标为预算缺项并降级说明，
+        # coverage 随之降为 partial/unknown，不再谎报 complete。输入域已与 _validate
+        # 共享 MAX_DAYS/MAX_PEOPLE 对齐，正常路径不会进此支，这里是防御性兜底。
+        reason = living.error.message if living.error else "生活成本估算失败"
+        uncovered.append("餐饮（估算）")
+        if include_local_transport:
+            uncovered.append("市内交通（估算）")
+        notes.append(f"生活成本未纳入预算：{reason}；餐饮/市内交通已标为缺项，待人工核验")
+        data = {}
+    else:
+        data = living.data if isinstance(living.data, dict) else {}
     default_note = ("默认口径（调用方未指定聚落类型/就餐方式）；"
                     if not (settlement_type and board_mode) else "")
     basis = f"{default_note}{data.get('caliber', '')}；{data.get('basis', '')}"

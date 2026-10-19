@@ -128,6 +128,39 @@ describe("BasicInfoPanel 研究信息编辑", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("N03：研究问题字段可编辑并随保存上行（旧后端 ContextPatch 缺此字段致 422）", async () => {
+    useProjectStore.getState().loadSnapshot({ ...SNAP, research_context: {} });
+    const calls = stubFetch([
+      { research_context: { research_questions: "RQ1" }, phase_transition: null },
+      { ...SNAP, research_context: { research_questions: "RQ1" } },
+    ]);
+    render(<BasicInfoPanel />);
+    fireEvent.change(screen.getByLabelText("研究问题"), { target: { value: "RQ1" } });
+    fireEvent.click(screen.getByText("保存修正"));
+    await waitFor(() =>
+      expect(calls[0].url).toBe("/projects/p1/research-context"));
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ research_questions: "RQ1" });
+  });
+
+  test("N03：取消勾选不适用访谈对象 → PUT 明确发 interviews_not_applicable:false 撤销", async () => {
+    useProjectStore.getState().loadSnapshot({
+      ...SNAP,
+      research_context: { interviews_not_applicable: true, interviews_na_reason: "纯档案研究" },
+    });
+    const calls = stubFetch([
+      { research_context: { interviews_not_applicable: false }, phase_transition: null },
+      { ...SNAP, research_context: { interviews_not_applicable: false } },
+    ]);
+    render(<BasicInfoPanel />);
+    // 当前为勾选态（快照 NA=true），点标签取消勾选
+    fireEvent.click(screen.getByText(/不适用访谈对象/));
+    fireEvent.click(screen.getByText("保存修正"));
+    await waitFor(() =>
+      expect(calls[0].url).toBe("/projects/p1/research-context"));
+    // 旧 if(na) 分支不会发 false；N03 修复后明确上行 false 以撤销已存 NA
+    expect(JSON.parse(String(calls[0].init?.body)).interviews_not_applicable).toBe(false);
+  });
+
   test("P4：长文本字段用多行 textarea 完整呈现（换行保留，不再单行截断）", () => {
     useProjectStore.getState().loadSnapshot({
       ...SNAP,

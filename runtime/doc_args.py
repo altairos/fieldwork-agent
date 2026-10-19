@@ -36,7 +36,7 @@ def _merge_proposal_ctx(base_ctx: dict, given_ctx: Any) -> dict[str, Any]:
 
 
 def merge_doc_args(repo: Any, pid: str, name: str, args: dict,
-                   ctx_view: "dict | None" = None) -> dict:
+                   ctx_view: dict | None = None) -> dict:
     """非文档工具原样返回；文档工具以 ctx_view（缺省仓储）为底合并模型值
     （就地改并返回 args）。"""
     if name not in _DOC_TOOLS:

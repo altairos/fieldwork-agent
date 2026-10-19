@@ -165,9 +165,14 @@ class ProjectRepository(Protocol):
     # ---------------------------------------------------------------- 提案文档
 
     def save_proposal(
-        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft"
+        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
+        *, provenance_ctx: dict | None = None,
     ) -> str:
-        """落一份文档并登记，返回记录 id；重复保存不覆盖既有文件（版本累积）。"""
+        """落一份文档并登记，返回记录 id；重复保存不覆盖既有文件（版本累积）。
+
+        N04：``provenance_ctx`` 非 None 时，依赖指纹的 ctx 路用生成时实际值
+        （文档正文所本），而非保存时按当前仓储推测。
+        """
         ...
 
     def get_latest_proposal(self, pid: str) -> dict | None:

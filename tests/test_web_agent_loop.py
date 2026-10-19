@@ -299,6 +299,71 @@ def test_cancel_skips_end_of_turn_side_effects(env):
     assert not repo.get_research_context("p1").get("topic")
 
 
+class CancelThenToolCallLLM:
+    """N13：首帧 delta 流出后取消，随后终帧携带 tool_calls——取消后不得再启动工具。"""
+    def __init__(self, tm, pid, tid):
+        self._tm, self._pid, self._tid = tm, pid, tid
+        self.calls = []
+
+    def chat_stream(self, messages, **kw):
+        self.calls.append((list(messages), kw))
+        def _gen():
+            yield {"delta": "部分"}
+            self._tm.cancel(self._pid, self._tid)   # 消费中途取消
+            yield {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                                  "arguments": {"dest_name": "大理"}}],
+                   "finish_reason": "tool_calls", "usage": {}}
+        return _gen()
+
+
+def test_cancel_mid_stream_prevents_tool_start(env):
+    """N13：慢流首帧后 cancel、终帧携带 tool_calls → 不再出现新的 tool_started，
+    终态 cancelled（旧实现取消后仍会启动工具、发 tool_started）。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = CancelThenToolCallLLM(tm, "p1", turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "tool_started" not in types
+    assert "tool_completed" not in types
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+
+
+def test_deadline_during_stream_stops_before_tools(env):
+    """N13：wall 截止在终帧到达前已过 → 启动工具前不再发起工具副作用。
+
+    复现审计场景（wall=20ms、单帧同步 sleep）：已开始的阻塞 sleep 不可撤回
+    （无硬截止），但越过截止后绝不再启动新工具（无 tool_started）。"""
+    import time
+    repo, tm = env
+
+    class SlowThenToolCallLLM:
+        def __init__(self):
+            self.calls = []
+
+        def chat_stream(self, messages, **kw):
+            self.calls.append((list(messages), kw))
+            def _gen():
+                yield {"delta": "思考中"}
+                time.sleep(0.08)   # 慢流：终帧迟迟才到，其间越过 wall 截止
+                yield {"content": "",
+                       "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                       "arguments": {"dest_name": "大理"}}],
+                       "finish_reason": "tool_calls", "usage": {}}
+            return _gen()
+
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm,
+                         SlowThenToolCallLLM(), FakeFlyAI(), max_wall_seconds=0.02))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert "tool_started" not in types      # 越过 wall 截止后不启动工具
+    assert "tool_completed" not in types
+
+
 class DeleteProjectMidStreamLLM:
     """流式中途删除项目（审查 1.2 竞态）：首帧 delta 后执行 DELETE 路由三步
     （cancel_all → repo.delete_project → tm.purge_project），随后按 trailing_deltas
@@ -512,6 +577,78 @@ def test_itinerary_quotes_bound_to_live_snapshots(env):
     old = [c for c in index if c["tool"] == "search_hotels"
            and repo.get_cached_search("p1", c["id"])["result"]["cheapest"] == 11.0]
     assert old and all(c["id"] != stay_cid for c in old)
+
+
+class SeqHotelPriceFlyAI:
+    """N05：search_hotels 带日期时按调用序返回 11、22……（Lock 保护，行程
+    内部搜索走线程池）；无日期直查返回固定价。其余搜索固定价。"""
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self._n = 0
+
+    def search_hotels(self, *, dest_name="", check_in="", check_out="", **kw):
+        if not check_in:
+            price = 99.0
+        else:
+            with self._lock:
+                price = 11.0 * (self._n + 1)
+                self._n += 1
+        return Envelope(ok=True, data=ItemPage(
+            items=[SearchItem(name="客栈A", price=price)],
+            total=1, cheapest=price, dearest=price))
+
+    def __getattr__(self, name):
+        def stub(**kw):
+            price = 100.0 if name == "search_trains" else 300.0
+            return Envelope(ok=True, data=ItemPage(
+                items=[SearchItem(name=f"{name}X", price=price)],
+                total=1, cheapest=price, dearest=price))
+        return stub
+
+
+def test_n05_same_spec_two_itineraries_bind_own_snapshots(env):
+    """N05：同规格（同 dest/日期）连续两次 compose_itinerary，酒店价 11→22；
+    每份行程的住宿引用必须绑定自己那次的快照，而非都被后写覆盖成第二次。"""
+    repo, tm = env
+    itin_args = {"departure": "昆明", "destinations": ["大理"],
+                 "start_date": "2026-11-01", "duration_days": 3,
+                 "budget_total": 5000}
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_itinerary",
+                                          "arguments": dict(itin_args)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "compose_itinerary",
+                                          "arguments": dict(itin_args)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "排两次同样行程", tm,
+                         llm, SeqHotelPriceFlyAI()))
+    index = repo.list_cached_searches("p1")
+    itins = [c["id"] for c in index if c["tool"] == "compose_itinerary"]
+    assert len(itins) == 2, itins
+    stays = []
+    for cid in itins:
+        plan = repo.get_cached_search("p1", cid)["result"]
+        stay = next(b for b in plan["budget"]["items"]
+                    if b["name"].startswith("住宿"))
+        ref_cid = re.search(r"flyai 快照 ([^\s（]+)", stay["source_ref"]).group(1)
+        cheapest = repo.get_cached_search("p1", ref_cid)["result"]["cheapest"]
+        stays.append((stay["amount"], cheapest, ref_cid))
+    # 两份行程引用不同快照（未被后写覆盖成同一个）
+    assert len({c for _, _, c in stays}) == 2, stays
+    # 两份用了不同酒店价（11 与 22）
+    assert len({c for _, c, _ in stays}) == 2, stays
+    # 引用与实付一致：amount/cheapest 系数相同（= 夜数×房间数）；
+    # 若被错绑到另一次的快照，两份系数会不同（旧实现：11 价行程引 22 快照）
+    ratios = {round(amt / cheap, 6) for amt, cheap, _ in stays}
+    assert len(ratios) == 1, stays
 
 
 # ---------------------------------------------------------------- N5 amap 快照链（宿主侧）
@@ -897,6 +1034,74 @@ def test_autoname_existing_title_never_overwritten(env):
     _maybe_autoname(repo, "p1", llm)
     assert repo.get_research_context("p1").get("title") == "我的手动名字"
     assert llm.calls == []
+
+
+def test_autoname_does_not_overwrite_rename_during_window(env):
+    """N09：命名窗口内用户改名 → llm.chat 返回后复核 title 非空，放弃覆盖。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "我想去大理研究宗族变迁")
+
+    class RenamingLLM:
+        def chat(self, messages, **kw):
+            repo.update_research_context("p1", {"title": "用户手动改名"})   # 模拟并发改名
+            return {"content": "自动生成的名字"}
+
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", RenamingLLM())
+    assert repo.get_research_context("p1").get("title") == "用户手动改名"
+
+
+def test_autoname_skips_when_project_edited_during_window(env):
+    """N09：命名窗口内项目被编辑（updated_at 变、title 仍空）→ 放弃写入，
+    避免用过期上下文命名覆盖用户的后续意图。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "去大理研究宗族")
+
+    class EditingLLM:
+        def chat(self, messages, **kw):
+            repo.update_research_context("p1", {"topic": "白族本主信仰"})   # 改 topic，title 仍空
+            return {"content": "自动名字"}
+
+    from fieldwork_agent.web_host.agent.loop import _maybe_autoname
+    _maybe_autoname(repo, "p1", EditingLLM())
+    assert not str(repo.get_research_context("p1").get("title") or "").strip()
+
+
+async def test_schedule_autoname_is_fire_and_forget(env):
+    """N09：_schedule_autoname 登记后台任务即返回、不同步命名——主回合不等待；
+    排空后台任务后 title 才落地。"""
+    repo, tm = env
+    repo.append_message("p1", "user", "我想去大理研究宗族变迁")
+    llm = AutonameLLM(content="大理宗族调研")
+    from fieldwork_agent.web_host.agent import loop as loop_mod
+    loop_mod._schedule_autoname(repo, "p1", llm)
+    # 尚未 await：任务未执行 → title 仍空、llm 未被调用（证明非同步阻塞）
+    assert not str(repo.get_research_context("p1").get("title") or "").strip()
+    assert llm.calls == []
+    pending = list(loop_mod._AUTONAME_TASKS)
+    assert pending, "后台命名任务应已登记（持引用防 GC）"
+    await asyncio.gather(*pending)
+    assert repo.get_research_context("p1").get("title") == "大理宗族调研"
+
+
+async def test_autoname_offloads_to_thread(env):
+    """N09：阻塞的命名模型调用在 to_thread 工作线程执行，不占事件循环线程。"""
+    import threading
+    repo, tm = env
+    repo.append_message("p1", "user", "去大理研究宗族")
+    main_thread = threading.get_ident()
+    seen = {}
+
+    class ThreadProbeLLM:
+        def chat(self, messages, **kw):
+            seen["thread"] = threading.get_ident()
+            return {"content": "线程名字"}
+
+    from fieldwork_agent.web_host.agent import loop as loop_mod
+    loop_mod._schedule_autoname(repo, "p1", ThreadProbeLLM())
+    await asyncio.gather(*list(loop_mod._AUTONAME_TASKS), return_exceptions=True)
+    assert seen["thread"] != main_thread   # 在工作线程执行 → 未阻塞事件循环线程
+    assert repo.get_research_context("p1").get("title") == "线程名字"
 
 
 def test_autoname_llm_none_falls_back_to_topic(env):
@@ -1324,6 +1529,55 @@ def test_doc_tool_sees_same_turn_staged_patch(env):
     assert "仓储旧主题" not in joined
     # F05 语义不破：轮末 commit 落盘新值
     assert repo.get_research_context("p1")["topic"] == "本轮新主题"
+
+
+# N04：同一 tool_calls 批次内写→文档的时序与正文/指纹一致性
+_PROPOSAL_ARGS_EMPTY_CTX = {
+    "ctx": {},   # 模型给空 ctx，由 merge_doc_args 从 staged_view 补齐
+    "sites": [{"name": "大理", "confirmed": True, "profile": {"location": "大理"}}],
+    "itinerary": {"legs": []},
+    "informants": [{"code": "INF-01", "type": "宗族长老",
+                    "relation": "同乡会引荐", "contact": "", "notes": ""}],
+}
+
+
+def test_n04_same_batch_write_then_proposal_uses_new_ctx(env):
+    """N04：同批先 update_research_context 再 compose_proposal(ctx={})，
+    文档正文必须用本轮新值（旧实现拿到轮前旧值），且落盘指纹与正文一致可确认。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "OLD_TOPIC", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理", "purpose": "global", "research_questions": "RQ_OLD"})
+    llm = ChatFakeLLM([
+        # 单帧双工具调用（同批）：先写主题，再出方案（ctx 空 → 由 staged_view 补）
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c1", "name": "update_research_context",
+              "arguments": {"patch": {"topic": "NEW_TOPIC",
+                                      "research_questions": "RQ_NEW"},
+                            "reason": "用户确认"}},
+             {"id": "c2", "name": "compose_proposal",
+              "arguments": _PROPOSAL_ARGS_EMPTY_CTX}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "改主题并出方案", tm, llm, FakeFlyAI()))
+
+    # 回合后项目主题为新值
+    assert repo.get_research_context("p1")["topic"] == "NEW_TOPIC"
+    # 落盘正文用新值（旧实现会含 OLD_TOPIC）
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    doc = repo.get_proposal_by_id("p1", docs[0]["id"])
+    assert "NEW_TOPIC" in doc["content"]
+    assert "OLD_TOPIC" not in doc["content"]
+    # 依赖指纹与正文一致 → 确认可成功（正文旧/指纹新的错配已消除）
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
 
 
 # ------------------------------- F05 取消保护 / F06 最终回答收敛 / F07 批前截断

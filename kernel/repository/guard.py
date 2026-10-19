@@ -5,6 +5,8 @@ mcp_server（折 tool 错误包络）与 web_host（折 HTTPException）两个�
 """
 
 import re
+import secrets
+from datetime import datetime
 from typing import Any
 
 PID_MAX_LEN = 64
@@ -73,6 +75,9 @@ def cache_id_violation(cache_id: Any) -> str:
     return ""
 
 OWNER_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}:[^\s:]{1,127}$")
+# X-Owner-Token 裸值形状（客户端令牌）：归一化前的准入校验，与 OWNER_RE
+# （归一化后的存储值形状）分工——前者管客户端输入，后者管落库值。
+OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def owner_violation(owner: str | None) -> str:
@@ -83,3 +88,33 @@ def owner_violation(owner: str | None) -> str:
         return ""
     return ("owner 须形如 <命名空间>:<标识>"
             "（命名空间 ^[a-z][a-z0-9_]{0,31}$，标识非空且不含空白与冒号）")
+
+
+def normalize_owner_token(raw: str | None) -> str | None:
+    """X-Owner-Token 裸值 → 归一化归属值 ``anon:<raw>``（身份映射单一来源）。
+
+    REST（web_host.api.owner）与 MCP HTTP（mcp_server.http_entry）两入口共用，
+    ``anon:`` 前缀只由服务端拼接、客户端永不携带：
+
+    - 空 / 纯空白 → None（无令牌；后续行为由各入口端点/handler 矩阵决定）；
+    - 形状非法 → ``ValueError``（调用方折 400，或按无令牌降级为拒绝访问）；
+    - 合法 → ``anon:<raw>``。
+
+    未来接入账号体系时，本函数与 ``owner_violation`` 是唯一的身份形状来源。
+    """
+    token = (raw or "").strip()
+    if not token:
+        return None
+    if not OWNER_TOKEN_RE.fullmatch(token):
+        raise ValueError("非法 X-Owner-Token 头")
+    return f"anon:{token}"
+
+
+def new_project_id() -> str:
+    """自动生成项目 ID：``field_<时间戳>_<随机>``（N02：随机段消除同秒碰撞）。
+
+    时间戳保可读性与大致时序；6 位十六进制随机段（secrets）消除不同用户
+    同秒创建的碰撞面（旧实现仅精确到秒）；形状恒过 project_id_violation
+    （字母数字下划线，长度远低于 PID_MAX_LEN）。REST 与 MCP 两入口共用。
+    """
+    return f"field_{datetime.now():%Y%m%d_%H%M%S}_{secrets.token_hex(3)}"

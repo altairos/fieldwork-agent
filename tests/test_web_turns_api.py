@@ -53,6 +53,50 @@ async def test_idempotent_creation(client):
     assert r1.json()["turn_id"] == r2.json()["turn_id"]
 
 
+async def test_idempotent_hit_does_not_duplicate_execution(client):
+    """N11：同一 idempotency_key 连发两次 → 同一 turn_id、run_turn 只跑一次、
+    用户消息只落一条（旧实现命中仍无条件排后台，模型调用与用户消息各 2 次）。"""
+    r1 = await client.post("/projects/p1/messages",
+                           json={"text": "hi", "idempotency_key": "dup"})
+    await asyncio.sleep(0.4)   # 等第一次后台回合完成
+    r2 = await client.post("/projects/p1/messages",
+                           json={"text": "hi", "idempotency_key": "dup"})
+    await asyncio.sleep(0.2)
+    assert r1.json()["turn_id"] == r2.json()["turn_id"]
+    msgs = (await client.get("/projects/p1/messages")).json()
+    assert [m["content"] for m in msgs if m["role"] == "user"] == ["hi"]   # 只落一条
+
+
+async def test_retry_old_turn_rejected_409(client):
+    """N12：完成问题一、问题二后重试「问题一」的 turn_id → 409，绝不误删/重放最新一轮。"""
+    tid1 = (await client.post("/projects/p1/messages",
+                              json={"text": "问题一"})).json()["turn_id"]
+    await asyncio.sleep(0.4)
+    tid2 = (await client.post("/projects/p1/messages",
+                              json={"text": "问题二"})).json()["turn_id"]
+    await asyncio.sleep(0.4)
+    assert tid2 != tid1
+    rr = await client.post(f"/projects/p1/turns/{tid1}/retry")
+    assert rr.status_code == 409
+    assert rr.json()["detail"]["code"] == "retry_not_latest"
+    # 消息未被误删：两条用户消息俱在
+    msgs = (await client.get("/projects/p1/messages")).json()
+    assert [m["content"] for m in msgs if m["role"] == "user"] == ["问题一", "问题二"]
+
+
+async def test_retry_latest_turn_allowed(client):
+    """N12：重试最新回合（尾部确属该 turn_id）→ 201，弹出旧回复并以同一文本重放。"""
+    tid1 = (await client.post("/projects/p1/messages",
+                              json={"text": "问题一"})).json()["turn_id"]
+    await asyncio.sleep(0.4)
+    rr = await client.post(f"/projects/p1/turns/{tid1}/retry")
+    assert rr.status_code == 201
+    assert rr.json()["turn_id"] != tid1   # 新建回合
+    await asyncio.sleep(0.4)
+    msgs = (await client.get("/projects/p1/messages")).json()
+    assert [m["content"] for m in msgs if m["role"] == "user"] == ["问题一"]   # 重放不新增用户消息
+
+
 async def test_sse_stream_events(client):
     r = await client.post("/projects/p1/messages", json={"text": "hello"})
     tid = r.json()["turn_id"]

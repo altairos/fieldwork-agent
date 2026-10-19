@@ -3,7 +3,10 @@
 田野点确认、报道人采纳、方案确认。守卫先于一切副作用；每次写后跑
 确定性阶段推进，把 phase_transition 原样返回给前端。"""
 from fastapi import APIRouter, Depends, HTTPException
-from fieldwork_agent.kernel.context_patch import sanitize_context_patch
+from fieldwork_agent.kernel.context_patch import (
+    ALLOWED_CONTEXT_FIELDS,
+    sanitize_context_patch,
+)
 from fieldwork_agent.kernel.documents.informants import candidate_to_record
 from fieldwork_agent.kernel.models import InformantCandidate
 from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
@@ -11,29 +14,40 @@ from fieldwork_agent.web_host.agent.loop import check_and_advance
 from fieldwork_agent.web_host.api.guard import checked_owned_project
 from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_repo
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 router = APIRouter(tags=["state"])
 
 
-class ContextPatch(BaseModel):
-    """审计二 R05：strict + extra=forbid——类型不符/白名单外键交 Pydantic 折 422。"""
+# N03：字段契约单一来源——ContextPatch 的字段集直接由 kernel
+# ALLOWED_CONTEXT_FIELDS 生成，新增白名单字段（如 research_questions /
+# candidate_windows）自动出现在 REST 入口，不再因手抄遗漏而 extra=forbid 折 422。
+# 非字符串字段的具体类型在此声明（与 sanitize_context_patch 的校验对齐）。
+_NON_STR_FIELD_TYPES = {
+    "interviews_not_applicable": bool | None,
+    "candidate_windows": list | None,
+}
 
-    model_config = ConfigDict(strict=True, extra="forbid")
 
-    title: str | None = None
-    discipline: str | None = None
-    topic: str | None = None
-    site_status: str | None = None
-    scale: str | None = None
-    budget: str | None = None
-    time_window: str | None = None
-    departure_city: str | None = None
-    target_location: str | None = None
-    travel_date: str | None = None
-    purpose: str | None = None
-    interviews_not_applicable: bool | None = None
-    interviews_na_reason: str | None = None
+def _build_context_patch_model() -> type[BaseModel]:
+    """按 ALLOWED_CONTEXT_FIELDS 动态生成 strict + extra=forbid 的 patch 模型。
+
+    默认每字段 ``str | None``；_NON_STR_FIELD_TYPES 里的按具体类型。与
+    sanitize_context_patch 的白名单/类型规则同源（字段名取自同一常量）。
+    """
+    fields = {
+        name: (_NON_STR_FIELD_TYPES.get(name, str | None), None)
+        for name in ALLOWED_CONTEXT_FIELDS
+    }
+    return create_model(
+        "ContextPatch",
+        __config__=ConfigDict(strict=True, extra="forbid"),
+        **fields,
+    )
+
+
+# 审计二 R05：strict + extra=forbid——类型不符/白名单外键交 Pydantic 折 422。
+ContextPatch = _build_context_patch_model()
 
 
 class AdoptInformantRequest(BaseModel):

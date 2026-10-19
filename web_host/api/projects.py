@@ -1,9 +1,7 @@
 # web_host/api/projects.py
 """项目 CRUD 路由（spec §3.2）。"""
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fieldwork_agent.kernel.repository.guard import cache_id_violation
+from fieldwork_agent.kernel.repository.guard import cache_id_violation, new_project_id
 from fieldwork_agent.web_host.api.guard import checked_owned_project, checked_project_id
 from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_repo, get_turn_manager
@@ -22,15 +20,26 @@ class CreateProjectRequest(BaseModel):
 @router.post("/projects", status_code=201)
 async def create_project(body: CreateProjectRequest, repo=Depends(get_repo),
                          owner: str | None = Depends(owner_from_request)):
+    """创建新项目（幂等：本人同名重提视为打开已有）。
+
+    N02：区分“创建新项目”与“打开/更新已有项目”。repo.create 幂等保留存量
+    owner（从不覆盖），创建后立即复核归属：若已存在且归属他人（含并发
+    竞争落败）→ 404，绝不写 patch 覆盖他人字段；归属本人才应用 patch。
+    事后复核而非事前查一次，消除并发创建的竞争窗口。
+    """
     if owner is None:
         raise HTTPException(
             status_code=400,
             detail={"code": "owner_token_required",
                     "message": "创建项目需携带 X-Owner-Token 头"},
         )
-    pid = body.project_id or f"field_{datetime.now():%Y%m%d_%H%M%S}"
+    pid = body.project_id or new_project_id()
     checked_project_id(pid, repo)   # 审计 F01：守卫先于一切副作用
-    repo.create(pid, owner=owner)
+    repo.create(pid, owner=owner)   # 幂等：已存在保留存量 owner，不覆盖
+    # N02 竞争安全复核：create 后归属仍非本人 → 已存在他人项目/并发落败，
+    # 与不存在同形 404（不泄露存在性），且尚未写任何 patch。
+    if repo.get_state(pid).get("owner") != owner:
+        raise HTTPException(404, f"项目不存在: {pid}")
     patch = {k: v for k, v in {"discipline": body.discipline,
                                 "topic": body.topic, "purpose": body.purpose}.items() if v}
     if patch:

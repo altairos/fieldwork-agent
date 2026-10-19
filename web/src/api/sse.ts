@@ -52,15 +52,20 @@ export async function streamTurnEvents(
   let reconnects = 0;
   const maxReconnects = opts.maxReconnects ?? 5;
   const url = `/projects/${projectId}/turns/${turnId}/events`;
+  // N14：只有收到明确终态（turn_done/error）才算完成；非终态 EOF（HTTP 200 后流被截断、
+  // 未见终态）一律按断线恢复重连，绝不当正常关闭——否则 conversation 永远停在 turnRunning。
+  let terminalSeen = false;
 
   while (true) {
     if (opts.signal?.aborted) return;
+    // 本连接是否收到「新帧」（seq 前进）：仅此才算真进展、才清零退避计数，
+    // 避免反复「200＋立即 EOF/重发旧帧」把重连次数掩盖成无限循环。
+    let progress = false;
     try {
       const headers: Record<string, string> = { Accept: "text/event-stream", ...authHeaders(), ...ownerHeaders() };
       if (lastId > 0) headers["Last-Event-ID"] = String(lastId);
       const resp = await fetch(url, { headers, signal: opts.signal });
       if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`);
-      reconnects = 0;                       // 连上即重置退避
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -68,14 +73,14 @@ export async function streamTurnEvents(
       try {
         while (!closed) {
           const { value, done } = await reader.read();
-          if (done) { closed = true; break; }
+          if (done) break;                // EOF：交下方终态判定（非终态则重连，不当完成）
           buffer += decoder.decode(value, { stream: true });
           const { frames, rest } = parseSseFrames(buffer);
           buffer = rest;
           for (const f of frames) {
-            if (f.seq > lastId) lastId = f.seq;
+            if (f.seq > lastId) { lastId = f.seq; progress = true; }   // 仅新帧推进算进展
             opts.onEvent(f);
-            if (f.event === "turn_done" || f.event === "error") { closed = true; }
+            if (f.event === "turn_done" || f.event === "error") { terminalSeen = true; closed = true; }
           }
         }
       } finally {
@@ -85,10 +90,12 @@ export async function streamTurnEvents(
         // abort 场景已由 signal 断开，cancel 幂等安全，其可能的拒绝一并吞掉。
         await reader.cancel().catch(() => {});
       }
-      opts.onClose?.();
-      return;                               // 正常结束（turn_done/error 或流关闭）
+      if (terminalSeen) { opts.onClose?.(); return; }   // 明确终态：正常结束
+      // 非终态 EOF：连接在收到终态前被截断（网络/代理/服务端重启），按断线恢复重连
+      throw new Error("SSE 流在收到终态前结束");
     } catch (err) {
       if (opts.signal?.aborted) return;
+      if (progress) reconnects = 0;        // 真正收到新帧才清零退避（断线恢复）；无进展则累加
       if (reconnects >= maxReconnects) { opts.onError?.(err as Error); return; }
       reconnects++;
       await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** reconnects, 8000)));

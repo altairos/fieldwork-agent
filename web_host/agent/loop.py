@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
@@ -31,6 +32,11 @@ _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降
 # 快捷选项标记：LLM 在枚举型提问末尾输出 [[options]]甲|乙|丙[[/options]]，
 # 轮末剥离标记、选项入消息 meta 与 turn_done payload（渐进增强：无标记则无选项）
 _OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
+
+# N05：当前工具调用实例 id（call_id）——_exec_tool 分派能力前置位，RecordingClient
+# 经 tag_provider 读取并写入每条记录的 sig["tag"]。asyncio.gather 为每个协程建独立
+# Task（各自 context 副本），to_thread 再拷贝当前 context，故并发调用互不串号。
+_CURRENT_CALL_ID: ContextVar[str] = ContextVar("fw_current_call_id", default="")
 
 
 def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
@@ -86,22 +92,37 @@ def _normalize_cjk_quotes(text: str) -> str:
     return "".join(out)
 
 
+def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
+    """N13：取消已置位或超过 wall 截止 → 应停止。每次消费流帧后、启动工具前统一
+    检查，尽早「停止副作用」（不再启动新工具/不再消费后续流帧）。已启动的线程
+    调用不可撤回，故本检查只保证不再发起新动作、不承诺硬截止；handle 由调用方保证非 None。
+    """
+    return handle.cancel_event.is_set() or (time.monotonic() - start) > max_wall_seconds
+
+
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
                    amap_client: Any = None,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
-    recorder = RecordingClient(flyai_client) if flyai_client is not None else None
+    recorder = (RecordingClient(flyai_client, tag_provider=_CURRENT_CALL_ID.get)
+                if flyai_client is not None else None)
     # N5：amap 同款双包装（spec §5.1 快照链对高德原语同样成立）——聚合层
     # 经 dispatch 拿到的是 recorder 透传视图，实际调用被逐次记录
-    amap_recorder = (RecordingClient(amap_client)
+    amap_recorder = (RecordingClient(amap_client, tag_provider=_CURRENT_CALL_ID.get)
                      if amap_client is not None else None)
     live_refs: dict[str, str] = {}
+    # N05：按调用实例（call_id）分组的规格键→快照引用——避免整回合共享
+    # 一个可覆盖的规格→cid 字典（同规格多次调用时后者不覆盖前者的绑定）。
+    live_refs_by_call: dict[str, dict[str, str]] = {}
     snapshot_ids: list[str] = []
     drained = 0
     drained_amap = 0
     call_args_map: dict[str, dict] = {}
+    # N04：文档工具生成时的仓储依赖视图（ctx 路 provenance）——落盘指纹据此
+    # 而非保存时推测；正常轮与保存时仓储一致，仅并发外部修改时有别。
+    doc_ctx_provenance: dict[str, dict] = {}
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
                                  llm,
                                  amap_recorder if amap_recorder is not None
@@ -117,7 +138,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     # R4：用户消息即时持久化（F09 修正：先 build 后 append——
     # build_messages 读 history 后自行 append 当前消息，顺序颠倒会双发）
     messages = build_messages(repo, pid, user_text, phase)
-    repo.append_message(pid, "user", user_text)
+    # N12：用户消息绑定 turn_id（入 metadata）——retry 据此校验尾部归属，不误删他人轮
+    repo.append_message(pid, "user", user_text, {"turn_id": turn_id})
 
     iterations = 0
     total_calls = 0
@@ -159,6 +181,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             async for chunk in _async_iter(stream):
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：停止消费已无消费者的流
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：消费中取消/超时 → 停止消费，不再处理后续帧（含终帧工具调用）
                 if "delta" in chunk and chunk["delta"]:
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})
@@ -199,6 +223,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     has_final_answer = True
                 break
 
+            # N13：启动工具前检查取消与 deadline——即便终帧已带 tool_calls，此刻已
+            # 取消/超时也不再启动新工具（不发 tool_started、不产生副作用），转轮末终态
+            if _stop_requested(handle, start, max_wall_seconds):
+                break
             # 并行工具执行（F07：批前截断——越过额度的调用不执行，直接回填
             # budget_exceeded 的 role=tool 消息与事件，协议上每个 id 均有回填）
             messages.append(_assistant_message(final_resp))
@@ -214,24 +242,42 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": False, "data": None,
                                  "degraded": None, "error": err})
-            coros = []
-            for call in executed:
+            # N04：同批工具按依赖顺序执行——状态写工具（update_research_context
+            # 等，name 在 state_handlers）先执行并 stage 进 buffer；随后才组装
+            # 其余工具（含文档工具）的入参并并发执行，使 merge_doc_args 读到
+            # 已 stage 的新 ctx（修复同批写→文档时文档拿到旧值、正文与依赖
+            # 指纹错配）。独立只读搜索与文档工具在第二阶段仍并发。
+            def _prepare(call):
                 name = call.get("name", "")
                 call_id = call.get("id", "")
                 args = _coerce_args(call.get("arguments"))
                 # 终审 M1：文档工具入参合并读"仓储+暂存"合并视图——同轮先
                 # update_research_context 再调文档工具时立即看到新值（与
                 # get_project_brief 的 staged_view 语义一致）
-                args = merge_doc_args(repo, pid, name, args,
-                                      ctx_view=buffer.staged_view())
+                ctx_view = buffer.staged_view()
+                args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view)
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
+                # N04：compose_proposal 落盘指纹的 ctx 路依据＝生成时仓储依赖视图
+                # （非模型合并后的 ctx，也非保存时推测）
+                if name == "compose_proposal":
+                    doc_ctx_provenance[call_id] = dict(ctx_view)
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})
-                coros.append(_exec_tool(dispatch, name, args, call_id, state_handlers))
+                return _exec_tool(dispatch, name, args, call_id, state_handlers)
 
-            results = await asyncio.gather(*coros)
+            write_calls = [c for c in executed if c.get("name", "") in state_handlers]
+            rest_calls = [c for c in executed if c.get("name", "") not in state_handlers]
+            results = []
+            if write_calls:
+                # 第一阶段：依赖写/读状态工具先落地（stage 进 buffer）
+                results.extend(await asyncio.gather(
+                    *(_prepare(c) for c in write_calls)))
+            if rest_calls:
+                # 第二阶段：文档工具此刻组装入参已能读到新 ctx；与只读搜索并发
+                results.extend(await asyncio.gather(
+                    *(_prepare(c) for c in rest_calls)))
             total_calls += len(executed)
 
             for call_id, name, env in results:
@@ -264,12 +310,14 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
             # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
             drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
-                                       live_refs, drained)
+                                       live_refs, drained,
+                                       live_refs_by_call=live_refs_by_call)
             # 双 recorder 各自游标（合并视图会错位）；snapshot_ids/live_refs
             # 共享：turn_done 汇总全部快照，轮末替换按键前缀天然不冲突
             drained_amap = _drain_snapshots(repo, pid, amap_recorder,
                                             snapshot_ids, live_refs,
-                                            drained_amap, label="amap")
+                                            drained_amap, label="amap",
+                                            live_refs_by_call=live_refs_by_call)
 
     except Exception as exc:
         tm.append_event(pid, turn_id, "error",
@@ -301,6 +349,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             async for chunk in _async_iter(stream):
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：同主流，停止消费与发射
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：续写流消费中取消/超时 → 停止，已流出增量仍拼入
                 if "delta" in chunk and chunk["delta"]:
                     cont_deltas += chunk["delta"]
                     tm.append_event(pid, turn_id, "message_delta",
@@ -345,6 +395,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             async for chunk in _async_iter(stream):
                 if tm.get_turn(pid, turn_id) is None:
                     return  # 项目删除竞态：同主流，停止消费与发射
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：收敛流消费中取消/超时 → 停止，走轮末终态
                 if "delta" in chunk and chunk["delta"]:
                     tm.append_event(pid, turn_id, "message_delta",
                                     {"text": chunk["delta"]})
@@ -389,14 +441,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         try:
             if accumulated_reply:
                 repo.append_message(pid, "assistant", accumulated_reply,
-                                    {"tool_calls": total_calls,
+                                    {"turn_id": turn_id,   # N12：绑定回合，retry 校验尾部归属
+                                     "tool_calls": total_calls,
                                      "finish_reason": finish_reason,
                                      **({"quick_replies": quick_replies}
                                         if quick_replies else {})})
             buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
-            _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs)
+            _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
+                                  doc_ctx_provenance, live_refs_by_call)
             _apply_extractions(repo, pid, user_text)
-            _maybe_autoname(repo, pid, llm)
+            _schedule_autoname(repo, pid, llm)   # N09：后台任务卸载，不阻塞事件循环/主回合
             transition = check_and_advance(repo, pid)
             if transition:
                 tm.append_event(pid, turn_id, "phase_transition", transition)
@@ -496,7 +550,13 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
             env = Envelope(ok=False, error=ToolError(
                 code="internal_error", message=str(exc)))
     else:
-        env = await asyncio.to_thread(dispatch, name, args)
+        # N05：置位当前 call_id——to_thread 拷贝本 Task 的 context，聚合内部
+        # 经 recorder 的搜索调用均带上该 tag，供轮末按调用实例绑定快照
+        token = _CURRENT_CALL_ID.set(call_id)
+        try:
+            env = await asyncio.to_thread(dispatch, name, args)
+        finally:
+            _CURRENT_CALL_ID.reset(token)
     return (call_id, name, env)
 
 
@@ -558,8 +618,18 @@ def _resolve_live_refs(obj, live_refs: dict[str, str]):
     return obj
 
 
-def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
-    """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。"""
+def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
+                          doc_ctx_provenance=None, live_refs_by_call=None):
+    """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。
+
+    N04：``doc_ctx_provenance``（call_id → 生成时仓储依赖视图）供 compose_proposal
+    落盘时作为 provenance_ctx 传给 save_proposal，使依赖指纹忠于生成时的
+    仓储依赖版本而非保存时推测（并发外部修改时能正确判失效）。
+    N05：``live_refs_by_call``（call_id → 规格键→引用）使每份产物按自己的
+    调用实例解析快照（本调用优先，全局 live_refs 作跨调用回退）。
+    """
+    doc_ctx_provenance = doc_ctx_provenance or {}
+    live_refs_by_call = live_refs_by_call or {}
     events = tm.replay(pid, turn_id, after_seq=0)
     for ev in events:
         if ev.event != "tool_completed" or not ev.data.get("ok"):
@@ -571,7 +641,10 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
             continue
         data_dict = data if isinstance(data, dict) else (
             data.model_dump(mode="json") if hasattr(data, "model_dump") else {"value": data})
-        data_dict = _resolve_live_refs(data_dict, live_refs)
+        # N05：按调用实例解析——本调用记录的规格键优先（同规格不互相覆盖），
+        # 全局 live_refs 作跨调用回退（保障无 tag 历史产物仍能解析）
+        effective_refs = {**live_refs, **live_refs_by_call.get(call_id, {})}
+        data_dict = _resolve_live_refs(data_dict, effective_refs)
         if name == "profile_field_site":
             repo.save_field_site(pid, {"name": data_dict.get("location", ""),
                                        "confirmed": False, "profile": data_dict})
@@ -581,9 +654,12 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs):
         elif name == "compose_proposal":
             markdown = data_dict.get("markdown", "")
             if markdown:
-                repo.save_proposal(pid, markdown,
-                                   kind=data_dict.get("kind") or "proposal",
-                                   version=data_dict.get("version") or "draft")
+                # N04：用生成时仓储依赖视图作为指纹依据（provenance）
+                repo.save_proposal(
+                    pid, markdown,
+                    kind=data_dict.get("kind") or "proposal",
+                    version=data_dict.get("version") or "draft",
+                    provenance_ctx=doc_ctx_provenance.get(call_id))
         elif name == "compose_interview_guide":
             # guide 返回 {类型: 正文} → 拼单文档落盘
             parts = ["# 访谈提纲", ""]
@@ -646,13 +722,19 @@ def _maybe_autoname(repo, pid, llm):
     依最近对话生成 ≤30 字中文项目名；LLM 不可用走 topic/首条消息兑底。
 
     任一步失败（含 LLM 返回空）静默返回，下回合再试；title 已非空直接返回
-    （用户手动命名后永不覆盖）。写入走 update_research_context 浅合并，
-    仅覆盖 title 键。
+    （用户手动命名后永不覆盖）。写入走 update_research_context 浅合并，仅覆盖 title 键。
+
+    N09：本函数含阻塞的 ``llm.chat``，生产路径由 ``_schedule_autoname`` 经
+    ``asyncio.to_thread`` 卸载到线程、以 fire-and-forget 后台任务执行（不卡事件
+    循环、主回合先完成）。为防命名窗口内的用户改名/编辑被覆盖，耗时的 llm.chat
+    前后各核对一次 title 与项目版本（updated_at）：返回时 title 已非空或版本已变
+    则放弃写入。同步直调（测试）无并发，复核天然通过。
     """
     try:
         ctx = repo.get_research_context(pid)
         if str(ctx.get("title") or "").strip():
             return
+        version_before = repo.get_state(pid).get("updated_at")   # N09：命名前项目版本基线
         history = repo.get_messages(pid, limit=10)
         convo = [m for m in history if m.get("role") in ("user", "assistant")]
         if llm is None:
@@ -679,9 +761,52 @@ def _maybe_autoname(repo, pid, llm):
             name = lines[0].strip().strip('"“”‘’《》').strip()[:30] if lines else ""
         if not name.strip():
             return
+        # N09：返回时复核——title 仍空（用户未在窗口内命名）且项目版本未变（无并发
+        # 编辑）才写入，绝不覆盖命名窗口期间的用户改名/编辑。
+        if str(repo.get_research_context(pid).get("title") or "").strip():
+            return
+        if repo.get_state(pid).get("updated_at") != version_before:
+            return
         repo.update_research_context(pid, {"title": name})
     except Exception:
         return   # best-effort：失败不影响回合流程，下回合再试
+
+
+# N09：自动命名后台任务引用集——fire-and-forget 须持引用，防 GC 提前回收任务
+_AUTONAME_TASKS: set[asyncio.Task] = set()
+# 命名模型调用的短超时（秒）：超时即放弃，best-effort 不拖累 worker
+_AUTONAME_TIMEOUT = 8.0
+
+
+async def _autoname_async(repo, pid, llm):
+    """N09：把阻塞的 ``_maybe_autoname`` 卸载到线程并加短超时——事件循环不被命名
+    模型调用阻塞（心跳/其他请求/SSE/取消照常及时处理）。best-effort：超时或任何
+    异常静默放弃、下回合再试；CancelledError 属 BaseException，会正常传播（任务被
+    取消时干净终止，不吞取消）。
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(_maybe_autoname, repo, pid, llm),
+            timeout=_AUTONAME_TIMEOUT)
+    except Exception:
+        return
+
+
+def _schedule_autoname(repo, pid, llm):
+    """N09：轮末以 fire-and-forget 后台任务触发自动命名——主回合不等待、先完成。
+
+    ``create_task`` 不产生 await 点，轮末块「同步无 await、取消不中途插入」的不变量
+    得以保持；任务在 run_turn 返回、事件循环空闲后才跑，其版本基线天然晚于本轮全部
+    写入（append_message/抽取/阶段推进），故 updated_at 复核只反映外部并发编辑。
+    无运行中事件循环（同步直调/脚本）时静默跳过，下回合再试。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_autoname_async(repo, pid, llm))
+    _AUTONAME_TASKS.add(task)
+    task.add_done_callback(_AUTONAME_TASKS.discard)
 
 
 # amap client 方法形参序（N5）：RecordingClient 记录的位置参数按此并入
@@ -698,7 +823,7 @@ _AMAP_PARAMS = {
 
 
 def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
-                      label: str = "flyai") -> int:
+                      label: str = "flyai", live_refs_by_call=None) -> int:
     """消费 recorder.calls[start:] 的新增成功搜索，落盘为快照证据（R08 §6）。
 
     返回新游标（幂等，同一调用不会重复落盘）。flyai 路径仅记录带目的地
@@ -710,6 +835,8 @@ def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
     每次落盘同时按 ``_live_key`` 归并 规格键→快照引用（后写覆盖：同一键
     多次命中取最新），轮末 ``_persist_tool_results`` 据此替换聚合产出中
     的规格键；文案前缀随 label（flyai/amap 快照）。
+    N05：``live_refs_by_call`` 非 None 时，另按调用实例（sig["tag"] 即 call_id）
+    分组存一份规格键→引用，使同规格多次调用不会互相覆盖（“同规格≠同一次报价”）。
     recorder 为 None（宿主未注入对应客户端）时原样返回游标。
     """
     if recorder is None:
@@ -737,5 +864,10 @@ def _drain_snapshots(repo, pid, recorder, snapshot_ids, live_refs, start: int,
         snapshot_ids.append(cid)
         key = _live_key(method, view)
         if key:
-            live_refs[key] = f"{label} 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+            ref = f"{label} 快照 {cid}（{datetime.now():%Y-%m-%d} 查询）"
+            live_refs[key] = ref   # 全局（后写覆盖，作跨调用回退）
+            if live_refs_by_call is not None:
+                # N05：按调用实例分组——同规格不同次调用各自绑定自己的快照
+                tag = sig.get("tag", "") or ""
+                live_refs_by_call.setdefault(tag, {})[key] = ref
     return len(recorder.calls)

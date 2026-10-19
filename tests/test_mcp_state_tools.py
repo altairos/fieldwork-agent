@@ -11,6 +11,7 @@ handler 调用风格按控制者裁决 1 统一为 kwargs 具名参数（server 
 import pytest
 from fieldwork_agent.kernel.context_patch import ALLOWED_CONTEXT_FIELDS
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+from fieldwork_agent.mcp_server import request_ctx
 from fieldwork_agent.mcp_server.state_tools import STATE_TOOLS, build_handlers
 from mcp.types import Tool
 
@@ -254,3 +255,64 @@ def test_search_knowledge_empty_text_lists_all(tmp_path):
     h["add_knowledge_entry"](project_id="p1", title="访谈", content="提纲草稿")
     r = h["search_knowledge"](project_id="p1", text="")
     assert r["ok"] and len(r["data"]) == 2
+
+
+# ---------------------------------------------------------------- N01：MCP 归属强制（单元级）
+
+
+def test_stdio_mode_sees_all_without_token(tmp_path):
+    """enforce_owner=False（stdio 可信全量）：无令牌也能建/列/读，行为不变。"""
+    repo = make_repo(tmp_path)
+    h = build_handlers(repo)   # 缺省 enforce_owner=False
+    assert h["create_project"](project_id="s1")["ok"]
+    listed = h["list_projects"]()["data"]
+    assert any(p["project_id"] == "s1" for p in listed)
+    assert h["get_project"](project_id="s1")["ok"]
+
+
+def test_enforce_owner_denies_without_token(tmp_path):
+    """enforce_owner=True 且无令牌（resolved_owner=None）：建/列/读全部拒绝。"""
+    repo = make_repo(tmp_path)
+    repo.create("other", owner="anon:alice")   # 预置他人项目
+    h = build_handlers(repo, enforce_owner=True)
+    tok = request_ctx.set_owner(None)
+    try:
+        assert h["create_project"](
+            project_id="e1")["error"]["code"] == "owner_token_required"
+        assert h["list_projects"]()["data"] == []
+        out = h["get_project"](project_id="other")
+        assert out["ok"] is False and out["error"]["code"] == "project_not_found"
+        assert not h["update_research_context"](
+            project_id="other", patch={"topic": "x"})["ok"]
+    finally:
+        request_ctx.reset_owner(tok)
+
+
+def test_enforce_owner_isolates_between_users(tmp_path):
+    """enforce_owner=True：alice 建/读通过（owner 不泄露），bob 读 alice 项目被拒。"""
+    repo = make_repo(tmp_path)
+    h = build_handlers(repo, enforce_owner=True)
+    tok = request_ctx.set_owner("anon:alice")
+    try:
+        assert h["create_project"](project_id="a1")["ok"]
+        got = h["get_project"](project_id="a1")
+        assert got["ok"] and "owner" not in got["data"]
+        assert [p["project_id"] for p in h["list_projects"]()["data"]] == ["a1"]
+    finally:
+        request_ctx.reset_owner(tok)
+    tok2 = request_ctx.set_owner("anon:bob")
+    try:
+        out = h["get_project"](project_id="a1")
+        assert out["ok"] is False and out["error"]["code"] == "project_not_found"
+        assert h["list_projects"]()["data"] == []
+        # bob 用 alice 的 pid create → 拒绝（不覆盖）
+        assert h["create_project"](
+            project_id="a1")["error"]["code"] == "project_not_found"
+    finally:
+        request_ctx.reset_owner(tok2)
+    # 归属未被 bob 篡改：alice 仍可读回
+    tok3 = request_ctx.set_owner("anon:alice")
+    try:
+        assert h["get_project"](project_id="a1")["ok"]
+    finally:
+        request_ctx.reset_owner(tok3)

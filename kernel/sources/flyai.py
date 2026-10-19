@@ -580,21 +580,29 @@ class RecordingClient:
     kernel 自身不持久化。记录项为
     ``(方法名, {"args": [...], "kwargs": {...}}, 返回包络)``；
     非可调用属性（如 ``api_key``）经 ``__getattr__`` 原样透传、不留痕。
+
+    N05 ``tag_provider``：可选零参可调用，记录时取当前调用实例标签（如宿主
+    的工具 call_id）写入 sig["tag"]——使同一规格键的多次调用能按调用实例
+    区分绑定快照（“同规格≠同一次报价”）。缺省 None 不打标（行为不变）。
     """
 
-    def __init__(self, inner: Any):
+    def __init__(self, inner: Any, tag_provider: Any = None):
         self.inner = inner
         self.calls: list[tuple[str, dict, Any]] = []
+        self._tag_provider = tag_provider
 
     def __getattr__(self, name: str):
-        # inner/calls 在实例字典命中，不会进入本方法；其余属性一律问 inner
+        # inner/calls/_tag_provider 在实例字典命中，不会进入本方法；其余属性一律问 inner
         target = getattr(self.inner, name)
         if not callable(target):
             return target
 
         def _recorded(*args: Any, **kwargs: Any) -> Any:
             result = target(*args, **kwargs)
-            self.calls.append((name, {"args": list(args), "kwargs": dict(kwargs)}, result))
+            sig: dict = {"args": list(args), "kwargs": dict(kwargs)}
+            if self._tag_provider is not None:
+                sig["tag"] = self._tag_provider()   # N05：当前调用实例标签
+            self.calls.append((name, sig, result))
             return result
 
         return _recorded

@@ -134,12 +134,81 @@ describe("streamTurnEvents 终止/出错时释放连接", () => {
     expect(closed).toBe(1);
   });
 
-  test("流自然结束(done)也 cancel reader 并回调 onClose", async () => {
-    const reader = stubSse([]);
+  // ── N14：只有收到明确终态（turn_done/error）才算完成；非终态 EOF 按断线恢复 ──
+  test("非终态 EOF（HTTP 200 后无 turn_done/error 即 done）→ 不当正常完成，重连耗尽后 onError", async () => {
+    // 首连吐一个 delta 后 EOF（连接被截断，未见终态）：maxReconnects=0 让退避不空转，
+    // 直接落到 onError。回归点：旧实现把这种 EOF 当正常关闭（onClose），conversation 永远 turnRunning。
+    const reader = stubSse([
+      'id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"半截"}\n\n',
+    ]);
+    const seen: EventEnvelope[] = [];
+    const errors: Error[] = [];
     let closed = 0;
-    await streamTurnEvents("p1", "t1", { onEvent: () => {}, onClose: () => { closed += 1; } });
+    await streamTurnEvents("p1", "t1", {
+      onEvent: (f) => seen.push(f),
+      onError: (e) => errors.push(e),
+      onClose: () => { closed += 1; },
+      maxReconnects: 0,
+    });
+    expect(reader.cancel).toHaveBeenCalledTimes(1);            // 截断的连接同样释放
+    expect(seen.map((f) => f.event)).toEqual(["message_delta"]);
+    expect(closed).toBe(0);                                     // 关键：非终态 EOF 不再被当正常关闭
+    expect(errors).toHaveLength(1);                            // 而是如实上报流中断
+  });
+
+  test("非终态 EOF → 按 Last-Event-ID 重连续传，收到终态后才 onClose", async () => {
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const sentHeaders: (HeadersInit | undefined)[] = [];
+      const cancels: ReturnType<typeof vi.fn>[] = [];
+      let conn = 0;
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+        sentHeaders.push(init?.headers);
+        conn += 1;
+        // 首连：delta(seq1) 后 EOF（截断）；重连：补上 turn_done(seq2)
+        const chunks = conn === 1
+          ? ['id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"半截"}\n\n']
+          : ['id: 2\nevent: turn_done\ndata: {"turn_id":"t1","seq":2,"reply_id":"t1","usage":{}}\n\n'];
+        const queue = chunks.map((c) => encoder.encode(c));
+        const cancel = vi.fn(async () => {});
+        cancels.push(cancel);
+        return { ok: true, status: 200, body: { getReader: () => ({
+          read: vi.fn(async () => queue.length
+            ? { value: queue.shift() as Uint8Array, done: false }
+            : { value: undefined, done: true }),
+          cancel,
+        }) } };
+      }));
+      const seen: EventEnvelope[] = [];
+      let closed = 0;
+      const done = streamTurnEvents("p1", "t1", {
+        onEvent: (f) => seen.push(f), onClose: () => { closed += 1; },
+      });
+      await vi.advanceTimersByTimeAsync(5000);                 // 越过首次退避（2s）让重连发生
+      await done;
+      expect(conn).toBe(2);                                    // 确实按断线恢复重连了
+      expect((sentHeaders[1] as Record<string, string>)["Last-Event-ID"]).toBe("1");  // 续传起点=已见最大 seq
+      expect(seen.map((f) => f.event)).toEqual(["message_delta", "turn_done"]);
+      expect(closed).toBe(1);                                  // 收到终态后才正常关闭
+      cancels.forEach((c) => expect(c).toHaveBeenCalledTimes(1));  // 每条连接都释放 reader
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("重连只在收到新帧时清零退避：反复「200＋重复帧＋EOF」不被掩盖成无限重连", async () => {
+    // 每次连接都重发同一 seq（服务端未按 Last-Event-ID 推进）→ 无新进展 → 退避计数不清零，
+    // maxReconnects=0 时首连即 onError（证明重复帧不算 progress）。
+    const reader = stubSse([
+      'id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"a"}\n\n',
+    ]);
+    const errors: Error[] = [];
+    await streamTurnEvents("p1", "t1", {
+      onEvent: () => {}, onError: (e) => errors.push(e), maxReconnects: 0,
+    });
     expect(reader.cancel).toHaveBeenCalledTimes(1);
-    expect(closed).toBe(1);
+    expect(errors).toHaveLength(1);
   });
 
   test("read 抛出时 finally 仍 cancel reader（重连耗尽后如实 onError）", async () => {

@@ -25,7 +25,7 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
 from fieldwork_agent.kernel.repository.guard import cache_id_violation, owner_violation
 from fieldwork_agent.kernel.repository.protocol import _UNSET
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MESSAGE_WINDOW = 50
 CACHE_LIMIT_BYTES = 64 * 1024
 
@@ -78,12 +78,13 @@ CREATE TABLE IF NOT EXISTS informants (
 CREATE INDEX IF NOT EXISTS idx_informants_project ON informants(project_id, seq);
 
 CREATE TABLE IF NOT EXISTS search_cache (
-    id         TEXT PRIMARY KEY,                -- 全局唯一（裁决：cid 不带 pid）
+    id         TEXT NOT NULL,                   -- N07：项目内作用域（跨项目同 legacy cid 共存）
     project_id TEXT NOT NULL,
     query      TEXT NOT NULL,
     tool       TEXT NOT NULL,
     result     TEXT NOT NULL,                   -- JSON；写入前已应用 64KB 截断
     cached_at  TEXT NOT NULL,
+    PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_cache_project ON search_cache(project_id, cached_at);
@@ -140,6 +141,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # 跨版本增量列（存量行由 DEFAULT 值补齐，不改任何既有语义）：
 # - v1→v2（审计二 R02）：projects.proposal_confirmed、proposals.dep_hash
 # - v2→v3（归属隔离）：projects.owner
+# - v3→v4（N07）：search_cache 主键由全局 id 改为 (project_id, id)——SQLite
+#   不能 ALTER 主键，在 _ensure_schema 里检测旧形状则整表重建（见下）。
 # confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对旧库
 # 在版本分支之前即已建好）；执行见 _ensure_schema 的显式事务
 # （补列与 user_version 同生共死，防「列已加、版本未进」的半迁移库重开锁死）。
@@ -184,6 +187,7 @@ class SqliteRepository:
 
     def __init__(self, db_path: Path | str):
         self._db_path = Path(db_path)
+        self._tx_conn: sqlite3.Connection | None = None   # N06：环境事务连接（见 transaction）
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
@@ -207,7 +211,14 @@ class SqliteRepository:
         并发写者在 busy_timeout 内排队等锁；读路径保持 deferred（WAL 下
         读不阻塞）。「_ensure_schema 不用 immediate：executescript 会隐式
         COMMIT 掉手动事务。」
+
+        N06：若已处于 ``transaction()`` 环境事务中（``_tx_conn`` 非空），复用同一
+        连接、不再单独 BEGIN/COMMIT/CLOSE——让一组写操作（迁移的清空+导入+
+        验证+标记）落在单事务里，任一步失败整体回滚到迁移前状态。
         """
+        if self._tx_conn is not None:
+            yield self._tx_conn
+            return
         conn = sqlite3.connect(self._db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -222,6 +233,37 @@ class SqliteRepository:
             conn.rollback()
             raise
         finally:
+            conn.close()
+
+    @contextmanager
+    def transaction(self):
+        """N06：把一组写操作包进「单连接单事务」（BEGIN IMMEDIATE … COMMIT/ROLLBACK）。
+
+        期间所有经 ``_connect`` 的读写都复用同一连接：写方法不再各自提交，读方法
+        （含 ``migrate._verify``）读到的是本事务未提交的中间态，可在 COMMIT 前校验。
+        任一步抛异常 → 整体 ROLLBACK，库回到进入前的状态（force 迁移「清空+导入」
+        的原子性即靠此保证）。不可重入：嵌套调用直接报错，避免半提交歧义。
+        """
+        if self._tx_conn is not None:
+            raise RuntimeError("已有进行中的 transaction()，不可重入")
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            self._tx_conn = conn
+            yield conn
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            self._tx_conn = None
             conn.close()
 
     def _ensure_schema(self) -> None:
@@ -245,6 +287,7 @@ class SqliteRepository:
                             f"PRAGMA table_info({table})")}
                         if column not in cols:
                             conn.execute(stmt)
+                    self._rebuild_search_cache_pk(conn)   # N07：v3→v4 复合主键
                     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     conn.execute("COMMIT")
                 except Exception:
@@ -258,6 +301,33 @@ class SqliteRepository:
             # 直接报 no such column；放这里在补列之后幂等补建（新库/旧库殊途同归）。
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner)")
+
+    @staticmethod
+    def _rebuild_search_cache_pk(conn) -> None:
+        """N07（v3→v4）：search_cache 主键由全局 ``id`` 重建为 ``(project_id, id)``。
+
+        SQLite 不能 ALTER 主键，采标准建新表→搬数据→drop→rename 四步（均用
+        conn.execute 而非 executescript，后者会隐式 COMMIT 掉外层事务）。
+        幂等：已是复合主键（project_id 的 pk 序>0）则直接返回；无入向 FK
+        引用 search_cache，foreign_keys=ON 下 drop/rename 安全。
+        """
+        pk_ord = {r[1]: r[5] for r in conn.execute("PRAGMA table_info(search_cache)")}
+        if pk_ord.get("project_id", 0) > 0:
+            return   # 已是复合主键（新库/已重建），无需动作
+        conn.execute(
+            "CREATE TABLE search_cache_new ("
+            "id TEXT NOT NULL, project_id TEXT NOT NULL, query TEXT NOT NULL,"
+            " tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL,"
+            " PRIMARY KEY (project_id, id),"
+            " FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE)")
+        conn.execute(
+            "INSERT INTO search_cache_new(id, project_id, query, tool, result, cached_at)"
+            " SELECT id, project_id, query, tool, result, cached_at FROM search_cache")
+        conn.execute("DROP TABLE search_cache")
+        conn.execute("ALTER TABLE search_cache_new RENAME TO search_cache")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cache_project"
+            " ON search_cache(project_id, cached_at)")
 
     def _require(self, pid: str) -> None:
         with self._connect() as conn:
@@ -700,12 +770,14 @@ class SqliteRepository:
     # ------------------------------------------------------------------ 提案文档
 
     def save_proposal(
-        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft"
+        self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
+        *, provenance_ctx: dict | None = None,
     ) -> str:
         """版本累积：每次 INSERT 新记录，绝不覆盖既有（契约要求）。
 
         对齐 json_repo：登记走 state["proposals"] + _save 落盘 → 同事务推进
         projects.updated_at；content 事实源存 DB（裁决4），不再落 .md 文件。
+        N04：provenance_ctx 非 None 时，依赖指纹的 ctx 路用生成时实际值。
         """
         self._require(pid)
         record_id = _new_id("prop")
@@ -713,7 +785,8 @@ class SqliteRepository:
         filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
         saved_at = _now()
         with self._connect(immediate=True) as conn:   # R04：指纹+存在性检查+seq 分配同锁
-            dep_hash = self._current_confirm_hash(pid, conn=conn)
+            dep_hash = self._current_confirm_hash(
+                pid, conn=conn, provenance_ctx=provenance_ctx)
             exists = conn.execute(
                 "SELECT 1 FROM proposals WHERE project_id=? AND filename=?",
                 (pid, filename)).fetchone()
@@ -763,14 +836,21 @@ class SqliteRepository:
                 return cached["id"]
         return ""
 
-    def _current_confirm_hash(self, pid: str, conn=None) -> str:
+    def _current_confirm_hash(self, pid: str, conn=None, *,
+                              provenance_ctx: dict | None = None) -> str:
         """五路依赖指纹（R09）。传 conn 时在该（写）事务内现读——确认校验/
-        存档指纹与写入同锁原子（审计 R04：写锁覆盖状态 API）。"""
+        存档指纹与写入同锁原子（审计 R04：写锁覆盖状态 API）。
+
+        N04：``provenance_ctx`` 非 None 时 ctx 路用生成时实际值（正文所本），
+        其余四路仍现读仓储——使指纹忠于正文实际依赖而非保存时推测。
+        """
         if conn is None:
             with self._connect() as ro:
-                return self._current_confirm_hash(pid, conn=ro)
+                return self._current_confirm_hash(
+                    pid, conn=ro, provenance_ctx=provenance_ctx)
         return compute_confirm_hash(
-            self._read_research_context(conn, pid),
+            provenance_ctx if provenance_ctx is not None
+            else self._read_research_context(conn, pid),
             self._read_field_sites(conn, pid),
             self._read_informants(conn, pid),
             self._read_knowledge(conn, pid),

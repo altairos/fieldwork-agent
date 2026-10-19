@@ -338,3 +338,45 @@ async def test_knowledge_hidden_from_other_owner(client, client_other):
     r = await client_other.get("/projects/mine/knowledge")
     assert r.status_code == 404
     assert (await client.get("/projects/mine/knowledge")).status_code == 200
+
+
+# ───────────────────────────────────────────────
+# N02：创建接口不得覆盖他人已存在项目 + 默认 ID 随机段
+# ───────────────────────────────────────────────
+
+
+async def test_create_cannot_overwrite_other_owner_project(client, client_other):
+    """N02：bob 拿 alice 的 project_id POST /projects 不得修改其字段，与不存在同形 404。"""
+    await client.post("/projects", json={"project_id": "shared", "topic": "ALICE_TOPIC"})
+    # bob 尝试用同一 pid 创建并覆盖主题
+    r = await client_other.post("/projects",
+                                json={"project_id": "shared", "topic": "BOB_OVERWRITE"})
+    assert r.status_code == 404
+    assert r.json()["detail"] == "项目不存在: shared"
+    # alice 项目未被篡改：主题仍为原值、归属仍是 alice
+    snap = (await client.get("/projects/shared")).json()
+    assert snap["research_context"]["topic"] == "ALICE_TOPIC"
+    # bob 仍看不到该项目
+    assert (await client_other.get("/projects/shared")).status_code == 404
+
+
+async def test_create_existing_own_project_is_idempotent_open(client):
+    """N02：本人同名重提视为打开/更新已有（幂等），不报错、可更新自己的字段。"""
+    r1 = await client.post("/projects", json={"project_id": "own", "topic": "T1"})
+    assert r1.status_code == 201
+    r2 = await client.post("/projects", json={"project_id": "own", "topic": "T2"})
+    assert r2.status_code == 201
+    assert (await client.get("/projects/own")).json()["research_context"]["topic"] == "T2"
+
+
+async def test_auto_project_id_has_random_suffix(client):
+    """N02：默认 ID 增随机段，同秒连续创建不碰撞（旧实现仅精确到秒）。"""
+    import re
+    ids = []
+    for _ in range(3):
+        r = await client.post("/projects", json={})
+        assert r.status_code == 201
+        ids.append(r.json()["project_id"])
+    assert len(set(ids)) == 3, ids   # 三个自动 ID 互不相同
+    for pid in ids:
+        assert re.fullmatch(r"field_\d{8}_\d{6}_[0-9a-f]{6}", pid), pid

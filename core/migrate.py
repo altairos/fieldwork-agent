@@ -138,8 +138,12 @@ def migrate_to_sqlite(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
       标记（典型来源：Web/MCP 已经跑了 sqlite 后端并原生写入了该项目）→ 默认
       抛 ``RuntimeError`` 中止，绝不清空别人的存量；``force=True`` 时先做滚动
       备份（``backup(keep=3)``）再整项目 CASCADE 清空重导；
+    - **逐项目原子（N06）**：单项目的「清空（force）+ 全部导入 + 校验 + 标记」在
+      ``SqliteRepository.transaction()`` 单事务内完成，任一步失败整体回滚到迁移前
+      状态，绝不留「已清空、半导入」的目标；失败即抛出中止整批，已成功项目各自
+      提交并带 ``migrated:<pid>`` 标记，批次结果可经 ``schema_meta`` 查证；
     - 幂等主语义：每项目迁移完成写项目级标记，再迁命中即整项目跳过；``INSERT OR
-      REPLACE`` 仅作中断重跑的兜底；标记在校验通过后写入，失败重迁自愈；
+      REPLACE`` 仅作中断重跑的兜底；标记与导入同事务，校验通过后随提交落盘；
     - 迁移先经 ``json_repo.create`` 幂等打开：触发 json 侧消息史规范化（窗口
       独有消息补写进 jsonl），否则旧版项目最近对话静默丢失；
     - messages 自增主键无稳定 id：导入前先清空该项目存量再整段重导（仅在已经
@@ -162,51 +166,63 @@ def migrate_to_sqlite(json_repo: JsonRepository, sqlite_repo: SqliteRepository,
             "（CLI: fieldwork migrate --to-sqlite --force，会先做滚动备份）")
     if conflicts and backup(sqlite_repo) is not None:
         report["backups"] = 1
-    migrated: list[str] = []   # 本轮实际导入的 pid；_verify 通过后才落标记
+    migrated: list[str] = []   # 本轮实际导入并提交的 pid
+    skipped: list[str] = []    # 已有迁移标记、本轮跳过的 pid（收尾单独校验）
     for pid in pids:
         if _already_migrated(sqlite_repo, pid):
             report["skipped"] += 1
+            skipped.append(pid)
             continue
-        if pid in conflicts:            # 只有 force 路径能到这里：先清旧行
-            _clear_project(sqlite_repo, pid)
         jstate = json_repo.get_state(pid)
-        json_repo.create(pid)           # 幂等打开 = 触发 json 侧消息史规范化
-        sqlite_repo.create(pid, owner=jstate.get("owner"))   # 幂等建项目（归属随迁）
-        sqlite_repo.set_phase(pid, jstate["phase"])          # 阶段（同阶段不写史）
-        sqlite_repo._import_phase_history(pid, jstate["phase_history"])
-        if jstate["research_context"]:
-            sqlite_repo.update_research_context(pid, jstate["research_context"])
-        sqlite_repo._import_project_meta(pid, jstate["created_at"], jstate["updated_at"])
-        sqlite_repo._clear_messages(pid)                     # 无稳定主键：清空重导
-        for m in json_repo.get_messages(pid, limit=0):       # 全量消息，保留原 ts
-            sqlite_repo._import_message(pid, m["role"], m["content"],
-                                        m.get("metadata", {}), m["ts"])
-            report["messages"] += 1
-        for s in jstate["field_sites"]:
-            sqlite_repo._import_record("field_sites", pid, s)
-            report["field_sites"] += 1
-        for i in jstate["informants"]:
-            sqlite_repo._import_record("informants", pid, i)
-            report["informants"] += 1
-        for c in json_repo.list_cached_searches(pid):        # 缓存（取全量含 result）
-            full = json_repo.get_cached_search(pid, c["id"])
-            if full is not None:
-                sqlite_repo._import_cache(pid, full)
-                report["search_cache"] += 1
-        for k in json_repo.list_knowledge(pid):
-            sqlite_repo._import_knowledge(pid, k)
-            report["knowledge"] += 1
-        for p in json_repo.list_proposals(pid):              # 含旧单值键兼容读出
-            sqlite_repo._import_proposal(pid, p)
-            report["proposals"] += 1
-        for c in jstate.get("confirmations") or []:          # 确认记录（审计二 R09）
-            sqlite_repo._import_confirmation(pid, c)
-            report["confirmations"] += 1
-        sqlite_repo._set_proposal_confirmed(pid, bool(jstate.get("proposal_confirmed")))
-        migrated.append(pid)
+        json_repo.create(pid)           # 幂等打开 = 触发 json 侧消息史规范化（json 后端，事务外）
+        # N06：清空（force）+ 全部导入 + 校验 + 标记 落进单事务；任一步失败整体回滚
+        # 到迁移前状态，绝不留「已清空、半导入」的目标（逐项目原子，非整批）。
+        tally = {k: 0 for k in ("messages", "field_sites", "informants", "search_cache",
+                                "knowledge", "proposals", "confirmations")}
+        with sqlite_repo.transaction():
+            if pid in conflicts:            # 只有 force 路径能到这里：先清旧行
+                _clear_project(sqlite_repo, pid)
+            sqlite_repo.create(pid, owner=jstate.get("owner"))   # 幂等建项目（归属随迁）
+            sqlite_repo.set_phase(pid, jstate["phase"])          # 阶段（同阶段不写史）
+            sqlite_repo._import_phase_history(pid, jstate["phase_history"])
+            if jstate["research_context"]:
+                sqlite_repo.update_research_context(pid, jstate["research_context"])
+            sqlite_repo._import_project_meta(pid, jstate["created_at"], jstate["updated_at"])
+            sqlite_repo._clear_messages(pid)                     # 无稳定主键：清空重导
+            for m in json_repo.get_messages(pid, limit=0):       # 全量消息，保留原 ts
+                sqlite_repo._import_message(pid, m["role"], m["content"],
+                                            m.get("metadata", {}), m["ts"])
+                tally["messages"] += 1
+            for s in jstate["field_sites"]:
+                sqlite_repo._import_record("field_sites", pid, s)
+                tally["field_sites"] += 1
+            for i in jstate["informants"]:
+                sqlite_repo._import_record("informants", pid, i)
+                tally["informants"] += 1
+            for c in json_repo.list_cached_searches(pid):        # 缓存（取全量含 result）
+                full = json_repo.get_cached_search(pid, c["id"])
+                if full is not None:
+                    sqlite_repo._import_cache(pid, full)
+                    tally["search_cache"] += 1
+            for k in json_repo.list_knowledge(pid):
+                sqlite_repo._import_knowledge(pid, k)
+                tally["knowledge"] += 1
+            for p in json_repo.list_proposals(pid):              # 含旧单值键兼容读出
+                sqlite_repo._import_proposal(pid, p)
+                tally["proposals"] += 1
+            for c in jstate.get("confirmations") or []:          # 确认记录（审计二 R09）
+                sqlite_repo._import_confirmation(pid, c)
+                tally["confirmations"] += 1
+            sqlite_repo._set_proposal_confirmed(pid, bool(jstate.get("proposal_confirmed")))
+            _verify(json_repo, sqlite_repo, [pid])   # 事务内校验：读到未提交态，失败即回滚
+            _mark_project(sqlite_repo, pid)          # 与导入同生共死（提交才算迁移完成）
+        for k, v in tally.items():                   # 事务提交成功后才并入总账
+            report[k] += v
         report["projects"] += 1
-    _verify(json_repo, sqlite_repo, pids)   # 行数 + 抽样哈希；不一致抛 RuntimeError
-    for pid in migrated:                    # 校验通过才标记（失败重迁自愈）
-        _mark_project(sqlite_repo, pid)
+        migrated.append(pid)
+    if skipped:
+        # 收尾安全网：本轮跳过（已标记）项目未被触碰，单独校验以捕获其存量漂移
+        # （导入类项目已在上各自事务内校验通过并提交）。
+        _verify(json_repo, sqlite_repo, skipped)
     _mark_migrated(sqlite_repo)
     return report
