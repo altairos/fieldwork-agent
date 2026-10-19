@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from fieldwork_agent.kernel.context_patch import (
     context_fields_hint,
+    context_patch_schema,
     sanitize_context_patch,
 )
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
@@ -25,14 +26,17 @@ _UPDATE_SCHEMA = {
     "function": {
         "name": "update_research_context",
         "description": (
-            "把对话中用户明确确认的研究信息写入项目状态（仅白名单字段）。"
-            "禁止推测、禁止补默认值；修正用完整新值覆盖（如预算 2 万改 5 万）。"),
+            "保存已确认研究信息与带状态的工作笔记（仅白名单字段）。正式字段禁止推测、禁止补默认值；"
+            "修正用完整新值覆盖。候选/文献缺口/否定方向写research_notes（id?、kind、content、origin、"
+            "status、basis、references）；采纳/否定需用户依据，文献笔记需真实来源。"
+            "当前焦点/未解决疑问/用户跳过的字段写interview_state（current_focus/open_questions/deferred_fields）。"),
         "parameters": {
             "type": "object",
             "properties": {
                 "patch": {
-                    "type": "object",
-                    "description": "要写入的字段 → 新值；白名单外键或类型不符将整次拒绝",
+                    **context_patch_schema(),
+                    "description": "正式字段→新值；research_notes为笔记增量列表（已有id可改状态），"
+                                   "interview_state为对话记忆对象；候选不自动变成已确认问题。非法项整次拒绝",
                 },
                 "reason": {
                     "type": "string",

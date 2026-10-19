@@ -83,13 +83,14 @@ const KERNEL_TOOLS = [
   "search_pois",
   "search_keyword",
   "search_ai",
+  "search_literature",
 ];
 
 /** 宿主层回合内状态工具（web_host/agent/state_tools.py build_state_tools）。 */
 const HOST_STATE_TOOLS = ["update_research_context"];
 
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 内核 15 能力名 + 宿主状态工具（无臆造 key）", () => {
+  test("注册表键集 = 已适配的内核能力名 + 宿主状态工具（无臆造 key）", () => {
     expect(Object.keys(toolCardRegistry).sort()).toEqual(
       [...KERNEL_TOOLS, ...HOST_STATE_TOOLS].sort(),
     );

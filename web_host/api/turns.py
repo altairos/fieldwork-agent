@@ -91,8 +91,9 @@ async def list_messages(project_id: str, request: Request,
     """消息史恢复（刷新回填）：按时间序回 role/content 全量史。
 
     只回 role/content（ts/metadata 是内核内部细节，不进 API 面）；
-    唯一例外：assistant 消息 metadata.quick_replies 非空时回传该键
-    （快捷选项按钮刷新恢复）；``limit=0`` 走 repo 语义取全量。
+    例外：assistant 消息携带快捷选项时回传 quick_reply_groups（多组
+    带标签，前端渲染多行 chips）；旧史仅有扁平 quick_replies 时同时回传
+    两者（quick_reply_groups 由扁平列表包成单个无标签组）；``limit=0`` 走全量。
     """
     repo = get_repo(request)
     checked_owned_project(project_id, repo, owner)
@@ -100,9 +101,15 @@ async def list_messages(project_id: str, request: Request,
     out = []
     for m in messages:
         item = {"role": m["role"], "content": m["content"]}
-        quick = (m.get("metadata") or {}).get("quick_replies")
+        meta = m.get("metadata") or {}
+        quick = meta.get("quick_replies")
         if quick:
             item["quick_replies"] = quick
+        groups = meta.get("quick_reply_groups")
+        if not groups and quick:
+            groups = [{"label": "", "options": quick}]   # 旧史兼容：扁平列表包成单组
+        if groups:
+            item["quick_reply_groups"] = groups
         out.append(item)
     return out
 

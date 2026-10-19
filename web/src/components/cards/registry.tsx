@@ -5,6 +5,7 @@ import { HotelCard } from "./HotelCard";
 import { InformantCard } from "./InformantCard";
 import { ItineraryCard } from "./ItineraryCard";
 import { LivingCostCard } from "./LivingCostCard";
+import { LiteratureCard } from "./LiteratureCard";
 import { PoiCard } from "./PoiCard";
 import { ProposalCard } from "./ProposalCard";
 import { SiteProfileCard } from "./SiteProfileCard";
@@ -62,6 +63,7 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   search_pois: PoiCard,
   search_keyword: PoiCard,
   search_ai: PoiCard,
+  search_literature: LiteratureCard,
   // 宿主层状态工具（轮 2 症状②，见头部注释例外说明）：data = {updated, reason}
   update_research_context: UpdateResearchContextCard,
 };
@@ -98,6 +100,7 @@ export const toolVisibility: Record<string, ToolVisibility> = {
   search_pois: "collapsed",
   search_keyword: "collapsed",
   search_ai: "collapsed",
+  search_literature: "full",
   // hidden：内部状态写入
   update_research_context: "hidden",
 };

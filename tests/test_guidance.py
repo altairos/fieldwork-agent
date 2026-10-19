@@ -13,13 +13,8 @@ from fieldwork_agent.kernel.models import (
 )
 
 
-def test_check_advance_a_to_b_needs_all_positioning_fields():
-    """方案 B（轮 2 产品决策）：六基础字段 + 深挖研究问题全齐才推进。
-
-    旧门槛 ``answered >= 4`` 允许缺位跳阶段，导致 A 阶段一答满四项就
-    冲进田野点画像、来不及深挖研究兴趣；收紧为七字段全齐（缺一返回
-    ``missing_fields`` 引导宿主继续追问而非推进）。
-    """
+def test_check_advance_a_to_b_needs_topic_and_research_question():
+    """定位探索只要求主题与已明确的问题；预算/人数等不阻止学术探索。"""
     six = dict(purpose="kaiti", discipline="人类学", topic="宗族", scale="单人",
                budget="2万", time_window="7月")
     # 六基础字段齐但缺深挖研究问题 → 不推进，且 missing 指明缺口
@@ -40,7 +35,10 @@ def test_check_advance_a_to_b_needs_all_positioning_fields():
     r2 = phases.check_advance(
         "research_positioning", ResearchContext(discipline="人类学", topic="x"), [], [], False, False
     )
-    assert not r2.can_advance and set(r2.missing_fields) & {"scale", "budget"}
+    assert not r2.can_advance and r2.missing_fields == ["research_questions"]
+    minimal = phases.check_advance("research_positioning", ResearchContext(
+        topic="宗族", research_questions="礼生如何参与事务协商"), [], [], False, False)
+    assert minimal.can_advance
 
 
 def test_check_advance_b_to_c_requires_site_and_informant():
@@ -105,15 +103,7 @@ def test_guiding_questions_are_non_empty_strings():
 
 
 def test_check_advance_required_fields_shape():
-    assert phases.REQUIRED_FIELDS["research_positioning"] == [
-        "purpose",
-        "discipline",
-        "topic",
-        "scale",
-        "budget",
-        "time_window",
-        "research_questions",
-    ]
+    assert phases.REQUIRED_FIELDS["research_positioning"] == ["topic", "research_questions"]
     assert "target_location" in phases.REQUIRED_FIELDS["field_site_profiles"]
     assert phases.REQUIRED_FIELDS["finished"] == []
 
@@ -198,23 +188,25 @@ def test_check_advance_b_to_c_non_interview_method():
 
 def test_positioning_prompt_and_questions_ask_purpose_first():
     """审阅意见 R1：用途采集前置到阶段 A。"""
-    assert "purpose" in phases.REQUIRED_FIELDS["research_positioning"]
+    assert "purpose" not in phases.REQUIRED_FIELDS["research_positioning"]
     qs = phases.guiding_questions("research_positioning")
     assert "用途" in qs[0] or "场合" in qs[0]
     assert "用途" in phases.phase_prompt("research_positioning")
 
 
 def test_positioning_prompt_deep_digs_research_interest():
-    """轮 2 方案 A：A 阶段 prompt 指示深挖研究兴趣，未深挖不急于推进。"""
+    """从具体线索协助形成核心问题，保留确认写入规则而不要求用户凑数量。"""
     prompt = phases.phase_prompt("research_positioning")
-    # 深挖指令：初步方向之后追问动机与 2-3 个可研究问题，而非直接过下一项
-    assert "追问" in prompt and "2-3" in prompt
+    assert "具体经历" in prompt and "一个核心问题" in prompt
+    assert "已经清楚就沿用" in prompt
+    assert "一次只问 2-3 个问题" not in prompt
     # 深挖成果经结构化字段沉淀（供 check_advance 七字段门槛计数）
     assert "research_questions" in prompt
     assert "update_research_context" in prompt
     # 引导问题模板含同款深挖问句
     qs = phases.guiding_questions("research_positioning")
-    assert any("2-3" in q and "研究问题" in q for q in qs)
+    assert any("具体经历" in q and "材料" in q for q in qs)
+    assert not any("2-3" in q for q in qs)
 
 
 def test_prompts_are_honest_about_scope():

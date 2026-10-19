@@ -34,6 +34,28 @@ async def test_update_research_context(client):
     assert ctx["budget"] == "5万" and ctx["scale"] == "两人同行"
 
 
+async def test_structured_research_state_is_available_through_rest(client):
+    result = await client.put("/projects/p1/research-context", json={
+        "topic": "宗族", "research_questions": "成员如何协商公共事务？",
+        "research_notes": [{"origin": "agent", "content": "是否需要比较不同场景", "status": "proposed"}],
+        "interview_state": {"current_focus": "材料路径", "deferred_fields": ["budget"]},
+    })
+    assert result.status_code == 200, result.text
+    ctx = result.json()["research_context"]
+    assert ctx["research_notes"][0]["id"].startswith("rn_")
+    assert ctx["interview_state"]["deferred_fields"] == ["budget"]
+    assert ctx["research_question_scope"]
+
+
+async def test_invalid_research_note_rejects_other_updates_atomically(client, app):
+    before = app.state.repo.get_research_context("p1")
+    result = await client.put("/projects/p1/research-context", json={
+        "budget": "8万", "research_notes": [{"content": "假称已采纳", "origin": "agent", "status": "adopted"}],
+    })
+    assert result.status_code == 422
+    assert app.state.repo.get_research_context("p1") == before
+
+
 # ---------------------------------------------------------------- N03：字段契约单一来源
 
 

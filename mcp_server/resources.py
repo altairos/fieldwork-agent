@@ -40,7 +40,8 @@ def _render_phases() -> str:
 def _render_questions(phase: str) -> str:
     """渲染 guidance/questions/{phase} 资源。"""
     qs = phases.guiding_questions(phase)
-    lines = [f"# 引导问题：{phase}", ""]
+    lines = [f"# 引导问题：{phase}", "",
+             "> 以下是按当前缺口选用的问题素材，不按序逐项询问；默认一个主问，信息足够可直接交付。", ""]
     for i, q in enumerate(qs, 1):
         lines.append(f"{i}. {q}")
     return "\n".join(lines)

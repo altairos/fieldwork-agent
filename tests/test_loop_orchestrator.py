@@ -412,7 +412,7 @@ def test_acceptance_smoke_no_key(fake_config):
     assert ctx["scale"] == "单人调研"
     filled = {k for k, v in ctx.items() if k != "extras" and str(v).strip()}
     assert filled <= set(ResearchContext.model_fields), "采集项必须是研究上下文槽位"
-    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == {"discipline", "scale", "budget"}
+    assert filled & set(REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]) == set()
     assert state["phase"] in PHASES
     assert out["phase"] == state["phase"] == PHASE_RESEARCH_POSITIONING
     assert out["phase_transition"] is None
@@ -451,18 +451,16 @@ def test_acceptance_smoke_no_key(fake_config):
     assert on_disk.exists() and on_disk.read_text(encoding="utf-8") == markdown
 
 
-# ------------------------------------------- 工具降级追问指令（防"只标注就停"）
+# ------------------------------------------- 工具降级：交付已有信息或按关键缺口提问
 
 
 def test_tool_content_degraded_appends_followup():
-    """degraded 工具结果附追问指令：LLM 必须转为引导性提问，不停在单方陈述。
-
-    回归：profile_field_site 返回 degraded+城市级无关 POI 后，回复停在
-    “必须换路径锁定”——标注了质量缺口但没有向用户提任何问题，对话中断。
-    """
+    """降级给出可操作路径，允许自然结束，只在关键线索不足时追问。"""
     env = Envelope(ok=True, data={"items": []}, degraded="交通段失败；活动段失败")
     c = _tool_content("profile_field_site", env)
     assert "引导性提问" in c
+    assert "已有信息足够回应时" in c and "自然结束" in c
+    assert "不强制追问研究信息" in c
     assert c.startswith("{"), "JSON 摘要在前，指令附后"
 
 

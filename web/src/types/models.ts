@@ -127,6 +127,25 @@ export interface ItineraryPlan {
 
 // ---------------------------------------------------------------- 研究上下文
 
+export interface ResearchNote {
+  id: string;
+  kind: "question" | "interpretation" | "method" | "literature_gap" | "decision" | "observation";
+  content: string;
+  origin: "user" | "agent" | "literature";
+  status: "proposed" | "adopted" | "rejected" | "unresolved" | "superseded";
+  basis: string;
+  references: string[];
+  scope_fingerprint: string;
+}
+
+export interface InterviewState {
+  current_focus: string;
+  last_user_message: string;
+  last_assistant_message: string;
+  open_questions: string[];
+  deferred_fields: string[];
+}
+
 /** 研究定位槽位；空字符串表示未填，extras 收野生字段。 */
 export interface ResearchContext {
   /** 项目显示名（任务1：用户可改 / agent 自动生成，≤30 字；空串 = 未命名，显示层回退 topic）。 */
@@ -142,8 +161,12 @@ export interface ResearchContext {
   travel_date: string;
   /** 输出用途（global|kaiti|grant|course，缺省视为 global）。 */
   purpose: string;
-  /** 深挖凝练的研究问题（轮 2 方案 B：A→B 推进的第七字段）。 */
+  /** 用户已明确表达或采纳的核心研究问题。 */
   research_questions: string;
+  /** 以下字段为增量扩展，旧项目可以缺省；范围指纹由宿主生成。 */
+  research_question_scope?: string;
+  research_notes?: ResearchNote[];
+  interview_state?: InterviewState;
   /** 非访谈型研究显式跳过访谈对象硬条件（附理由）。 */
   interviews_not_applicable: boolean;
   interviews_na_reason: string;

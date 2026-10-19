@@ -37,9 +37,10 @@ def _canonical(value):
 
 def compute_confirm_hash(ctx: dict, sites: list, informants: list,
                          knowledge: list, itinerary_cid: str = "") -> str:
-    """五路依赖指纹 → sha1 hex（键序无关；ctx 全量进指纹，保守失效）。"""
+    """五路依赖指纹；工作笔记/对话记忆不进文档事实渠道，正式上下文仍保守失效。"""
     payload = {
-        "ctx": _canonical(ctx or {}),
+        "ctx": _canonical({k: v for k, v in (ctx or {}).items()
+                           if k not in {"research_notes", "interview_state"}}),
         "sites": _canonical(sites or []),
         "informants": _canonical(informants or []),
         "knowledge": _canonical(knowledge or []),

@@ -23,6 +23,7 @@ from typing import Any
 
 from fieldwork_agent.kernel.models import Envelope, ItemPage, Schedule, SearchItem, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.tool_usage import check_tool_domain
 from pydantic import BaseModel, Field
 
 # normalize_items 消费的候选键（命中即不进入 extra，避免同一信息两处表达）
@@ -408,11 +409,15 @@ class FlyAIClient:
         return self._execute(args)
 
     def search_keyword(self, query: str) -> Envelope:
-        """关键词搜索 — 广义覆盖（签证/租车/保险/美食等）。"""
+        """飞猪旅行商品关键词搜索；明确的学术请求在出网前拒绝。"""
+        if (error := check_tool_domain("search_keyword", query)) is not None:
+            return error
         return self._execute(["keyword-search", "--query", query])
 
     def search_ai(self, query: str) -> Envelope:
-        """AI 语义搜索 — 自然语言理解复杂意图（核心能力）。"""
+        """飞猪旅行商品语义搜索，不是通用研究或网页搜索。"""
+        if (error := check_tool_domain("search_ai", query)) is not None:
+            return error
         return self._execute(["ai-search", "--query", query])
 
 
@@ -433,6 +438,8 @@ def _make_search_fn(method_name: str):
     """
 
     def fn(*, client: FlyAIClient | None = None, **kwargs: Any) -> Envelope:
+        if (error := check_tool_domain(method_name, kwargs.get("query", ""))) is not None:
+            return error
         target = client if client is not None else FlyAIClient()
         return getattr(target, method_name)(**kwargs)
 
@@ -518,13 +525,13 @@ class SearchPoisArgs(BaseModel):
 class SearchKeywordArgs(BaseModel):
     """``search_keyword`` 入参（与 FlyAIClient.search_keyword 形参对齐）。"""
 
-    query: str = Field(description="查询串")
+    query: str = Field(description="飞猪旅行商品查询（签证/租车/保险/美食/门票等）；不查论文、文献或地方资料")
 
 
 class SearchAiArgs(BaseModel):
     """``search_ai`` 入参（与 FlyAIClient.search_ai 形参对齐）。"""
 
-    query: str = Field(description="自然语言查询")
+    query: str = Field(description="旅行商品需求，如长期驻村住宿；不是通用网页/学术搜索，论文用search_literature")
 
 
 # description 写明田野场景语义（spec §2.1①：宿主 LLM 靠 schema+description 选型，
@@ -561,13 +568,14 @@ register(CapabilityMeta(
     read_only=True, open_world=True))
 register(CapabilityMeta(
     name="search_keyword",
-    description="关键词搜索：签证/租车/保险/美食等广义覆盖，补足结构化搜索触达不到的信息。",
+    description="飞猪旅行商品关键词检索：仅查签证/租车/保险/餐饮/门票等供给。不是网页搜索，"
+                "不能查论文、文献、民族志、地方志或社会背景资料；学术材料必须用search_literature。",
     fn=search_keyword, args_model=SearchKeywordArgs,
     read_only=True, open_world=True))
 register(CapabilityMeta(
     name="search_ai",
-    description="AI 语义搜索：以自然语言理解复杂田野意图（如『适合长期驻村的便宜住宿』），"
-                "是处理模糊/长尾需求的核心能力。",
+    description="飞猪旅行商品语义检索：只处理旅行供给需求，如『适合长期驻村的便宜住宿』。"
+                "不能研究学术问题或检索论文、文献、地方资料；学术材料必须用search_literature。",
     fn=search_ai, args_model=SearchAiArgs,
     read_only=True, open_world=True))
 

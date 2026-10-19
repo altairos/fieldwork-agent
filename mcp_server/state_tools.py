@@ -14,7 +14,11 @@ Windows 绝对路径/盘符整体替换基路径）；规则实现已下沉 kern
 from collections.abc import Callable
 from typing import Any
 
-from fieldwork_agent.kernel.context_patch import context_fields_hint, sanitize_context_patch
+from fieldwork_agent.kernel.context_patch import (
+    context_fields_hint,
+    context_patch_schema,
+    sanitize_context_patch,
+)
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.models import FieldSiteRecord, InformantRecord, ResearchContext
 from fieldwork_agent.kernel.repository.guard import new_project_id, project_id_violation
@@ -259,10 +263,12 @@ STATE_TOOLS: list[Tool] = [
     Tool(name="update_research_context",
          description="按 patch 浅合并更新研究上下文（只覆盖 patch 中出现的键），返回更新后的完整上下文。"
                      "用户已明确陈述的研究事实（目的地/时长/日期等）应在本轮立即写入持久化，"
-                     "不要只在回复中口头复述。",
+                     "不要只在回复中口头复述。research_notes保存有origin/status/basis/references的候选、"
+                     "文献缺口与否定方向，按id增量更新，不自动采纳；interview_state保存焦点、未解决疑问"
+                     "与deferred_fields，避免重复追问。",
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
-                                     "patch": {"type": "object",
+                                     "patch": {**context_patch_schema(),
                                                "description": "要合并的键值对，仅限白名单字段："
                                                                + context_fields_hint()
                                                                + "；任一字段非法则整次拒绝（原子语义，绝不部分写入）"}},

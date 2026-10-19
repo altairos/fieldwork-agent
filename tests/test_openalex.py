@@ -4,6 +4,9 @@
 内核无任何文献检索能力。OpenAlex 是免费开放学术图谱（2.5 亿+ 文献，CC0），
 REST 无需 key 即可基础调用，补社科文献检索缺口。
 """
+import copy
+
+import pytest
 from fieldwork_agent.kernel.models import LiteratureItem, LiteraturePage
 from fieldwork_agent.kernel.registry import build_tool_schemas, capabilities
 from fieldwork_agent.kernel.sources.openalex import (
@@ -64,7 +67,8 @@ def test_search_works_maps_fields(monkeypatch):
     monkeypatch.setattr(client, "_get", fake_get)
     env = client.search_works("commodity circulation", max_results=5)
     assert env.ok and isinstance(env.data, LiteraturePage)
-    assert env.data.total == 25                      # meta.count 直出（不加工）
+    assert env.data.total == env.data.returned_count == 1
+    assert env.data.matched_total == 25              # 命中数不能当作已返回数量
     item = env.data.items[0]
     assert isinstance(item, LiteratureItem)
     assert item.title == "The social life of things"
@@ -76,8 +80,8 @@ def test_search_works_maps_fields(monkeypatch):
     assert item.abstract == "things have things social"
     assert item.is_oa is False
     assert calls["path"] == "/works"
-    assert calls["params"]["search"] == "commodity circulation"
-    assert calls["params"]["per-page"] == 5
+    assert calls["params"]["search.title_and_abstract"] == "commodity circulation"
+    assert calls["params"]["per-page"] == 4         # probe小批试检
 
 
 def test_search_works_year_and_oa_filters(monkeypatch):
@@ -176,3 +180,116 @@ def test_search_literature_fn_self_constructs_client(monkeypatch):
     env = search_literature("commodity circulation")
     assert env.ok and isinstance(env.data, LiteraturePage)
     assert env.data.items[0].title == "The social life of things"
+
+
+def test_large_hit_count_is_not_returned_count(monkeypatch):
+    payload = {**_WORKS_PAYLOAD, "meta": {"count": 24000}}
+    monkeypatch.setattr(OpenAlexClient, "_get", lambda *a: payload)
+    page = search_literature("kinship").data
+    assert page.total == page.returned_count == page.retrieved_count == 1
+    assert page.matched_total == 24000
+    assert page.query_reports[0].assessment == "broad"
+
+
+def test_matrix_compiles_and_deduplicates_routes(monkeypatch):
+    calls = []
+
+    def fake_get(self, path, params):
+        calls.append(params)
+        payload = copy.deepcopy(_WORKS_PAYLOAD)
+        # 同一DOI不同大小写/前缀，跨路线合并；两条不同ID不妨碍DOI去重。
+        if len(calls) == 2:
+            payload["results"][0]["doi"] = "DOI:10.1017/cbo9780511812682"
+            payload["results"][0]["id"] = "https://openalex.org/W2"
+        return payload
+
+    monkeypatch.setattr(OpenAlexClient, "_get", fake_get)
+    matrix = [
+        {"label": "核心", "groups": [["kinship", "lineage"], ["social change"]],
+         "exclude_terms": ["cell lineage"]},
+        {"label": "理论", "purpose": "theory", "groups": [["social reproduction"]]},
+    ]
+    page = search_literature("宗族变迁", search_matrix=matrix).data
+    assert len(calls) == 2
+    assert calls[0]["search.title_and_abstract"] == (
+        '("kinship" OR "lineage") AND ("social change") NOT ("cell lineage")')
+    assert page.total == 1 and page.retrieved_count == 2
+    assert page.unique_count == 1 and page.duplicates_removed == 1
+    assert page.matched_total is None   # 不对重叠路线命中数求和
+    assert page.items[0].matched_queries == ["核心", "理论"]
+
+
+def test_round_robin_keeps_different_purposes_and_caps_output(monkeypatch):
+    calls = []
+
+    def fake_get(self, path, params):
+        calls.append(params)
+        return {"meta": {"count": 100}, "results": [
+            {"id": f"W{len(calls)}-{i}", "title": f"Paper {len(calls)}-{i}"}
+            for i in range(100)]}  # 即使上游返回超量也只消费请求的采样数
+
+    monkeypatch.setattr(OpenAlexClient, "_get", fake_get)
+    page = search_literature("kinship", max_results=2, stage="focused", search_matrix=[
+        {"label": "核心", "groups": [["kinship"]]},
+        {"label": "方法", "purpose": "method", "groups": [["ethnography"]]},
+    ]).data
+    assert [it.id for it in page.items] == ["W1-0", "W2-0"]
+    assert page.total == 2 and page.retrieved_count == 4 and page.truncated
+    assert all("page" not in c and "cursor" not in c for c in calls)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"query": "  "}, {"max_results": 10000}, {"max_results": 0},
+    {"year_from": 2025, "year_to": 2000},
+    {"search_matrix": [{"label": str(i), "groups": [["kinship"]]} for i in range(5)]},
+    {"search_matrix": [{"label": "核心", "groups": [[]]}]},
+    {"search_matrix": [{"label": "核心", "groups": [['"injected" OR other']]}]},
+])
+def test_invalid_scope_never_reaches_network(monkeypatch, kwargs):
+    def unexpected(*args):
+        pytest.fail("无效检索不应触达网络")
+    monkeypatch.setattr(OpenAlexClient, "_get", unexpected)
+    env = search_literature(**{"query": "kinship", **kwargs})
+    assert not env.ok and env.error.code == "invalid_arguments"
+
+
+def test_matrix_partial_failure_preserves_success_and_trace(monkeypatch):
+    responses = iter([_WORKS_PAYLOAD, {"_local_error": "HTTP 429"}])
+    monkeypatch.setattr(OpenAlexClient, "_get", lambda *a: next(responses))
+    env = search_literature("kinship", search_matrix=[
+        {"label": str(i), "groups": [[f"term {i}"]]} for i in range(3)])
+    assert env.ok and env.degraded == "partial_literature_search"
+    assert len(env.data.items) == 1 and len(env.data.query_reports) == 2
+    assert env.data.query_reports[1].matched_total is None  # 失败不伪装成零命中
+    assert env.data.query_reports[1].error.code == "literature_rate_limited"
+    assert "1 路未执行" in env.data.warnings[-1]
+
+
+def test_discipline_is_not_blindly_appended_and_fields_are_scoped(monkeypatch):
+    calls = []
+    monkeypatch.setattr(OpenAlexClient, "_get", lambda self, p, q: (calls.append(q), _WORKS_PAYLOAD)[1])
+    search_literature("kinship", discipline="人类学", search_field="title", stage="focused")
+    assert calls[0]["search.title"] == "kinship"
+    assert calls[0]["per-page"] == 8
+    search_literature("kinship", search_field="all")
+    assert calls[1]["search"] == "kinship"
+
+
+def test_empty_search_retains_feedback_and_chinese_links(monkeypatch):
+    monkeypatch.setattr(OpenAlexClient, "_get", lambda *a: {"meta": {"count": 0}, "results": []})
+    env = search_literature("宗族变迁")
+    assert not env.ok and env.data.total == 0
+    assert env.data.query_reports[0].assessment == "empty"
+    assert env.data.query_reports[0].next_action and env.data.chinese_sources
+
+
+def test_duplicate_can_supply_missing_abstract(monkeypatch):
+    original = copy.deepcopy(_WORKS_PAYLOAD)
+    original["results"][0].pop("abstract_inverted_index")
+    responses = iter([original, _WORKS_PAYLOAD])
+    monkeypatch.setattr(OpenAlexClient, "_get", lambda *a: next(responses))
+    page = search_literature("kinship", search_matrix=[
+        {"label": "核心", "groups": [["kinship"]]},
+        {"label": "理论", "groups": [["social reproduction"]]},
+    ]).data
+    assert page.total == 1 and page.items[0].abstract == "things have things social"

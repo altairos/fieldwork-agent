@@ -37,6 +37,9 @@ from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
 from fieldwork_agent.kernel.guidance.costs import COST_GUIDANCE
 from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
+from fieldwork_agent.kernel.guidance.interview import INTERVIEW_GUIDANCE, INTERVIEW_TURN_REMINDER
+from fieldwork_agent.kernel.guidance.literature import LITERATURE_GUIDANCE
+from fieldwork_agent.kernel.guidance.research import RESEARCH_WORKFLOW_GUIDANCE
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
@@ -52,6 +55,7 @@ from fieldwork_agent.kernel.registry import (
     validate_tool_args,
 )
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+from fieldwork_agent.kernel.research_state import turn_memory_patch
 from fieldwork_agent.kernel.sources.amap import (
     AMapClient,
     amap_around_search,
@@ -73,8 +77,10 @@ from fieldwork_agent.kernel.sources.flyai import (
     search_trains,
 )
 from fieldwork_agent.kernel.sources.openalex import search_literature
+from fieldwork_agent.kernel.tool_usage import TOOL_USAGE_GUIDANCE
 from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.loop import run_tool_loop
+from fieldwork_agent.runtime.research_workflow import bind_research_searches
 from fieldwork_agent.runtime.state_tools import build_project_state_tools
 
 from .config import Config
@@ -130,7 +136,7 @@ _TOOL_GUIDANCE = (
     "（amap_geocode/amap_around_search/amap_direction_transit/amap_weather 等）；"
     "高德仅覆盖境内：amap_no_result（常见于境外地名）时，明确告知用户"
     "境外田野点的定位/周边/接驳功能正在开发中、后续版本将追加（不要静默跳过），"
-    "并改用搜索工具补位。"
+    "仅在交通/住宿等旅行供给问题上用飞猪补位，不用飞猪替代地理事实或学术数据。"
     "学术文献检索（研究综述/理论对话/既有研究）用 search_literature（OpenAlex 开放学术图谱），"
     "飞猪/高德等旅行类工具不覆盖文献（search_keyword/search_ai 只返回旅行商品，勿用于查论文）；"
     "search_literature 以外文为主，中文期刊用其返回的国家哲社文献中心/PubScholar 深链补位，"
@@ -146,7 +152,8 @@ _TOOL_GUIDANCE = (
 def _system_prompt(phase: str, snapshot: str) -> str:
     """CLI 回合 system（与 web_host/agent/context.py 同序拼装）。"""
     return "\n\n".join([phases.time_anchor(), phases.phase_prompt(phase),
-                        COST_GUIDANCE, _TOOL_GUIDANCE, snapshot])
+                        COST_GUIDANCE, _TOOL_GUIDANCE, LITERATURE_GUIDANCE,
+                        INTERVIEW_GUIDANCE, TOOL_USAGE_GUIDANCE, RESEARCH_WORKFLOW_GUIDANCE, snapshot])
 
 
 def _to_dict(data: Any) -> dict:
@@ -266,6 +273,7 @@ class FieldAgent:
             messages += [{"role": m["role"], "content": m["content"]}
                          for m in history if m.get("role") in ("user", "assistant")]
             messages.append({"role": "user", "content": message})
+            messages.append({"role": "system", "content": INTERVIEW_TURN_REMINDER})
             state_schemas, state_handlers = build_project_state_tools(
                 self.repo, pid)
             tools = (self._build_tools() + state_schemas) if use_tools else []
@@ -275,10 +283,12 @@ class FieldAgent:
             reply = loop.reply
             tool_events = loop.tool_events
         else:
-            reply = rule_based_reply(phase)
+            reply = rule_based_reply(phase, self.repo.get_research_context(pid))
             tool_events = []
 
         self._persist_events(pid, tool_events)
+        self.repo.update_research_context(pid, turn_memory_patch(
+            self.repo.get_research_context(pid), message, reply))
         self.repo.append_message(pid, "assistant", reply,
                                  {"tool_calls": len(tool_events)})
 
@@ -316,7 +326,7 @@ class FieldAgent:
                 return Envelope(ok=False, error=ToolError(
                     code="internal_error", message=str(exc), hint=""))
 
-        return dispatch
+        return bind_research_searches(dispatch, self.repo, self.project_id)
 
     def _snapshot(self, pid: str) -> str:
         """repo 快照摘要（F04 有界版）：kernel brief + 行程状态拼接。"""

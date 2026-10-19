@@ -6,6 +6,10 @@
 from typing import Any
 
 from fieldwork_agent.kernel.guidance import phases
+from fieldwork_agent.kernel.guidance.interview import INTERVIEW_GUIDANCE, INTERVIEW_TURN_REMINDER
+from fieldwork_agent.kernel.guidance.literature import LITERATURE_GUIDANCE
+from fieldwork_agent.kernel.guidance.research import RESEARCH_WORKFLOW_GUIDANCE
+from fieldwork_agent.kernel.tool_usage import TOOL_USAGE_GUIDANCE
 from mcp.types import Prompt, PromptArgument
 
 # ---------------------------------------------------------------- Prompt 目录
@@ -52,7 +56,8 @@ def get_prompt(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         content = (
             f"[提示：建议宿主先读取 fieldwork://guidance/phases 与 "
             f"fieldwork://guidance/questions/{phase} 获取完整上下文]\n\n"
-            f"{system_text}"
+            f"{system_text}\n\n{LITERATURE_GUIDANCE}\n\n{INTERVIEW_GUIDANCE}"
+            f"\n\n{TOOL_USAGE_GUIDANCE}\n\n{RESEARCH_WORKFLOW_GUIDANCE}\n\n{INTERVIEW_TURN_REMINDER}"
         )
         return {
             "ok": True,

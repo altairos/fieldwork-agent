@@ -1153,10 +1153,14 @@ def test_options_tag_stripped_meta_and_turn_done_carry_quick_replies(env):
                      if m["role"] == "assistant")
     assert assistant["content"] == "你想先校准哪一项？"  # 标记与尾随空白已剥离
     assert assistant["metadata"]["quick_replies"] == ["研究问题", "田野地点", "时间窗"]
+    assert assistant["metadata"]["quick_reply_groups"] == [
+        {"label": "", "options": ["研究问题", "田野地点", "时间窗"]}]
     assert assistant["metadata"]["tool_calls"] == 0
     done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
                 if e.event == "turn_done")
     assert done.data["quick_replies"] == ["研究问题", "田野地点", "时间窗"]
+    assert done.data["quick_reply_groups"] == [
+        {"label": "", "options": ["研究问题", "田野地点", "时间窗"]}]
 
 
 def test_no_options_tag_reply_intact_and_quick_replies_empty(env):
@@ -1172,26 +1176,88 @@ def test_no_options_tag_reply_intact_and_quick_replies_empty(env):
                      if m["role"] == "assistant")
     assert assistant["content"] == "好的，已记录。"
     assert "quick_replies" not in (assistant.get("metadata") or {})
+    assert "quick_reply_groups" not in (assistant.get("metadata") or {})
     done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
                 if e.event == "turn_done")
     assert done.data["quick_replies"] == []
+    assert done.data["quick_reply_groups"] == []
+
+
+def test_multi_group_options_persisted_and_emitted(env):
+    """多组带标签选项（问题①）：一次问两个可枚举问题、每问一组选项，
+    两组均写入 metadata.quick_reply_groups 与 turn_done；正文剥离全部标记；
+    多组时旧 quick_replies 不再携带误导性子集（为空、不入史）。"""
+    repo, tm = env
+    reply = ("先定两件事：\n\n**1. 用途？**\n**2. 学科？**\n\n"
+             "[[options:用途]]高校开题|基金申报[[/options]]\n"
+             "[[options:学科]]人类学|社会学[[/options]]")
+    llm = FakeLLM([[
+        {"delta": reply},
+        {"content": reply, "tool_calls": None, "finish_reason": "stop",
+         "usage": {"total_tokens": 5}},
+    ]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    assistant = next(m for m in repo.get_messages("p1")
+                     if m["role"] == "assistant")
+    assert "[[options" not in assistant["content"]   # 两组标记均已剥离
+    assert assistant["content"].startswith("先定两件事：")
+    assert assistant["metadata"]["quick_reply_groups"] == [
+        {"label": "用途", "options": ["高校开题", "基金申报"]},
+        {"label": "学科", "options": ["人类学", "社会学"]},
+    ]
+    assert "quick_replies" not in assistant["metadata"]  # 多组时旧字段为空、不入史
+    done = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                if e.event == "turn_done")
+    assert done.data["quick_replies"] == []
+    assert done.data["quick_reply_groups"] == [
+        {"label": "用途", "options": ["高校开题", "基金申报"]},
+        {"label": "学科", "options": ["人类学", "社会学"]},
+    ]
 
 
 def test_extract_quick_replies_bounds():
-    """抽取单元边界：最多 4 项、每项截 20 字；解析不出有效选项回落原文。"""
+    """抽取单元边界（多组契约）：返回 (正文, groups)，每组 {label, options}；
+    每组最多 4 项、每项截 20 字；无标记/无有效选项 → groups=[] 且正文原样。"""
     from fieldwork_agent.web_host.agent.loop import _extract_quick_replies
-    body, opts = _extract_quick_replies(
+    body, groups = _extract_quick_replies(
         "正文\n[[options]]甲|乙|丙|丁|戊[[/options]]")
     assert body == "正文"
-    assert opts == ["甲", "乙", "丙", "丁"]  # 第 5 项丢弃
+    assert groups == [{"label": "", "options": ["甲", "乙", "丙", "丁"]}]  # 第 5 项丢弃
     long_opt = "长" * 30
-    _, opts2 = _extract_quick_replies(f"[[options]]{long_opt}|乙[[/options]]")
-    assert opts2 == ["长" * 20, "乙"]          # 单项截 20 字
-    body3, opts3 = _extract_quick_replies("纯正文，无标记")
-    assert body3 == "纯正文，无标记" and opts3 == []
+    _, groups2 = _extract_quick_replies(f"[[options]]{long_opt}|乙[[/options]]")
+    assert groups2 == [{"label": "", "options": ["长" * 20, "乙"]}]   # 单项截 20 字
+    body3, groups3 = _extract_quick_replies("纯正文，无标记")
+    assert body3 == "纯正文，无标记" and groups3 == []
     empty_tag = "[[options]] | | [[/options]]"  # 全空选项：无按钮可渲染
-    body4, opts4 = _extract_quick_replies(empty_tag)
-    assert opts4 == [] and body4 == empty_tag
+    body4, groups4 = _extract_quick_replies(empty_tag)
+    assert groups4 == [] and body4 == empty_tag
+
+
+def test_extract_quick_replies_multi_labeled_groups():
+    """多组带标签：每个 [[options:标签]] 块成一组、一问一组一一对应；
+    正文剥离全部块；标签截 12 字；组数上限 3。"""
+    from fieldwork_agent.web_host.agent.loop import _extract_quick_replies
+    body, groups = _extract_quick_replies(
+        "用途？[[options:用途]]高校开题|基金申报[[/options]]"
+        "学科？[[options:学科取向]]人类学|社会学[[/options]]")
+    assert body == "用途？学科？"          # 两个块都被剥离
+    assert groups == [
+        {"label": "用途", "options": ["高校开题", "基金申报"]},
+        {"label": "学科取向", "options": ["人类学", "社会学"]},
+    ]
+    # 标签超 12 字截断
+    _, g2 = _extract_quick_replies(f"[[options:{'标'*20}]]甲[[/options]]")
+    assert g2 == [{"label": "标" * 12, "options": ["甲"]}]
+    # 组数上限 3：第 4 组丢弃
+    four = "".join(f"[[options:g{i}]]选项{i}[[/options]]" for i in range(4))
+    _, g3 = _extract_quick_replies(four)
+    assert [g["label"] for g in g3] == ["g0", "g1", "g2"]
+    # 全空选项的块被跳过，不产出空组
+    _, g4 = _extract_quick_replies(
+        "甲？[[options:a]]实|在[[/options]]乙？[[options:b]] | [[/options]]")
+    assert g4 == [{"label": "a", "options": ["实", "在"]}]
 
 
 # ------------------------------- 中文全角引号归一（问题3 后端）
@@ -1454,7 +1520,8 @@ def test_build_messages_appends_options_reminder_after_user(env):
     msgs = build_messages(repo, "p1", "帮我定位选题", "research_positioning")
     assert msgs[-2]["role"] == "user" and msgs[-2]["content"] == "帮我定位选题"
     assert msgs[-1]["role"] == "system"
-    assert "[[options]]" in msgs[-1]["content"]
+    assert "[[options:" in msgs[-1]["content"]      # 带标签多组格式
+    assert "一问一组" in msgs[-1]["content"]
 
 
 def test_options_reminder_reaches_llm_every_turn(env):
@@ -1466,7 +1533,7 @@ def test_options_reminder_reaches_llm_every_turn(env):
     from fieldwork_agent.web_host.agent.loop import run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
     msgs = llm.calls[0][0]
-    assert msgs[-1]["role"] == "system" and "[[options]]" in msgs[-1]["content"]
+    assert msgs[-1]["role"] == "system" and "[[options:" in msgs[-1]["content"]
     # 提醒不落库：消息史只存 user/assistant 原文
     persisted_roles = {m["role"] for m in repo.get_messages("p1")}
     assert persisted_roles <= {"user", "assistant"}

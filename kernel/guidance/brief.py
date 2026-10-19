@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 from fieldwork_agent.kernel.guidance.phases import PHASE_RESEARCH_POSITIONING, REQUIRED_FIELDS
+from fieldwork_agent.kernel.guidance.research import build_research_guidance
 from fieldwork_agent.kernel.models import ResearchContext
+from fieldwork_agent.kernel.research_state import scope_fingerprint
 
 _BRIEF_SKIP_SLOTS = ("extras", "candidate_windows")
 
@@ -66,4 +68,11 @@ def build_project_brief(state: dict, *,
                              f"({str(s.get('query', ''))[:60]})" for s in tail)
         more = "（尾部 5 条）" if len(snaps) > 5 else ""
         lines.append(f"已缓存搜索 {len(snaps)} 条{more}：{snap_txt}")
+    lines.append(build_research_guidance(ctx.model_dump()))
+    literature = [s for s in snaps if s.get("tool") == "search_literature"][-4:]
+    for search in literature:
+        marker = search.get("query", "")
+        # 指纹随检索元数据/可读标签保存，旧检索不猜测归属。
+        status = "当前范围" if marker.endswith(f" | scope={scope_fingerprint(ctx.model_dump())}") else "旧范围或未绑定，需重新核验"
+        lines.append(f"文献快照 {search.get('id')}：{status}；主题/问题变更后检查矩阵与材料缺口")
     return "项目摘要：" + "；".join(lines)

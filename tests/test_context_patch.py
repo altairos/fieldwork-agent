@@ -92,7 +92,8 @@ def test_r05_research_questions_whitelisted_and_stripped():
     assert "research_questions" in ALLOWED_CONTEXT_FIELDS
     out = sanitize_context_patch(
         {"research_questions": " 宗族礼生角色在丧仪中的实践 "})
-    assert out == {"research_questions": "宗族礼生角色在丧仪中的实践"}
+    assert out["research_questions"] == "宗族礼生角色在丧仪中的实践"
+    assert out["research_question_scope"]
 
 
 def test_r05_hint_lists_all_fields():

@@ -2,7 +2,11 @@
 from fieldwork_agent.kernel.guidance import phases
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
 from fieldwork_agent.kernel.guidance.costs import COST_GUIDANCE
+from fieldwork_agent.kernel.guidance.interview import INTERVIEW_GUIDANCE, INTERVIEW_TURN_REMINDER
+from fieldwork_agent.kernel.guidance.literature import LITERATURE_GUIDANCE
+from fieldwork_agent.kernel.guidance.research import RESEARCH_WORKFLOW_GUIDANCE
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
+from fieldwork_agent.kernel.tool_usage import TOOL_USAGE_GUIDANCE
 
 _TOOL_GUIDANCE = (
     "工具使用指引：需要真实交通/住宿/景点/文化活动数据时，调用飞猪搜索工具"
@@ -10,33 +14,39 @@ _TOOL_GUIDANCE = (
     "或聚合能力（profile_field_site/compose_itinerary）。"
     "地理工具（高德）仅覆盖境内：amap_no_result（常见于境外地名）时，明确告知用户"
     "境外田野点的定位/周边/接驳功能正在开发中、后续版本将追加（不要静默跳过），"
-    "并改用搜索工具补位。"
+    "仅在交通/住宿等旅行供给问题上用飞猪补位，不用飞猪替代地理事实或学术数据。"
     "学术文献检索（研究综述/理论对话/既有研究）用 search_literature（OpenAlex 开放学术图谱）；"
     "飞猪/高德等旅行类工具不覆盖文献（search_keyword/search_ai 只返回旅行商品，勿用于查论文）；"
     "search_literature 以外文为主，中文期刊用其返回的国家哲社文献中心/PubScholar 深链补位，不臆造引用。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案。"
     "不要臆造数据；工具不可用、降级或返回数据与田野需求不符时：如实标注质量与缺口，"
-    "并把下一步落成对用户的具体引导性提问（地点线索、村庄/县名、本地联系人、"
-    "已有材料等），保持对话推进，绝不停在单方陈述。"
+    "已有信息足够回应时继续交付并自然结束；仅当用户能补充的关键线索会影响下一步时，"
+    "再提出一个具体问题（如地点线索、本地联系人或已有材料），不要重复索取已知信息。"
     "数据诚实：回复只引用本轮实际调用工具返回的数据；不得声称调用了本轮未调用的工具，"
     "不得把历史轮数据包装成本轮实测——历史数据只能以“此前采样/上一轮显示”表述引用"
     "且不得补造细节（店名/评分/价格等）。回答先直接回应用户当前问题，支撑数据放后。\n\n"
     "职责边界：本助手只服务田野调查研究方案的设计与产出。输出用途（海外申请/"
     "开题/申报等）仅用于校准方案体例与严谨度，不提供留学申请咨询：不问标化成绩、"
     "GPA、写作样本、择校与申请策略；用户提起时温和拉回研究设计。\n\n"
-    "交互约定：向用户提问时优先把问题设计成候选答案可枚举的形式，并在回复"
-    "最末尾输出一行[[options]]选项甲|选项乙|选项丙[[/options]]（2-4 个选项、"
-    "以 | 分隔、每个 ≤ 12 字，与正文中给出的备选一致），前端会渲染为快捷按钮"
-    "供用户点选；只有确实无法枚举的开放式问题才直接提问不带标记。"
+    "交互约定：经历叙述用开放问法，只有真实可枚举的选择才提供选项。每个可枚举"
+    "问题都在回复最末尾单独输出一组带标签的选项块 [[options:问题短标签]]选项甲|选项乙|选项丙"
+    "[[/options]]（2-4 个选项、以 | 分隔、每个 ≤ 12 字、标签 ≤ 8 字，与正文中该问题"
+    "的备选一致）；本回合问了几个可枚举问题就给几组、一问一组一一对应，前端会把"
+    "每组渲染成一行带小标题的快捷按钮供用户逐组点选；确实无法枚举的开放式问题"
+    "直接提问、不带标记。没有向用户提问就不输出选项块，不为展示按钮而制造问题。"
 )
 
 # 每轮动态提醒（追加在 user 消息之后）：长对话中 system prompt 的交互约定
 # 指令会随轮次衰减（生产实录：前 2 回合规守 [[options]]、后 2 回合遗忘），
 # 尾部短提醒以最近距离对抗衰减；仅影响当轮 LLM 输入，不落库。
 _OPTIONS_REMINDER = (
-    "提醒：若本回合向用户提出的问题候选答案可枚举，务必在回复最末尾输出"
-    "[[options]]选项|选项|选项[[/options]] 标记（2-4 项、以 | 分隔、每项 ≤ 12 字）；"
-    "无法枚举的开放式问题不需要。"
+    INTERVIEW_TURN_REMINDER
+    + "提醒：仅在本回合确实向用户提出可枚举问题时，每个可枚举的问题才需要在回复"
+    "最末尾单独输出一组带标签"
+    "的选项块 [[options:问题短标签]]选项|选项|选项[[/options]]（2-4 项、以 | 分隔、"
+    "每项 ≤ 12 字）；问了几个可枚举问题就给几组，一问一组一一对应。无法枚举的"
+    "开放式问题不需要；请用户讲经历或材料时，不生成“经历/阅读/新闻”等类型选项。"
+    "没有向用户提问就不生成选项块。"
 )
 
 
@@ -49,7 +59,8 @@ def build_snapshot(repo: ProjectRepository, pid: str) -> str:
 
 def build_system_prompt(phase: str, snapshot: str) -> str:
     return "\n\n".join([phases.time_anchor(), phases.phase_prompt(phase),
-                        COST_GUIDANCE, _TOOL_GUIDANCE, snapshot])
+                        COST_GUIDANCE, _TOOL_GUIDANCE, LITERATURE_GUIDANCE,
+                        INTERVIEW_GUIDANCE, TOOL_USAGE_GUIDANCE, RESEARCH_WORKFLOW_GUIDANCE, snapshot])
 
 
 def build_messages(repo: ProjectRepository, pid: str, user_text: str,

@@ -10,8 +10,10 @@ from typing import Any
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
+from fieldwork_agent.kernel.research_state import turn_memory_patch
 from fieldwork_agent.kernel.sources.flyai import RecordingClient
 from fieldwork_agent.runtime.doc_args import merge_doc_args
+from fieldwork_agent.runtime.literature import LiteratureSearchBudget
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
     _budget_skip_content,
@@ -19,6 +21,7 @@ from fieldwork_agent.runtime.loop import (
     _error_dict,
     _tool_content,
 )
+from fieldwork_agent.runtime.research_workflow import bind_research_searches
 from fieldwork_agent.runtime.turn_buffer import TurnPatchBuffer
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
@@ -27,11 +30,16 @@ from fieldwork_agent.web_host.turn_manager import TurnManager
 
 # 无 LLM 降级提示：web 宿主无启动横幅渠道，提示附在回复末尾（CLI 宿主用启动横幅呈现）
 _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
-                  "以上为固定引导文案；配置后可启用智能对话。）")
+                  "以上为规则引导文案；配置后可启用智能对话。）")
 
 # 快捷选项标记：LLM 在枚举型提问末尾输出 [[options]]甲|乙|丙[[/options]]，
 # 轮末剥离标记、选项入消息 meta 与 turn_done payload（渐进增强：无标记则无选项）
-_OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
+_OPTIONS_TAG_RE = re.compile(
+    r"\[\[options(?::([^\]]*))?\]\](.*?)\[\[/options\]\]", re.S)
+_MAX_OPTION_GROUPS = 3        # 兼容旧对话的解析容错；新策略默认一个主问，不据此剪裁正文
+_MAX_OPTIONS_PER_GROUP = 4
+_MAX_OPTION_LEN = 20
+_MAX_LABEL_LEN = 12
 
 # N05：当前工具调用实例 id（call_id）——_exec_tool 分派能力前置位，RecordingClient
 # 经 tag_provider 读取并写入每条记录的 sig["tag"]。asyncio.gather 为每个协程建独立
@@ -39,20 +47,31 @@ _OPTIONS_TAG_RE = re.compile(r"\[\[options\]\](.*?)\[\[/options\]\]", re.S)
 _CURRENT_CALL_ID: ContextVar[str] = ContextVar("fw_current_call_id", default="")
 
 
-def _extract_quick_replies(reply: str) -> tuple[str, list[str]]:
-    """剥离尾部 [[options]] 标记；返回 (干净正文, 选项列表)。
+def _extract_quick_replies(reply: str) -> tuple[str, list[dict]]:
+    """剥离所有 [[options[:标签]]] 标记块；返回 (干净正文, groups)。
 
-    选项按 | 切分、strip、滤空，最多取 4 个，每项截断 20 字；
-    标记缺失或解析不出有效选项 → (原文, [])。
+    每个块 → 一组 ``{"label": str, "options": list[str]}``：options 按 | 切分、
+    strip、滤空，每组最多 4 项、每项截 20 字；label 为可选的 ``:标签``（截 12
+    字，无标签则 ""）。无有效选项的块跳过（不产出空组）；组数上限 3。
+    一个可枚举问题对应一组，多组时正文剥离全部块；无任何有效组 → (原文, [])
+    （标记原样保留，与历史行为一致）。
     """
-    match = _OPTIONS_TAG_RE.search(reply)
-    if not match:
+    matches = list(_OPTIONS_TAG_RE.finditer(reply))
+    if not matches:
         return reply, []
-    options = [opt.strip()[:20] for opt in match.group(1).split("|")]
-    options = [opt for opt in options if opt][:4]
-    if not options:
+    groups: list[dict] = []
+    for m in matches:
+        options = [opt.strip()[:_MAX_OPTION_LEN] for opt in m.group(2).split("|")]
+        options = [opt for opt in options if opt][:_MAX_OPTIONS_PER_GROUP]
+        if not options:
+            continue
+        label = (m.group(1) or "").strip()[:_MAX_LABEL_LEN]
+        groups.append({"label": label, "options": options})
+        if len(groups) >= _MAX_OPTION_GROUPS:
+            break
+    if not groups:
         return reply, []
-    return reply[:match.start()].rstrip(), options
+    return _OPTIONS_TAG_RE.sub("", reply).rstrip(), groups
 
 
 # 中文全角引号归一（问题3）：LLM 输出的成对半角双引号在内容含中文时
@@ -127,10 +146,14 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                  llm,
                                  amap_recorder if amap_recorder is not None
                                  else amap_client)
+    dispatch = LiteratureSearchBudget().wrap(dispatch)
     tools = build_tool_schemas()
     # F05：回合级 patch 暂存——状态工具与时窗回写先进 buffer，轮末正常结束
     # commit 落盘、取消 discard，项目状态不受残缺回合影响
     buffer = TurnPatchBuffer(repo, pid)
+    dispatch = bind_research_searches(
+        dispatch, repo, pid, context_provider=buffer.staged_view,
+        on_snapshot=snapshot_ids.append)
     state_schemas, state_handlers = build_state_tools(repo, pid, buffer=buffer)
     tools = tools + state_schemas
     phase = repo.get_phase(pid)
@@ -169,7 +192,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
 
             # 无 LLM（未配置 DashScope key）降级：规则文案回复后退出，走统一轮末
             if llm is None:
-                reply = rule_based_reply(phase) + _DEGRADED_NOTE
+                reply = rule_based_reply(phase, repo.get_research_context(pid)) + _DEGRADED_NOTE
                 tm.append_event(pid, turn_id, "message_delta", {"text": reply})
                 accumulated_reply = reply
                 break
@@ -433,19 +456,26 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
     cancelled = handle.cancel_event.is_set()
-    quick_replies: list[str] = []
+    quick_reply_groups: list[dict] = []
     if not cancelled and accumulated_reply:
-        accumulated_reply, quick_replies = _extract_quick_replies(accumulated_reply)
+        accumulated_reply, quick_reply_groups = _extract_quick_replies(accumulated_reply)
         accumulated_reply = _normalize_cjk_quotes(accumulated_reply)
+    # 旧扁平 quick_replies 仅单组时携带；多组时为空，避免只覆盖其中一个问题的误导性子集
+    quick_replies: list[str] = (quick_reply_groups[0]["options"]
+                                if len(quick_reply_groups) == 1 else [])
     if not cancelled:
         try:
             if accumulated_reply:
-                repo.append_message(pid, "assistant", accumulated_reply,
-                                    {"turn_id": turn_id,   # N12：绑定回合，retry 校验尾部归属
-                                     "tool_calls": total_calls,
-                                     "finish_reason": finish_reason,
-                                     **({"quick_replies": quick_replies}
-                                        if quick_replies else {})})
+                # 合并：N12 的 turn_id（retry 校验尾部归属）与 quick_reply_groups 特性共存
+                meta = {"turn_id": turn_id,
+                        "tool_calls": total_calls, "finish_reason": finish_reason}
+                if quick_replies:
+                    meta["quick_replies"] = quick_replies
+                if quick_reply_groups:
+                    meta["quick_reply_groups"] = quick_reply_groups
+                repo.append_message(pid, "assistant", accumulated_reply, meta)
+            if accumulated_reply:
+                buffer.stage(turn_memory_patch(buffer.staged_view(), user_text, accumulated_reply))
             buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                                   doc_ctx_provenance, live_refs_by_call)
@@ -470,6 +500,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                         {"reply_id": turn_id, "usage": usage_total,
                          "snapshot_ids": snapshot_ids,
                          "quick_replies": quick_replies,
+                         "quick_reply_groups": quick_reply_groups,
                          "finish_reason": finish_reason,
                          "incomplete": incomplete})
         tm.finish(pid, turn_id, "completed")
@@ -488,18 +519,25 @@ _PROMISE_MARKERS = ("我这就", "马上", "我先", "接下来", "下面", "让
                     "先来", "我来", "实测", "查一下", "查一查")
 
 _PREAMBLE_NUDGE = ("你上一条回复只是前导语（说明接下来要做什么），尚未给出结果。"
-                   "请立即调用合适的工具获取真实数据，拿到结果后再给出完整回答；"
-                   "不要再输出「我这就去查」这类前导语。")
+                   "请补齐能够独立成立的回应：需要澄清时围绕当前研究目标提一个主问题，"
+                   "信息足够时直接整理或交付并自然结束；只有需要外部真实数据时才调用工具。"
+                   "不要为补全前导语强制调用工具或追加问题，不要再停在「我这就去查」。")
 
 
 def _looks_like_preamble(text: str) -> bool:
     """前导语判定：以未完标点收尾，或短句且含承诺词、但未以句末标点收尾。"""
-    body = text.strip()
+    # 可回应的选项已构成决策提示（兼容旧“先定两项：+选项”），不强制修复成工具调用。
+    matches = list(_OPTIONS_TAG_RE.finditer(text))
+    if any(len([opt for opt in match.group(2).split("|") if opt.strip()]) >= 2
+           for match in matches):
+        return False
+    # 快捷选项是展示标记；完整问句后附空/坏选项，也不应变成前导语。
+    body = _OPTIONS_TAG_RE.sub("", text).strip()
     if not body:
         return False
     if body[-1] in _PREAMBLE_TAIL_CHARS:
         return True
-    return (len(body) <= 120 and body[-1] not in "。！？"
+    return (len(body) <= 120 and body[-1] not in "。！？.!?"
             and any(marker in body for marker in _PROMISE_MARKERS))
 
 

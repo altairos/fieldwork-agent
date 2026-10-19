@@ -24,7 +24,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from fieldwork_agent.kernel.guidance.interview import INTERVIEW_DEGRADED_GUIDANCE
 from fieldwork_agent.kernel.models import Envelope, ToolError
+from fieldwork_agent.runtime.literature import LiteratureSearchBudget
 
 # 摘要序列化后进消息的字符安全上限（R5：结构化摘要仍须有界）
 TOOL_CONTENT_LIMIT = 2000
@@ -32,6 +34,38 @@ TOOL_CONTENT_LIMIT = 2000
 _TOP_ITEMS = 5
 # 长字符串在摘要中的预览阈值
 _PREVIEW = 160
+_LITERATURE_CONTENT_LIMIT = 12000
+
+
+def _literature_summary(env: Envelope) -> dict:
+    """保留引用与筛选证据，不把文献分页压成只有标题的商品摘要。"""
+    out: dict[str, Any] = {"tool": "search_literature", "ok": env.ok}
+    if not env.ok:
+        out["error"] = _error_dict(env)
+    if env.degraded:
+        out["degraded"] = env.degraded
+    data = env.data.model_dump(mode="json") if hasattr(env.data, "model_dump") else env.data
+    if not isinstance(data, dict):
+        return out
+    items = data.get("items") or []
+    for key in ("returned_count", "retrieved_count", "unique_count", "duplicates_removed",
+                "matched_total", "truncated", "warnings", "query_reports", "chinese_sources",
+                "scope_fingerprint", "scope_basis"):
+        if key in data:
+            out[key] = data[key]
+    # 即使处理旧缓存，实际返回数也从items计算，不信任旧total=meta.count。
+    out["returned_count"] = len(items)
+    out["items"] = [{
+        "title": str(item.get("title") or "")[:240],
+        "authors": [str(a)[:100] for a in (item.get("authors") or [])[:3]],
+        "year": item.get("year"), "doi": item.get("doi", ""), "id": item.get("id", ""),
+        "venue": str(item.get("venue") or "")[:120],
+        "abstract": str(item.get("abstract") or "")[:500],
+        "screening_basis": "abstract_excerpt" if item.get("abstract") else "title_only_unverified",
+        "matched_queries": item.get("matched_queries", []),
+    } for item in items[:8] if isinstance(item, dict)]
+    out["summarized_count"] = len(out["items"])
+    return out
 
 
 @dataclass
@@ -80,6 +114,8 @@ def _error_dict(env: Envelope) -> dict | None:
 
 def _summarize(name: str, env: Envelope) -> dict:
     """Envelope → 结构化摘要（供 LLM 读；形状见模块 docstring 与 task 报告）。"""
+    if name == "search_literature":
+        return _literature_summary(env)
     out: dict[str, Any] = {"tool": name, "ok": env.ok}
     if env.degraded:
         out["degraded"] = env.degraded
@@ -120,18 +156,31 @@ def _summarize(name: str, env: Envelope) -> dict:
     return out
 
 
-# 工具失败/降级时的追问指令：防 LLM"只标注数据缺口就停"——必须转为
-# 引导性提问收集替代信息（回归：degraded 画像轮回复停在单方陈述）。
-_DEGRADED_FOLLOWUP = (
-    "\n\n【系统提示：本次工具调用未取得可用数据。请勿就此停下：向用户如实标注"
-    "数据缺口后，立即转为引导性提问收集替代信息——例如具体村庄或县名、可引荐"
-    "的本地联系人、已知的祠堂/庙宇/文献线索——每轮以 1-2 个具体问题收尾，"
-    "保持对话推进。】"
-)
+# 工具失败时提供可操作路径；是否提问由关键缺口决定，不强制以追问结尾。
+_DEGRADED_FOLLOWUP = INTERVIEW_DEGRADED_GUIDANCE
 
 
 def _tool_content(name: str, env: Envelope) -> str:
     """摘要序列化为 JSON 字符串并截到安全上限（R5）；失败/降级附追问指令。"""
+    if name == "search_literature":
+        summary = _literature_summary(env)
+        summary["instruction"] = (
+            "只依据items中的标题/摘要节选初筛，不代表读过全文；数据库命中数不是已取回数。"
+            "先按query_reports调整不足路线；已覆盖问题或预算用尽就停止，通常推荐5-8篇。"
+            "比较解释与材料缺口，必要时将候选问题/文献局限写入research_notes并附真实来源；"
+            "用户采纳后才改research_questions。禁止用命中数断言研究空白。")
+        dumped = json.dumps(summary, ensure_ascii=False, default=str)
+        # 保持JSON完整；按整条候选缩减，不在DOI/作者/JSON语法中间截断。
+        while len(dumped) > _LITERATURE_CONTENT_LIMIT and summary.get("items"):
+            summary["items"].pop()
+            summary["summarized_count"] = len(summary["items"])
+            dumped = json.dumps(summary, ensure_ascii=False, default=str)
+        if len(dumped) > _LITERATURE_CONTENT_LIMIT:
+            # 极端畸形上游响应仍有界，保留可操作错误，不输出半截JSON。
+            dumped = json.dumps({"tool": name, "ok": False, "error": {
+                "code": "literature_summary_too_large", "message": "检索元数据过长，请缩小矩阵。"}},
+                ensure_ascii=False)
+        return dumped
     dumped = json.dumps(_summarize(name, env), ensure_ascii=False, default=str)
     content = dumped[:TOOL_CONTENT_LIMIT]
     if env.degraded or not env.ok:
@@ -188,6 +237,7 @@ def run_tool_loop(llm: Any, messages: list[dict],
     提示后取一次最终回答再返回。``messages`` 为入参副本，不改动调用方列表。
     """
     msgs = list(messages)
+    dispatch = LiteratureSearchBudget().wrap(dispatch)
     tool_events: list[dict] = []
     iterations = 0
     total_calls = 0

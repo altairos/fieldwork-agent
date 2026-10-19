@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -79,6 +79,7 @@ class LiteratureItem(BaseModel):
     abstract: str = ""
     open_access_url: str | None = None
     is_oa: bool = False
+    matched_queries: list[str] = Field(default_factory=list)
 
 
 class LiteratureSourceLink(BaseModel):
@@ -93,16 +94,39 @@ class LiteratureSourceLink(BaseModel):
     url: str = ""
 
 
-class LiteraturePage(BaseModel):
-    """一页文献检索结果 + 中文社科检索深链。
+class LiteratureQueryReport(BaseModel):
+    """单路检索的真实执行记录；不同路的命中数有重叠，不能相加。"""
 
-    ``total`` 直出 OpenAlex ``meta.count``（不加工）；``chinese_sources`` 是国家哲社
-    文献中心与 PubScholar 等中文社科平台的检索入口/深链，供助手呈现可点击链接
-    （OpenAlex 以外文为主，中文期刊需这些平台补位）。
+    label: str = ""
+    purpose: str = "core"
+    query: str = ""
+    search_field: str = "title_and_abstract"
+    matched_total: int | None = None
+    retrieved_count: int = 0
+    assessment: str = ""
+    next_action: str = ""
+    error: ToolError | None = None
+
+
+class LiteraturePage(BaseModel):
+    """有界候选文献集；total/returned_count 均为实际交付条数，绝非数据库命中数。
+
+    matched_total 只用于单路数据库命中数，多路为 None；每路原始命中数在
+    query_reports 中。候选仅经过元数据检索与去重，最终相关性由 agent 依据摘要判断。
     """
 
     items: list[LiteratureItem] = Field(default_factory=list)
     total: int = 0
+    returned_count: int = 0
+    retrieved_count: int = 0
+    unique_count: int = 0
+    duplicates_removed: int = 0
+    matched_total: int | None = None
+    query_reports: list[LiteratureQueryReport] = Field(default_factory=list)
+    scope_fingerprint: str = ""
+    scope_basis: dict[str, str] = Field(default_factory=dict)
+    truncated: bool = False
+    warnings: list[str] = Field(default_factory=list)
     chinese_sources: list[LiteratureSourceLink] = Field(default_factory=list)
 
 
@@ -282,6 +306,29 @@ class WindowAnalysis(BaseModel):
 # ---------------------------------------------------------------- 研究上下文
 
 
+class ResearchNote(BaseModel):
+    """有来源和采纳状态的研究工作笔记；不自动进入已确认研究问题。"""
+
+    id: str = Field(default="", max_length=80)
+    kind: Literal["question", "interpretation", "method", "literature_gap", "decision", "observation"] = "question"
+    content: str = Field(default="", max_length=800)
+    origin: Literal["user", "agent", "literature"] = "agent"
+    status: Literal["proposed", "adopted", "rejected", "unresolved", "superseded"] = "proposed"
+    basis: str = Field(default="", max_length=500)
+    references: list[str] = Field(default_factory=list, max_length=8)
+    scope_fingerprint: str = ""
+
+
+class InterviewState(BaseModel):
+    """小型持久对话记忆；供模型理解已交流内容，不作为研究事实。"""
+
+    current_focus: str = Field(default="", max_length=300)
+    last_user_message: str = Field(default="", max_length=1200)
+    last_assistant_message: str = Field(default="", max_length=1200)
+    open_questions: list[str] = Field(default_factory=list, max_length=8)
+    deferred_fields: list[str] = Field(default_factory=list, max_length=12)
+
+
 class ResearchContext(BaseModel):
     """研究定位槽位；空字符串表示未填，``extras`` 收野生字段。"""
 
@@ -302,6 +349,9 @@ class ResearchContext(BaseModel):
     # 轮 2 方案 B：深挖研究问题（经 update_research_context 写入，计入 A→B 推进；
     # 必须声明为正式槽位——宿主经 model_validate(repo dict) 构造，未声明键会被丢弃）
     research_questions: str = ""
+    research_question_scope: str = ""  # 宿主生成，旧项目缺省为空以保留读取兼容
+    research_notes: list[ResearchNote] = Field(default_factory=list)
+    interview_state: InterviewState = Field(default_factory=InterviewState)
     # 审阅意见 R3：非访谈型研究显式跳过访谈对象硬条件（附理由）
     interviews_not_applicable: bool = False
     interviews_na_reason: str = ""

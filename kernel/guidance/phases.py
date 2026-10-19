@@ -13,6 +13,7 @@ from datetime import date
 from typing import Any
 
 from fieldwork_agent.kernel import assets
+from fieldwork_agent.kernel.guidance.research import task_readiness
 from fieldwork_agent.kernel.models import (
     AdvanceResult,
     FieldSiteRecord,
@@ -36,10 +37,8 @@ PHASES: list[str] = [
     PHASE_FINISHED,
 ]
 
-# 研究定位阶段的推进门槛：七字段（六基础 + research_questions 深挖研究问题）
-# 全齐才推进。旧引擎 ``answered >= 4`` 允许缺位跳阶段，轮 2 产品决策收紧
-# （用户反馈：阶段推进太快，应先深挖用户研究兴趣再开始具体搜索）。
-MIN_POSITIONING_ANSWERED = 7
+# 定位→田野探索只要求主题与明确的问题；执行约束按任务需要补充。
+MIN_POSITIONING_ANSWERED = 2
 
 
 def __getattr__(name: str):
@@ -49,15 +48,17 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-# 各阶段的引导问题模板
+# 各阶段的引导问题素材：按当前缺口选用，不代表必须按序询问。
 GUIDING_QUESTIONS: dict[str, list[str]] = {
     PHASE_RESEARCH_POSITIONING: [
         "这份方案主要用在什么场合？（海外/港澳申请、高校开题、基金申报、课程作业）",
         "请问您的学科背景和研究取向是什么？（人类学/社会学/政治学/跨学科？）",
         "您初步的研究问题或关注焦点是什么？",
-        "围绕这个方向，您希望具体回答哪 2-3 个研究问题？为什么是它们？",
+        "有没有一件具体经历，或者一份读过的材料，让您开始关注这个主题？",
+        "从这些线索中，您最想弄清楚的是什么？",
         "您对田野地点的确定程度如何？（已明确地点 / 有区域范围 / 希望我推荐）",
-        "这次调研是单人还是团队？预计多长时间？",
+        "这次调研是单人还是团队？",
+        "您预计调研多长时间？",
         "经费来源和大致预算范围是怎样的？",
         "希望在什么时间段进行调研？",
     ],
@@ -88,8 +89,7 @@ GUIDING_QUESTIONS: dict[str, list[str]] = {
 # 每阶段需要采集的 ResearchContext 字段名（供宿主渲染采集清单；
 # 仅研究定位阶段的 ``check_advance`` 直接用它做推进计数）
 REQUIRED_FIELDS: dict[str, list[str]] = {
-    PHASE_RESEARCH_POSITIONING: ["purpose", "discipline", "topic", "scale", "budget",
-                                 "time_window", "research_questions"],
+    PHASE_RESEARCH_POSITIONING: ["topic", "research_questions"],
     PHASE_FIELD_SITE_PROFILES: ["target_location", "site_status"],
     PHASE_ITINERARY_PLANNING: ["departure_city", "target_location", "travel_date"],
     PHASE_PROPOSAL_GENERATION: ["topic", "target_location"],
@@ -142,16 +142,18 @@ def check_advance(
     ``ctx.interviews_not_applicable`` 下跳过后者）；C→D 为 ``itinerary``；
     D→finished 为 ``proposal`` / ``proposal_confirmation``。
     """
+    revised = task_readiness(ctx.model_dump(), "field_site_comparison")
+    if phase in PHASES[1:] and ctx.research_question_scope and not revised["ready"]:
+        return AdvanceResult(can_advance=True, to_phase=PHASE_RESEARCH_POSITIONING,
+                             missing_fields=revised["missing"])
     nxt = _next_phase(phase)
     if nxt is None:
         # 已完成或未知阶段：一律不推进
         return AdvanceResult(can_advance=False, to_phase=None, missing_fields=[])
 
     if phase == PHASE_RESEARCH_POSITIONING:
-        required = REQUIRED_FIELDS[PHASE_RESEARCH_POSITIONING]
-        missing = [f for f in required if not _filled(ctx, f)]
-        answered = len(required) - len(missing)
-        if answered >= MIN_POSITIONING_ANSWERED:
+        missing = task_readiness(ctx.model_dump(), "field_site_comparison")["missing"]
+        if not missing:
             return AdvanceResult(can_advance=True, to_phase=nxt, missing_fields=[])
         return AdvanceResult(can_advance=False, to_phase=None, missing_fields=missing)
 

@@ -26,6 +26,8 @@ router = APIRouter(tags=["state"])
 _NON_STR_FIELD_TYPES = {
     "interviews_not_applicable": bool | None,
     "candidate_windows": list | None,
+    "research_notes": list | None,
+    "interview_state": dict | None,
 }
 
 
