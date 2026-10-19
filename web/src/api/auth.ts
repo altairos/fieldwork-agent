@@ -1,4 +1,5 @@
 import { authHeaders } from "../lib/keys";
+import { ApiError } from "./rest";
 import { clearSessionToken, getOwnerToken, ownerHeaders, setSessionToken } from "../lib/session";
 
 export interface AuthUser { user_id: string; email: string; created_at?: string; }
@@ -9,7 +10,7 @@ async function authReq<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...ownerHeaders(), ...init?.headers },
   });
-  if (!resp.ok) throw new Error(await resp.text().catch(() => resp.statusText));
+  if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
 }
 
@@ -24,6 +25,7 @@ export const auth = {
       body: JSON.stringify({ email, password, anon_token: getOwnerToken() }) });
     setSessionToken(r.session_token); return r;
   },
-  async logout(): Promise<void> { await authReq<void>("/auth/logout", { method: "POST" }); clearSessionToken(); },
+  // 本地清理不因网络失败短路：无论 POST 成败都清会话令牌
+  async logout(): Promise<void> { try { await authReq<void>("/auth/logout", { method: "POST" }); } finally { clearSessionToken(); } },
   me: () => authReq<{ anonymous: boolean; user?: AuthUser }>("/auth/me"),
 };

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { auth, type AuthUser } from "../api/auth";
 import { clearSessionToken, getSessionToken } from "../lib/session";
-import { setOnSessionExpired } from "../api/rest";
+import { isSessionExpiredError, setOnSessionExpired } from "../api/rest";
 
 interface AuthState {
   user: AuthUser | null;
@@ -17,11 +17,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: null, expired: false,
   async login(e, p) { const r = await auth.login(e, p); set({ user: r.user, expired: false }); },
   async register(e, p) { const r = await auth.register(e, p); set({ user: r.user, expired: false }); },
-  async logout() { await auth.logout(); set({ user: null }); },
+  async logout() { try { await auth.logout(); } finally { set({ user: null }); } },
   async checkSession() {
     if (!getSessionToken()) { set({ user: null }); return; }
     try { const me = await auth.me(); set({ user: me.anonymous ? null : (me.user ?? null) }); }
-    catch { clearSessionToken(); set({ user: null, expired: true }); }   // 401 session_expired
+    catch (err) {
+      if (isSessionExpiredError(err)) { clearSessionToken(); set({ user: null, expired: true }); }
+      else set({ user: null });   // 瞬时错误（断网/5xx/守卫 401）：不摧毁仍有效的会话令牌，待下次重试
+    }
   },
   acknowledgeExpired() { set({ expired: false }); },
 }));

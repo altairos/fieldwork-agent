@@ -23,14 +23,16 @@ export function apiDetail(err: ApiError): string | null {
 
 /** App Token 守卫 401（web_host/app.py 审计 F02）：页面级 REST 的 401 唯一来源。
  *  响应体是 `{"code","message"}` 形状（非 detail）：状态码之外复核 code，
- *  区分守卫 401 与其他来源的 401；非 JSON 或无 code 键的未知形状保守放行
+ *  区分守卫 401 与其他来源的 401；FastAPI detail 形状（如 session_expired）
+ *  明确排除，不引导填令牌；非 JSON 体等未知形状保守放行
  *  （仍引导用户填令牌，不因形状未知而漏拦）。 */
 export function isAppTokenError(err: unknown): err is ApiError {
   if (!(err instanceof ApiError) || err.status !== 401) return false;
   try {
     const parsed = JSON.parse(err.message) as { code?: unknown } | null;
-    if (parsed && typeof parsed === "object" && "code" in parsed) {
-      return parsed.code === "app_token_required";
+    if (parsed && typeof parsed === "object") {
+      if ("code" in parsed) return parsed.code === "app_token_required";
+      if ("detail" in parsed) return false;   // FastAPI detail 形状（如 session_expired）：非守卫体，不引导填令牌
     }
   } catch {
     // 非 JSON 体（网关纯文本 401）：无法复核，保守按令牌问题处理
