@@ -144,7 +144,7 @@ export function Composer({
           <IconLock className="w-3.5 h-3.5 shrink-0" />
           {locked
             ? lockHint
-            : <span>缺少百炼 API Key：请回首页「密钥 / 登录」填写并保存后重试。</span>}
+            : <span>缺少百炼 API Key：请回首页「密钥」填写并保存后重试。</span>}
         </div>
       )}
 
