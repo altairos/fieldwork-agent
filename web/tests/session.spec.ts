@@ -1,6 +1,13 @@
-// web/tests/session.spec.ts —— 匿名归属令牌：懒生成/稳定/隐私模式内存兜底
+// web/tests/session.spec.ts —— 匿名归属令牌：懒生成/稳定/隐私模式内存兜底；会话令牌登录态优先
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getOwnerToken, ownerHeaders, randomToken } from "../src/lib/session";
+import {
+  clearSessionToken,
+  getOwnerToken,
+  getSessionToken,
+  ownerHeaders,
+  randomToken,
+  setSessionToken,
+} from "../src/lib/session";
 
 describe("session owner token", () => {
   beforeEach(() => localStorage.clear());
@@ -27,5 +34,18 @@ describe("session owner token", () => {
     const a = getOwnerToken();
     expect(a).toMatch(/^[0-9a-f]{32}$/);
     expect(getOwnerToken()).toBe(a);   // 内存 Map 兜底，不因存储被禁而漂移
+  });
+
+  it("setSessionToken 后 ownerHeaders 优先发会话令牌", () => {
+    setSessionToken("sess_abc");
+    expect(getSessionToken()).toBe("sess_abc");
+    expect(ownerHeaders()).toEqual({ "X-Owner-Token": "sess_abc" });
+  });
+
+  it("clearSessionToken 后 ownerHeaders 回落匿名令牌", () => {
+    setSessionToken("sess_abc");
+    clearSessionToken();
+    expect(getSessionToken()).toBe("");
+    expect(ownerHeaders()).toEqual({ "X-Owner-Token": getOwnerToken() });
   });
 });
