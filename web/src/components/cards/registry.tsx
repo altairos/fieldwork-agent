@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import { AiSearchCard } from "./AiSearchCard";
 import { BudgetCard } from "./BudgetCard";
 import { FlightCard } from "./FlightCard";
 import { HotelCard } from "./HotelCard";
@@ -54,7 +55,7 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   compose_proposal: ProposalCard,
   compose_interview_guide: ProposalCard,
   suggest_informants: InformantCard,
-  // 8 个飞猪搜索原语（同构 ItemPage → 按语义分四类卡）
+  // 8 个飞猪搜索原语（同构 ItemPage → 按语义分四类卡；例外见 search_ai 行注）
   search_flights: FlightCard,
   search_trains: TrainCard,
   search_hotels: HotelCard,
@@ -62,7 +63,7 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   search_marriott_packages: HotelCard,
   search_pois: PoiCard,
   search_keyword: PoiCard,
-  search_ai: PoiCard,
+  search_ai: AiSearchCard,  // AI 语义检索：Markdown 直答（spec A4）
   // 学术文献检索（OpenAlex + 中文社科深链）：产出是用户核心交付物，用专属卡原样整卡渲染
   search_literature: LiteratureCard,
   // 宿主层状态工具（轮 2 症状②，见头部注释例外说明）：data = {updated, reason}
