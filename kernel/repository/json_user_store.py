@@ -57,7 +57,7 @@ class JsonUserStore:
         os.replace(tmp, path)                     # 原子替换
 
     def _locked(self, path: Path):
-        return FileLock(path.with_suffix(".lock"))
+        return FileLock(path.with_suffix(".lock"), timeout=5.0)  # 镜像 sqlite busy_timeout=5000 量级
 
     @staticmethod
     def _public(rec: dict) -> dict:
