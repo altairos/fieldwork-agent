@@ -59,18 +59,36 @@ def test_concurrent_renew_vs_revoke_ends_revoked(store):
     tok = store.create_session(u["user_id"], 30)
     barrier = threading.Barrier(2, timeout=5)
 
+    errors: list[BaseException] = []
+
     def renew():
-        barrier.wait()
-        for _ in range(30):
-            store.resolve_session(tok)
+        try:
+            barrier.wait()
+            for _ in range(30):
+                store.resolve_session(tok)
+        except BaseException as e:
+            errors.append(e)
 
     def revoke():
-        barrier.wait()
-        store.revoke_session(tok)
+        try:
+            barrier.wait()
+            store.revoke_session(tok)
+        except BaseException as e:
+            errors.append(e)
 
     ts = [threading.Thread(target=renew), threading.Thread(target=revoke)]
     for t in ts:
         t.start()
     for t in ts:
-        t.join()
+        t.join(timeout=60)
+        assert not t.is_alive(), "worker 线程 60s 未结束（疑似死锁）"
+    assert not errors, f"worker 线程异常: {errors}"
     assert store.resolve_session(tok) is None
+
+
+def test_unknown_lookups_and_idempotent_revoke(store):
+    assert store.get_user("u_nope") is None
+    assert store.get_user_by_email("nobody@x.com") is None
+    assert store.verify_password("u_nope", "whatever-1") is False
+    assert store.resolve_session("not-a-session-token") is None
+    store.revoke_session("sess_wellformed-but-unknown")
