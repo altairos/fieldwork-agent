@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { QuickReplyGroup } from "../../types/events";
 
 /**
@@ -33,8 +33,17 @@ export function QuickReplies({
   onSend: (text: string) => void;
   onCustom: () => void;
 }) {
-  // 各组当前选中项（下标对齐 groups；"" = 未选）。组件随 groups 清空而卸载，状态自然复位。
+  // 各组当前选中项（下标对齐 groups；"" = 未选）。
   const [picked, setPicked] = useState<string[]>([]);
+  // groups 内容变了就清空选中（评审 R7）：原先只靠"提交后 groups 清空 → 组件卸载"复位，
+  // 一旦出现"非空替换而不卸载"（比如刷新回填/重放对齐把上一组换成新一组），按下标对齐的
+  // picked 会把甲题的答案错标到乙题上。这里用组标签+选项拼签名，变化即重置。
+  const signature = groups
+    .map((g) => `${g.label}\u0000${g.options.join("\u0001")}`)
+    .join("\u0002");
+  useEffect(() => {
+    setPicked((prev) => (prev.length ? [] : prev));   // 空态返回同一引用，避免无谓重渲染
+  }, [signature]);
   if (!groups.length) return null;
 
   const fastPath = groups.length === 1 && !groups[0].label;
@@ -76,7 +85,7 @@ export function QuickReplies({
     <div className="space-y-2" data-testid="quick-replies">
       {groups.map((g, gi) => (
         <div
-          key={gi}
+          key={`${g.label}\u0000${gi}`}
           className="flex flex-wrap items-center gap-1.5"
           data-testid="quick-reply-group"
         >

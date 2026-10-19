@@ -1,4 +1,5 @@
-import { getToolCard, toolVisibility } from "../cards/registry";
+import { getToolCard } from "../cards/registry";
+import { visibilityOf } from "../../lib/toolMeta";
 import { EmptyState } from "../ui/EmptyState";
 import { IconCompass } from "../ui/icons";
 import { useConversationStore } from "../../stores/conversation";
@@ -86,7 +87,7 @@ export function Timeline({
   // 对话 tab 只内联 full 级（spec C4）：collapsed 级移入「检索结果」tab（EvidencePanel），
   // hidden 永不渲染；失败不滞留（问题4，由活动条承担）。未注册工具默认 full 保可见。
   const visible = settled.filter((call) =>
-    (toolVisibility[call.tool] ?? "full") === "full" && call.status !== "failed");
+    visibilityOf(call.tool) === "full" && call.status !== "failed");
   const idle = messages.length === 0 && settled.length === 0 && !hasStreamBuffer && !turnRunning;
   // 问题2：进入已有会话的工作台时，对话史回填（hydrate）需要时间；回填完成前的
   // idle 窗口显示「加载中」+ 旋转 logo，而非误导性的「尚无对话」；hydrate 落地后仍空才是真空会话。

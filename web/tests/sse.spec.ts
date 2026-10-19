@@ -154,3 +154,67 @@ describe("streamTurnEvents 终止/出错时释放连接", () => {
     expect(errors.map((e) => e.message)).toEqual(["socket hang up"]);
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// 评审 P2 加固：CRLF 帧（R3）、空闲看门狗（R2）、退避重置时机（R1）
+// ══════════════════════════════════════════════════════════════════════════
+
+describe("parseSseFrames 兼容 CRLF（R3）", () => {
+  test("CRLF 分隔的多帧正常切分（中间层改写行尾时不粘成一帧）", () => {
+    const raw =
+      'id: 1\r\nevent: message_delta\r\ndata: {"turn_id":"t","seq":1,"text":"a"}\r\n\r\n' +
+      'id: 2\r\nevent: turn_done\r\ndata: {"turn_id":"t","seq":2,"reply_id":"t","usage":{}}\r\n\r\n';
+    const { frames, rest } = parseSseFrames(raw);
+    expect(frames.map((f) => f.event)).toEqual(["message_delta", "turn_done"]);
+    expect(frames[0].data.text).toBe("a");
+    expect(rest).toBe("");
+  });
+
+  test("CRLF 与 LF 混排同样解析（同一流里两种行尾）", () => {
+    const raw =
+      'id: 1\nevent: message_delta\r\ndata: {"turn_id":"t","seq":1,"text":"混"}\n\r\n';
+    const { frames } = parseSseFrames(raw);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].data.text).toBe("混");
+  });
+});
+
+describe("streamTurnEvents 连接健壮性（R1/R2）", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  test("连上即断不无限重连：退避只在收到过字节后重置（R1）", async () => {
+    // 旧实现在 fetch 成功后立刻 `reconnects = 0`：连接被中间层秒断时退避永远从 1s 重来，
+    // maxReconnects 形同不存在 → 无上限重连风暴（旧代码下本用例会永不结束）。
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200,
+      body: { getReader: () => ({
+        read: async () => { throw new Error("ECONNRESET"); },
+        cancel: async () => {},
+      }) },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const errors: Error[] = [];
+    await streamTurnEvents("p1", "t1", {
+      onEvent: () => {}, onError: (e) => errors.push(e), maxReconnects: 1,
+    });
+    expect(errors.map((e) => e.message)).toEqual(["ECONNRESET"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);   // 首次 + 1 次重试后放弃
+  });
+
+  test("空闲超时：一个字节都没有时按 idleTimeoutMs 中断并走 onError（R2）", async () => {
+    // 后端发完 turn_done 后靠心跳续命、不主动关流；中间层静默保活时 read() 会永久挂起，
+    // busy 永真、连「重新生成」都看不到。看门狗把这种"静默卡死"变成可重连的错误。
+    const cancel = vi.fn(async () => {});
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, status: 200,
+      body: { getReader: () => ({ read: () => new Promise<never>(() => {}), cancel }) },
+    })));
+    const errors: Error[] = [];
+    await streamTurnEvents("p1", "t1", {
+      onEvent: () => {}, onError: (e) => errors.push(e), maxReconnects: 0, idleTimeoutMs: 20,
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toMatch(/空闲超时/);
+    expect(cancel).toHaveBeenCalledTimes(1);      // 挂起的 read 也随 cancel 收尾
+  });
+});

@@ -1,6 +1,7 @@
 import type { CachedSearchSummary } from "../api/rest";
 import type { ToolCall } from "../stores/tools";
-import { getToolCard, toolVisibility } from "../components/cards/registry";
+import { getToolCard } from "../components/cards/registry";
+import { visibilityOf } from "../lib/toolMeta";
 import { ToolCardFallback } from "../components/cards/ToolCardFallback";
 
 /**
@@ -54,6 +55,22 @@ function liveIsEmpty(t: ToolCall): boolean {
   return Array.isArray(items) && items.length === 0 && Number(rec["total"] ?? 0) === 0;
 }
 
+/** 证据行的时间归属标签（评审 P1-1）。
+ *
+ * 原实现把所有实时行一律标「本轮」，而 tools store 只在换项目时 reset（App 的跨项目
+ * reset effect），跨回合不清——于是一小时内第 3 回合看到的第 1 回合实时行仍写「本轮」，
+ * 界面在说谎。
+ *
+ * 现在按 `EvidenceRow.turnId` 与 `conversation.currentTurnId` 比对：只有当前（或刚结束的
+ * 那个）回合标「本轮」，更早的实时行标「本次会话」。turnId 缺失（旧后端事件不含
+ * turn_id）时不臆猜归属，同样按「本次会话」——宁可少说，不可说错。
+ *
+ * 截断标记（「已截断」）优先级更高，由调用方在外部判定（它还依赖缓存详情的 truncated）。 */
+export function evidenceTurnLabel(row: EvidenceRow, currentTurnId: string | null): string {
+  if (row.origin === "cache") return "已归档";
+  return row.turnId && currentTurnId && row.turnId === currentTurnId ? "本轮" : "本次会话";
+}
+
 /**
  * 合并两源为证据行列表。
  * cached 须来自 rest.listCachedSearches（索引序即时间序，Task 5）；
@@ -67,7 +84,7 @@ export function mergeEvidence(
   // （Fallback=裸 JSON，剔除）、索引已判空的不入（empty===true 剔除；null=
   // 旧库 unknown 不预过滤，R12）；未注册工具默认不入（不臆造展示）
   const cacheAdmitted = cached.filter(
-    (c) => (toolVisibility[c.tool] ?? "full") === "collapsed"
+    (c) => visibilityOf(c.tool) === "collapsed"
       && c.empty !== true
       && getToolCard(c.tool) !== ToolCardFallback,
   );
@@ -94,7 +111,7 @@ export function mergeEvidence(
   const liveAdmitted = live.filter(
     (t) =>
       t.status === "done" &&
-      (toolVisibility[t.tool] ?? "full") === "collapsed" &&
+      visibilityOf(t.tool) === "collapsed" &&
       getToolCard(t.tool) !== ToolCardFallback &&
       !liveIsEmpty(t),
   );

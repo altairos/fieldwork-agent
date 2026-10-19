@@ -79,52 +79,9 @@ export function getToolCard(tool: string): ComponentType<ToolCardProps> {
   return toolCardRegistry[tool] ?? ToolCardFallback;
 }
 
-/**
- * 工具可见性分级（C 节问题 2，对话流精简）——时间线 settled 区按此分流：
- * - full：聚合/文档产出（用户核心交付物），原样整卡渲染；
- * - collapsed：过程性检索（8 搜索原语 + 文献检索/地点检索 amap_text_search，spec C3
- *   delta），折叠为单行摘要条，点击展开原卡；
- * - hidden：内部状态写入与内部地理管线（amap_*，spec C3），时间线不显示（成功与
- *   失败均不显示，正文自会解释）；
- * 未注册工具（Fallback 卡）默认 full（新能力优先保证可见，再人工分级）。
- * 键集大体与上方注册表同源；例外：get_project_brief 为 hidden 只读工具，5 个内部
- * amap_* 地理管线同样不建卡（不建死代码），均只列入本可见性表、不入注册表
- * （update_research_context 虽 hidden 但有专属卡）。
- */
-export type ToolVisibility = "full" | "collapsed" | "hidden";
-export const toolVisibility: Record<string, ToolVisibility> = {
-  // full：聚合/文档产出（用户核心交付物）
-  profile_field_site: "full",
-  compose_itinerary: "full",
-  analyze_fieldwork_window: "full",
-  estimate_living_cost: "full",
-  compose_proposal: "full",
-  compose_interview_guide: "full",
-  suggest_informants: "full",
-  // collapsed：过程性检索（8 搜索原语 + 文献检索 + 地点检索，spec C3）
-  search_flights: "collapsed",
-  search_trains: "collapsed",
-  search_hotels: "collapsed",
-  search_marriott_hotels: "collapsed",
-  search_marriott_packages: "collapsed",
-  search_pois: "collapsed",
-  search_keyword: "collapsed",
-  search_ai: "collapsed",
-  search_literature: "collapsed",  // 文献检索改入证据 tab（spec C3 delta；精细过滤延后，见备忘）
-  amap_text_search: "collapsed",
-  // hidden：内部状态读写（每回合由 build_state_tools 注入，非用户交付物，正文自会解释）
-  // update_research_context 有专属卡（列于上方注册表）；get_project_brief 是只读上下文
-  // 刷新、hidden 后永不渲染，故只登记可见性、不建卡片（不建死代码）。
-  update_research_context: "hidden",
-  get_project_brief: "hidden",
-  // 内部地理管线（profile_field_site/行程内部调用，非用户交付物，spec C3）：
-  // 快照以 amap_ 前缀落盘，hidden 后不进证据 tab（amap_text_search 除外）
-  amap_geocode: "hidden",
-  amap_regeocode: "hidden",
-  amap_around_search: "hidden",
-  amap_direction_transit: "hidden",
-  amap_weather: "hidden",
-};
+// 可见性分级（full/collapsed/hidden）与中文名**不在本文件**：它们是纯数据，
+// 已下沉到 `lib/toolMeta.ts`（评审 P1-3）。放在这里会让 stores/lib 为了查一个字符串
+// 把整棵卡片树（含 react-markdown）拉进依赖图；本文件只负责 `tool → 组件`。
 
 /** Task 7 右栏「预算」面板复用同一份 BudgetBreakdown 视图（同源，不另写一套）。 */
 export { BudgetCard };

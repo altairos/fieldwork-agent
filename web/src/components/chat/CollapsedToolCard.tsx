@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Chip } from "../ui/Chip";
 import { IconAlert, IconCaret } from "../ui/icons";
 import { getToolCard } from "../cards/registry";
-import { toolLabel } from "../cards/toolLabels";
+import { toolLabel } from "../../lib/toolMeta";
 
 /**
  * CollapsedToolCard — 过程性检索工具的折叠摘要条（C 节问题 2，对话流精简）。

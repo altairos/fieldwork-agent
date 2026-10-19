@@ -20,6 +20,10 @@ interface ConversationState {
    *  进入工作台先 reset 置 false，拉取完成 hydrate 置 true；
    *  Timeline 据此区分「加载中」与「真·空会话」，避免加载窗口误显“尚无对话”。 */
   hydrated: boolean;
+  /** 当前（或最近一次）回合 id —— 证据 tab 判定「本轮/本次会话」用（评审 P1-1）。
+   *  由 useTurn 在 POST 成功、或 adopt 领养时写入；取消/重置清空。undefined 语义：
+   *  旧事件缺 turn_id 时不臆测归属（证据行一律标「本次会话」）。 */
+  currentTurnId: string | null;
   lastUsage: Record<string, unknown>;
   quickReplyGroups: QuickReplyGroup[];   // 待作答的多组快捷选项（末条 assistant 携带；用户作答后清空）
   applyEvent: (ev: SseEvent) => void;
@@ -29,10 +33,11 @@ interface ConversationState {
   failTurn: () => void;                  // 回合创建被拒：回滚乐观 UI（见实现处注释）
   cancelTurn: () => void;                // 用户取消：复位流式态，不动 messages（见实现处注释）
   dropLastAssistant: () => void;         // 重新生成：后端已弹出，本地同步丢弃
+  setCurrentTurn: (turnId: string | null) => void;
   reset: () => void;
 }
 export const useConversationStore = create<ConversationState>()((set) => ({
-  messages: [], streamBuffer: "", turnRunning: false, hydrated: false, lastUsage: {}, quickReplyGroups: [],
+  messages: [], streamBuffer: "", turnRunning: false, hydrated: false, currentTurnId: null, lastUsage: {}, quickReplyGroups: [],
   applyEvent: (ev) => set((st) => {
     if (ev.event === "message_delta") {
       return { streamBuffer: st.streamBuffer + ev.text, turnRunning: true };
@@ -88,7 +93,7 @@ export const useConversationStore = create<ConversationState>()((set) => ({
   // 用户取消（P2-9）：SSE 断开收不到终态事件，turnRunning/streamBuffer 须主动复位，
   // 否则打字光标永久脉冲；残缺 streamBuffer 丢弃（对齐后端：取消的残缺回复不入史），
   // messages 不动——user 消息已被后端接受，与 failTurn（回合被拒弹消息）语义相反。
-  cancelTurn: () => set({ turnRunning: false, streamBuffer: "" }),
+  cancelTurn: () => set({ turnRunning: false, streamBuffer: "", currentTurnId: null }),
   // 重新生成前调用：后端已把末条 assistant 弹出并重放 user 消息，本地只丢这一条；
   // quickReplyGroups 一并清空（旧选项属于已作废的回复）。
   dropLastAssistant: () => set((st) => {
@@ -96,5 +101,6 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     if (msgs.length && msgs[msgs.length - 1].role === "assistant") msgs.pop();
     return { messages: msgs, quickReplyGroups: [] };
   }),
-  reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, hydrated: false, lastUsage: {}, quickReplyGroups: [] }),
+  setCurrentTurn: (turnId) => set({ currentTurnId: turnId }),
+  reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, hydrated: false, currentTurnId: null, lastUsage: {}, quickReplyGroups: [] }),
 }));

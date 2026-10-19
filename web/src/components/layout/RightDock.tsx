@@ -5,7 +5,7 @@ import { BudgetPanel } from "../right/BudgetPanel";
 import { FieldSitesPanel } from "../right/FieldSitesPanel";
 import { InformantsPanel } from "../right/InformantsPanel";
 import { KnowledgePanel } from "../right/KnowledgePanel";
-import { Tabs, type TabItem } from "../ui/Tabs";
+import { Tabs, tabIds, type TabItem } from "../ui/Tabs";
 import { IconCompass, IconSpark } from "../ui/icons";
 
 /**
@@ -25,6 +25,9 @@ import { IconCompass, IconSpark } from "../ui/icons";
  * 若任一侧 id 漂移（如旧 site/informant/kb）TS 直接报错，杜绝接线错位。
  * 默认消费 useUiStore 的 activeTab/pendingSuggestion；也可用 props 受控覆盖（children 为插槽逃生口）。
  */
+/** tab ↔ tabpanel 的 id 契约（与 Tabs 的 idBase 同源，两侧拼错不可能） */
+const IDS = tabIds("rightdock");
+
 const TABS: TabItem[] = [
   { id: "basic-info", label: "基本信息" },
   { id: "sites", label: "田野点" },
@@ -91,11 +94,18 @@ export function RightDock({
 
       <div className="px-4 pt-3 pb-2 border-b border-hairline">
         <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 实时状态</div>
-        <Tabs tabs={TABS} active={tab} onChange={handleChange} />
+        <Tabs tabs={TABS} active={tab} onChange={handleChange} idBase="rightdock" />
       </div>
 
       {/* overscroll-contain（批次 C）：移动端底部面板内滚动不穿透到底层对话流 */}
-      <div className="flex-1 overflow-y-auto scroll overscroll-contain p-4">{children ?? <Panel />}</div>
+      <div
+        role="tabpanel"
+        id={IDS.panel(tab)}
+        aria-labelledby={IDS.tab(tab)}
+        className="flex-1 overflow-y-auto scroll overscroll-contain p-4"
+      >
+        {children ?? <Panel />}
+      </div>
 
       {/* 实时口径声明栏：五 Tab 常驻一致（不随面板滚动，对齐 dock 底缘） */}
       <div className="border-t border-hairline px-4 py-2 flex items-center gap-2 text-[11px] leading-snug text-inkfaint">

@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { DEFAULT_PHASES } from "../components/layout/LeftRail";
-import { toolVisibility } from "../components/cards/registry";
+import { phaseLabel } from "../lib/phases";
+import { visibilityOf } from "../lib/toolMeta";
 import { useToolsStore } from "./tools";
 import type { SseEvent } from "../types/events";
 import type { ErrorEvent } from "../types/events";
@@ -45,8 +45,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   applyEvent: (ev) => set(() => {
     if (ev.event === "phase_transition") {
       const tab = PHASE_TAB[ev.to];
-      // 阶段 id → 中文名（唯一来源 LeftRail 阶段配置；未知 id 回落原值）
-      const label = DEFAULT_PHASES.find((p) => p.id === ev.to)?.label ?? ev.to;
+      // 阶段 id → 中文名（唯一来源 lib/phases；未知 id 回落原值）
+      const label = phaseLabel(ev.to);
       // 关键不变量：不自动改 activeTab，只置建议
       return tab ? { pendingSuggestion: { tab, reason: `已进入「${label}」阶段` } } : {};
     }
@@ -57,7 +57,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
       // 新可展示证据到达 → 红点（绝不自动切 tab，红线）；工具名查 tools store
       // （dispatchEvent 顺序：tools 先于 ui，byCallId 必已就位）
       const tool = useToolsStore.getState().byCallId[ev.call_id]?.tool ?? "";
-      if ((toolVisibility[tool] ?? "full") === "collapsed" && get().middleTab !== "evidence") {
+      if (visibilityOf(tool) === "collapsed" && get().middleTab !== "evidence") {
         return { evidenceHint: true };
       }
     }

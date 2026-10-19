@@ -1,7 +1,7 @@
 import { Chip } from "../ui/Chip";
 import { PulseDot, type DotTone } from "../ui/PulseDot";
 import { IconAlert, IconCheck } from "../ui/icons";
-import { toolLabel } from "../cards/toolLabels";
+import { toolLabel, isHiddenTool } from "../../lib/toolMeta";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
 
 /**
@@ -20,7 +20,8 @@ import { useToolsStore, type ToolCall } from "../../stores/tools";
  *      条下渲染一次性通知卡（配额说明 + 申请自己的 API Key 外链）
  *
  * 过滤规则（C 节问题 2，对话流精简）：只留「活的和有问题的」——
- *   - update_research_context 不显示（内部状态写入，含失败重试噪音；正文自会解释）；
+ *   - hidden 级（update_research_context、get_project_brief、5 个内部 amap_*）不显示
+ *     （成功与失败均不显示，spec C3；判定统一走 lib/toolMeta.visibilityOf）；
  *   - 成功且未降级（done && !degraded）不显示——成功活动的结果呈现由时间线 settled 区
  *     卡片/折叠摘要条承担，信息不丢失、密度下降；
  *   - running / failed / degraded 保留（进行中提示 + 异常提醒，语义从"全程审计视图"
@@ -153,8 +154,11 @@ export function ToolActivityStrip() {
   const calls = order
     .map((id) => byCallId[id])
     .filter((c): c is ToolCall => Boolean(c))
-    // 只留活的和有问题的：内部状态写入不显示；成功且未降级不显示（结果由 settled 区卡片承担）
-    .filter((c) => c.tool !== "update_research_context" && !(c.status === "done" && !c.degraded));
+    // 只留活的和有问题的：hidden 级不显示（内部状态写入 + 内部地理管线，成功与失败
+    // 均不显示，spec C3）；成功且未降级不显示（结果由 settled 区卡片承担）。
+    // 判定走 lib/toolMeta 的单一入口——原先是硬编码排除 update_research_context 一个名字，
+    // 于是 amap_geocode 失败时活动条会冒一行「地理编码 · 调用失败」，违反 spec C3。
+    .filter((c) => !isHiddenTool(c.tool) && !(c.status === "done" && !c.degraded));
   if (calls.length === 0) return null;
   const quotaExhausted = calls.some((c) => c.status === "failed" && c.error?.code === RATE_LIMIT_CODE);
   const rows = groupRows(calls);

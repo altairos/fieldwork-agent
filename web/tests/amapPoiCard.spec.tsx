@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { AmapPoiCard } from "../src/components/cards/AmapPoiCard";
-import { toolCardRegistry, toolVisibility } from "../src/components/cards/registry";
+import { toolCardRegistry } from "../src/components/cards/registry";
+import { TOOL_VISIBILITY as toolVisibility } from "../src/lib/toolMeta";
 
 describe("AmapPoiCard", () => {
   it("列表渲染 name + extra 摘要，超出 LIST_LIMIT 注明总数", () => {

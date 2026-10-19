@@ -1,6 +1,6 @@
 import { CardShell, NoData } from "./CardShell";
 import { LIST_LIMIT, extraLine, toItemPage } from "./data";
-import { toolLabel } from "./toolLabels";
+import { toolLabel } from "../../lib/toolMeta";
 import type { ToolCardProps } from "./types";
 
 /**

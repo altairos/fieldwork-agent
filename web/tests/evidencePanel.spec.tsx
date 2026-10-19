@@ -104,6 +104,47 @@ describe("EvidencePanel 混合数据源", () => {
       expect(screen.getByText(/检索记录加载失败/)).toBeTruthy());
     expect(screen.getByText(/昆明 酒店/)).toBeTruthy();
   });
+  it("实时行按回合归属标注：当前回合「本轮」、更早回合「本次会话」（P1-1）", async () => {
+    // 原实现把所有实时行一律标「本轮」，而 tools store 只在换项目时 reset——
+    // 第 3 回合打开证据 tab，第 1 回合的实时行仍写「本轮」，界面在说谎。
+    const conv = await import("../src/stores/conversation");
+    vi.mocked(rest.listCachedSearches).mockResolvedValue([]);
+    for (const [cid, turn] of [["cOld", "t1"], ["cNew", "t2"]] as const) {
+      useToolsStore.getState().applyEvent({
+        event: "tool_started", call_id: cid, tool: "search_ai",
+        args: { query: `q-${turn}` }, purpose: "", turn_id: turn, seq: 1,
+      } as never);
+      useToolsStore.getState().applyEvent({
+        event: "tool_completed", call_id: cid, ok: true, data: { answer: "有内容" },
+      } as never);
+    }
+    conv.useConversationStore.getState().setCurrentTurn("t2");
+    render(<EvidencePanel projectId="p1" />);
+
+    const older = await screen.findByRole("button", { name: /q-t1/ });
+    const current = screen.getByRole("button", { name: /q-t2/ });
+    expect(older.textContent).toContain("本次会话");
+    expect(older.textContent).not.toContain("本轮");
+    expect(current.textContent).toContain("本轮");
+  });
+
+  it("缺 turn_id 的旧事件不臆测归属：一律标「本次会话」（P1-1）", async () => {
+    const conv = await import("../src/stores/conversation");
+    vi.mocked(rest.listCachedSearches).mockResolvedValue([]);
+    // 手工造一条**不带 turn_id** 的实时行（旧后端事件不含该字段）
+    useToolsStore.getState().applyEvent({
+      event: "tool_started", call_id: "cLegacy", tool: "search_ai",
+      args: { query: "旧事件查询" }, purpose: "",
+    } as never);
+    useToolsStore.getState().applyEvent({
+      event: "tool_completed", call_id: "cLegacy", ok: true, data: { answer: "有内容" },
+    } as never);
+    conv.useConversationStore.getState().setCurrentTurn("t1");
+    render(<EvidencePanel projectId="p1" />);
+    const row = await screen.findByRole("button", { name: /旧事件查询/ });
+    expect(row.textContent).toContain("本次会话");
+  });
+
   it("turnRunning true→false 重拉索引（回合结束刷新，C5）", async () => {
     const conv = await import("../src/stores/conversation");
     vi.mocked(rest.listCachedSearches).mockResolvedValue([]);

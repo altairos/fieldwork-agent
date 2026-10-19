@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rest, type CachedSearchRecord, type CachedSearchSummary } from "../../api/rest";
-import { mergeEvidence, type EvidenceRow } from "../../lib/evidenceFilter";
+import { evidenceTurnLabel, mergeEvidence, type EvidenceRow } from "../../lib/evidenceFilter";
 import { useConversationStore } from "../../stores/conversation";
-import { useToolsStore } from "../../stores/tools";
+import { useToolsStore, type ToolCall } from "../../stores/tools";
 import { getToolCard } from "../cards/registry";
-import { toolLabel } from "../cards/toolLabels";
+import { toolLabel } from "../../lib/toolMeta";
 import { IconCaret } from "../ui/icons";
 
 /**
@@ -18,8 +18,12 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [records, setRecords] = useState<Record<string, CachedSearchRecord>>({});
-  const tools = useToolsStore();
+  // 分字段订阅（评审 R5）：原先 useToolsStore() 无 selector，任何工具事件都重渲染整面板；
+  // 且 useMemo 依赖整个 store 对象 → 每次必然失效，等于没 memo。
+  const order = useToolsStore((s) => s.order);
+  const byCallId = useToolsStore((s) => s.byCallId);
   const turnRunning = useConversationStore((s) => s.turnRunning);
+  const currentTurnId = useConversationStore((s) => s.currentTurnId);
   const turnRunningRef = useRef(turnRunning);
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
@@ -44,11 +48,11 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
   }, [turnRunning, reload]);
 
   const rows = useMemo(() => {
-    const settled = tools.order
-      .map((cid) => tools.byCallId[cid])
-      .filter((t): t is NonNullable<typeof t> => Boolean(t));
+    const settled = order
+      .map((cid) => byCallId[cid])
+      .filter((t): t is ToolCall => Boolean(t));
     return mergeEvidence(summaries, settled);
-  }, [summaries, tools]);
+  }, [summaries, order, byCallId]);
 
   const toggle = (row: EvidenceRow) => {
     const next = !open[row.key];
@@ -105,7 +109,7 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
                 {row.query || "（未命名查询）"}
               </span>
               <span className="text-[11px] text-inkfaint shrink-0">
-                {truncated ? "已截断" : row.origin === "live" ? "本轮" : "已归档"}
+                {truncated ? "已截断" : evidenceTurnLabel(row, currentTurnId)}
               </span>
             </button>
             {open[row.key] && (
