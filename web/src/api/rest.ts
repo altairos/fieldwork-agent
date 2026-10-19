@@ -79,7 +79,29 @@ export interface CachedSearchRecord {
   query: string;
   tool: string;
   cached_at?: string;
-  result: { items?: { name?: string; price?: number | null }[] } | null;
+  result: {
+    items?: { name?: string; price?: number | null }[];
+    total?: number;
+    answer?: string | null;
+    /** >64KB 截断标记（json_repo/sqlite cache_search 写入路径，R5） */
+    truncated?: boolean;
+    preview?: string;
+  } | null;
+}
+
+/** 快照索引项（GET /projects/{id}/cached-searches；写入时派生字段，spec C5/R3/R13-R15）。
+ *  null = 存量旧记录 unknown（R12）：不预过滤，懒加载展开后再判。 */
+export interface CachedSearchSummary {
+  id: string;
+  query: string;
+  tool: string;
+  cached_at?: string;
+  parent_call_id?: string | null;
+  turn_id?: string | null;
+  query_key?: string | null;
+  empty?: boolean | null;
+  truncated?: boolean | null;
+  total?: number | null;
 }
 
 /** 知识条目（GET /projects/{id}/knowledge，web_host/api/projects.py::list_knowledge，审计三 Fix 1b）。 */
@@ -127,6 +149,9 @@ export const rest = {
       : `/projects/${id}/proposal/download`,
   getCachedSearch: (id: string, cid: string) =>
     req<CachedSearchRecord>(`/projects/${id}/cached-searches/${cid}`),
+  // 快照索引（证据 tab 持久层数据源，spec C5；派生字段写入时生成，索引不含 result）
+  listCachedSearches: (id: string) =>
+    req<CachedSearchSummary[]>(`/projects/${id}/cached-searches`),
   // 审计三 Fix 1c：agent add_knowledge_entry 落盘条目的可见面（按创建顺序，含正文）
   listKnowledge: (id: string) => req<KnowledgeEntry[]>(`/projects/${id}/knowledge`),
   // P1 右栏编辑：改 title/content（未提供的字段不改），返回更新后条目

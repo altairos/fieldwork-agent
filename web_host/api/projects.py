@@ -86,7 +86,7 @@ async def delete_project(project_id: str, request: Request, repo=Depends(get_rep
 @router.get("/projects/{project_id}/cached-searches")
 async def list_cached_searches(project_id: str, repo=Depends(get_repo),
                                owner: str | None = Depends(owner_from_request)):
-    """快照索引（spec §5.2）：[{id, query, tool, cached_at}]，不含 result 体。"""
+    """快照索引（spec §5.2 + C5/R3）：[{id,query,tool,cached_at,parent_call_id,turn_id,query_key,empty,truncated,total}]，不含 result 体；empty/truncated/total 为 null 表示存量旧记录 unknown。"""
     checked_owned_project(project_id, repo, owner)
     return repo.list_cached_searches(project_id)
 
