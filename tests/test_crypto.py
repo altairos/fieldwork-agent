@@ -1,5 +1,6 @@
 # tests/test_crypto.py
 import threading
+import time
 
 from fieldwork_agent.kernel.identity.crypto import (
     FileLock,
@@ -27,6 +28,8 @@ def test_session_token_shape_and_hash():
     t = new_session_token()
     assert t.startswith("sess_") and len(t) < 128
     assert hash_token(t) == hash_token(t) and len(hash_token(t)) == 64
+    # CSPRNG 契约：两次调用必须产生不同令牌 (M-8)
+    assert new_session_token() != new_session_token()
 
 
 def test_file_lock_serializes_writers(tmp_path):
@@ -38,6 +41,7 @@ def test_file_lock_serializes_writers(tmp_path):
         try:
             with FileLock(lock_path):
                 cur = counter["n"]
+                time.sleep(0.01)           # 放大竞争窗口 (M-6)：无锁时读/写间必然交错
                 counter["n"] = cur + 1     # 临界区：无锁会丢更新
         except Exception as e:  # noqa: BLE001
             errors.append(e)
