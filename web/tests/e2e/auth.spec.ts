@@ -8,15 +8,18 @@ import { test, expect, type BrowserContext } from "@playwright/test";
  *      user:<alice>）→ 回首页展开「我的项目」折叠列表，被认领项目仍可见
  *     （sess_ 令牌归属解析，GET /projects 按 user:<alice> 过滤命中）
  *   ③ ctxB 全新 context（空 localStorage → 懒生成不同 anon_token）注册 bob
- *      → 认领不到 alice 的项目 → bob 首页不出现 alice 的项目（owner 过滤隔离）
+ *      → 认领不到 alice 的项目 → bob 的 GET /projects 响应体空数组 + 折叠
+ *      入口不渲染（owner 过滤隔离的双断言，fix round 1）
  *
  * 选择器消歧（Playwright getByRole name 默认子串匹配）：首页/顶栏「登录」入口钮
  *   与 AuthDialog 提交钮（login 模式）同名、「没有账号？注册」含「注册」子串——
  *   入口/提交一律 exact，模式切换用 /没有账号/ 定位；dialog 打开前页面只有一个
  *   「登录」钮，入口点击用 exact 即安全。
  * mock 的 research_context.topic 恒为「大理乡村旅居研究」（与输入文本无关）——
- *   断言用子串「大理乡村旅居」；Hub 项目列表默认折叠（重设计 Ruling P-1/P-2），
- *   须先点「继续上次」展开再断言，scope 到列表行按钮避免同值文本误命中。
+ *   alice 段断言用子串「大理乡村旅居」；Hub 项目列表默认折叠（重设计 Ruling
+ *   P-1/P-2），非空列表须先点「继续上次」展开、scope 到列表行按钮断言（^ 锚定
+ *   排除行尾删除钮同子串 aria-label）；bob 段不展开也不查 DOM 文本，改走响应体
+ *   + 折叠入口 count 0（getByText toBeHidden 在默认折叠下恒过，守卫不了泄漏）。
  * workers:1 全局串行（playwright.config），不与 keys.spec 的 settingsState 翻转并发。
  */
 test("匿名建项 → 注册认领 → 跨上下文隔离", async ({ page, browser }) => {
@@ -54,13 +57,17 @@ test("匿名建项 → 注册认领 → 跨上下文隔离", async ({ page, brow
     await pageB.getByRole("button", { name: "注册", exact: true }).click();
     // 等 register 落定（成功才关弹窗）再导航：避免请求被页面跳转中断
     await expect(pageB.getByRole("dialog")).toBeHidden({ timeout: 10_000 });
-    // 等列表请求返回后再断言隔离：bob 的 GET /projects 按 user:<bob> 过滤 →
-    // 空列表（折叠入口不渲染），alice 的项目名在 Hub 任何区域都不出现
+    // 隔离双断言（均确定性、无竞态，取代原 getByText toBeHidden——折叠列表下
+    // DOM 无项目名文本，该断言恒过守卫不了泄漏回归）：
+    //   a. 响应体空数组 —— 服务端按 user:<bob> 过滤的直接证据；waitForResponse
+    //      的 url 匹配用 pathname 精确 ===，避免误捕获 /projects/:id/... 子路径
+    //   b. 空列表时「继续上次」折叠入口不渲染 —— count 0 与响应体互证，无渲染竞态
     const listLoaded = pageB.waitForResponse(
-      (r) => r.url().includes("/projects") && r.request().method() === "GET",
+      (r) => new URL(r.url()).pathname === "/projects" && r.request().method() === "GET",
     );
     await pageB.goto("/");
-    await listLoaded;
-    await expect(pageB.getByText("大理乡村旅居")).toBeHidden({ timeout: 10_000 });
+    const res = await listLoaded;
+    expect(await res.json()).toEqual([]); // 服务端按 user:<bob> 过滤的直接证据
+    await expect(pageB.getByRole("button", { name: /继续上次/ })).toHaveCount(0); // 空列表：折叠入口不渲染
   } finally { await ctxB.close(); }
 });
