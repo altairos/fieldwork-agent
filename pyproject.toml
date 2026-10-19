@@ -50,6 +50,7 @@ packages = [
     "fieldwork_agent.kernel.aggregation",
     "fieldwork_agent.kernel.documents",
     "fieldwork_agent.kernel.repository",
+    "fieldwork_agent.kernel.identity",
     "fieldwork_agent.runtime",
     "fieldwork_agent.mcp_server",
     "fieldwork_agent.web_host",
