@@ -58,8 +58,8 @@ describe("ProjectHub（极简首页）", () => {
     expect(screen.queryByText(/导出格式/)).toBeNull();
     expect(screen.queryByText(/四阶段/)).toBeNull();
     expect(screen.queryByText(/学术纵深/)).toBeNull();
-    // 无项目时「继续上次」入口不渲染
-    expect(screen.queryByRole("button", { name: /继续上次/ })).toBeNull();
+    // 无项目时「继续先前项目」入口不渲染
+    expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull();
   });
 
   test("点击示例 chip 填入完整示例文案", async () => {
@@ -122,7 +122,7 @@ describe("ProjectHub（极简首页）", () => {
     ] as any);
     renderHome();
     // 默认折叠：入口可见，项目本身不渲染
-    const toggle = await screen.findByRole("button", { name: /继续上次 · 我的项目（1）/ });
+    const toggle = await screen.findByRole("button", { name: /继续先前项目（1）/ });
     expect(screen.queryByText(/宗族变迁/)).toBeNull();
     fireEvent.click(toggle);
     // 锚定开头：删除钮 aria-label 含“删除项目 宗族变迁”，会与纯正则多匹配
@@ -138,7 +138,7 @@ describe("ProjectHub（极简首页）", () => {
       { project_id: "p3", phase: "research_positioning", research_context: {}, counts: { sites: 0, informants: 0, proposals: 0 } },
     ] as any);
     renderHome();
-    fireEvent.click(await screen.findByRole("button", { name: /继续上次 · 我的项目（3）/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /继续先前项目（3）/ }));
     expect(await screen.findByText("宗族调研手记")).toBeInTheDocument(); // title 优先
     expect(screen.getByText("非遗传承")).toBeInTheDocument();           // 无 title 回退 topic
     expect(screen.getByText("未命名项目")).toBeInTheDocument();          // 皆空兑底

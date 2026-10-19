@@ -102,12 +102,22 @@ class ProjectRepository(Protocol):
 
     # ---------------------------------------------------------------- 搜索结果缓存
 
-    def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
-        """缓存一次检索结果，返回缓存 id；序列化超 64KB 时 ``result`` 替换为截断标记。"""
+    def cache_search(self, pid: str, query: str, tool: str, result: dict, *,
+                     parent_call_id: str = "", turn_id: str = "",
+                     query_key: str = "") -> str:
+        """缓存一次检索结果，返回缓存 id；序列化超 64KB 时 ``result`` 替换为截断标记。
+
+        写入时派生索引摘要并落存（R3/R12）：``empty/truncated/total`` 由 result 计算，
+        ``parent_call_id/turn_id/query_key`` 由调用方传入（证据面板跨层配对/回合归属/
+        同题分组，R13/R14）。keyword-only 新参全部有默认——既有调用点零改动兼容。
+        """
         ...
 
     def list_cached_searches(self, pid: str) -> list[dict]:
-        """缓存索引（不含 ``result``）：``{"id", "query", "tool", "cached_at"}``。"""
+        """缓存索引（不含 ``result``）：``{"id","query","tool","cached_at",
+        "parent_call_id","turn_id","query_key","empty","truncated","total"}``，
+        按 ``(cached_at, id)`` 升序（R15 平局规则前提，双实现契约锁定）。
+        ``empty/truncated/total`` 为 None = 存量旧记录 unknown（R12）。"""
         ...
 
     def get_cached_search(self, pid: str, cid: str) -> dict | None:

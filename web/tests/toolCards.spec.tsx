@@ -11,6 +11,7 @@ import { PoiCard } from "../src/components/cards/PoiCard";
 import { TrainCard } from "../src/components/cards/TrainCard";
 import { ItineraryCard } from "../src/components/cards/ItineraryCard";
 import { InformantCard } from "../src/components/cards/InformantCard";
+import { LiteratureCard } from "../src/components/cards/LiteratureCard";
 import { ProposalCard } from "../src/components/cards/ProposalCard";
 import { UpdateResearchContextCard } from "../src/components/cards/UpdateResearchContextCard";
 import { saveKeys } from "../src/lib/keys";
@@ -63,7 +64,7 @@ describe("BudgetCard coverage", () => {
 // 补充断言：注册表 key 必须与真实工具名全等（不臆造、不漏映射）。
 // 名单分两组：内核名单取自实测 `fieldwork_agent.kernel.CAPABILITIES()`
 // （kernel/registry.py + kernel/sources/flyai.py + kernel/aggregation/* +
-// kernel/documents/*，15 项，与 mcp_server/mapping.py TOOL_GROUPS 键集一致）；
+// kernel/documents/* + kernel/sources/amap.py，17 项，与 mcp_server/mapping.py TOOL_GROUPS 键集一致）；
 // 宿主层状态工具（轮 2 症状②）由 web_host/agent/state_tools.py 每回合注入
 // loop，不经内核 registry，是注册表唯一超出内核键集的合法例外。
 // ──────────────────────────────────────────────────────────────────────────
@@ -84,13 +85,14 @@ const KERNEL_TOOLS = [
   "search_keyword",
   "search_ai",
   "search_literature",
+  "amap_text_search",
 ];
 
 /** 宿主层回合内状态工具（web_host/agent/state_tools.py build_state_tools）。 */
 const HOST_STATE_TOOLS = ["update_research_context"];
 
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 已适配的内核能力名 + 宿主状态工具（无臆造 key）", () => {
+  test("注册表键集 = 内核 17 能力名 + 宿主状态工具（无臆造 key）", () => {
     expect(Object.keys(toolCardRegistry).sort()).toEqual(
       [...KERNEL_TOOLS, ...HOST_STATE_TOOLS].sort(),
     );
@@ -320,7 +322,7 @@ describe("其余卡片", () => {
     const cards: ComponentType<ToolCardProps>[] = [
       SiteProfileCard, PoiCard, HotelCard, FlightCard, TrainCard,
       ItineraryCard, BudgetCard, InformantCard, ProposalCard, ToolCardFallback,
-      UpdateResearchContextCard,
+      UpdateResearchContextCard, LiteratureCard,
     ];
     for (const C of cards) {
       expect(() => render(<C data={null} degraded="flyai_unavailable" />)).not.toThrow();
@@ -437,5 +439,57 @@ describe("BudgetCard 估算区间", () => {
     expect(screen.getByText("跨预算线")).toBeInTheDocument();
     expect(screen.queryByText("预算内")).not.toBeInTheDocument();
     expect(screen.getByText(/按上限.*可能超出/)).toBeInTheDocument();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────
+// LiteratureCard（search_literature → LiteraturePage）：文献条目如实呈现 + 中文社科深链。
+// 红线：只呈现检索到的真实条目，空字段不渲染、不臆造。
+// ───────────────────────────────────────────────────────────────
+describe("LiteratureCard", () => {
+  const LIT = {
+    items: [
+      { id: "https://openalex.org/W1", title: "The social life of things",
+        authors: ["Arjun Appadurai", "Igor Kopytoff"], year: 1986,
+        doi: "10.1017/CBO9780511812682", venue: "Cambridge University Press",
+        cited_by_count: 1234, abstract: "商品的社会生命与 commodification。",
+        open_access_url: "https://example.org/oa.pdf", is_oa: true },
+    ],
+    total: 25,
+    chinese_sources: [
+      { label: "国家哲学社会科学文献中心", url: "https://www.ncpssd.cn/" },
+      { label: "PubScholar 公益学术平台", url: "https://pubscholar.cn/search?q=%E9%93%B6%E5%99%A8" },
+    ],
+  };
+
+  test("渲染文献条目：标题/作者/年份/期刊/被引", () => {
+    render(<LiteratureCard data={LIT} />);
+    expect(screen.getByText(/The social life of things/)).toBeInTheDocument();
+    expect(screen.getByText(/Arjun Appadurai/)).toBeInTheDocument();
+    expect(screen.getByText(/1986/)).toBeInTheDocument();
+    expect(screen.getByText(/Cambridge University Press/)).toBeInTheDocument();
+    expect(screen.getByText(/1234/)).toBeInTheDocument();
+  });
+
+  test("总数 chip 与 DOI/OA 链接如实呈现", () => {
+    render(<LiteratureCard data={LIT} />);
+    expect(screen.getByText(/25/)).toBeInTheDocument();  // total 直出
+    const doi = screen.getByRole("link", { name: /DOI/ });
+    expect(doi).toHaveAttribute("href", "https://doi.org/10.1017/CBO9780511812682");
+    expect(screen.getByRole("link", { name: /开放获取|OA|全文/ })).toHaveAttribute(
+      "href", "https://example.org/oa.pdf");
+  });
+
+  test("中文社科检索深链呈现为可点击链接", () => {
+    render(<LiteratureCard data={LIT} />);
+    const ncpssd = screen.getByRole("link", { name: /国家哲学社会科学文献中心/ });
+    expect(ncpssd).toHaveAttribute("href", "https://www.ncpssd.cn/");
+    const pub = screen.getByRole("link", { name: /PubScholar/ });
+    expect(pub).toHaveAttribute("href", "https://pubscholar.cn/search?q=%E9%93%B6%E5%99%A8");
+  });
+
+  test("data=null 不报错且走空态", () => {
+    render(<LiteratureCard data={null} />);
+    expect(screen.getByText("工具未返回数据")).toBeInTheDocument();
   });
 });

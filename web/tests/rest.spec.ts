@@ -266,3 +266,16 @@ describe("mock 服务器 download 三格式", () => {
     expect(buf.subarray(0, 4).toString("latin1")).toBe("PK\u0003\u0004");
   });
 });
+
+describe("rest.listCachedSearches", () => {
+  it("listCachedSearches 命中索引端点并透传派生字段", async () => {
+    // stubFetch 的 resps[0] 即 json() 返回体：索引端点返回数组，需双层嵌套
+    const body = [{ id: "srch_1", query: "q", tool: "search_ai", cached_at: "2026-10-19T12:00:00",
+                    parent_call_id: "call_1", turn_id: "trn_1", query_key: "search_ai|{}",
+                    empty: false, truncated: false, total: 0 }];
+    const calls = stubFetch([body]);
+    const r = await rest.listCachedSearches("p1");
+    expect(calls[0].url).toBe("/projects/p1/cached-searches");
+    expect(r).toEqual(body);
+  });
+});

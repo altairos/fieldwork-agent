@@ -3,6 +3,8 @@ import type { SseEvent, ToolErrorInfo } from "../types/events";
 
 export interface ToolCall {
   call_id: string; tool: string; args: Record<string, unknown>; purpose: string;
+  /** R15 回合归属：采集自 tool_started 封套平铺的 turn_id/seq（旧事件缺省 undefined） */
+  turnId?: string; seq?: number;
   status: "running" | "done" | "failed"; ok?: boolean; data?: unknown; degraded?: string | null;
   error?: ToolErrorInfo | null;
 }
@@ -19,7 +21,8 @@ export const useToolsStore = create<ToolsState>()((set) => ({
       if (st.byCallId[ev.call_id]) return {};          // 幂等：已存在不重置
       return {
         byCallId: { ...st.byCallId, [ev.call_id]: {
-          call_id: ev.call_id, tool: ev.tool, args: ev.args, purpose: ev.purpose, status: "running" } },
+          call_id: ev.call_id, tool: ev.tool, args: ev.args, purpose: ev.purpose, status: "running",
+          turnId: ev.turn_id, seq: ev.seq } },
         order: [...st.order, ev.call_id],
       };
     }

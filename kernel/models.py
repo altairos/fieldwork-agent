@@ -77,6 +77,8 @@ class ItemPage(BaseModel):
     raw_count: int | None = None
     entity_count: int | None = None
     evidence: SourceEvidence = Field(default_factory=SourceEvidence)
+    # AI 语义搜索（ai-search）直答文本（Markdown）；平铺/深层路径恒 None（spec A1，R1）
+    answer: str | None = None
 
 
 # ---------------------------------------------------------------- 学术文献（OpenAlex）

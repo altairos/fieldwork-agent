@@ -54,7 +54,7 @@ export function ThemeSwitcher() {
         <div
           role="menu"
           aria-label="界面配色"
-          className="absolute right-0 mt-2 w-64 z-50 rounded-lg hairline bg-card shadow-pop p-1.5 max-h-[70vh] overflow-y-auto"
+          className="absolute right-0 mt-2 w-64 z-50 rounded-lg hairline fw-glass g2 p-1.5 max-h-[70vh] overflow-y-auto"
         >
           {THEMES.map((t) => {
             const selected = t.id === theme;

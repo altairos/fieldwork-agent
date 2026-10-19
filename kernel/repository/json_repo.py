@@ -29,6 +29,7 @@ from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
 from fieldwork_agent.kernel.models import ConfirmationRecord
+from fieldwork_agent.kernel.repository.cache_summary import result_summary
 from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
@@ -373,20 +374,27 @@ class JsonRepository:
 
     # ------------------------------------------------------------------ 搜索缓存
 
-    def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
+    def cache_search(self, pid: str, query: str, tool: str, result: dict, *,
+                     parent_call_id: str = "", turn_id: str = "",
+                     query_key: str = "") -> str:
         self._require(pid)
         cid = _new_id("srch", self._cache_dir(pid))
         cached_at = _now()
         serialized = json.dumps(result, ensure_ascii=False)
-        payload = {"id": cid, "query": query, "tool": tool, "cached_at": cached_at}
+        payload = {"id": cid, "query": query, "tool": tool, "cached_at": cached_at,
+                   "parent_call_id": parent_call_id, "turn_id": turn_id,
+                   "query_key": query_key}
         if len(serialized.encode("utf-8")) > CACHE_LIMIT_BYTES:
             # 超限：整体替换为截断标记，preview 按 UTF-8 字节截断（不产生半个字符）
             preview = serialized.encode("utf-8")[:CACHE_LIMIT_BYTES].decode(
                 "utf-8", errors="ignore"
             )
             payload["result"] = {"truncated": True, "preview": preview}
+            payload["truncated"], payload["empty"], payload["total"] = True, False, None
         else:
             payload["result"] = result
+            empty, total = result_summary(result)
+            payload["truncated"], payload["empty"], payload["total"] = False, empty, total
         self._write_json(self._cache_dir(pid) / f"{cid}.json", payload)
         return cid
 
@@ -401,15 +409,29 @@ class JsonRepository:
                 continue
             if data is None:
                 continue
-            index.append(
-                {
-                    "id": data.get("id", path.stem),
-                    "query": data.get("query", ""),
-                    # 旧文件键是 source_tool，读时归一为 tool
-                    "tool": data.get("tool") or data.get("source_tool", ""),
-                    "cached_at": data.get("cached_at", ""),
-                }
-            )
+            entry = {
+                "id": data.get("id", path.stem),
+                "query": data.get("query", ""),
+                # 旧文件键是 source_tool，读时归一为 tool
+                "tool": data.get("tool") or data.get("source_tool", ""),
+                "cached_at": data.get("cached_at", ""),
+                "parent_call_id": data.get("parent_call_id") or "",
+                "turn_id": data.get("turn_id") or "",
+                "query_key": data.get("query_key") or "",
+                "empty": data.get("empty"),
+                "truncated": data.get("truncated"),
+                "total": data.get("total"),
+            }
+            if entry["empty"] is None or entry["truncated"] is None:
+                # 存量旧记录（R12）：Json 索引本就整读文件，现场派生零额外 IO
+                res = data.get("result")
+                if isinstance(res, dict) and res.get("truncated") is True:
+                    entry["truncated"], entry["empty"], entry["total"] = True, False, None
+                else:
+                    empty, total = result_summary(res)
+                    entry["truncated"], entry["empty"], entry["total"] = False, empty, total
+            index.append(entry)
+        index.sort(key=lambda e: (e["cached_at"], e["id"]))   # R15：与 SQLite 同序
         return index
 
     def get_cached_search(self, pid: str, cid: str) -> dict | None:

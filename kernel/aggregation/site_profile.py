@@ -264,6 +264,10 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     accommodation = _build_page(acc_filtered, max_items_per_section) \
         if "accommodation" in by_tag else None
 
+    # R1：AI 语义搜索只回 answer 无 items——收进 hints，不在 items 合并中静默丢失
+    acc_answers = [page.answer for _, page in by_tag.get("accommodation", [])
+                   if getattr(page, "answer", None) and page.answer.strip()]
+
     transport_items = merged_items("transport")
     transport = _build_page(transport_items, max_items_per_section) \
         if "transport" in by_tag else None
@@ -291,6 +295,8 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     if include_accommodation and not final_items["accommodation"]:
         hints["accommodation"] = ("平台未见住宿供给：建议以最近枢纽城市住宿为基地，"
                                   "进村住宿通过当地学术合作方/接待方安排，需人工核实")
+    if acc_answers:
+        hints["accommodation_ai"] = acc_answers[0]
     summary = SummaryHints(
         section_counts={
             tag: len(items) for tag, items in final_items.items()

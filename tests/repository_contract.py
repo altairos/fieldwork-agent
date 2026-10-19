@@ -181,6 +181,40 @@ class TestContract:
         assert stored["truncated"] is True
         assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
+    def test_cache_index_carries_derived_fields(self, repo):
+        """R3/R13/R14：索引项带写入时派生的关联键与摘要（不读 result 即可过滤/配对）。"""
+        cid = repo.cache_search("p1", "search_hotels {}", "search_hotels",
+                                {"items": [], "total": 0},
+                                parent_call_id="call_1", turn_id="trn_1",
+                                query_key="search_hotels|{}")
+        idx = {e["id"]: e for e in repo.list_cached_searches("p1")}[cid]
+        assert idx["empty"] is True and idx["truncated"] is False and idx["total"] == 0
+        assert idx["parent_call_id"] == "call_1" and idx["turn_id"] == "trn_1"
+        assert idx["query_key"] == "search_hotels|{}"
+
+    def test_cache_index_answer_not_empty(self, repo):
+        """R1×R3：ai-search answer-only 页不算空（否则证据 tab 把有价值答案滤掉）。"""
+        cid = repo.cache_search("p1", "q", "search_ai",
+                                {"items": [], "total": 0, "answer": "## 答案"})
+        idx = {e["id"]: e for e in repo.list_cached_searches("p1")}[cid]
+        assert idx["empty"] is False
+
+    def test_cache_index_truncated_flag(self, repo):
+        """R5/R12：>64KB 替换为截断标记时，索引 truncated=True 而非 empty=True。"""
+        big = {"items": [{"name": "x" * 200} for _ in range(800)], "total": 800}
+        cid = repo.cache_search("p1", "q", "search_pois", big)
+        idx = {e["id"]: e for e in repo.list_cached_searches("p1")}[cid]
+        assert idx["truncated"] is True and idx["empty"] is False
+
+    def test_cache_index_sorted_by_cached_at_id(self, repo):
+        """R15：平局规则的前提——双实现索引同序 (cached_at, id)。"""
+        c1 = repo.cache_search("p1", "q1", "search_ai", {"items": [], "total": 1})
+        c2 = repo.cache_search("p1", "q2", "search_ai", {"items": [], "total": 1})
+        order = [e["id"] for e in repo.list_cached_searches("p1")]
+        assert order == sorted(order, key=lambda i: (
+            {e["id"]: e for e in repo.list_cached_searches("p1")}[i]["cached_at"], i))
+        assert set(order) == {c1, c2}
+
     # ---------------------------------------------------------------- 知识库
 
     def test_knowledge_roundtrip_and_search(self, repo):

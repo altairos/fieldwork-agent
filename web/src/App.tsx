@@ -1,23 +1,46 @@
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type CSSProperties, lazy, Suspense, useEffect } from "react";
 import { BrowserRouter, Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { isAppTokenError, rest } from "./api/rest";
 import { Composer } from "./components/chat/Composer";
+import { EvidencePanel } from "./components/chat/EvidencePanel";
 import { PhaseBanner } from "./components/chat/PhaseBanner";
 import { Timeline } from "./components/chat/Timeline";
 import { Header } from "./components/layout/Header";
 import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
-import { RightResizeHandle, loadRightWidth, RIGHT_W_KEY } from "./components/layout/RightResizeHandle";
+import { RightResizeHandle } from "./components/layout/RightResizeHandle";
 import { KeyDialog } from "./components/settings/KeyDialog";
+import { Tabs, tabIds } from "./components/ui/Tabs";
 import { IconCaret } from "./components/ui/icons";
+import { useAuthGate } from "./hooks/useAuthGate";
+import { useMobileDrawer } from "./hooks/useMobileDrawer";
+import { useProjectBootstrap } from "./hooks/useProjectBootstrap";
+import { useRenameProject } from "./hooks/useRenameProject";
+import { useRightWidth } from "./hooks/useRightWidth";
 import { useTurn } from "./hooks/useTurn";
-import { getKeys, hasDashScopeKey } from "./lib/keys";
-import { useConversationStore } from "./stores/conversation";
 import { useProjectStore } from "./stores/project";
-import { useToolsStore } from "./stores/tools";
-import { useUiStore, PHASE_TAB } from "./stores/ui";
-import { ProjectHub } from "./routes/ProjectHub";
-import { ProposalView } from "./routes/ProposalView";
+import { useUiStore, PHASE_TAB, type MiddleTab } from "./stores/ui";
+
+/**
+ * 路由级代码分割（评审 R9）：原先 ProjectHub / ProposalView 与工作台全部打进同一个
+ * 560 kB 主 chunk，首屏（绝大多数用户是 `/` 首页）要下完提案阅读器 + 全部卡片才开画。
+ * 现在两条独立路由各自成 chunk，主包只留工作台骨架（路由切换时由 Suspense 兜一次）。
+ *
+ * 补 `default` 包装而不改路由文件的导出形状：`routes/*` 用具名导出（测试直接 import
+ * 具名组件），lazy 需要 default。
+ */
+const ProjectHub = lazy(() =>
+  import("./routes/ProjectHub").then((m) => ({ default: m.ProjectHub })));
+const ProposalView = lazy(() =>
+  import("./routes/ProposalView").then((m) => ({ default: m.ProposalView })));
+
+/** 路由懒加载的兜底：与时间线"加载中"同一视觉语言（旋转 logo，不闪白屏）。 */
+function RouteFallback() {
+  return (
+    <div className="h-full grid place-items-center">
+      <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 animate-spin opacity-70" />
+    </div>
+  );
+}
 
 /**
  * Workspace 三栏骨架（设计板 lines 388-674）：
@@ -26,169 +49,49 @@ import { ProposalView } from "./routes/ProposalView";
  *   拖拽结果 localStorage 持久化，刷新/重挂载恢复）。
  *
  * 中栏（设计板 line 426 `flex flex-col bg-paper/40 min-w-0`）= PhaseBanner(428-432)
- *   + Timeline(433-514，flex-1 滚动) + Composer(516-526)。
+ *   + 「对话/检索结果」双 tab（spec C1）+ Timeline(433-514，flex-1 滚动)
+ *   + Composer(516-526)。
+ *
  * 回合所有权单一：`useTurn(projectId)` 只在此处调用一次，句柄注入 Composer
  *   （Composer 自身不再建第二个回合，避免并发 SSE 流）。
- * 初始快照：`GET /projects/{id}` → `project.loadSnapshot`（右栏五面板的 REST 侧数据源）；
- *   失败经 ui store 的 error 事件如实上屏（PhaseBanner 的降级横幅），不静默吞错、不伪造空快照。
- * 跨项目 reset（Task 7 遗留，Task 8 补齐）：projectId 变化时先清空 conversation/tools/ui/project
- *   四个 store，避免上一个项目的对话/工具卡/横幅状态串台；该 effect 声明在快照加载之前，
- *   React 按声明顺序执行，保证「先清后载」。
- * 无 key 拦截（可浏览不可发）：挂载时查本地 key + GET /settings/status，
- * 本地无百炼 key 且服务端未配 → Composer locked；状态查询失败不锁
- * （后端 403 llm_key_required 兑底，见 useTurn keyMissing）。
- * 移动端（<lg，批次 A）：三栏回落单栏——左栏抽屉化（ui store 的 leftCollapsed，
- *   Header 汉堡钮触发，backdrop/Escape 关闭）；右栏折叠为底部面板（rightCollapsed，
- *   把手切换）；桌面（lg+）布局不变（CSS 断点控制，JS 状态只管移动形态）。
- * App Token 401（服务端启用 FIELDWORK_APP_TOKEN 后浏览器未存/失效）：横幅给人话
- *   指引（不透传后端 JSON）并就地弹 KeyDialog；保存新令牌后关闭即带新令牌重拉
- *   快照与消息史（authRetry 重跑本 effect），免整页刷新。
+ *
+ * **职责拆分（评审 R8）**：本组件只负责布局与接线，原先压在它身上的七件事已各自成 hook——
+ *   跨项目 reset + 快照/历史回填 → `useProjectBootstrap`；
+ *   无 key 拦截 + 401 弹层 + bfcache 复查 → `useAuthGate`；
+ *   移动端抽屉/Escape → `useMobileDrawer`；
+ *   右栏宽度持久化 → `useRightWidth`；
+ *   Header 改名 → `useRenameProject`；
+ *   回合生命周期 → `useTurn`（原有）；
+ *   `?turn=` 领养首页创建的回合 → 本组件内 6 行（它同时要改 URL，与路由绑死）。
  */
+const MIDDLE_IDS = tabIds("middle");
+
 function Workspace() {
   const { id } = useParams();
   const projectId = id ?? "";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
   const phase = useProjectStore((s) => s.phase);
   // 项目显示名（任务1）：title（用户改名 / agent 自动命名）优先，未命名回退 topic；
-  // 两者皆空由 Header 调用处兑底「未命名项目」——绝不回退 project_id（字母+数字不面向用户）。
+  // 两者皆空由调用处兑底「未命名项目」——绝不回退 project_id（字母+数字不面向用户）。
   const projectName = useProjectStore(
     (s) => s.snapshot?.research_context?.title || s.snapshot?.research_context?.topic || "",
   );
-  const loadSnapshot = useProjectStore((s) => s.loadSnapshot);
-  const leftCollapsed = useUiStore((s) => s.leftCollapsed);
-  const rightCollapsed = useUiStore((s) => s.rightCollapsed);
-  const toggleLeft = useUiStore((s) => s.toggleLeft);
-  const toggleRight = useUiStore((s) => s.toggleRight);
-  // 发送链路守卫 401 → 就地弹密钥层（免回首页）；箭头体延迟求值 openKeyDialog
-  // （其 const 定义在下方，此处直引会碰 TDZ）。
-  const turn = useTurn(projectId, { onAuthError: () => openKeyDialog() });
+
+  const { composerLocked, keyDialogOpen, openKeyDialog, closeKeyDialog, authRetry } = useAuthGate(projectId);
+  const { leftCollapsed, rightCollapsed, toggleLeft, toggleRight } = useMobileDrawer();
+  const { rightWidth, setRightWidth } = useRightWidth();
+  const renameProject = useRenameProject(projectId);
+  useProjectBootstrap(projectId, { onAuthError: openKeyDialog, retryToken: authRetry });
+
+  // 回合句柄（单一所有权）：发送链路守卫 401 时就地弹密钥层（免回首页）
+  const turn = useTurn(projectId, { onAuthError: openKeyDialog });
   const turnAdopt = turn.adopt;   // 解构出稳定引用再进 effect 依赖（turn 对象每渲染新引用）
-  const [searchParams] = useSearchParams();
-  const [composerLocked, setComposerLocked] = useState(false);
-  const [keyDialogOpen, setKeyDialogOpen] = useState(false);
-  const [authRetry, setAuthRetry] = useState(0);   // 401 弹层保存新令牌后 +1 → 重拉数据
-  const tokenBeforeDialog = useRef("");             // 弹层打开前的令牌快照（关闭时比对）
-  // P3 右栏拖拽调宽：宽度状态由 Workspace 持有（--right-w 须设在 grid 祖先容器，
-  // 把手组件作用域够不着），把手只上抛新值
-  const [rightWidth, setRightWidth] = useState(loadRightWidth);
 
-  // 跨项目 reset：按 projectId 变化清空四 store（幂等，StrictMode 双执行安全）
-  useEffect(() => {
-    useConversationStore.getState().reset();
-    useToolsStore.getState().reset();
-    useUiStore.getState().reset();
-    useProjectStore.getState().reset();
-  }, [projectId]);
-
-  // P5 bfcache 恢复：回首页保存 key 后后退回本页时，页面从缓存原样恢复（React
-  // 不重挂载，上面的判定 effect 不重跑）→ persisted pageshow 重查一次，
-  // 避免已保存的 key 被旧状态误判为“未配置”
-  useEffect(() => {
-    const onShow = (e: PageTransitionEvent) => {
-      if (!e.persisted) return;
-      if (hasDashScopeKey()) {
-        setComposerLocked(false);
-        return;
-      }
-      rest
-        .settingsStatus()
-        .then((s) => setComposerLocked(!s.dashscope_configured))
-        .catch(() => {});
-    };
-    window.addEventListener("pageshow", onShow);
-    return () => window.removeEventListener("pageshow", onShow);
-  }, []);
-
-  // P3 拖拽结果持久化：宽度一变即写 localStorage（clamp 由把手组件保证在界内）
-  useEffect(() => {
-    localStorage.setItem(RIGHT_W_KEY, String(rightWidth));
-  }, [rightWidth]);
-
-  // 无 key 拦截：本地 key 优先（免查）；否则等服务端结论。查询失败不锁（后端 403 兜底），
-  // 避免旧后端（无 /settings/status）把已配 key 的部署锁死。
-  useEffect(() => {
-    if (hasDashScopeKey()) {
-      setComposerLocked(false);
-      return;
-    }
-    let alive = true;
-    rest
-      .settingsStatus()
-      .then((s) => {
-        if (alive) setComposerLocked(!s.dashscope_configured);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [projectId]);
-
-  // 401 就地弹密钥层（不必回首页找入口）；关闭时若保存过新令牌 → 就地重试；
-  // P5：弹层里补填了百炼 Key → 就地解锁（原判定只在挂载时查一次，
-  // 回首页保存后返回未重查 → 误显“未配置百炼 API Key”）
-  const openKeyDialog = () => {
-    tokenBeforeDialog.current = getKeys().appToken;
-    setKeyDialogOpen(true);
-  };
-  const closeKeyDialog = () => {
-    setKeyDialogOpen(false);
-    if (getKeys().appToken !== tokenBeforeDialog.current) setAuthRetry((n) => n + 1);
-    if (hasDashScopeKey()) setComposerLocked(false);
-  };
-
-  useEffect(() => {
-    if (!projectId) return;
-    let alive = true;
-    rest
-      .getProject(projectId)
-      .then((snap) => {
-        if (alive) {
-          loadSnapshot(snap);
-          dismissBannerIf("snapshot_failed");   // 令牌重试成功的主场景：只撤同 code 横幅
-        }
-      })
-      .catch((err: unknown) => {
-        if (!alive) return;
-        if (isAppTokenError(err)) {
-          reportAuthError("snapshot_failed");
-          openKeyDialog();
-          return;
-        }
-        useUiStore.getState().applyEvent({
-          event: "error",
-          code: "snapshot_failed",
-          message: "项目快照加载失败，请稍后重试",  // 友好文案（2026-10-18）：不透出 String(err)；err 供上方令牌判定
-          hint: "请刷新重试",
-        });
-      });
-    // 对话史回填（刷新恢复）：与快照并列拉取互不阻塞；reset effect 先于本 effect
-    // 声明执行，hydrate 一定落在清空之后。失败如实上屏，不静默留"尚无对话"假象。
-    rest
-      .getMessages(projectId)
-      .then((msgs) => {
-        if (alive) {
-          useConversationStore.getState().hydrate(msgs);
-          dismissBannerIf("history_failed");
-        }
-      })
-      .catch((err: unknown) => {
-        if (!alive) return;
-        if (isAppTokenError(err)) {
-          reportAuthError("history_failed");
-          openKeyDialog();
-          return;
-        }
-        useUiStore.getState().applyEvent({
-          event: "error",
-          code: "history_failed",
-          message: "对话历史加载失败，请稍后重试",
-          hint: "请刷新重试",
-        });
-      });
-    return () => {
-      alive = false;
-    };
-  }, [projectId, loadSnapshot, authRetry]);
+  const middleTab = useUiStore((s) => s.middleTab);
+  const evidenceHint = useUiStore((s) => s.evidenceHint);
+  const setMiddleTab = useUiStore((s) => s.setMiddleTab);
 
   // 首页两步创建携带的首轮回合（?turn=，轮 4）：接住后立即 replace 清 query
   // （防刷新重放/分享链接重触发），再订阅该回合的 SSE 回放——首页输入由此成为
@@ -200,15 +103,6 @@ function Workspace() {
     void turnAdopt(turnId);
   }, [projectId, searchParams, navigate, turnAdopt]);
 
-  // Escape 关闭移动端抽屉（对齐 ThemeSwitcher 键盘关闭惯例）；桌面无抽屉，无副作用
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !useUiStore.getState().leftCollapsed) toggleLeft();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [toggleLeft]);
-
   return (
     <div className="h-full flex flex-col">
       <Header
@@ -216,18 +110,7 @@ function Workspace() {
         phase={phase}
         view="workspace"
         onMenu={toggleLeft}
-        onRename={(name) => {
-          // 任务1：Header 改名 → PUT title → 重拉快照（Header 经 store 回读新名）
-          void (async () => {
-            try {
-              await rest.updateResearchContext(projectId, { title: name });
-              loadSnapshot(await rest.getProject(projectId));
-            } catch (e) {
-              // 改名失败保持原名（无全局 toast 通道；用户重试即可）
-              console.warn("rename failed:", e);
-            }
-          })();
-        }}
+        onRename={(name) => { void renameProject(name); }}
         onNavigate={(v) => {
           if (v === "proposal") navigate(`/p/${id}/proposal`);
         }}
@@ -242,7 +125,7 @@ function Workspace() {
             点击不切阶段（产品红线） */}
         {!leftCollapsed && (
           <div
-            className="fixed inset-0 z-30 bg-ink/35 fade-in lg:hidden"
+            className="fixed inset-0 z-30 bg-ink/35 fade-in fw-scrim lg:hidden"
             onClick={toggleLeft}
             aria-hidden="true"
           />
@@ -262,12 +145,37 @@ function Workspace() {
         </div>
         <main className="flex flex-col bg-paper/40 min-w-0 min-h-0">
           <PhaseBanner />
-          <Timeline
-            onRetry={() => { void turn.retry(); }}
-            canRetry={turn.canRetry}
-            retrying={turn.busy}
-            incomplete={turn.incomplete}
-          />
+          <div className="px-4 pt-3 shrink-0">
+            {/* 中栏双 tab（spec C1）：对话 / 检索结果；红点=evidenceHint，绝不自动切（红线） */}
+            <Tabs
+              cols={2}
+              idBase="middle"
+              active={middleTab}
+              onChange={(id) => setMiddleTab(id as MiddleTab)}
+              tabs={[
+                { id: "chat", label: "对话" },
+                { id: "evidence", label: "检索结果", dot: evidenceHint || undefined },
+              ]}
+            />
+          </div>
+          {/* tabpanel：面板懒挂载（未选中不渲染，避免每次进工作台就拉证据索引） */}
+          <div
+            role="tabpanel"
+            id={MIDDLE_IDS.panel(middleTab)}
+            aria-labelledby={MIDDLE_IDS.tab(middleTab)}
+            className="flex flex-col flex-1 min-h-0"
+          >
+            {middleTab === "chat" ? (
+              <Timeline
+                onRetry={() => { void turn.retry(); }}
+                canRetry={turn.canRetry}
+                retrying={turn.busy}
+                incomplete={turn.incomplete}
+              />
+            ) : (
+              <EvidencePanel projectId={projectId} />
+            )}
+          </div>
           <Composer
             turn={turn}
             locked={composerLocked}
@@ -323,33 +231,16 @@ function Workspace() {
   );
 }
 
-/** App Token 守卫 401（web_host/app.py 审计 F02）的共用降级：人话横幅如实保留来源
- *  code，不透传后端 JSON 响应体；弹层由调用方就地打开。 */
-function reportAuthError(code: "snapshot_failed" | "history_failed") {
-  useUiStore.getState().applyEvent({
-    event: "error",
-    code,
-    message: "访问令牌缺失或已失效，无法加载项目数据",
-    hint: "请在「密钥与登录」弹层填写访问令牌并保存",
-  });
-}
-
-/** 成功回调只撤同 code 的降级横幅：dismissBanner 是无条件清空单一槽位，
- *  兄弟请求失败侧（如快照 500 + 消息史成功）或其他来源（SSE 错误等）的
- *  横幅不得被成功侧误撤——错误指示丢失比横幅多留更糟。 */
-function dismissBannerIf(code: string) {
-  const ui = useUiStore.getState();
-  if (ui.degradedBanner?.code === code) ui.dismissBanner();
-}
-
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<ProjectHub />} />
-        <Route path="/p/:id" element={<Workspace />} />
-        <Route path="/p/:id/proposal" element={<ProposalView />} />
-      </Routes>
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route path="/" element={<ProjectHub />} />
+          <Route path="/p/:id" element={<Workspace />} />
+          <Route path="/p/:id/proposal" element={<ProposalView />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

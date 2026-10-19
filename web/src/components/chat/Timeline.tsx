@@ -1,4 +1,5 @@
-import { getToolCard, toolVisibility } from "../cards/registry";
+import { getToolCard } from "../cards/registry";
+import { visibilityOf } from "../../lib/toolMeta";
 import { EmptyState } from "../ui/EmptyState";
 import { IconCompass } from "../ui/icons";
 import { useConversationStore } from "../../stores/conversation";
@@ -6,7 +7,6 @@ import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
 import { useUiStore } from "../../stores/ui";
 import { AssistantStream } from "./AssistantStream";
-import { CollapsedToolCard } from "./CollapsedToolCard";
 import { MessageBubble } from "./MessageBubble";
 import { ToolActivityStrip } from "./ToolActivityStrip";
 
@@ -22,10 +22,12 @@ import { ToolActivityStrip } from "./ToolActivityStrip";
  * 同源红线②：结果卡一律 `getToolCard(call.tool)` + `tool_completed.data`（tools store 归约结果），
  * 时间线自身 0 处 fetch、0 处数字加工；运行中的调用不提前渲染卡片（否则会误报「工具未返回数据」）。
  *
- * 可见性分流（C 节问题 2）：settled 区按 `toolVisibility` 三级分流——full 原样整卡、
- * collapsed 折叠摘要条（CollapsedToolCard，点击展开原卡）、hidden 不显示（成功与失败均不显示，
+ * 可见性分流（C 节问题 2 → spec C4）：对话 tab 只内联 full 级整卡；collapsed 级（过程性检索）
+ * 移入中栏「检索结果」tab（EvidencePanel，Task 12 接线）、hidden 不显示（成功与失败均不显示，
  * 内部状态写入自会由助手正文解释）；未注册工具默认 full。成功活动不再进活动条（见
  * ToolActivityStrip），由这里的卡片承担结果呈现。
+ * 中间态注记（Task 10 → 12）：本提交后、EvidencePanel 接线前，collapsed 卡在两个 tab
+ * 都不可见——同一分支内的过渡提交，不部署，可接受。
  *
  * 已知取舍：tools store 不记录调用属于哪个回合（Task 3 契约），故本回合区块内的结果卡按
  *   `tools.order` 全量渲染于时间线尾部活动区；多回合会话中历史卡片不会回到各自消息之间。
@@ -68,8 +70,12 @@ export function Timeline({
   incomplete?: boolean;
 } = {}) {
   const messages = useConversationStore((s) => s.messages);
-  const streamBuffer = useConversationStore((s) => s.streamBuffer);
+  // 只取布尔（渲染开销闸门）：streamBuffer 每个 delta 都变，直接订阅会让整条时间线
+  // 每 token 重渲染一次（历史消息随之重解析 markdown，O(tokens × 历史)）。
+  // 这里只关心"有没有流式正文"（空态判定），正文本身由 AssistantStream 自己订阅。
+  const hasStreamBuffer = useConversationStore((s) => Boolean(s.streamBuffer));
   const turnRunning = useConversationStore((s) => s.turnRunning);
+  const hydrated = useConversationStore((s) => s.hydrated);
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
   const phase = useProjectStore((s) => s.phase);
@@ -77,9 +83,16 @@ export function Timeline({
   const settled = order
     .map((id) => byCallId[id])
     .filter((call) => Boolean(call) && call.status !== "running");
-  // hidden 级不进时间线（含失败态：正文自会解释）；全部被隐藏时不渲染外层缩进容器
-  const visible = settled.filter((call) => (toolVisibility[call.tool] ?? "full") !== "hidden");
-  const empty = messages.length === 0 && settled.length === 0 && !streamBuffer && !turnRunning;
+  // done 但数据为空的卡保留（NoData 对“成功但无数据”仍有信息量）；全部被过滤时不渲染外层缩进容器。
+  // 对话 tab 只内联 full 级（spec C4）：collapsed 级移入「检索结果」tab（EvidencePanel），
+  // hidden 永不渲染；失败不滞留（问题4，由活动条承担）。未注册工具默认 full 保可见。
+  const visible = settled.filter((call) =>
+    visibilityOf(call.tool) === "full" && call.status !== "failed");
+  const idle = messages.length === 0 && settled.length === 0 && !hasStreamBuffer && !turnRunning;
+  // 问题2：进入已有会话的工作台时，对话史回填（hydrate）需要时间；回填完成前的
+  // idle 窗口显示「加载中」+ 旋转 logo，而非误导性的「尚无对话」；hydrate 落地后仍空才是真空会话。
+  const loading = idle && !hydrated;
+  const empty = idle && hydrated;
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto scroll px-6 py-5 space-y-5">
@@ -93,17 +106,6 @@ export function Timeline({
       {visible.length > 0 && (
         <div className="pl-9 space-y-3">
           {visible.map((call) => {
-            if ((toolVisibility[call.tool] ?? "full") === "collapsed") {
-              return (
-                <CollapsedToolCard
-                  key={call.call_id}
-                  tool={call.tool}
-                  data={call.data === undefined ? null : call.data}
-                  degraded={call.degraded ?? null}
-                  error={call.error ?? null}
-                />
-              );
-            }
             const Card = getToolCard(call.tool);
             return (
               <Card
@@ -117,23 +119,35 @@ export function Timeline({
         </div>
       )}
 
-      {/* 回合中断：正文残缺/未收敛 → 给「重新生成」而不让用户自己重写问题 */}
+      {/* 回合异常收场才给「重新生成」（用户反馈：重试入口只在失败/卡住时有意义）：
+          incomplete=正文残缺/未收敛（卡住）；canRetry 单独成立=回合失败（error 事件）。
+          正常完成的回合不渲染。 */}
       {(incomplete || canRetry) && (
         <div className="pl-9 flex items-center gap-2 flex-wrap text-[11.5px]">
-          {incomplete && (
+          {incomplete ? (
             <span className="text-ochre">本轮生成中断：正文可能在句中被截断，或未给出结论。</span>
+          ) : (
+            <span className="text-ochre">本轮生成失败。</span>
           )}
           {canRetry && onRetry && (
             <button
               type="button"
               onClick={onRetry}
               disabled={retrying}
-              className="chip hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition disabled:opacity-50"
+              className="inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition disabled:opacity-50"
             >
               {retrying ? "正在重新生成…" : "重新生成"}
             </button>
           )}
         </div>
+      )}
+
+      {loading && (
+        <EmptyState
+          icon={<img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 animate-spin" />}
+          title="加载中"
+          hint="正在恢复本项目的对话与上下文…"
+        />
       )}
 
       {empty && (
@@ -148,7 +162,7 @@ export function Timeline({
                 key={q}
                 type="button"
                 onClick={() => useUiStore.getState().setComposerDraft(q)}
-                className="chip hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition"
+                className="inline-flex items-center rounded-md px-2.5 py-1 text-[12px] leading-[18px] border hairline bg-card text-inksoft hover:bg-cardsunk hover:text-ink transition"
               >
                 {q}
               </button>

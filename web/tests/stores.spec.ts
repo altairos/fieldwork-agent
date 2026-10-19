@@ -153,55 +153,84 @@ describe("conversation store hydrate（刷新回填）", () => {
   });
 });
 
-describe("conversation store quickReplies 状态机（B 节快捷作答）", () => {
-  test("turn_done：正文剥离 [[options]] 标记入史，选项进 state 与末条消息", () => {
+describe("conversation store quickReplyGroups 状态机（多组快捷作答）", () => {
+  test("turn_done（多组）：正文剥离 [[options]] 入史，各组进 state 与末条消息", () => {
+    const s = useConversationStore.getState();
+    s.applyEvent(ev({ event: "message_delta", text: "先定两件事：[[options:用途]]开题|申报[[/options]][[options:学科]]人类学|社会学[[/options]]" }));
+    s.applyEvent(ev({ event: "turn_done", reply_id: "t1", usage: {}, quick_reply_groups: [
+      { label: "用途", options: ["开题", "申报"] },
+      { label: "学科", options: ["人类学", "社会学"] },
+    ] }));
+    const after = useConversationStore.getState();
+    expect(after.messages.at(-1)?.content).toBe("先定两件事："); // 与后端入史口径一致
+    expect(after.messages.at(-1)?.quickReplyGroups).toEqual([
+      { label: "用途", options: ["开题", "申报"] },
+      { label: "学科", options: ["人类学", "社会学"] },
+    ]);
+    expect(after.quickReplyGroups).toHaveLength(2);            // Composer 据此渲染多行 chips
+  });
+  test("turn_done（旧单组 quick_replies）：向后兼容包成单个无标签组", () => {
     const s = useConversationStore.getState();
     s.applyEvent(ev({ event: "message_delta", text: "先校准研究问题吗？[[options]]是|否[[/options]]" }));
     s.applyEvent(ev({ event: "turn_done", reply_id: "t1", usage: {}, quick_replies: ["是", "否"] }));
     const after = useConversationStore.getState();
-    expect(after.messages.at(-1)?.content).toBe("先校准研究问题吗？"); // 与后端入史口径一致
-    expect(after.messages.at(-1)?.quickReplies).toEqual(["是", "否"]);
-    expect(after.quickReplies).toEqual(["是", "否"]);                  // Composer 据此渲染 chips
+    expect(after.messages.at(-1)?.content).toBe("先校准研究问题吗？");
+    expect(after.quickReplyGroups).toEqual([{ label: "", options: ["是", "否"] }]);
   });
-  test("turn_done 无选项（渐进增强基准）：quickReplies 归空、正文原样", () => {
+  test("turn_done 无选项（渐进增强基准）：quickReplyGroups 归空、正文原样", () => {
     const s = useConversationStore.getState();
     s.applyEvent(ev({ event: "message_delta", text: "好的" }));
     s.applyEvent(ev({ event: "turn_done", reply_id: "t1", usage: {} }));
     const after = useConversationStore.getState();
     expect(after.messages.at(-1)?.content).toBe("好的");
-    expect(after.messages.at(-1)?.quickReplies).toBeUndefined();         // 无值不加键
-    expect(after.quickReplies).toEqual([]);
+    expect(after.messages.at(-1)?.quickReplyGroups).toBeUndefined();     // 无值不加键
+    expect(after.quickReplyGroups).toEqual([]);
   });
   test("pushUser 清空（用户已作答，按钮退场）", () => {
-    useConversationStore.setState({ quickReplies: ["是", "否"] });
+    useConversationStore.setState({ quickReplyGroups: [{ label: "", options: ["是", "否"] }] });
     useConversationStore.getState().pushUser("是");
-    expect(useConversationStore.getState().quickReplies).toEqual([]);
+    expect(useConversationStore.getState().quickReplyGroups).toEqual([]);
   });
-  test("hydrate：末条 assistant 带 quick_replies 恢复待作答（刷新后按钮重现）", () => {
+  test("hydrate（多组）：末条 assistant 带 quick_reply_groups 恢复待作答", () => {
+    useConversationStore.getState().hydrate([
+      { role: "user", content: "问" },
+      { role: "assistant", content: "答", quick_reply_groups: [
+        { label: "用途", options: ["开题", "申报"] },
+        { label: "学科", options: ["人类学", "社会学"] },
+      ] },
+    ]);
+    const s = useConversationStore.getState();
+    expect(s.quickReplyGroups).toHaveLength(2);
+    expect(s.messages.at(-1)?.quickReplyGroups).toEqual([
+      { label: "用途", options: ["开题", "申报"] },
+      { label: "学科", options: ["人类学", "社会学"] },
+    ]);
+  });
+  test("hydrate（旧史 quick_replies）：扁平列表包成单个无标签组", () => {
     useConversationStore.getState().hydrate([
       { role: "user", content: "问" },
       { role: "assistant", content: "答", quick_replies: ["甲", "乙"] },
     ]);
     const s = useConversationStore.getState();
-    expect(s.quickReplies).toEqual(["甲", "乙"]);
-    expect(s.messages.at(-1)?.quickReplies).toEqual(["甲", "乙"]);      // snake→camel 映射
+    expect(s.quickReplyGroups).toEqual([{ label: "", options: ["甲", "乙"] }]);
+    expect(s.messages.at(-1)?.quickReplyGroups).toEqual([{ label: "", options: ["甲", "乙"] }]);
   });
   test("hydrate：末条 assistant 无选项或末条是 user 时不恢复", () => {
     useConversationStore.getState().hydrate([
       { role: "user", content: "问" },
       { role: "assistant", content: "答" },
     ]);
-    expect(useConversationStore.getState().quickReplies).toEqual([]);
+    expect(useConversationStore.getState().quickReplyGroups).toEqual([]);
     useConversationStore.getState().hydrate([
       { role: "assistant", content: "答" },
       { role: "user", content: "追问" },
     ]);
-    expect(useConversationStore.getState().quickReplies).toEqual([]);
+    expect(useConversationStore.getState().quickReplyGroups).toEqual([]);
   });
   test("reset 清空（跨项目不残留上一项目的待作答选项）", () => {
-    useConversationStore.setState({ quickReplies: ["甲"] });
+    useConversationStore.setState({ quickReplyGroups: [{ label: "", options: ["甲"] }] });
     useConversationStore.getState().reset();
-    expect(useConversationStore.getState().quickReplies).toEqual([]);
+    expect(useConversationStore.getState().quickReplyGroups).toEqual([]);
   });
 });
 

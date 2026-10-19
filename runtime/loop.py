@@ -143,6 +143,10 @@ def _summarize(name: str, env: Envelope) -> dict:
             out["dearest"] = data["dearest"]
         out["top_items"] = [_item_brief(it) for it in items[:_TOP_ITEMS]
                             if isinstance(it, dict)]
+        # R1：ai-search 直答文本进摘要（answer-only 页 total=0，旧路径全丢）；
+        # 长度不另设限——_tool_content 统一截到 TOOL_CONTENT_LIMIT
+        if isinstance(data.get("answer"), str) and data["answer"].strip():
+            out["answer"] = data["answer"]
         return out
     # 候选列表（suggest_informants 等）：给总数与前几条（name+关键标量）
     if isinstance(data, list):

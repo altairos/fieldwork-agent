@@ -217,6 +217,38 @@ def test_cache_truncated_64kb(tmp_path):
     assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
 
+def test_cache_index_legacy_row_unknown(tmp_path):
+    """R12：迁移前的旧行新列为 NULL → 索引 empty/truncated/total 为 None（前端 unknown），
+    既有 4 字段不受影响。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:   # 对照 _V1_MIN：先建 v3 旧 schema 库再重开触发迁移
+        conn.executescript(
+            """
+            CREATE TABLE projects (
+                project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, phase TEXT NOT NULL,
+                phase_history TEXT NOT NULL DEFAULT '[]');
+            CREATE TABLE search_cache (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, query TEXT NOT NULL,
+                tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL);
+            PRAGMA user_version=3;
+            """)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','research_positioning','[]')")
+        conn.execute(
+            "INSERT INTO search_cache(id,project_id,query,tool,result,cached_at)"
+            " VALUES(?,?,?,?,?,?)",
+            ("srch_20260101_000000_legacy0", "p1", "q", "search_ai",
+             '{"items":[],"total":0}', "2026-01-01T00:00:00"))
+    repo = SqliteRepository(db_path=db)   # 重开 → v3→v4 迁移补列（旧行新列 NULL）
+    row = repo.list_cached_searches("p1")[0]
+    assert row["empty"] is None and row["truncated"] is None and row["total"] is None
+    assert row["query_key"] == "" and row["parent_call_id"] == "" and row["turn_id"] == ""
+    assert (row["id"], row["query"], row["tool"], row["cached_at"]) == (
+        "srch_20260101_000000_legacy0", "q", "search_ai", "2026-01-01T00:00:00")
+
+
 def test_knowledge_roundtrip_and_search(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
@@ -313,7 +345,8 @@ def test_schema_version_is_current(tmp_path):
 def test_v1_db_upgrades_to_current_in_place(tmp_path):
     """存量 v1 库：增量补列补表、版本推进、既有行原样保留（绝不 DROP 重建）。
 
-    v1 库重开直达当前版（v2 的 proposal_confirmed/dep_hash、v3 的 owner 一并补齐）。"""
+    v1 库重开直达当前版（v2 的 proposal_confirmed/dep_hash、v3 的 owner、
+    v4 的 search_cache 六列与复合主键一并补齐）。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(_V1_MIN)
@@ -644,7 +677,8 @@ def test_concurrent_field_site_seq_unique(tmp_path):
 # ------------------------------------------------------------------ 归属隔离（v2→当前版升级）
 
 def test_v2_database_upgrades_to_current(tmp_path):
-    """v2 旧库重开自动升至当前版：projects.owner 补列，数据无损。"""
+    """v2 旧库重开自动升至当前版：projects.owner 与 search_cache 六列/
+    复合主键补齐，数据无损。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
         conn.executescript("""
@@ -725,6 +759,70 @@ def test_v3_db_upgrades_search_cache_to_composite_pk(tmp_path):
                                "cached_at": "2026-01-05T10:00:00"})
     assert repo.get_cached_search("p_a", "20260105100000_0")["result"] == {"hotel": ["A"]}
     assert repo.get_cached_search("p_b", "20260105100000_0")["result"] == {"hotel": ["B"]}
+
+
+def test_both_v4_shapes_upgrade_to_v5(tmp_path):
+    """合并版升 v5：N07 与 C5 在两条分支各自为 v4，两种形状的 v4 库重开必须互补齐。
+
+    - HEAD 形（复合主键、无六列）：补六列，主键不动；
+    - 分支形（全局 id 主键、有六列）：重建复合主键，六列数据原样保留。
+    """
+    base_projects = """
+        CREATE TABLE projects (
+            project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, phase TEXT NOT NULL,
+            phase_history TEXT NOT NULL DEFAULT '[]',
+            proposal_confirmed INTEGER NOT NULL DEFAULT 0, owner TEXT);
+    """
+    six = {"parent_call_id", "turn_id", "query_key", "is_empty", "is_truncated", "total"}
+
+    # HEAD 形 v4：复合主键、无六列 → 补列，主键保持
+    db_a = tmp_path / "head_v4.db"
+    with sqlite3.connect(db_a) as conn:
+        conn.executescript(base_projects + """
+            CREATE TABLE search_cache (
+                id TEXT NOT NULL, project_id TEXT NOT NULL, query TEXT NOT NULL,
+                tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, id),
+                FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE);
+            PRAGMA user_version=4;
+        """)
+    SqliteRepository(db_path=db_a)   # 重开触发 v4→v5 互补齐
+    with sqlite3.connect(db_a) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(search_cache)")}
+        pk = {r[1]: r[5] for r in conn.execute("PRAGMA table_info(search_cache)")}
+    assert six <= cols                       # C5 六列补齐
+    assert pk["project_id"] == 1 and pk["id"] == 2   # 复合主键保持（未误重建）
+
+    # 分支形 v4：全局 id 主键、有六列（含数据）→ 重建复合主键，数据穿越保留
+    db_b = tmp_path / "branch_v4.db"
+    with sqlite3.connect(db_b) as conn:
+        conn.executescript(base_projects + """
+            CREATE TABLE search_cache (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, query TEXT NOT NULL,
+                tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL,
+                parent_call_id TEXT, turn_id TEXT, query_key TEXT,
+                is_empty INTEGER, is_truncated INTEGER, total INTEGER,
+                FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE);
+            PRAGMA user_version=4;
+        """)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','synthesis','[]')")
+        conn.execute(
+            "INSERT INTO search_cache(id,project_id,query,tool,result,cached_at,"
+            " parent_call_id,turn_id,query_key,is_empty,is_truncated,total)"
+            " VALUES('c1','p1','大理文献','search_literature','{}','2026-01-05T10:00:00',"
+            " 'call_1','turn_1','k1',0,1,7)")
+    SqliteRepository(db_path=db_b)
+    with sqlite3.connect(db_b) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        pk = {r[1]: r[5] for r in conn.execute("PRAGMA table_info(search_cache)")}
+        row = conn.execute(
+            "SELECT parent_call_id, total FROM search_cache WHERE project_id='p1'").fetchone()
+    assert pk["project_id"] == 1 and pk["id"] == 2   # 重建为复合主键
+    assert row == ("call_1", 7)                      # 六列数据穿越重建保留
 
 
 def test_import_cache_same_cid_across_projects_coexist(tmp_path):

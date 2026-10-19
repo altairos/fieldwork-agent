@@ -53,7 +53,7 @@ export function Header({
     { id: "proposal", label: "方案草稿" },
   ];
   return (
-    <header className="sticky top-0 z-40 backdrop-blur bg-paper/85 border-b border-hairline">
+    <header className="sticky top-0 z-40 fw-glass g1 border-b border-hairline">
       <div className="px-4 sm:px-6 h-14 flex items-center gap-3 sm:gap-6">
         {onMenu && (
           <button
@@ -123,7 +123,7 @@ export function Header({
                 role="tab"
                 aria-selected={view === v.id}
                 onClick={() => onNavigate?.(v.id)}
-                className={`px-2 sm:px-3 h-8 rounded-md border transition ${
+                className={`px-2 sm:px-3 h-8 rounded-md border whitespace-nowrap shrink-0 transition ${
                   view === v.id
                     ? "text-cinnabar border-cinnabar"
                     : "border-transparent text-inksoft hover:text-ink hover:bg-cardsunk"

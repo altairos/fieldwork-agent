@@ -27,6 +27,12 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   // N10：请求代次——每次 send/adopt/retry 与项目切换都递增；回读（快照/消息）返回时
   // 若代次已变则弃置，杜绝旧响应写入新页面 store（adopt 的收尾 hydrate 此前缺此保护）。
   const generationRef = useRef(0);
+  // 同步在飞守卫（评审 R4）：`busy` 是 state，`setBusy(true)` 要等本轮渲染后才为真，
+  // 而它原先是在 `await createTurn` **之后**才置位——POST 落地前 busy 仍是 false，
+  // 连点/回车双发会各自创建回合（后端 409 才算兜住）。当前 UI 靠「提交即清空 textarea」
+  // 掩盖了这个竞态，一旦有别的触发源（快捷键、快捷键连击、程序化 send）就会暴露。
+  // ref 在同一次事件回调里同步生效，与 busy（渲染态/按钮禁用）职责分离。
+  const inFlightRef = useRef(false);
   // 守卫 401 回调经 ref 中转：send 不因此重造（依赖数组不抖），调用方换弹层状态不重启回合句柄。
   // 无依赖 effect 每次 render 同步最新引用（opts 可能是内联对象）。
   const onAuthErrorRef = useRef(opts?.onAuthError);
@@ -87,10 +93,14 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
           const prev = seenRef.current;
           seenRef.current = dispatchEvent(env, seenRef.current);
+          // 「重新生成」只在失败/卡住时给出（用户反馈）：正常完成的回合不给重试入口；
+          // turn_done.incomplete=true → 正文未收敛/截断；error → 回合失败终态。
           if (env.event === "turn_done") {
             if (seenRef.current !== prev) void refreshSnapshot(gen);
-            setRetryable(true);
+            setRetryable(env.data.incomplete === true);
             setIncomplete(env.data.incomplete === true);
+          } else if (env.event === "error") {
+            setRetryable(true);
           }
         },
         onError: () => {
@@ -99,6 +109,7 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           // onClose 只改 busy，不能代替 conversation 终态。
           useConversationStore.getState().cancelTurn();
           useUiStore.getState().applyEvent({ event: "error", code: "stream_error", message: "事件流中断", hint: "请重试" });
+          setRetryable(true);   // 断线重连耗尽（卡住）：留重试入口；若后端仍在跑，retry 会 409 并如实提示
         },
         onClose: () => { setBusy(false); },
       });
@@ -111,51 +122,57 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   }, [projectId, refreshSnapshot, rehydrateMessages]);
 
   const send = useCallback(async (text: string) => {
-    if (!text.trim() || busy) return;
-    setConflict(false);
-    setKeyMissing(false);
-    useConversationStore.getState().pushUser(text);
-    useConversationStore.getState().beginTurn();
-
-    // ── 第一步：POST 创建回合 ──
-    // 失败 → failTurn 回滚乐观 UI：移除刚 push 的用户消息 + turnRunning=false + 清 buffer，
-    // 否则打字光标永久脉冲且对话流留下后端未接受的消息。
-    // 409（已有回合在执行）与 403（llm_key_required，服务端无 key 且请求头未带）
-    // 各自进专属提示态；守卫 401（App Token）给人话横幅不透传后端 JSON，
-    // 并回调调用方就地弹密钥层（App 注入 openKeyDialog）；其余如实上屏。
-    let turnId: string;
+    if (!text.trim() || inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
-      turnId = (await rest.createTurn(projectId, text)).turn_id;
-    } catch (err) {
-      setBusy(false);
-      useConversationStore.getState().failTurn();
-      if (err instanceof ApiError && err.status === 409) setConflict(true);
-      else if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
-      else if (isAppTokenError(err)) {
-        useUiStore.getState().applyEvent({
-          event: "error",
-          code: "send_failed",
-          message: "访问令牌缺失或已失效，发送被拒绝",
-          hint: "请在「密钥与登录」弹层填写访问令牌并保存",
-        });
-        onAuthErrorRef.current?.();
-      }
-      else useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
-      return;
-    }
+      setConflict(false);
+      setKeyMissing(false);
+      useConversationStore.getState().pushUser(text);
+      useConversationStore.getState().beginTurn();
 
-    // ── 第二步：订阅 SSE 事件流（与 adopt 共用 streamAndRefresh）──
-    // 此阶段消息已被后端接受，异常只如实上屏；绝不调 failTurn（会弹掉真实对话内容）。
-    // 流内错误由 onError 回调处理，turnRunning 由 error/turn_done 事件与 onClose 负责；
-    // 首见 turn_done 回读项目快照（R06a），send 无需 re-hydrate 消息史（乐观 push + delta 已对齐）。
-    turnIdRef.current = turnId;
-    setLastTurnId(turnId);
-    setRetryable(false);
-    setIncomplete(false);
-    seenRef.current = new Set();
-    const gen = ++generationRef.current;   // N10：本次请求代次
-    await streamAndRefresh(turnId, gen, { rehydrateMessages: false });
-  }, [projectId, busy, streamAndRefresh]);
+      // ── 第一步：POST 创建回合 ──
+      // 失败 → failTurn 回滚乐观 UI：移除刚 push 的用户消息 + turnRunning=false + 清 buffer，
+      // 否则打字光标永久脉冲且对话流留下后端未接受的消息。
+      // 409（已有回合在执行）与 403（llm_key_required，服务端无 key 且请求头未带）
+      // 各自进专属提示态；守卫 401（App Token）给人话横幅不透传后端 JSON，
+      // 并回调调用方就地弹密钥层（App 注入 openKeyDialog）；其余如实上屏。
+      let turnId: string;
+      try {
+        turnId = (await rest.createTurn(projectId, text)).turn_id;
+      } catch (err) {
+        setBusy(false);
+        useConversationStore.getState().failTurn();
+        if (err instanceof ApiError && err.status === 409) setConflict(true);
+        else if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
+        else if (isAppTokenError(err)) {
+          useUiStore.getState().applyEvent({
+            event: "error",
+            code: "send_failed",
+            message: "访问令牌缺失或已失效，发送被拒绝",
+            hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+          });
+          onAuthErrorRef.current?.();
+        }
+        else useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
+        return;
+      }
+
+      // ── 第二步：订阅 SSE 事件流（与 adopt 共用 streamAndRefresh）──
+      // 此阶段消息已被后端接受，异常只如实上屏；绝不调 failTurn（会弹掉真实对话内容）。
+      // 流内错误由 onError 回调处理，turnRunning 由 error/turn_done 事件与 onClose 负责；
+      // 首见 turn_done 回读项目快照（R06a），send 无需 re-hydrate 消息史（乐观 push + delta 已对齐）。
+      turnIdRef.current = turnId;
+      setLastTurnId(turnId);
+      useConversationStore.getState().setCurrentTurn(turnId);   // 证据 tab「本轮」标签依据（P1-1）
+      setRetryable(false);
+      setIncomplete(false);
+      seenRef.current = new Set();
+      const gen = ++generationRef.current;   // N10：本次请求代次
+      await streamAndRefresh(turnId, gen, { rehydrateMessages: false });
+    } finally {
+      inFlightRef.current = false;      // 成功/失败/提前 return 一律释放
+    }
+  }, [projectId, streamAndRefresh]);
 
   // 领养回合（首页两步创建→跳转接住，轮 4）：不 POST 创建，只订阅该回合事件流。
   // N10：与 send 共用 streamAndRefresh——终态同样回读项目快照（修复 adopt 漏刷致
@@ -165,6 +182,7 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     abortRef.current?.abort();               // StrictMode/重复领养：先断旧流
     turnIdRef.current = turnId;
     setLastTurnId(turnId);
+    useConversationStore.getState().setCurrentTurn(turnId);   // 领养回合同样算「本轮」（P1-1）
     setRetryable(false);
     setIncomplete(false);
     seenRef.current = new Set();
@@ -187,7 +205,8 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   // 必须先等 POST 成功再丢本地 assistant——失败时历史保持原样。
   const retry = useCallback(async (turnId?: string) => {
     const target = turnId ?? lastTurnId;
-    if (!target || busy) return;
+    if (!target || inFlightRef.current) return;
+    inFlightRef.current = true;
     setKeyMissing(false);
     setRetryable(false);
     try {
@@ -215,8 +234,10 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           hint: "请等当前回合结束，或直接重新发送这条问题",
         });
       }
+    } finally {
+      inFlightRef.current = false;
     }
-  }, [projectId, busy, lastTurnId, adopt]);
+  }, [projectId, lastTurnId, adopt]);
 
   return {
     send, adopt, cancel, retry, busy, conflict, keyMissing,

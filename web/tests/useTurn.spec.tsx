@@ -160,6 +160,7 @@ describe("useTurn — SSE 阶段（消息已被接受，绝不回滚）", () => 
     expect(useUiStore.getState().degradedBanner?.code).toBe("internal_error");
     expect(useUiStore.getState().degradedBanner?.message).toBe("上游超时");
     expect(result.current.busy).toBe(false);
+    expect(result.current.canRetry).toBe(true);       // 失败终态：给重试入口（问题1）
     expect(sse.cancel).toHaveBeenCalledTimes(1);      // error 终止后同样释放连接（Fix #2）
   });
 
@@ -215,6 +216,7 @@ describe("useTurn — SSE 阶段（消息已被接受，绝不回滚）", () => 
     expect(useConversationStore.getState().turnRunning).toBe(false);
     expect(useConversationStore.getState().lastUsage).toEqual({ total_tokens: 12 });
     expect(result.current.busy).toBe(false);
+    expect(result.current.canRetry).toBe(false);      // 正常完成：不给重试入口（问题1）
     expect(sse.cancel).toHaveBeenCalledTimes(1);
     expect(useUiStore.getState().degradedBanner).toBeNull();
   });
@@ -577,6 +579,7 @@ describe("useTurn — 重新生成", () => {
     expect(useConversationStore.getState().messages.map((m) => m.content))
       .toEqual(["帮我排行程"]);
     expect(sseTwo.cancel).toHaveBeenCalled();
+    expect(result.current.canRetry).toBe(false); // 新回合正常完成：重试入口关闭（问题1）
   });
 
   test("retry 被拒（409）→ 如实上屏，不动本地消息", async () => {
@@ -593,5 +596,35 @@ describe("useTurn — 重新生成", () => {
     expect(useConversationStore.getState().messages.map((m) => m.content))
       .toEqual(["问", "答"]);
     expect(useUiStore.getState().degradedBanner?.code).toBe("retry_failed");
+  });
+});
+
+describe("useTurn — 同步在飞守卫（评审 R4）", () => {
+  test("POST 落地前连发两次：只创建一个回合、只 push 一条用户消息", async () => {
+    // `busy` 是渲染态：setBusy(true) 要等下一轮渲染才为真，而它原先在 await createTurn
+    // 之后才置位——同一 tick 内的第二次 send 看到 busy 仍是 false，会各自 POST 一个回合。
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const sse = sseResp([
+      'id: 1\nevent: turn_done\ndata: {"turn_id":"t1","seq":1,"reply_id":"t1","usage":{}}\n\n',
+    ]);
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/messages")) { await gate; return jsonResp(CREATED, true, 200); }
+      return sse.resp;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => {
+      const first = result.current.send("第一次");
+      void result.current.send("第二次");   // 同一 tick，busy 尚未为真
+      release();
+      await first;
+    });
+
+    const posts = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/messages"));
+    expect(posts).toHaveLength(1);
+    expect(useConversationStore.getState().messages.filter((m) => m.role === "user"))
+      .toHaveLength(1);
   });
 });

@@ -504,6 +504,36 @@ def test_search_snapshot_persisted_and_turn_done_carries_ids(env):
     assert done.data["snapshot_ids"] == [cached[0]["id"]]
 
 
+def test_snapshot_carries_query_key_and_parent_call_id(env):
+    """R9/R13/R14：快照落盘带归一化 query_key 与产生它的工具 call_id。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    entries = repo.list_cached_searches("p1")
+    assert entries, "search_hotels 成功调用应落快照"
+    e = entries[0]
+    assert e["turn_id"] == turn.turn_id
+    assert e["parent_call_id"]            # 非空：来自 tool_started 的 call_id
+    assert e["query_key"].startswith("search_hotels|{")
+    # 归一化：query_key 的参数含签名默认值（FakeFlyAI.search_hotels 的默认形参）
+
+
+def test_query_key_canonical_helper():
+    from fieldwork_agent.web_host.agent.loop import _query_key
+    k1 = _query_key("search_hotels", {"dest_name": "大理", "check_in": ""})
+    k2 = _query_key("search_hotels", {"check_in": "", "dest_name": "大理"})
+    assert k1 == k2 == 'search_hotels|{"check_in": "", "dest_name": "大理"}'
+
+
 class TwoPriceFlyAI:
     """R08 测试桩：search_hotels 按是否带 check_in 返回 11.0/22.0 两档价。
 
@@ -713,7 +743,7 @@ def test_amap_drain_snapshots_position_args_and_label(env):
     rec.weather(city="大理")
     snapshot_ids, live_refs = [], {}
     cursor = _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs,
-                              0, label="amap")
+                              0, turn_id="t1", label="amap")
     index = repo.list_cached_searches("p1")
     assert {c["tool"] for c in index} == \
         {"amap_geocode", "amap_around_search", "amap_weather"}
@@ -724,7 +754,8 @@ def test_amap_drain_snapshots_position_args_and_label(env):
         .startswith("amap 快照")
     assert not any(k.startswith("@live:amap_weather") for k in live_refs)
     assert len(snapshot_ids) == 3 and cursor == len(rec.calls)
-    _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs, cursor, label="amap")
+    _drain_snapshots(repo, "p1", rec, snapshot_ids, live_refs, cursor,
+                     turn_id="t1", label="amap")
     assert len(repo.list_cached_searches("p1")) == 3  # 幂等不重复落盘
 
 
@@ -1772,3 +1803,222 @@ def test_f07_web_batch_truncated_before_dispatch(env):
     started = [e.data["call_id"] for e in events if e.event == "tool_started"]
     assert started == ["c1"]                              # 被截断者不再启动
     assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+# ---------- Task 13：悬挂判定 + 统一终检门（spec B，R6/R8/R16/R18） ----------
+
+@pytest.mark.parametrize("text,expected", [
+    ("先问最实际的：", True),               # 全角冒号收尾（R6 生产实录形态）
+    ("先问最实际的:", True),                # 半角冒号同样悬挂
+    ("想了解哪方面？[[options:补充]]场地|联系方式[[/options]]", False),  # 有效选项块收尾
+    ("想了解哪方面？[[options:补充]] [[/options]]", True),               # 空选项块收尾
+    ("想了解哪方面？[[options:补充]] | | [[/options]]", True),           # 仅空白/竖线选项
+    ("前文有块[[options:a]]甲|乙[[/options]]\n结尾再问：", True),        # 只看收尾：尾部冒号仍悬挂
+    ("完整回答，句号收尾。", False),
+    ("块后有正文[[options:q]]甲|乙[[/options]]\n以上，请选择。", False),  # 块后还有正文：不悬挂
+    ("", False),                            # 空串不悬挂
+])
+def test_looks_dangling(text, expected):
+    """R6：悬挂判定只看收尾结构——冒号收尾，或无有效选项的 options 块收尾。"""
+    from fieldwork_agent.web_host.agent.loop import _looks_dangling
+    assert _looks_dangling(text) is expected
+
+
+def test_rule_reply_not_incomplete(env):
+    """R16 回归护栏：无 LLM 规则降级文案即最终答案，终检门不得误标 incomplete。
+
+    （现状已通过——防终检门引入回归：若实现后失败，说明规则分支漏置
+    has_final_answer。文案尾部实测安全：_DEGRADED_NOTE 以"。）"收尾。）"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "你好", tm, None, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is not True
+
+
+def test_convergence_length_truncation_marks_incomplete(env):
+    """R16 回归：主循环空回复触发收敛，收敛帧自身 length 截断——
+    旧代码不接管收敛帧 finish_reason 且无终检门，终态 completed 伪装完整。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],                                   # 主循环空回复 → 触发收敛
+        [{"delta": "开头，"},
+         {"content": "开头，", "tool_calls": None, "finish_reason": "length",
+          "usage": {}}],                                   # 收敛帧：逗号结尾 + length
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "帮我查大理的场地", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+
+
+# ---------- Task 14：统一续流预算 + 悬挂补完（spec B，R2/R6/R18） ----------
+
+def test_continuation_budget_caps_llm_calls(env):
+    """R2：四类续流共用 MAX_CONTINUATIONS 预算——酷刑脚本（每帧冒号收尾）
+    不得无限续流：LLM 调用总数封顶，终态 incomplete 如实上报。"""
+    repo, tm = env
+    frame = [{"delta": "缺："},
+             {"content": "缺：", "tool_calls": None, "finish_reason": "stop",
+              "usage": {}}]
+    llm = FakeLLM([[dict(f) for f in frame] for _ in range(20)])   # 帧给足，防 pop 空
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn, MAX_CONTINUATIONS
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "查一下", tm, llm, FakeFlyAI()))
+    assert len(llm.calls) <= 1 + MAX_CONTINUATIONS
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    # 主循环×2 + 收敛 + 悬挂补完各流出一次：补完确实发生过且被计数
+    assert deltas.count("缺：") == 4
+
+
+def test_dangling_completion_appends_options(env):
+    """R6：收敛产出冒号收尾的悬挂回复 → 悬挂补完追加完整结尾（含选项块）；
+    已流出正文全部保留；轮末剥离出 quick_reply_groups；incomplete=False。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查场地："},
+         {"content": "我先查场地：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 前导语 → 带工具重问
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 又冒号收尾，不再重问 → break
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 收敛：产出仍冒号收尾
+        [{"delta": "补充如下。[[options:补充]]场地|联系方式[[/options]]"},
+         {"content": "补充如下。[[options:补充]]场地|联系方式[[/options]]",
+          "tool_calls": None, "finish_reason": "stop", "usage": {}}],  # 悬挂补完
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "缺什么", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is False
+    groups = done.data["quick_reply_groups"]
+    assert groups and groups[0]["options"] == ["场地", "联系方式"]
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "我先查场地：" in deltas and "补充如下。" in deltas   # 已流出正文绝不丢
+
+
+def test_recovery_failed_cleared_after_success(env):
+    """R18：recovery_failed 是「最近一次恢复」语义——截断续流失败置位后，
+    悬挂补完成功清除，终检门不因早期失败误标 incomplete；失败续流已流出
+    的增量照样保留。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "内容，"},
+         {"content": "内容，", "tool_calls": None, "finish_reason": "length",
+          "usage": {}}],                                    # 截断 → 续写触发
+        [{"delta": "清单如下："}],                           # 续写流无终帧 → recovery_failed=True
+        [{"delta": "三点。"},
+         {"content": "三点。", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],                                    # 悬挂补完成功 → 清除
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "给我清单", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is False
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "清单如下：" in deltas and "三点。" in deltas      # 失败续流的增量不丢
+
+
+def test_completion_frame_truncated_marks_incomplete(env):
+    """R8：悬挂补完帧自身 finish_reason=length、停在「地点和」（非冒号）——
+    补完块一次性不再回补，终检门 _looks_truncated 兜住 → incomplete=True。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查场地："},
+         {"content": "我先查场地：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 前导语 → 带工具重问
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 又冒号收尾，不再重问 → break
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 收敛：产出仍冒号收尾
+        [{"delta": "推荐三个地点和"},
+         {"content": "推荐三个地点和", "tool_calls": None,
+          "finish_reason": "length", "usage": {}}],          # 悬挂补完被 length 截断
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "缺什么", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True   # 终检门 _looks_truncated 捕获（R8）
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "推荐三个地点和" in deltas   # 已流出内容不丢
+
+
+def test_dangling_completion_dead_ends_incomplete(env):
+    """R18 后半：悬挂补完流无终帧且预算内无后续恢复 → recovery_failed 终值
+    True → 终检门 incomplete=True；两次续流已流出的增量都保留。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "内容，"},
+         {"content": "内容，", "tool_calls": None, "finish_reason": "length",
+          "usage": {}}],                                    # 截断 → 续写触发
+        [{"delta": "清单如下："}],                           # 续写流无终帧 → recovery_failed=True
+        [{"delta": "甲乙丙。"}],                             # 悬挂补完同样无终帧 → 保持 True
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "给我清单", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert "清单如下：" in deltas and "甲乙丙。" in deltas   # 已流出内容不丢
+
+
+def test_completion_cancel_during_hangfix_keeps_cancelled(env):
+    """终审 W1（P1-4/F05）：悬挂补完流的 await 窗口内用户取消——
+    TurnManager.cancel 已立即 finish("cancelled") 置终态，run_turn 跑完
+    补完流后必须刷新取消快照：轮末不落 assistant 消息、不 commit 暂存、
+    不发 turn_done，终态保持 cancelled（不被改写 completed）。"""
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    handle = tm.get_turn("p1", turn.turn_id)
+
+    def _hangfix_gen():
+        yield {"delta": "补充如下。"}
+        # 首个 delta 已被消费（await 窗口打开）——此刻模拟 TurnManager.cancel
+        # 的完整行为：cancel_event.set() + finish("cancelled") 置终态
+        handle.cancel_event.set()
+        tm.finish("p1", turn.turn_id, "cancelled")
+        yield {"content": "补充如下。完整收尾。", "tool_calls": None,
+               "finish_reason": "stop", "usage": {}}
+
+    llm = FakeLLM([
+        [{"delta": "我先查场地："},
+         {"content": "我先查场地：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 前导语 → 带工具重问
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 又冒号收尾，不再重问 → break
+        [{"delta": "仍缺两项："},
+         {"content": "仍缺两项：", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],           # 收敛：产出仍冒号收尾
+        _hangfix_gen(),                                     # 悬挂补完：中途取消
+    ])
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "缺什么", tm, llm, FakeFlyAI()))
+    # 终态 cancelled 未被改写（轮末二次 finish("cancelled") 幂等无害）
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    # P1-4：取消即中止本轮全部状态变更——无 assistant 消息 append
+    assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
+    # 无 turn_done（cancelled 终态不发完成事件）
+    types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
+    assert "turn_done" not in types

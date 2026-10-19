@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Chip } from "../ui/Chip";
 import { IconAlert, IconCaret } from "../ui/icons";
 import { getToolCard } from "../cards/registry";
+import { toolLabel } from "../../lib/toolMeta";
 
 /**
  * CollapsedToolCard — 过程性检索工具的折叠摘要条（C 节问题 2，对话流精简）。
@@ -15,18 +16,6 @@ import { getToolCard } from "../cards/registry";
  * 红线沿袭卡片层：数字直出不加工（total/cheapest/dearest 原样），解析不出
  * ItemPage 形状时回落「无数据」，绝不臆造。
  */
-
-/** 工具名 → 中文显示名（仅 collapsed 级工具需要；未命中回落原名）。 */
-const TOOL_LABELS: Record<string, string> = {
-  search_flights: "航班搜索",
-  search_trains: "火车票搜索",
-  search_hotels: "酒店搜索",
-  search_marriott_hotels: "万豪酒店搜索",
-  search_marriott_packages: "万豪套餐搜索",
-  search_pois: "兴趣点搜索",
-  search_keyword: "关键词检索",
-  search_ai: "AI 检索",
-};
 
 /** ItemPage 形状容错解析（kernel/models.py：{items, total, cheapest, dearest}）。 */
 function parseItemPage(data: unknown): { total: number; cheapest: number | null; dearest: number | null } | null {
@@ -63,7 +52,7 @@ export function CollapsedToolCard({
   error?: { message: string } | null;
 }) {
   const [open, setOpen] = useState(false);
-  const label = TOOL_LABELS[tool] ?? tool;
+  const label = toolLabel(tool);
 
   return (
     <div data-testid="collapsed-tool-card">

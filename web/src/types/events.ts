@@ -20,6 +20,9 @@ export interface ToolStarted {
   tool: string;
   args: Record<string, unknown>;
   purpose: string;
+  /** 封套平铺字段（EventEnvelope → data 整包 spread）：回合归属与同回合平局裁决用（R15） */
+  turn_id?: string;
+  seq?: number;
 }
 
 /** 工具失败时的机器可读错误三元组（对齐 web_host ToolCompleted.error；旧事件无此字段）。 */
@@ -46,13 +49,22 @@ export interface PhaseTransition {
   to: string;
 }
 
+/** 一组快捷作答选项（对应一个可枚举问题）：label 为问题短标签（可空），options 为候选。 */
+export interface QuickReplyGroup {
+  label: string;
+  options: string[];
+}
+
 /** 单轮回复完成事件。 */
 export interface TurnDone {
   reply_id: string;
   usage: Record<string, unknown>;
   /** 本轮产生的搜索快照 cid（M3 证据链，后端 Task 10 注入；旧回合无此字段）。 */
   snapshot_ids?: string[];
-  /** 轮末抽取的快捷作答选项（[[options]] 标记，B 节问题 4；无标记/旧事件缺省）。 */
+  /** 轮末抽取的多组快捷作答选项（每组对应一个可枚举问题，[[options:标签]] 标记）。
+   *  多问时一问一组，前端逐组渲染 chips；无标记/旧事件缺省。 */
+  quick_reply_groups?: QuickReplyGroup[];
+  /** @deprecated 旧单组扁平选项；仅向后兼容，优先用 quick_reply_groups。 */
   quick_replies?: string[];
   /** 回合未收敛出正文（前导语/触顶/收敛失败）→ 前端展示中断提示与重新生成。 */
   incomplete?: boolean;

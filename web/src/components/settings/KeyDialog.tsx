@@ -23,7 +23,7 @@ export function KeyDialog({ open, onClose }: { open: boolean; onClose: () => voi
       onClick={onClose}
       className="fixed inset-0 z-50 grid place-items-center px-4 py-8"
     >
-      <div className="absolute inset-0 bg-ink/40 fade-in" aria-hidden="true" />
+      <div className="absolute inset-0 bg-ink/40 fade-in fw-scrim" aria-hidden="true" />
       <div
         role="dialog"
         aria-modal="true"
@@ -32,7 +32,7 @@ export function KeyDialog({ open, onClose }: { open: boolean; onClose: () => voi
         onKeyDown={(e) => {
           if (e.key === "Escape") onClose();
         }}
-        className="relative hairline rounded-xl bg-card shadow-pop w-full max-w-[540px] max-h-full overflow-y-auto scroll sheet-in"
+        className="relative hairline rounded-xl fw-glass g1 w-full max-w-[540px] max-h-full overflow-y-auto scroll sheet-in"
       >
         <div className="sticky top-0 bg-card flex items-center justify-between gap-3 px-5 h-14 border-b border-hairline">
           <div className="flex items-center gap-2 font-serif text-[15px] font-semibold">

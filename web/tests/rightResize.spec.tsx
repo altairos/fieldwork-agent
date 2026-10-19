@@ -123,11 +123,11 @@ describe("右栏拖拽调宽（P3）", () => {
   test("RightDock 根含 w-full：面板背景宽度跟随第三列（任务4）", async () => {
     // 根因：右栏内层 flex row 中 RightDock 是唯一子项，shrink-to-fit 卡在内容宽度
     // （基本信息/访谈对象等窄内容 tab 背景不随拖宽变化）；w-full 使其恒等于可用宽。
-    // 选择器 .bg-paperdeep.border-l 唯一命中 RightDock 根（LeftRail 为 border-r、
-    // 移动端条无 border-l）。
+    // 选择器 .fw-glass.border-l 唯一命中 RightDock 根（LeftRail 为 border-r、
+    // 移动端条无 border-l；玻璃化后底色类为 fw-glass 而非 bg-paperdeep）。
     const { container } = render(<App />);
     const handle = await screen.findByRole("separator", { name: "调整右栏宽度" });
-    const dock = () => container.querySelector<HTMLElement>(".bg-paperdeep.border-l");
+    const dock = () => container.querySelector<HTMLElement>(".fw-glass.border-l");
     expect(dock()).not.toBeNull();
     expect(dock()!.className).toContain("w-full");
 

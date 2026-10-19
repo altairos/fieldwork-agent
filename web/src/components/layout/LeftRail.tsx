@@ -1,3 +1,4 @@
+import { DEFAULT_PHASES, type PhaseItem } from "../../lib/phases";
 import { IconCheck, IconCompass, IconLock } from "../ui/icons";
 
 /**
@@ -10,31 +11,13 @@ import { IconCheck, IconCompass, IconLock } from "../ui/icons";
  *     进行中 → `bg-card border border-cinnabar/30 shadow-card` + 朱砂圆标 num 字母（line 411-413）
  *     未解锁 → `opacity-55` + 灰圆标 lock（line 415-417）+ cursor-not-allowed +
  *       title 解锁条件提示（可点性规范：锁定项不伪装可点，hover 明示“完成什么才解锁”）
- *   底部「返回项目集」按钮（line 421）。
+ *   底部「返回首页」按钮（line 421）。
  * 交互（红线：阶段推进由可验证条件判定，点击条目只切右栏查看对应面板，不推进阶段）：
  *   locked 或未传 onSelect → 点击不响应（aria-disabled + 对应 cursor）。
  */
-export interface PhaseItem {
-  /** 阶段 id（对齐后端 phase：research_positioning 等） */
-  id: string;
-  /** 阶段字母 A/B/C/D */
-  letter: string;
-  /** 阶段名 */
-  label: string;
-  /** 简介（设计板 lines 373-376 四阶段访谈说明） */
-  desc: string;
-  /** 本阶段达成后解锁的下一阶段（末阶段无；PhaseBanner 解锁尾文用） */
-  unlock?: string;
-}
-
-/** 四阶段默认配置（名称/简介取自设计板 lines 373-376、405-417） */
-export const DEFAULT_PHASES: PhaseItem[] = [
-  { id: "research_positioning", letter: "A", label: "研究定位", desc: "学科·问题·规模·经费·时间窗", unlock: "田野点画像" },
-  { id: "field_site_profiles", letter: "B", label: "田野点画像", desc: "交通·住宿·文化·配套四维", unlock: "行程规划" },
-  { id: "itinerary_planning", letter: "C", label: "行程规划", desc: "节奏·缓冲·预算·备选路线", unlock: "方案生成" },
-  { id: "proposal_generation", letter: "D", label: "方案生成", desc: "英美式八章方案草稿" },
-];
-
+// 阶段表与类型已下沉到 lib/phases（纯数据；stores 层也要用，不能让它反向依赖组件层）。
+// 此处 re-export 只为保持既有调用面（其他组件/测试仍可从这里取）。
+export { DEFAULT_PHASES, type PhaseItem } from "../../lib/phases";
 export function LeftRail({
   phase,
   phases = DEFAULT_PHASES,
@@ -49,7 +32,7 @@ export function LeftRail({
 }) {
   const current = phases.findIndex((p) => p.id === phase);
   return (
-    <div className="bg-paperdeep border-r border-hairline flex flex-col min-h-0">
+    <div className="fw-glass g2 border-r border-hairline flex flex-col min-h-0">
       <div className="px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint">方案规划阶段</div>
       {/* overscroll-contain（批次 C）：抽屉/内嵌滚动到边界不把滚动链传导给底层页面 */}
       <nav className="px-3 space-y-1 flex-1 overflow-y-auto scroll overscroll-contain">
@@ -109,7 +92,7 @@ export function LeftRail({
             className="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft hover:bg-cardsunk transition flex items-center justify-center gap-1.5"
           >
             <IconCompass className="w-4 h-4" />
-            返回项目集
+            返回首页
           </button>
         </div>
       )}

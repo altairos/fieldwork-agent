@@ -39,6 +39,43 @@
   .proposal-body blockquote p { font-size: 13.5px; line-height: 1.9; margin-bottom: 4px; }
   .proposal-body blockquote p:last-child { margin-bottom: 0; }
   .proposal-body blockquote ul, .proposal-body blockquote ol { font-size: 13.5px; line-height: 1.9; margin-bottom: 0; }
+
+  /* 毛玻璃（磨砂宣纸 vellum-frost）：半透明纸调面板 + backdrop-blur + 顶部高光线。
+     底色/投影复用 --fw-card/--fw-shadow，描边交由各元素自身 hairline/border 工具类，
+     六主题自动适配（禁裸 hex）。三档强度共用一套变量，仅调 blur/saturate/alpha：
+     g1 常驻/大面积面板（吸顶栏、右栏 panel、模态面板）、
+     g2 悬浮弹层（配色弹层/toast/移动端抽屉；高不透明，防与底层 panel 文字交叠）、
+     g3 小面积强磨砂（输入壳）。
+     只用于悬浮层与面板底，平铺卡片保持实底纸面（玻璃需背景才成立、且保正文对比）。 */
+  .fw-glass{
+    isolation:isolate;
+    background:rgb(var(--fw-card) / var(--g-alpha,.55));
+    -webkit-backdrop-filter:blur(var(--g-blur,16px)) saturate(var(--g-sat,1.3));
+    backdrop-filter:blur(var(--g-blur,16px)) saturate(var(--g-sat,1.3));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / var(--g-hi,.5)),
+      inset 0 0 0 1px rgb(255 255 255 / .06),
+      0 10px 34px rgb(var(--fw-shadow) / var(--g-sh,.12));
+  }
+  .g1{--g-blur:8px;  --g-sat:1.12; --g-alpha:.80; --g-hi:.34; --g-sh:.07;}
+  .g2{--g-blur:14px; --g-sat:1.25; --g-alpha:.90; --g-hi:.45; --g-sh:.12;}
+  .g3{--g-blur:22px; --g-sat:1.45; --g-alpha:.60; --g-hi:.55; --g-sh:.10;}
+  /* 磨砂遮罩（移动端抽屉 / 模态 scrim）：轻模糊压暗背景，blur 级别克制 */
+  .fw-scrim{
+    -webkit-backdrop-filter:blur(3px) saturate(1.05);
+    backdrop-filter:blur(3px) saturate(1.05);
+  }
+}
+
+/* 毛玻璃兜底：不支持 backdrop-filter → 玻璃近实底、遮罩去模糊（保文字对比）；
+   系统「降低透明度」偏好 → 同样回落。custom prop 与 backdrop-filter 在层外声明以压过组件层。 */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .fw-glass{--g-alpha:.94; box-shadow:0 10px 30px rgb(var(--fw-shadow) / .10);}
+  .fw-scrim{-webkit-backdrop-filter:none; backdrop-filter:none;}
+}
+@media (prefers-reduced-transparency: reduce){
+  .fw-glass{--g-alpha:.96; -webkit-backdrop-filter:none; backdrop-filter:none;}
+  .fw-scrim{-webkit-backdrop-filter:none; backdrop-filter:none;}
 }
 
 /* 触控热区扩展（移动端适配批次 B）：触屏（无 hover + 粗指针）下伪元素外扩命中区，

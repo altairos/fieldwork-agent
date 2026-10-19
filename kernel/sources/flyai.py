@@ -14,6 +14,8 @@
   ``FlyAIClient()``（搜索类是开放世界：``read_only=True, open_world=True``，
   对照 spec §2.4 annotations 约定）。
 """
+import contextvars
+import inspect
 import json
 import os
 import shutil
@@ -216,9 +218,17 @@ def _error_envelope(message: str) -> Envelope:
 def _page_envelope(payload: dict[str, Any]) -> Envelope:
     """成功分支：优先展开 ``data.journeys``（航班/火车深层结构），否则 ``data.itemList`` 平铺。
 
+    ``data`` 为字符串（ai-search 体验模式直答 Markdown）时走 answer 分支——
+    旧路径 data.get 崩溃（'str' object has no attribute 'get'，spec A2/R1）。
     payload 顶层或 ``data`` 内的 ``systemMessage``（体验模式提示）透传进 ``Envelope.degraded``。
     """
-    data = payload.get("data") or {}
+    raw_data = payload.get("data")
+    system_message = payload.get("systemMessage") or (
+        raw_data.get("systemMessage") if isinstance(raw_data, dict) else None)
+    if isinstance(raw_data, str):
+        return Envelope(ok=True, data=ItemPage(answer=raw_data or None),
+                        degraded=str(system_message) if system_message else None)
+    data = raw_data or {}
     journeys = data.get("journeys")
     if isinstance(journeys, list) and journeys:
         items = [_journey_item(j) for j in journeys if isinstance(j, dict)]
@@ -229,7 +239,6 @@ def _page_envelope(payload: dict[str, Any]) -> Envelope:
             raw_list = []
         items = normalize_items(raw_list)
         raw_total = len(raw_list)
-    system_message = payload.get("systemMessage") or data.get("systemMessage")
     prices = [i.price for i in items if i.price is not None]
     return Envelope(ok=True, data=ItemPage(
         items=items,
@@ -616,13 +625,36 @@ register(CapabilityMeta(
     read_only=True, open_world=True))
 
 
+# 当前工具调用 id（web_host loop._exec_tool 置位；RecordingClient 记录时读取，
+# 供快照 parent_call_id 跨层配对——kernel 不 import 宿主，变量定义在 kernel 侧，
+# 宿主置位，公理 1 不破）。默认空串：CLI/MCP 宿主不置位时快照无配对键（前端降级路径）。
+current_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "fw_current_call_id", default="")
+
+
+def _normalized_view(target: Any, args: tuple, kwargs: dict) -> dict:
+    """实际调用 → 完整命名参数视图（R17）：bind 位置转名 + apply_defaults 补签名默认值。
+
+    直通 dispatch（工具层已补默认）与聚合内部调用（常省略默认）经此归一后，
+    等效查询必得同键。bind 失败（理论签名漂移）降级为 kwargs 原样，绝不抛。
+    """
+    try:
+        bound = inspect.signature(target).bind(*args, **kwargs)
+    except (TypeError, ValueError):
+        return dict(kwargs)
+    bound.apply_defaults()
+    return dict(bound.arguments)
+
+
 class RecordingClient:
     """包装任意 client、逐次记录方法调用的替身（spec §5.1 快照链捕获件）。
 
     纯内存、不碰 repository（公理 1）：web 宿主在回合级用它包住自持
     ``FlyAIClient``，轮末由宿主侧消费 ``calls`` 落盘为快照证据；
     kernel 自身不持久化。记录项为
-    ``(方法名, {"args": [...], "kwargs": {...}}, 返回包络)``；
+    ``(方法名, {"args": [...], "kwargs": {...}, "view": {...}, "call_id": "..."},
+    返回包络)``——``view`` 为归一化命名参数视图（R17），``call_id`` 为记录时
+    ``current_call_id`` 值（快照 parent_call_id 配对键，R13）；
     非可调用属性（如 ``api_key``）经 ``__getattr__`` 原样透传、不留痕。
 
     N05 ``tag_provider``：可选零参可调用，记录时取当前调用实例标签（如宿主
@@ -643,7 +675,11 @@ class RecordingClient:
 
         def _recorded(*args: Any, **kwargs: Any) -> Any:
             result = target(*args, **kwargs)
-            sig: dict = {"args": list(args), "kwargs": dict(kwargs)}
+            # N05/R13 融合：view（R17 归一化视图）与 call_id（R13 配对键，kernel 侧
+            # 唯一 contextvar）必记；宿主注入 tag_provider 时补 tag（N05 调用实例标签）
+            sig: dict = {"args": list(args), "kwargs": dict(kwargs),
+                         "view": _normalized_view(target, args, kwargs),
+                         "call_id": current_call_id.get("")}
             if self._tag_provider is not None:
                 sig["tag"] = self._tag_provider()   # N05：当前调用实例标签
             self.calls.append((name, sig, result))

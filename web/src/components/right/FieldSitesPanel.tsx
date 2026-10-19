@@ -5,6 +5,7 @@ import { Price } from "../ui/Price";
 import { IconBed, IconCheck, IconPin, IconPlane, IconTemple } from "../ui/icons";
 import { ItemList } from "../cards/SearchResultCard";
 import { asArray, asRecord, boolOf, numOf, strOf, toItemPage } from "../cards/data";
+import { formatDate } from "../../lib/datetime";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
 import { rest } from "../../api/rest";
@@ -120,7 +121,7 @@ function SiteBlock({ site, onConfirm, confirming }: {
             <span className="truncate">{site.name || "未命名田野点"}</span>
           </div>
           {generatedAt && (
-            <div className="num text-[11px] text-inkfaint">{`画像生成于 ${generatedAt}`}</div>
+            <div className="num text-[11px] text-inkfaint">{`画像生成于 ${formatDate(generatedAt)}`}</div>
           )}
         </div>
         <span className="shrink-0 flex items-center gap-1.5">

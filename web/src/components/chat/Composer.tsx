@@ -11,14 +11,16 @@ import { QuickReplies } from "./QuickReplies";
  *
  * 设计板同源：中栏 Composer lines 516-526
  *   外框 line 517 `border-t border-hairline bg-card px-6 py-3.5`
- *   输入壳 line 518 `hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition`
+ *   输入壳 line 518 `hairline rounded-lg bg-paper/60 p-2.5 flex items-start gap-3 focus-within:border-cinnabar/50 transition`
+ *     （items-start：单行时光标/文字贴左上——用户反馈 items-end 会把首行压到底部；
+ *     点击壳内空白（target 直达壳体）聚焦 textarea；取消/发送钮 self-end 贴底对齐）
  *   textarea line 519 `flex-1 bg-transparent resize-none outline-none text-[13.5px] leading-relaxed placeholder:text-inkfaint`
  *     （rows=1 + 随内容自增高，上限 160px，避免长文把时间线挤没；
  *     移动端批次 C：粗指针设备提到 16px，防 iOS Safari 聚焦自动缩放）
  *   发送键 line 520 `h-9 w-9 grid place-items-center rounded-md bg-cinnabar` → 复用 Task 5 `Button`
  *     primary（其配色即 line 520 的 bg-cinnabar / #F7EFE6 / hover #96382a，token 外值已在 Button 内注行号）
  *   底注 line 522-524：`flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint`
- *     「阶段推进由可验证条件判定，非模型自由发挥」
+ *     「所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。」
  *     （原右侧「模型可配置 · function calling」易被误读为可自选 LLM，已删除）
  *
  * 交互：回车发送 / Shift+Enter 换行 / 输入法组合中（isComposing）不发送；busy 时发送键禁用并显示「取消」；
@@ -29,8 +31,8 @@ import { QuickReplies } from "./QuickReplies";
  * turn 句柄由 App 的 `useTurn(projectId)` 注入（单一回合所有者）；仅传 projectId 时组件自建句柄，
  * 便于独立渲染/测试。两者取其一，绝不并存两个活动回合。
  *
- * 快捷作答（B 节问题 4）：末条 assistant 携带选项时输入壳上方渲染 QuickReplies chips；
- * 点选即发送、自定义聚焦输入框；用户作答（pushUser）/回合运行中/锁定时不显示。
+ * 快捷作答（多组）：末条 assistant 携带选项时输入壳上方渲染 QuickReplies chips；
+ * 单组无标签点选即发送、多组逐组选择后一次发送、自定义聚焦输入框；用户作答（pushUser）/回合运行中/锁定时不显示。
  */
 export interface TurnHandle {
   send: (text: string) => void | Promise<void>;
@@ -59,7 +61,7 @@ export function Composer({
   const api: TurnHandle = turn ?? own;
   const [text, setText] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
-  const quickReplies = useConversationStore((s) => s.quickReplies);
+  const quickReplyGroups = useConversationStore((s) => s.quickReplyGroups);
 
   // 自增高：先归零再取 scrollHeight（jsdom 下 scrollHeight=0，退化为单行高度，无副作用）
   useEffect(() => {
@@ -90,16 +92,21 @@ export function Composer({
 
   return (
     <div className="border-t border-hairline bg-card px-4 sm:px-6 py-3.5">
-      {quickReplies.length > 0 && !api.busy && !locked && (
+      {quickReplyGroups.length > 0 && !api.busy && !locked && (
         <div className="mb-2">
           <QuickReplies
-            options={quickReplies}
-            onPick={(opt) => void api.send(opt)}
+            groups={quickReplyGroups}
+            onSend={(text) => void api.send(text)}
             onCustom={() => areaRef.current?.focus()}
           />
         </div>
       )}
-      <div className="hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
+      <div
+        className="hairline rounded-lg fw-glass g3 p-2.5 flex items-start gap-3 focus-within:border-cinnabar/50 transition"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) areaRef.current?.focus();
+        }}
+      >
         <textarea
           ref={areaRef}
           rows={1}
@@ -117,7 +124,7 @@ export function Composer({
           placeholder={locked ? "配置百炼 API Key 后可开始对话…" : "继续描述你的调研安排，或让罗盘细化某一段行程…"}
         />
         {api.busy && (
-          <Button variant="outline" size="sm" onClick={() => void api.cancel()} className="shrink-0">
+          <Button variant="outline" size="sm" onClick={() => void api.cancel()} className="shrink-0 self-end">
             取消
           </Button>
         )}
@@ -126,7 +133,7 @@ export function Composer({
           aria-label="发送"
           disabled={!canSend}
           onClick={submit}
-          className="w-9 !px-0 shrink-0"
+          className="w-9 !px-0 shrink-0 self-end"
         >
           <IconSend className="w-5 h-5 shrink-0" />
         </Button>
@@ -150,7 +157,7 @@ export function Composer({
 
       {/* 底注：辅助说明（窄屏 flex-wrap 防挤溢） */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10.5px] text-inkfaint">
-        <span>阶段推进由可验证条件判定，非模型自由发挥</span>
+        <span>所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。</span>
       </div>
     </div>
   );
