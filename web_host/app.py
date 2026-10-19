@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 APP_TOKEN_HEADER = "X-App-Token"
 # 受保护前缀（审计 F02 + MCP 改造2）：/projects、/settings、/mcp 全族；
 # /health、/ready 与静态前端豁免——页面要先能打开、健康探针不该被令牌拦住。
-_PROTECTED_PREFIXES = ("/projects", "/settings", "/mcp")
+_PROTECTED_PREFIXES = ("/projects", "/settings", "/mcp", "/auth")
 
 
 def _is_protected(path: str) -> bool:
@@ -122,8 +122,9 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
             status_code=200 if ok else 503,
         )
 
-    from fieldwork_agent.web_host.api import exports, projects, settings, state, turns
+    from fieldwork_agent.web_host.api import auth, exports, projects, settings, state, turns
 
+    app.include_router(auth.router)
     app.include_router(projects.router)
     app.include_router(turns.router)
     app.include_router(exports.router)
