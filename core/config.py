@@ -66,7 +66,10 @@ class Config:
             os.getenv("FA_USER_STORE_DIR", str(CONFIG_DIR / "accounts")))
         self.session_ttl_days: int = int(os.getenv("FA_SESSION_TTL_DAYS", "30"))
         self.pbkdf2_iterations: int = int(os.getenv("FA_PBKDF2_ITERATIONS", "600000"))
-        self.registration_open: bool = os.getenv("FA_REGISTRATION_OPEN", "1") != "0"
+        # 注册开关是安全边界：归一化（strip+lower，同 FA_STORAGE 风格）后按常见
+        # 假值集合判定，避免 FA_REGISTRATION_OPEN=false/no/off 被静默当成"开"。
+        self.registration_open: bool = os.getenv(
+            "FA_REGISTRATION_OPEN", "1").strip().lower() not in ("0", "false", "no", "off", "")
 
         # 云同步（钉钉）
         self.dingtalk_webhook: str = ""
