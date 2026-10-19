@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 from fieldwork_agent.kernel.aggregation.amap_refs import live_geocode_ref, live_transit_ref
 from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.source_requests import source_task
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from pydantic import BaseModel, Field
 
@@ -64,6 +65,7 @@ def _resolve_date_param(date_hint: str) -> tuple[str, str | None]:
     return d.isoformat(), None
 
 
+@source_task
 def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
                    amap_client: AMapClient | None = None) -> Envelope:
     """聚合枢纽城市→田野点的末端接驳方案（跨城公交为主，PoC §5.2）。"""
@@ -75,7 +77,7 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
     except Exception as exc:
         return _no_result(f"枢纽地名解析异常：{hub}（{exc}）")
     if not (hub_env.ok and isinstance(hub_env.data, GeoLocation)):
-        if hub_env.error is not None and hub_env.error.code == "amap_invalid_key":
+        if hub_env.error is not None and hub_env.error.code in ("amap_invalid_key", "amap_ip_denied", "amap_quota", "amap_rate_limited"):
             return Envelope(ok=False, error=hub_env.error)  # 无 Key 原样透传
         return _no_result(f"枢纽地名未能解析：{hub}")
 
@@ -84,7 +86,7 @@ def plan_last_mile(hub: str, site: str, date_hint: str = "", *,
     except Exception as exc:
         return _no_result(f"田野点地名解析异常：{site}（{exc}）")
     if not (site_env.ok and isinstance(site_env.data, GeoLocation)):
-        if site_env.error is not None and site_env.error.code == "amap_invalid_key":
+        if site_env.error is not None and site_env.error.code in ("amap_invalid_key", "amap_ip_denied", "amap_quota", "amap_rate_limited"):
             return Envelope(ok=False, error=site_env.error)  # 无 Key 原样透传
         return _no_result(f"田野点地名未能解析：{site}")
 

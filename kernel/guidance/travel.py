@@ -10,4 +10,12 @@ TRAVEL_GUIDANCE = """旅行与田野可行性：
 rooms、researcher_count、可选hub_location、max_commute_minutes和daily_available_minutes。
 预算房费与往返通勤费分别说明，source未说明报价单位时仅作情景估算；没有每日可用时间基线，
 不编造有效研究小时。无地址核对不把飞猪酒店与同名高德POI认定为同一个地点。
+田野预调查先根据当前研究问题设计1至4路query_matrix，通常2至4路：每路给label、research_purpose、
+place_types、keywords（逐个试检的1至3个词）、administrative_scope、search_anchor(site/area)、
+radius_meters、expected_evidence、min_candidates/max_candidates。只在数量不足且有理由时设置
+expanded_radius_meters扩展一次；达到候选数量即停止，不依据POI密度判断学术价值。
+按生活保障实际需要指定facility_keywords（可为空）和facility_radius，城市乡村不固定用同一范围。
+本轮只找候选观察场所时，include_accommodation设false、facility_keywords设空列表，不查询无关住宿与设施。
+两源整轮原语请求预算20次，聚合内部也计数；来源不足或预算耗尽时交付已有候选和缺口，不无限重试。
+source_usage区分实际原语尝试、缓存命中、相同在途请求合并、失败与阻断；缓存不是本轮实时取数。
 """

@@ -18,11 +18,13 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from datetime import date, datetime
 from typing import Any
 
 from fieldwork_agent.kernel.models import Envelope, ItemPage, Schedule, SearchItem, ToolError
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.source_requests import cache_key, cached_request, request_guard
 from fieldwork_agent.kernel.tool_usage import check_tool_domain
 from fieldwork_agent.kernel.travel import finite_price, stamp_evidence
 from pydantic import BaseModel, Field
@@ -266,6 +268,10 @@ class FlyAIClient:
 
     def __init__(self, api_key: str = ""):
         self.api_key = api_key
+        self.stats = {"cache_hit": 0}
+        self._cache = {}
+        self._cache_lock = threading.Lock()
+        self._inflight = {}
 
     def _run_command(self, args: list) -> dict[str, Any]:
         """执行 flyai 子命令，返回解析后的 JSON；任何异常都折成 ``{status:-1,error}``。"""
@@ -296,6 +302,13 @@ class FlyAIClient:
 
     def _execute(self, args: list) -> Envelope:
         """跑一条 flyai 命令并归一化为包络。"""
+        return cached_request(self, cache_key(self, args), 300,
+                              lambda: self._execute_uncached(args))
+
+    def _execute_uncached(self, args: list) -> Envelope:
+        blocked = request_guard("flyai", self)
+        if blocked:
+            return blocked
         payload = self._run_command(args)
         if not isinstance(payload, dict) or payload.get("status", 0) != 0 or "error" in payload:
             message = ""

@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fieldwork_agent.kernel.models import GeoLocation, ItemPage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TravelConstraints(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     max_duration_minutes: int | None = Field(default=None, ge=0)
     max_walking_meters: int | None = Field(default=None, ge=0)
     latest_arrival_time: str = Field(default="", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$|^$", description="大交通到达枢纽的最晚当地时间；不等于最终访问点到达时间")

@@ -12,13 +12,16 @@ from datetime import datetime, timedelta
 from fieldwork_agent.kernel.models import (
     Envelope,
     FestivalInfo,
+    ItemPage,
     PriceCurve,
     RecommendedWindow,
     ToolError,
     WindowAnalysis,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.source_requests import source_task
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
+from fieldwork_agent.kernel.travel import item_value
 from pydantic import BaseModel, Field
 
 DATE_FMT = "%Y-%m-%d"
@@ -275,6 +278,57 @@ class AnalyzeFieldworkWindowArgs(BaseModel):
     sample_step: int = Field(default=7, ge=1, description="采样步进（天），默认 7")
 
 
+def _verify_window(client, window: RecommendedWindow, departure: str, destination: str,
+                   duration_days: int, budget_total: float) -> dict:
+    """只对入选窗口补查真实去返程日期及完整入住区间；无单位不推断全程价。"""
+    def fetch(kind):
+        try:
+            if kind == "outbound":
+                env = client.search_flights(origin=departure, destination=destination, dep_date=window.start)
+            elif kind == "return":
+                env = client.search_flights(origin=destination, destination=departure, dep_date=window.end)
+            else:
+                env = client.search_hotels(dest_name=destination, check_in=window.start, check_out=window.end)
+            return env
+        except Exception as exc:
+            return Envelope(ok=False, error=ToolError(code="source_exception", message=str(exc)))
+    kinds = ("outbound", "return", "stay") if duration_days > 1 else ("outbound", "return")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(copy_context().run, fetch, kind) for kind in kinds]
+        results = dict(zip(kinds, [f.result() for f in futures], strict=True))
+    missing, quotes, refs = [], {}, []
+    for kind, env in results.items():
+        page = env.data if env.ok and isinstance(env.data, ItemPage) else ItemPage()
+        priced = [item for item in page.items if item.price is not None]
+        chosen = min(priced, key=lambda item: item.price) if priced else None
+        if not chosen:
+            missing.append(kind)
+            continue
+        if kind == "stay":
+            basis = item_value(chosen, "price_basis")
+            if basis == "total_per_room":
+                quotes[kind] = chosen.price
+            elif basis == "nightly_per_room":
+                quotes[kind] = chosen.price * (duration_days - 1)
+            else:
+                missing.append("stay_price_basis")
+        else:
+            quotes[kind] = chosen.price
+            expected = window.start if kind == "outbound" else window.end
+            if chosen.schedule and chosen.schedule.dep_date and chosen.schedule.dep_date[:10] != expected:
+                quotes.pop(kind, None)
+                missing.append(f"{kind}_date")
+        if chosen.evidence.source_ref:
+            refs.append(chosen.evidence.source_ref)
+    estimate = round(sum(quotes.values()) + 150 * duration_days, 2) if not missing else None
+    return {"coverage": "complete" if not missing else "partial", "missing_fields": missing,
+        "known_quote_subtotal": round(sum(quotes.values()), 2), "estimate_with_meals": estimate,
+        "budget_feasible": estimate <= budget_total if estimate is not None else None,
+        "assumptions": "单人、单间；餐费150元/天为估算，不含未知接驳与现场费用",
+        "source_refs": refs, "availability_status": "未确认实际可订与现场进入条件"}
+
+
+@source_task
 def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
                              range_end: str, duration_days: int, budget_total: float,
                              sample_step: int = 7, *, client=None, llm=None) -> Envelope:
@@ -298,6 +352,8 @@ def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
     # 未注入即保持 None，节庆维度按降级矩阵退化为空（spec §4.3）
 
     dates, _, widened = _sample_dates(range_start, range_end, sample_step)
+    if len(dates) > 4:
+        dates = [dates[round(i * (len(dates) - 1) / 3)] for i in range(4)]
     curve, notes = _sample_curve(c, departure, destination, dates)
     if all(v is None for v in curve.flight_min) and all(v is None for v in curve.hotel_min):
         return _error_env("all_sources_failed", "航班与住宿采样整类失败，无法生成时窗分析",
@@ -317,6 +373,8 @@ def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
     if widened:
         degraded.append(f"区间采样点超 {MAX_SAMPLES}，步进自动放大")
     top = windows[:3]
+    for window in top:
+        window.evidence["quote_check"] = _verify_window(c, window, departure, destination, duration_days, budget_total)
     best = top[0] if top else None
     if best is not None and best.evidence.get("uncovered"):
         degraded.append(f"最优窗口缺 {'/'.join(best.evidence['uncovered'])} 报价，预算可行性待核验")
@@ -324,7 +382,7 @@ def analyze_fieldwork_window(departure: str, destination: str, range_start: str,
         windows=top,
         price_curve=curve,
         festivals=festivals,
-        budget_feasible=None,  # 采样最低价不是去返程与连续入住的完整报价
+        budget_feasible=None,  # 补查仍不覆盖全部接驳/现场费用，不宣布整体预算可行
         degraded="；".join(degraded) or None,
     )
     return Envelope(ok=True, data=analysis, degraded=analysis.degraded)

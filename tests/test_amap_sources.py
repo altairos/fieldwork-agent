@@ -146,8 +146,8 @@ def test_direction_transit_each_transit_becomes_item(monkeypatch):
                  {"walking": {"distance": "600"}, "bus": {"buslines": [{"name": "8路"}]}},
                  {"walking": {"distance": "600"}, "bus": None}]},
             {"duration": "5400", "cost": "6.0", "walking_distance": "300",
-             "segments": [{"walking": {}, "bus": {"buslines": [
-                 {"name": "班车"}, {"name": "支线2"}]}}]}]}})
+             "segments": [{"walking": {}, "bus": {"buslines": [{"name": "班车"}]}},
+                          {"walking": {}, "bus": {"buslines": [{"name": "支线2"}]}}]}]}})
     env = client.direction_transit("100.16,25.60", "100.17,25.66", city="大理")
     assert env.ok and env.data.total == 2
     first, second = env.data.items

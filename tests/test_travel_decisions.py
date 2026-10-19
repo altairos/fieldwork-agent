@@ -107,3 +107,29 @@ def test_same_name_without_address_cannot_be_joined_or_assigned_research_hours()
         LodgingComparisonRequest(nights=6, visit_days=6), date.today().isoformat(), HotelGeo())
     assert rows[0]["match_status"] == "unknown"
     assert "research_minutes_per_visit_day" not in rows[0]
+
+
+def test_full_stay_price_compares_and_budgets_without_multiplying_nights_twice():
+    class FullStay(Supply):
+        def search_hotels(self, **kw):
+            return Envelope(ok=True, data=ItemPage(items=[
+                SearchItem(name="全程价", price=300, extra={"price_basis": "total_per_room"}),
+                SearchItem(name="按晚价", price=120, extra={"price_basis": "nightly_per_room"})]))
+    env = compose_itinerary("出发", ["访问点"], date.today().isoformat(), 4, 5000,
+        client=FullStay(), amap_client=Geo())
+    assert env.data.stays[0]["chosen"]["name"] == "全程价"
+    assert env.data.stays[0]["nightly_price"] == 100
+    assert next(i.amount for i in env.data.budget.items if i.name.startswith("住宿")) == 300
+
+
+def test_cached_quote_time_is_not_rewritten_to_current_budget_time():
+    from fieldwork_agent.kernel.models import SourceEvidence
+    class Cached(Supply):
+        def transport(self, kw, time, place, price):
+            env = super().transport(kw, time, place, price)
+            env.data.items[0].evidence = SourceEvidence(source="flyai", fetched_at="2026-10-01T12:00:00Z", cache_hit=True)
+            return env
+    env = compose_itinerary("出发", ["访问点"], date.today().isoformat(), 2, 5000,
+        client=Cached(), amap_client=Geo())
+    quotes = [i for i in env.data.budget.items if i.name.startswith("交通")]
+    assert quotes and all(i.priced_at == "2026-10-01T12:00:00Z" for i in quotes)

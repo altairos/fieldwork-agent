@@ -263,7 +263,9 @@ def test_analyze_fieldwork_window_happy():
                                    sample_step=7, client=stub, llm=llm)
     assert env.ok and isinstance(env.data, WindowAnalysis)
     assert env.data.windows[0].start == "2026-07-15"
-    assert env.data.windows[0].score == pytest.approx(18.82, abs=0.01)
+    assert env.data.windows[0].score == pytest.approx(33.13, abs=0.01)
+    assert len(env.data.price_curve.dates) == 4
+    assert env.data.windows[0].evidence["quote_check"]["coverage"] == "partial"
     assert len(env.data.windows) == 3
     assert env.data.festivals[0].name == "彝族火把节"
     assert env.data.budget_feasible is None

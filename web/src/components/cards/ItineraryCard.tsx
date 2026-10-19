@@ -147,8 +147,10 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
   const subtitle = [route, days === null ? "" : `${days} 天`].filter((s) => s !== "").join(" · ");
 
   // 结论 chip：不完整 → ochre（不给结论）；complete 且超支 → cinnabar；否则 bamboo（line 470）
-  const complete = budget.coverage === "complete";
-  const statusChip = !hasPlan ? undefined : !complete ? (
+  const complete = budget.coverage === "complete" && budget.quote_status !== "unverified";
+  const statusChip = !hasPlan ? undefined : budget.quote_status === "unverified" ? (
+    <Chip tone="ochre">报价口径待核实</Chip>
+  ) : !complete ? (
     <Chip tone="ochre">预算不完整</Chip>
   ) : budget.over_budget ? (
     <Chip tone="cinnabar">超出预算</Chip>

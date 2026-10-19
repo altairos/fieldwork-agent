@@ -34,6 +34,7 @@ class SourceEvidence(BaseModel):
     fetched_at: str = ""
     source_updated_at: str = ""
     cache_hit: bool = False
+    coalesced: bool = False
     source_ref: str = ""
     references: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
@@ -47,6 +48,7 @@ class Envelope(BaseModel):
     error: ToolError | None = None
     degraded: str | None = None
     evidence: SourceEvidence | None = None
+    usage: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------- 检索与行情
@@ -202,6 +204,7 @@ class FieldSiteProfile(BaseModel):
     summary: SummaryHints = Field(default_factory=SummaryHints)
     generated_at: str = ""
     lodging_comparison: list[dict[str, Any]] = Field(default_factory=list)
+    spatial_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 行程与预算
@@ -270,6 +273,7 @@ class BudgetBreakdown(BaseModel):
     over_budget: bool = False
     coverage: str = "unknown"
     uncovered: list[str] = Field(default_factory=list)
+    quote_status: str = ""  # 旧数据缺省；unverified表示报价单位或完整入住口径待核验
     total_high: float | None = None            # 含估算上沿的合计；报价类条目 low=high
     over_budget_possible: bool = False         # total_high > budget_total：区间跨预算线
 

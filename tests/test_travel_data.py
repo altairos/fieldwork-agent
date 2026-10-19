@@ -34,6 +34,12 @@ def test_transit_keeps_boarding_stop_operating_hours_and_walking():
     assert "1800" in json.dumps(summary)
 
 
+def test_alternative_buslines_in_one_segment_are_not_extra_transfers():
+    env = _transits_page({"route": {"transits": [{"segments": [
+        {"bus": {"buslines": [{"name": "甲线"}, {"name": "乙线"}]}}]}]}})
+    assert env.data.items[0].schedule.stops == 0
+
+
 def test_entity_and_offer_dedup_does_not_merge_distinct_rooms_or_same_name_places():
     a = SearchItem(name="村舍", price=100, extra={"hotelId": "h1", "roomType": "单人"})
     b = a.model_copy(deep=True)
@@ -48,6 +54,16 @@ def test_entity_and_offer_dedup_does_not_merge_distinct_rooms_or_same_name_place
 def test_visible_price_summary_does_not_use_hidden_cheapest():
     page = visible_page([SearchItem(name="已展示", price=200), SearchItem(name="隐藏", price=10)], 1)
     assert page.cheapest == 200 and page.total == 2
+
+
+def test_observed_flyai_hotel_aliases_preserve_identity_and_original_fields():
+    hotel = SearchItem(name="脱敏酒店", price=100, extra={"shId": "fixture-hotel", "rate": "4.8",
+        "latitude": 25.1, "longitude": 100.1, "brandName": "示例"})
+    env = stamp_evidence(Envelope(ok=True, data=ItemPage(items=[hotel])), "flyai", {"command": "search-hotel"})
+    assert env.data.items[0].evidence.source_item_id == "fixture-hotel"
+    assert visible_page([hotel, hotel.model_copy(deep=True)], 5).total == 1
+    details = json.loads(_tool_content("search_hotels", env))["top_items"][0]["details"]
+    assert details["shId"] == "fixture-hotel" and details["rate"] == "4.8"
 
 
 def test_cached_evidence_keeps_original_fetch_time_and_immutable_copy(monkeypatch):

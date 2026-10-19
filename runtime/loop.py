@@ -113,6 +113,8 @@ def _summarize(name: str, env: Envelope) -> dict:
     if name == "search_literature":
         return _literature_summary(env)
     out: dict[str, Any] = {"tool": name, "ok": env.ok}
+    if env.usage:
+        out["source_usage"] = env.usage
     if env.degraded:
         out["degraded"] = env.degraded
     if not env.ok:
@@ -241,6 +243,12 @@ def run_tool_loop(llm: Any, messages: list[dict],
     提示后取一次最终回答再返回。``messages`` 为入参副本，不改动调用方列表。
     """
     msgs = list(messages)
+    from fieldwork_agent.kernel.source_requests import SourceBudget
+    budget = getattr(dispatch, "_source_budget", None)
+    if budget is None:
+        dispatch = SourceBudget(deadline=time.monotonic() + max_wall_seconds).wrap(dispatch)
+    else:
+        budget.deadline = min(budget.deadline, time.monotonic() + max_wall_seconds)
     dispatch = LiteratureSearchBudget().wrap(dispatch)
     tool_events: list[dict] = []
     iterations = 0
@@ -289,7 +297,7 @@ def run_tool_loop(llm: Any, messages: list[dict],
                          "content": _tool_content(name, env)})
             tool_events.append({"tool": name, "call_id": call_id, "ok": env.ok,
                                 "data": env.data, "degraded": env.degraded,
-                                "arguments": args})
+                                "arguments": args, "source_usage": env.usage})
             if on_event:
                 on_event("tool_completed", {"call_id": call_id, "ok": env.ok,
                                             "data": env.data, "degraded": env.degraded,

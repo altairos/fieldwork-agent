@@ -14,7 +14,6 @@ import functools
 import inspect
 import json
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +28,7 @@ from fieldwork_agent.kernel.models import (
     ToolError,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.source_requests import cache_key, cached_request, request_guard
 from fieldwork_agent.kernel.travel import finite_price, stamp_evidence
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,7 @@ _INFOCODE_MAP = {
     "10001": "amap_invalid_key",
     "10003": "amap_quota",
     "10004": "amap_rate_limited",
+    "10005": "amap_ip_denied",
 }
 
 _HINTS = {
@@ -55,6 +56,7 @@ _HINTS = {
         "高德日配额已用尽（infocode 10003）：次日自动恢复；"
         "个人认证可提额，或降低调用频率。"),
     "amap_rate_limited": "触发高德 QPS 限流（infocode 10004）：请稍后重试并降低并发。",
+    "amap_ip_denied": "当前出口IP不在高德Key的IP白名单内（10005）；请在高德控制台核对出口IP与白名单，重复查询或改地名不能解决。",
     "amap_no_result": (
         "高德仅覆盖境内：境外田野点的定位/周边/接驳功能正在开发中"
         "（后续版本将追加）；境内生僻地名请改用标准写法（省+市+乡镇）；"
@@ -133,20 +135,10 @@ def _cached(ttl_seconds: float):
             bound = sig.bind(self, *args, **kwargs)
             bound.apply_defaults()
             params = {k: v for k, v in bound.arguments.items() if k != "self"}
-            key = (fn.__name__, tuple(sorted(params.items())))
-            with self._cache_lock:
-                hit = self._cache.get(key)
-                if hit is not None and hit[0] > time.monotonic():
-                    self.stats["cache_hit"] += 1
-                    return stamp_evidence(hit[1].model_copy(deep=True), "amap",
-                                          {"method": fn.__name__, **params}, cache_hit=True)
-            env = fn(self, *args, **kwargs)
-            if env.ok:
-                stamp_evidence(env, "amap", {"method": fn.__name__, **params})
-                with self._cache_lock:
-                    self._cache[key] = (time.monotonic() + ttl_seconds, env)
-                return env.model_copy(deep=True)
-            return env
+            key = cache_key(self, [fn.__name__, params])
+            def fetch():
+                return stamp_evidence(fn(self, *args, **kwargs), "amap", {"method": fn.__name__, **params})
+            return cached_request(self, key, ttl_seconds, fetch)
         return wrapper
     return deco
 
@@ -160,6 +152,7 @@ class AMapClient:
         self.stats = {"cache_hit": 0}   # 宿主日志可见，验证省配额（§4.1）
         self._cache: dict[tuple, tuple[float, Envelope]] = {}
         self._cache_lock = threading.Lock()
+        self._inflight = {}
 
     # ══════════════════════════════════════════
     # 传输层
@@ -187,6 +180,9 @@ class AMapClient:
                 "未配置高德 API Key（AMAP_API_KEY / amap_api_key）", code="amap_invalid_key")
         merged = dict(params)
         merged["key"] = self.api_key
+        blocked = request_guard("amap", self)
+        if blocked:
+            return None, blocked
         payload = self._get(path, merged)
         infocode = str(payload.get("infocode", ""))
         if infocode == "00000":            # 本地失败（传输/解析）
@@ -246,11 +242,14 @@ class AMapClient:
             source="amap"))
 
     @_cached(_TTL_VOLATILE)
-    def text_search(self, keywords: str, city: str = "", page_size: int = 10) -> Envelope:
+    def text_search(self, keywords: str, city: str = "", page_size: int = 10,
+                    city_limit: bool = False) -> Envelope:
         """关键词 POI 搜索：按行政区找目标（卫生院/派出所/集贸市场等田野保障设施）。"""
-        params: dict[str, Any] = {"keywords": keywords, "offset": page_size}
+        params: dict[str, Any] = {"keywords": keywords, "offset": page_size, "extensions": "all"}
         if city:
             params["city"] = city
+        if city_limit:
+            params["citylimit"] = "true"
         payload, err = self._call("/v3/place/text", params)
         if err:
             return err
@@ -261,7 +260,7 @@ class AMapClient:
                       page_size: int = 10) -> Envelope:
         """周边搜索：以 "lng,lat" 为圆心找半径内设施（驻村便利性画像）。"""
         params: dict[str, Any] = {"keywords": keywords, "location": location,
-                                  "radius": radius, "offset": page_size}
+                                  "radius": radius, "offset": page_size, "extensions": "all"}
         payload, err = self._call("/v3/place/around", params)
         if err:
             return err
@@ -335,7 +334,10 @@ def _transits_page(payload: dict[str, Any]) -> Envelope:
     items: list[SearchItem] = []
     for t in transits:
         lines: list[str] = []
+        rides = 0
         for seg in t.get("segments") or []:
+            if (seg.get("bus") or {}).get("buslines") or seg.get("railway"):
+                rides += 1
             for line in (seg.get("bus") or {}).get("buslines") or []:
                 name = line.get("name")
                 if name:
@@ -350,7 +352,7 @@ def _transits_page(payload: dict[str, Any]) -> Envelope:
                    "segments": t.get("segments") or []},
             schedule=Schedule(
                 duration_minutes=duration // 60 if duration is not None else None,
-                stops=max(len(lines) - 1, 0), stops_kind="transfers",
+                stops=max(rides - 1, 0), stops_kind="transfers",
                 segments=t.get("segments") or [])))
     prices = [i.price for i in items if i.price is not None]
     return Envelope(ok=True, data=ItemPage(
@@ -405,6 +407,7 @@ class AmapTextSearchArgs(BaseModel):
     keywords: str = Field(description="关键词（如 卫生院|派出所|集贸市场）")
     city: str = Field(default="", description="城市名或 adcode")
     page_size: int = Field(default=10, description="每页条数")
+    city_limit: bool = Field(default=False, description="仅检索指定城市或adcode，避免跨区同名召回")
 
 
 class AmapAroundSearchArgs(BaseModel):

@@ -75,6 +75,7 @@ from fieldwork_agent.kernel.models import (
     compute_inputs_hash,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.source_requests import source_task
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from pydantic import BaseModel, Field
@@ -223,7 +224,7 @@ def _select(cands: list[dict], prefer_key: str | None = None, preference: str = 
     priced = sorted(
         [c for c in cands if c["price"] is not None and (c.get("constraints") or {}).get("status") != "failed"],
         key=lambda c: (0 if (c.get("constraints") or {}).get("status") == "passed" else 1,
-                       ((c.get("schedule") or {}).get("duration_minutes") or float("inf")) if preference == "time" else c["price"],
+                       ((c.get("schedule") or {}).get("duration_minutes") or float("inf")) if preference == "time" else c.get("nightly_comparison_price", c["price"]),
                        c["price"], 0 if prefer_key and c.get(prefer_key) else 1),
     )
     unpriced = [c for c in cands if c["price"] is None]
@@ -341,6 +342,7 @@ def _plan_leg_last_mile(amap_client: AMapClient, hop: dict[str, str],
 # ---------------------------------------------------------------- 能力实现
 
 
+@source_task
 def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                       duration_days: int, budget_total: float, researcher_count: int = 1,
                       rooms: int = 0, settlement_type: str | None = None,
@@ -485,12 +487,14 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         if w["nights"] <= 0:
             notes.append(f"{w['dest']} 未排到住宿夜：天数不足以覆盖全部目的地")
             continue
+        for candidate in hotel_cands.get(idx, []):
+            candidate["nightly_comparison_price"] = candidate["price"] / w["nights"] if candidate["price"] is not None and candidate.get("extra", {}).get("price_basis") == "total_per_room" else candidate["price"]
         chosen, alts = _select(hotel_cands.get(idx, []), prefer_key="guesthouse")
         if chosen is None:
             notes.append(f"{w['dest']} 住宿无可用价格，预算未计该条")
         stay: dict[str, Any] = {"dest": w["dest"], "check_in": w["check_in"],
                                 "check_out": w["check_out"], "nights": w["nights"],
-                                "nightly_price": chosen["price"] if chosen else None,
+                                "nightly_price": chosen["nightly_comparison_price"] if chosen else None,
                                 "chosen": chosen, "alternatives": alts}
         # R2/R6：长住只拿到日价→标估算待核验，不宣称长期住宿已落实
         if w["nights"] > LONG_STAY_THRESHOLD:
@@ -513,7 +517,7 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                                     amount=round(leg["chosen"]["price"] * researcher_count, 2),
                                     source="cheapest", unit="票价×人数",
                                     quantity=1.0, people=researcher_count,
-                                    priced_at=priced_at,
+                                    priced_at=leg["chosen"].get("evidence", {}).get("fetched_at") or priced_at,
                                     source_ref=f"{leg['chosen']['name']}"
                                                f"（{ref_fn(leg['from'], leg['to'], leg['date'])}）"))
         else:
@@ -524,12 +528,12 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
             continue
         priced_count += 1
         lm = leg["last_mile"]
-        first = next((i for i in lm["options"].items if i.price is not None), None)
+        first = min((i for i in lm["options"].items if i.price is not None), key=lambda i: i.price, default=None)
         items.append(BudgetItem(
             name=f"接驳（{leg['from']}→{leg['to']}）",
             amount=round(lm["options"].cheapest * researcher_count, 2),
             source="cheapest", unit="高德公交最低价×人数",
-            quantity=1.0, people=researcher_count, priced_at=priced_at,
+            quantity=1.0, people=researcher_count, priced_at=first.evidence.fetched_at if first and first.evidence.fetched_at else priced_at,
             source_ref=f"{first.name}（高德公交）" if first else "高德公交"))
     for stay in stays:
         if stay["nightly_price"] is not None:
@@ -542,7 +546,7 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
                                                  * rooms_eff, 2),
                                     source="cheapest", unit="每晚价×夜数×房间数",
                                     quantity=float(stay["nights"]), people=rooms_eff,
-                                    priced_at=priced_at,
+                                    priced_at=stay["chosen"].get("evidence", {}).get("fetched_at") or priced_at,
                                     source_ref=f"{stay['chosen']['name']}（{hotel_ref}）"
                                     if stay["chosen"] else ""))
         else:
@@ -601,7 +605,9 @@ def compose_itinerary(departure: str, destinations: list[str], start_date: str,
         items=items, total=total, total_high=total_high, budget_total=budget_total,
         over_budget=coverage == "complete" and total > budget_total,
         over_budget_possible=coverage == "complete" and total_high > budget_total,
-        coverage=coverage, uncovered=uncovered)
+        coverage=coverage, uncovered=uncovered,
+        quote_status="unverified" if any((stay.get("chosen") or {}).get("extra", {}).get("price_basis")
+            not in ("nightly_per_room", "total_per_room") for stay in stays) else "caliber_stated")
 
     # 6) 备选：由已抓到的未选交通候选汇成（零额外调用）
     alternatives: list[dict[str, Any]] = [

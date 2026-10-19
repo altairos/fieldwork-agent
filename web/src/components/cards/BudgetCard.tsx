@@ -44,6 +44,7 @@ interface BudgetView {
   budget_total: number | null;
   over_budget: boolean;
   coverage: string;
+  quote_status: string;
   total_high: number | null;
   over_budget_possible: boolean;
   uncovered: string[];
@@ -75,6 +76,7 @@ export function toBudget(data: unknown): BudgetView {
     budget_total: numOf(rec.budget_total),
     over_budget: boolOf(rec.over_budget),
     coverage: strOf(rec.coverage),
+    quote_status: strOf(rec.quote_status),
     total_high: numOf(rec.total_high),
     over_budget_possible: boolOf(rec.over_budget_possible),
     uncovered: asArray(rec.uncovered).map((u) => strOf(u)).filter((u) => u !== ""),
@@ -172,7 +174,7 @@ export function BudgetBar({ budget }: { budget: unknown }) {
 
 export function BudgetCard({ data, degraded }: ToolCardProps) {
   const b = toBudget(data);
-  const complete = b.coverage === "complete";
+  const complete = b.coverage === "complete" && b.quote_status !== "unverified";
   const over = b.over_budget;
   const pct = percent(b.total, b.budget_total);
   const diff =
@@ -184,7 +186,9 @@ export function BudgetCard({ data, degraded }: ToolCardProps) {
   const pctColor =
     tone === "danger" ? "text-danger" : tone === "ochre" ? "text-ochre" : "text-bamboo";
 
-  const statusChip = !complete ? (
+  const statusChip = b.quote_status === "unverified" ? (
+    <Chip tone="ochre">报价口径待核实</Chip>
+  ) : !complete ? (
     <Chip tone="ochre">预算不完整</Chip>
   ) : over ? (
     <Chip tone="cinnabar">超出预算</Chip>

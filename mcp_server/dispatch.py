@@ -12,6 +12,7 @@ from typing import Any
 # capabilities 从 registry 直导（kernel/__init__ 导出的别名是 CAPABILITIES）
 from fieldwork_agent.kernel.models import Envelope
 from fieldwork_agent.kernel.registry import capabilities
+from fieldwork_agent.kernel.source_requests import source_task
 
 # 终审⑥：INTERNAL 分支要可观测。库代码只取 logger，不配 handler/basicConfig（宿主决定落地）
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ def _resolve(name: str, ctx: dict | None = None) -> Any:
     return meta.fn if meta is not None else None
 
 
+@source_task
 def call_capability(name: str, arguments: dict, ctx: dict) -> dict:
     """按能力名分派并把结果折进统一包络；保留键按 ``fn`` 签名 + ctx 双条件注入。"""
     fn = _resolve(name, ctx)

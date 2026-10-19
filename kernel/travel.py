@@ -43,7 +43,7 @@ def stamp_evidence(env: Envelope, source: str, conditions: dict,
     if isinstance(data, ItemPage):
         for item in data.items:
             item.evidence = evidence.model_copy(deep=True)
-            item.evidence.source_item_id = str(item_value(item, "id", "hotelId", "itemId", "skuId", "journeyId") or "")
+            item.evidence.source_item_id = str(item_value(item, "hotelId", "shId", "id", "itemId", "skuId", "journeyId") or "")
             item.evidence.source_ref += ":" + item.evidence.source_item_id + ":" + hashlib.sha256(
                 json.dumps([item.name, item.price, item.extra, item.schedule.model_dump() if item.schedule else None],
                     sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -59,9 +59,11 @@ def stamp_evidence(env: Envelope, source: str, conditions: dict,
 
 
 def entity_key(item: SearchItem) -> str | None:
-    identity = item_value(item, "hotelId", "id", "itemId", "journeyId")
-    if identity:
-        return json.dumps([item.evidence.source, identity], ensure_ascii=False, sort_keys=True)
+    for key in ("hotelId", "shId", "id", "itemId", "journeyId"):
+        identity = item_value(item, key)
+        if identity:
+            kind = "hotel" if key in ("hotelId", "shId") else key
+            return json.dumps([item.evidence.source, kind, identity], ensure_ascii=False, sort_keys=True)
     address, location = item_value(item, "address"), item_value(item, "location")
     if address or location:
         return json.dumps([item.name.strip(), item_value(item, "adcode", "cityname"), address, location],

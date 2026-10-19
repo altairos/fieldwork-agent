@@ -30,6 +30,7 @@ export interface SourceEvidence {
   fetched_at: string;
   source_updated_at: string;
   cache_hit: boolean;
+  coalesced?: boolean;
   source_ref: string;
   references: string[];
   missing_fields: string[];
@@ -86,6 +87,8 @@ export interface FieldSiteProfile {
   amenities: ItemPage | null;
   summary: SummaryHints;
   generated_at: string;
+  lodging_comparison?: Record<string, unknown>[];
+  spatial_results?: Record<string, unknown>[];
 }
 
 // ---------------------------------------------------------------- 行程与预算
@@ -127,6 +130,7 @@ export interface BudgetBreakdown {
   budget_total: number;
   over_budget: boolean;
   coverage: string;
+  quote_status?: string;
   uncovered: string[];
   total_high?: number | null;
   over_budget_possible?: boolean;

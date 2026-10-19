@@ -11,6 +11,7 @@ from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.research_state import turn_memory_patch
+from fieldwork_agent.kernel.source_requests import SourceBudget
 from fieldwork_agent.kernel.sources.flyai import RecordingClient
 from fieldwork_agent.runtime.doc_args import merge_doc_args
 from fieldwork_agent.runtime.literature import LiteratureSearchBudget
@@ -146,6 +147,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                                  llm,
                                  amap_recorder if amap_recorder is not None
                                  else amap_client)
+    deadline = time.monotonic() + max_wall_seconds
+    def sources_stopped():
+        handle = tm.get_turn(pid, turn_id)
+        return handle is None or handle.cancel_event.is_set() or time.monotonic() >= deadline
+    dispatch = SourceBudget(namespace=pid, cancelled=sources_stopped, deadline=deadline).wrap(dispatch)
     dispatch = LiteratureSearchBudget().wrap(dispatch)
     tools = build_tool_schemas()
     # F05：回合级 patch 暂存——状态工具与时窗回写先进 buffer，轮末正常结束
@@ -309,7 +315,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     data = data.model_dump(mode="json")
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": env.ok,
-                                 "data": data, "degraded": env.degraded,
+                                 "data": data, "degraded": env.degraded, "source_usage": env.usage,
                                  "error": _error_dict(env)})
                 messages.append({"role": "tool", "tool_call_id": call_id,
                                  "content": _tool_content(name, env)})
@@ -626,8 +632,9 @@ def _live_key(method: str, kwargs: dict) -> str:
     if method == "around_search":
         keywords = kwargs.get("keywords") or ""
         location = kwargs.get("location") or ""
-        return (f"@live:amap_around_search:{keywords}|{location}"
-                if keywords and location else "")
+        radius = kwargs.get("radius", 5000)
+        suffix = f"|radius={radius}" if radius != 5000 else ""
+        return (f"@live:amap_around_search:{keywords}|{location}{suffix}" if keywords and location else "")
     if method == "direction_transit":
         origin = kwargs.get("origin") or ""
         dest = kwargs.get("destination") or ""
@@ -853,7 +860,7 @@ def _schedule_autoname(repo, pid, llm):
 _AMAP_PARAMS = {
     "geocode": ("address", "city"),
     "regeocode": ("location",),
-    "text_search": ("keywords", "city", "page_size"),
+    "text_search": ("keywords", "city", "page_size", "city_limit"),
     "around_search": ("keywords", "location", "radius", "page_size"),
     "direction_transit": ("origin", "destination", "city", "cityd", "date"),
     "weather": ("city", "extensions"),

@@ -37,6 +37,7 @@ export interface ToolCompleted {
   degraded?: string | null;
   /** 失败时的错误三元组（如配额用尽 flyai_rate_limited）；成功或旧事件为 null/缺省。 */
   error?: ToolErrorInfo | null;
+  source_usage?: Record<string, unknown> | null;
 }
 
 /** 阶段迁移事件（Python 侧 from_phase/to_phase 以 alias "from"/"to" 上线）。 */

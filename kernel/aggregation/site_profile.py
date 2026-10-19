@@ -31,6 +31,7 @@ from fieldwork_agent.kernel.aggregation.amap_refs import (
     live_geocode_ref,
 )
 from fieldwork_agent.kernel.aggregation.lodging import LodgingComparisonRequest, compare_lodging
+from fieldwork_agent.kernel.aggregation.spatial import SpatialQuery, execute_matrix
 from fieldwork_agent.kernel.models import (
     Envelope,
     FieldSiteProfile,
@@ -41,10 +42,11 @@ from fieldwork_agent.kernel.models import (
     ToolError,
 )
 from fieldwork_agent.kernel.registry import CapabilityMeta, register
+from fieldwork_agent.kernel.source_requests import source_task
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from fieldwork_agent.kernel.travel import visible_page
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # 默认文化兴趣（search_pois 的 category 值），每项发起一次 POI 搜索
 DEFAULT_INTERESTS: list[str] = ["人文古迹", "宗教场所", "古镇古村", "博物馆"]
@@ -70,6 +72,10 @@ class ProfileFieldSiteArgs(BaseModel):
     travel_date: str = ""
     max_items_per_section: int = 5
     comparison: LodgingComparisonRequest | None = None
+    query_matrix: list[SpatialQuery] | None = Field(default=None, min_length=1, max_length=4)
+    facility_keywords: list[str] | None = Field(default=None, max_length=5)
+    facility_radius: int = Field(default=5000, ge=100, le=50000)
+    include_accommodation: bool = Field(default=True, description="本轮只找观察场所、不查住宿时设false")
 
 
 def _safe_call(fn: Callable, *args: Any, **kwargs: Any) -> Envelope:
@@ -102,11 +108,15 @@ def _min_price(items: list[SearchItem]) -> float | None:
     return min(prices) if prices else None
 
 
+@source_task
 def profile_field_site(location: str, budget_per_night: float = 200,
                        interests: list[str] | None = None,
                        departure_city: str = "", travel_date: str = "",
                        max_items_per_section: int = 5,
-                       comparison: dict | LodgingComparisonRequest | None = None, *,
+                       comparison: dict | LodgingComparisonRequest | None = None,
+                       query_matrix: list[dict | SpatialQuery] | None = None,
+                       facility_keywords: list[str] | None = None,
+                       facility_radius: int = 5000, include_accommodation: bool = True, *,
                        client: FlyAIClient | None = None,
                        amap_client: AMapClient | None = None) -> Envelope:
     """聚合目的地田野点画像：住宿/交通/文化/活动四段 + 高德 geo/facilities 段。
@@ -122,6 +132,11 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         interests = DEFAULT_INTERESTS
     comparison_request = (comparison if isinstance(comparison, LodgingComparisonRequest)
                           else LodgingComparisonRequest.model_validate(comparison) if comparison else None)
+    if query_matrix is not None and not 1 <= len(query_matrix) <= 4:
+        return Envelope(ok=False, error=ToolError(code="invalid_arguments", message="空间矩阵须为1至4路"))
+    spatial_rows = [r if isinstance(r, SpatialQuery) else SpatialQuery.model_validate(r) for r in query_matrix or []]
+    if spatial_rows:
+        interests = []  # 用户任务已有研究场景路线，无需固定的旅游文化类别
 
     # 每个任务 = (段名, 段内元信息, 无参调用)，并行提交到线程池
     tasks: list[tuple[str, str, Callable[[], Envelope]]] = [
@@ -138,6 +153,10 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         ("amenities", "", lambda: _safe_call(
             client.search_keyword, f"{location} 文化活动 节庆 民俗")),
     ]
+    if spatial_rows:
+        tasks = tasks[:2]  # 先查两种结构化住宿；有足够候选时不再追加泛词/语义商品检索
+    if not include_accommodation:
+        tasks = [task for task in tasks if task[0] != "accommodation"]
     # 文化兴趣：每个 interest 一次 POI 搜索（默认参数捕获避免闭包晚绑定）
     for interest in interests:
         tasks.append(("culture", interest, lambda i=interest: _safe_call(
@@ -151,7 +170,7 @@ def profile_field_site(location: str, budget_per_night: float = 200,
             client.search_trains, origin=departure_city, destination=location,
             dep_date=travel_date)))
 
-    if comparison_request and comparison_request.hub_location:
+    if include_accommodation and comparison_request and comparison_request.hub_location:
         tasks.append(("accommodation", "hub", lambda: _safe_call(client.search_hotels,
             dest_name=comparison_request.hub_location, check_in=travel_date,
             max_price=str(int(budget_per_night * BUDGET_MARKUP)))))
@@ -184,20 +203,23 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         geo = geo_env.data
         succeeded += 1  # 高德也算源：flyai 全挂但 geocode 成功仍可出 geo-only 画像
         live_refs.append(live_geocode_ref(location))
-        if geo.location:
+        if geo.ambiguous:
+            degraded = "地名有多个匹配，周边检索需先核实锚点"
+        if geo.location and not geo.ambiguous:
+            facility_terms = DEFAULT_FACILITY_KEYWORDS if facility_keywords is None else facility_keywords
             geo_tasks = [lambda kw=kw: _safe_call(
                 amap_client.around_search, keywords=kw,
-                location=geo.location, radius=FACILITY_RADIUS)
-                for kw in DEFAULT_FACILITY_KEYWORDS]
+                location=geo.location, radius=facility_radius)
+                for kw in facility_terms]
             with ThreadPoolExecutor(max_workers=5) as pool:
                 fac_envs = [fut.result() for fut in
                             [pool.submit(copy_context().run, t) for t in geo_tasks]]
             fac_items: list[SearchItem] = []
             any_around_ok = False
-            for fac_env, fac_kw in zip(fac_envs, DEFAULT_FACILITY_KEYWORDS, strict=True):
+            for fac_env, fac_kw in zip(fac_envs, facility_terms, strict=True):
                 if fac_env.ok and isinstance(fac_env.data, ItemPage):
                     any_around_ok = True
-                    live_refs.append(live_around_ref(fac_kw, geo.location))
+                    live_refs.append(live_around_ref(fac_kw, geo.location, facility_radius))
                     for item in fac_env.data.items:  # 跨关键词同名去重，首见保留
                         if item.name:
                             # N6 地图面板：附命中关键词（五类色分数据源，前端不猜
@@ -217,14 +239,17 @@ def profile_field_site(location: str, budget_per_night: float = 200,
             degraded = ("地理底座：高德未收录（境外田野点的定位/周边设施"
                         "正在开发中，后续版本将追加），已回退纯 FlyAI 文本链路")
         else:
-            degraded = "地理底座：高德未收录，已回退纯 FlyAI 文本链路"
+            degraded = f"地理底座不可用（{err_code}）：{geo_env.error.hint if geo_env.error else '请检查数据源返回'}；地理事实仍待核实"
 
     # 全部源失败（含仅 ok=False / 仅异常；geocode 亦无结果）→ 整体失败包络
+    spatial_results = execute_matrix(spatial_rows, geo, location, amap_client) if spatial_rows else []
+    if any(any(q["ok"] for q in r["requests"]) for r in spatial_results):
+        succeeded += 1
     if succeeded == 0:
         return Envelope(ok=False, error=ToolError(
             code="all_sources_failed",
             message="田野点画像聚合失败：所有数据源均未返回有效结果",
-            hint="flyai CLI 不可用或无网络，请确认 `flyai` 命令可用后重试",
+            hint=geo_env.error.hint if geo_env.error else "请检查旅行与地理来源配置；保留缺口，不反复更换检索词",
         ))
 
     def merged_items(tag: str) -> list[SearchItem]:
@@ -263,7 +288,7 @@ def profile_field_site(location: str, budget_per_night: float = 200,
     }
     # R6：住宿段无任何可见供给（海外偏远点常态）→ 二段式建议，区分于"有供给但超预算"
     hints: dict[str, str] = {}
-    if not final_items["accommodation"]:
+    if include_accommodation and not final_items["accommodation"]:
         hints["accommodation"] = ("平台未见住宿供给：建议以最近枢纽城市住宿为基地，"
                                   "进村住宿通过当地学术合作方/接待方安排，需人工核实")
     summary = SummaryHints(
@@ -288,6 +313,7 @@ def profile_field_site(location: str, budget_per_night: float = 200,
         live_refs=live_refs,
         summary=summary,
         generated_at=datetime.now().isoformat(),
+        spatial_results=spatial_results,
         lodging_comparison=compare_lodging(visible_page(acc_filtered, len(acc_filtered)).items, geo, comparison_request, travel_date, amap_client)
             if comparison_request and geo and accommodation else [],
     )

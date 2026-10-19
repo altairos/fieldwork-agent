@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 from fieldwork_agent.kernel.registry import capabilities
+from fieldwork_agent.kernel.source_requests import SourceBudget
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from fieldwork_agent.mcp_server import dispatch, request_ctx, state_tools
@@ -171,7 +172,8 @@ def create_server(config: "Config | None" = None,
             # 能力路径：阻塞的 flyai 子进程/文档生成丢工作线程；
             # call_capability 自带包络兜底，不重复包
             payload = await anyio.to_thread.run_sync(
-                lambda: dispatch.call_capability(name, arguments, _effective_host_ctx()))
+                lambda: SourceBudget(namespace=request_ctx.resolved_owner() or "").wrap(
+                    dispatch.call_capability)(name, arguments, _effective_host_ctx()))
         logger.info("mcp tools/call name=%s project_id=%s ok=%s degraded=%s",
                     name, arguments.get("project_id") or "-",
                     payload.get("ok"), bool(payload.get("degraded")))

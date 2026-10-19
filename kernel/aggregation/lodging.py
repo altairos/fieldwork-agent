@@ -6,10 +6,11 @@ from fieldwork_agent.kernel.aggregation.last_mile import _resolve_date_param
 from fieldwork_agent.kernel.aggregation.travel_decisions import match_hotel, result
 from fieldwork_agent.kernel.models import Envelope, GeoLocation, ItemPage, SearchItem
 from fieldwork_agent.kernel.travel import item_value
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class LodgingComparisonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     nights: int = Field(ge=1, le=366)
     visit_days: int = Field(ge=0, le=366)
     rooms: int = Field(default=1, ge=1, le=30)
@@ -17,6 +18,12 @@ class LodgingComparisonRequest(BaseModel):
     hub_location: str = Field(default="", max_length=150)
     max_commute_minutes: int | None = Field(default=None, ge=0, description="每日往返通勤上限，分钟")
     daily_available_minutes: int | None = Field(default=None, ge=0, le=1440)
+
+    @model_validator(mode="after")
+    def validate_visit_days(self):
+        if self.visit_days > self.nights + 1:
+            raise ValueError("访问天数不能超过驻留日历天数")
+        return self
 
 
 def compare_lodging(items: list[SearchItem], target: GeoLocation,
@@ -47,6 +54,10 @@ def compare_lodging(items: list[SearchItem], target: GeoLocation,
                 "rooms": request.rooms, "researcher_count": request.researcher_count},
             "quote_coverage": "estimate", "match_status": "unknown"}
         report["price_basis_assumption"] = "按展示价为单间每晚的情景估算，口径待核实"
+        price_basis = item_value(item, "price_basis")
+        room_total = item.price if price_basis == "total_per_room" else item.price * request.nights if item.price is not None else None
+        if price_basis in ("nightly_per_room", "total_per_room"):
+            report["price_basis_assumption"] = "按来源声明的单间计价口径计算，实际房态待核实"
         address = item_value(item, "address")
         if not address or len(str(address)) < 5 or target.ambiguous or not target.location:
             report["constraints"] = result([], ["住宿地址及唯一访问点定位"])
@@ -98,8 +109,8 @@ def compare_lodging(items: list[SearchItem], target: GeoLocation,
             missing.append("具体访问点")
         report.update({"commute_minutes_per_visit_day": commute,
             "commute_cost_per_visit_day": daily_cost,
-            "cost_estimate": round(item.price * request.nights * request.rooms + daily_cost * request.visit_days, 2)
-                if item.price is not None and daily_cost is not None else None,
+            "cost_estimate": round(room_total * request.rooms + daily_cost * request.visit_days, 2)
+                if room_total is not None and daily_cost is not None else None,
             "research_minutes_per_visit_day": max(0, request.daily_available_minutes - commute)
                 if request.daily_available_minutes is not None and commute is not None else None,
             "routes": [i.model_dump() for i in best] if best else [],

@@ -22,9 +22,10 @@ def live_geocode_ref(address: str) -> str:
     return f"@live:amap_geocode:{address}"
 
 
-def live_around_ref(keywords: str, location: str) -> str:
+def live_around_ref(keywords: str, location: str, radius: int = 5000) -> str:
     """around_search 规格键：关键词 + 坐标锚点（radius 不进键）。"""
-    return f"@live:amap_around_search:{keywords}|{location}"
+    base = f"@live:amap_around_search:{keywords}|{location}"
+    return f"{base}|radius={radius}" if radius != 5000 else base
 
 
 def live_transit_ref(origin: str, destination: str, date: str = "") -> str:

@@ -3,8 +3,15 @@ import { describe, expect, test } from "vitest";
 import { SearchItemRow } from "../src/components/cards/SearchResultCard";
 import { WindowCard } from "../src/components/cards/WindowCard";
 import { LodgingComparison } from "../src/components/cards/LodgingComparison";
+import { SpatialResults } from "../src/components/cards/SpatialResults";
 
 describe("旅行证据展示", () => {
+  test("展示空间路线用途与核实边界", () => {
+    render(<SpatialResults data={[{ query: { label: "生产场景", research_purpose: "了解学习过程", keywords: ["作坊"] },
+      items: [{ name: "甲作坊" }], stop_reason: "候选已足够", evidence_boundary: "进入条件待核实" }]} />);
+    expect(screen.getByText("甲作坊")).toBeVisible();
+    expect(screen.getByText("进入条件待核实")).toBeVisible();
+  });
   test("住宿比较明确展示情景估算、通勤时间及待核实条件", () => {
     render(<LodgingComparison data={[{ name: "近舍", cost_estimate: 864,
       commute_minutes_per_visit_day: 20, quote_coverage: "estimate",

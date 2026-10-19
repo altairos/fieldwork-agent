@@ -15,9 +15,9 @@ def brief_item(item: dict) -> dict:
     extra = item.get("extra") or {}
     info = extra.get("info") if isinstance(extra.get("info"), dict) else {}
     details = {**info, **extra}
-    selected = ("id", "hotelId", "address", "location", "adcode", "type", "distance",
+    selected = ("id", "hotelId", "shId", "address", "location", "latitude", "longitude", "adcode", "type", "distance",
         "walking_distance", "facility_kind", "roomType", "roomName", "skuId", "checkIn", "checkOut",
-        "rating", "origin", "destination", "constraints", "match_status")
+        "rating", "rate", "star", "brandName", "origin", "destination", "constraints", "match_status")
     selected_details = {k: details[k] for k in selected if details.get(k) not in (None, "", [])}
     if selected_details:
         out["details"] = selected_details

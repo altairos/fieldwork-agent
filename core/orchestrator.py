@@ -56,6 +56,7 @@ from fieldwork_agent.kernel.registry import (
 )
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.kernel.research_state import turn_memory_patch
+from fieldwork_agent.kernel.source_requests import SourceBudget
 from fieldwork_agent.kernel.sources.amap import (
     AMapClient,
     amap_around_search,
@@ -326,7 +327,7 @@ class FieldAgent:
                 return Envelope(ok=False, error=ToolError(
                     code="internal_error", message=str(exc), hint=""))
 
-        return bind_research_searches(dispatch, self.repo, self.project_id)
+        return SourceBudget(namespace=self.project_id).wrap(bind_research_searches(dispatch, self.repo, self.project_id))
 
     def _snapshot(self, pid: str) -> str:
         """repo 快照摘要（F04 有界版）：kernel brief + 行程状态拼接。"""
