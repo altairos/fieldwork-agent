@@ -49,7 +49,7 @@ export function LeftRail({
 }) {
   const current = phases.findIndex((p) => p.id === phase);
   return (
-    <div className="bg-paperdeep border-r border-hairline flex flex-col min-h-0">
+    <div className="fw-glass g2 border-r border-hairline flex flex-col min-h-0">
       <div className="px-3 py-3 text-[10.5px] tracking-[.18em] text-inkfaint">方案规划阶段</div>
       {/* overscroll-contain（批次 C）：抽屉/内嵌滚动到边界不把滚动链传导给底层页面 */}
       <nav className="px-3 space-y-1 flex-1 overflow-y-auto scroll overscroll-contain">

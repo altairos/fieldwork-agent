@@ -67,10 +67,10 @@ export function RightDock({
   const Panel = PANELS[tab] ?? BasicInfoPanel;
 
   return (
-    <div className="bg-paperdeep border-l border-hairline flex flex-col w-full min-w-0 min-h-0 relative">
+    <div className="fw-glass g1 border-l border-hairline flex flex-col w-full min-w-0 min-h-0 relative">
       {/* 切换建议 toast（不自动切，用户点「查看」才切） */}
       {suggestion && (
-        <div className="absolute top-2 left-3 right-3 z-10 rounded-lg bg-card shadow-pop hairline p-3 flex items-start gap-2.5">
+        <div className="absolute top-2 left-3 right-3 z-10 rounded-lg fw-glass g2 hairline p-3 flex items-start gap-2.5">
           <IconSpark className="w-4 h-4 text-cinnabar mt-0.5 shrink-0" />
           <div className="flex-1 min-w-0">
             <div className="text-[12px] text-ink leading-snug">

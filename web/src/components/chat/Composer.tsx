@@ -99,7 +99,7 @@ export function Composer({
           />
         </div>
       )}
-      <div className="hairline rounded-lg bg-paper/60 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
+      <div className="hairline rounded-lg fw-glass g3 p-2.5 flex items-end gap-3 focus-within:border-cinnabar/50 transition">
         <textarea
           ref={areaRef}
           rows={1}

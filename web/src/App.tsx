@@ -242,7 +242,7 @@ function Workspace() {
             点击不切阶段（产品红线） */}
         {!leftCollapsed && (
           <div
-            className="fixed inset-0 z-30 bg-ink/35 fade-in lg:hidden"
+            className="fixed inset-0 z-30 bg-ink/35 fade-in fw-scrim lg:hidden"
             onClick={toggleLeft}
             aria-hidden="true"
           />
