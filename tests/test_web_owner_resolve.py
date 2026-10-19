@@ -38,7 +38,13 @@ def test_expired_session_401():
     assert ei.value.status_code == 401 and ei.value.detail["code"] == "session_expired"
 
 
-def test_malformed_token_400():
+@pytest.mark.parametrize("raw", ["bad token", "sess_ a", "sess_" + "a" * 200])
+def test_malformed_token_400(raw):
+    """形状 400 先于会话查询：sess_ 前缀但形状非法 → 不触 store。
+
+    store=None 即顺序证明——若实现先查会话，sess_ 前缀遇 None store
+    会抛 SessionExpired 折 401，断言 400 随之失败。
+    """
     with pytest.raises(HTTPException) as ei:
-        owner_from_request(_req("bad token", None))
+        owner_from_request(_req(raw, None))
     assert ei.value.status_code == 400

@@ -14,6 +14,9 @@ OWNER_TOKEN_HEADER = "X-Owner-Token"
 
 
 def owner_from_request(request: Request) -> str | None:
+    """X-Owner-Token → owner。空/纯空白 → None；形状非法 → 400（先于会话查询）；
+    sess_ → 查会话：命中 ``user:<id>``、失效 401 session_expired；其他 → ``anon:<raw>``。
+    """
     raw = (request.headers.get(OWNER_TOKEN_HEADER) or "").strip()
     if not raw:
         return None

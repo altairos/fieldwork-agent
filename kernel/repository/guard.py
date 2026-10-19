@@ -91,16 +91,16 @@ def owner_violation(owner: str | None) -> str:
 
 
 def normalize_owner_token(raw: str | None) -> str | None:
-    """X-Owner-Token 裸值 → 归一化归属值 ``anon:<raw>``（身份映射单一来源）。
+    """X-Owner-Token 裸值 → 归一化归属值 ``anon:<raw>``（匿名路径折叠）。
 
-    REST（web_host.api.owner）与 MCP HTTP（mcp_server.http_entry）两入口共用，
-    ``anon:`` 前缀只由服务端拼接、客户端永不携带：
+    MCP HTTP 入口（mcp_server.http_entry）使用；REST 入口已升级为会话
+    resolver（web_host.api.owner → kernel/identity/owner_resolve），形状
+    规则仍共用本模块 OWNER_TOKEN_RE（唯一来源）。``anon:`` 前缀只由
+    服务端拼接、客户端永不携带：
 
     - 空 / 纯空白 → None（无令牌；后续行为由各入口端点/handler 矩阵决定）；
     - 形状非法 → ``ValueError``（调用方折 400，或按无令牌降级为拒绝访问）；
     - 合法 → ``anon:<raw>``。
-
-    未来接入账号体系时，本函数与 ``owner_violation`` 是唯一的身份形状来源。
     """
     token = (raw or "").strip()
     if not token:
