@@ -208,9 +208,10 @@ export function ProjectHub() {
             <span title={user.email} className="max-w-[14ch] truncate text-[12.5px] text-inksoft">
               {user.email}
             </span>
+            {/* 网络失败不打扰：本地清理已在 store 的 finally 完成 */}
             <button
               type="button"
-              onClick={() => void logout()}
+              onClick={() => void logout().catch(() => {})}
               className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
             >
               退出

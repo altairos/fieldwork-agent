@@ -13,6 +13,7 @@ import { KeyDialog } from "./components/settings/KeyDialog";
 import { IconCaret } from "./components/ui/icons";
 import { useTurn } from "./hooks/useTurn";
 import { getKeys, hasDashScopeKey } from "./lib/keys";
+import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversation";
 import { useProjectStore } from "./stores/project";
 import { useToolsStore } from "./stores/tools";
@@ -348,6 +349,10 @@ function dismissBannerIf(code: string) {
 }
 
 export default function App() {
+  // 挂载即核对会话（T14 checkSession 的首个产品调用点）：带 sess_ 刷新后恢复登录态
+  // 显示；失效就地清令牌（不弹窗打断）；瞬时失败仅置 user:null、令牌保留
+  useEffect(() => { void useAuthStore.getState().checkSession(); }, []);
+
   return (
     <BrowserRouter>
       <Routes>

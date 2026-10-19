@@ -151,9 +151,10 @@ export function Header({
                 >
                   {user.email}
                 </span>
+                {/* 网络失败不打扰：本地清理已在 store 的 finally 完成 */}
                 <button
                   type="button"
-                  onClick={() => void logout()}
+                  onClick={() => void logout().catch(() => {})}
                   className="px-2.5 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition cursor-pointer"
                 >
                   退出
