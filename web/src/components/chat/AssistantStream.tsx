@@ -1,3 +1,4 @@
+import { memo, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -71,8 +72,13 @@ const MD_COMPONENTS: Components = {
   td: ({ children }) => <td className="px-2 py-1.5 border-b border-hairsoft text-inksoft">{children}</td>,
 };
 
-/** 宋体 markdown 正文（历史助手消息与流式缓冲共用）。 */
-export function MarkdownBody({ text }: { text: string }) {
+/** 宋体 markdown 正文（历史助手消息与流式缓冲共用）。
+ *
+ * memo 必要（性能）：AssistantStream 每 delta 都会重渲染（它订阅 streamBuffer），
+ * 而文本经节流后多数次渲染并不变——不 memo 时 remarkGfm 会把同一份文本重复解析，
+ * 节流等于白做。memo 后只有文本真正推进的那几次才解析。
+ */
+export const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
   return (
     <div className="font-serif text-[14.5px] leading-[1.85] text-ink space-y-2.5 break-words">
       <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
@@ -80,19 +86,71 @@ export function MarkdownBody({ text }: { text: string }) {
       </Markdown>
     </div>
   );
+});
+
+/** 流式渲染节流间隔（ms）：内核 delta 可能每几十毫秒一个，渲染层没必要同频解析 markdown。 */
+const FLUSH_MS = 60;
+
+/**
+ * 渲染节流（性能修复）：store 的 streamBuffer 仍逐 delta 追加（不丢字），
+ * 本 hook 只把"渲染用的文本"降频到 FLUSH_MS。
+ *
+ * 两条即时通道必须保留，否则会引入可见回归：
+ * - 首帧（lastFlush 初值为 -∞）立即上屏——测试与"刚开始回复就停顿"的场景不能延迟；
+ * - 清空（turn_done/cancel）立即生效并撤销排程，否则会残留一段延迟后才消失的旧正文。
+ * 排程中若又有新 delta，不重复排程，触发时取 latest 里的最新值（后到覆盖先到）。
+ */
+function useThrottledText(text: string): string {
+  const [shown, setShown] = useState(text);
+  const latest = useRef(text);
+  const lastFlush = useRef(Number.NEGATIVE_INFINITY);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  latest.current = text;
+
+  useEffect(() => {
+    if (text === "") {
+      if (timer.current !== null) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+      lastFlush.current = Number.NEGATIVE_INFINITY;
+      setShown("");
+      return;
+    }
+    const wait = FLUSH_MS - (performance.now() - lastFlush.current);
+    if (wait <= 0) {
+      lastFlush.current = performance.now();
+      setShown(text);
+      return;
+    }
+    if (timer.current !== null) return;          // 已在排程窗口内，等它一次性取最新值
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      lastFlush.current = performance.now();
+      setShown(latest.current);
+    }, wait);
+  }, [text]);
+
+  // 卸载（切 tab / 换项目）撤销未触发的排程，避免对已卸载组件 setState
+  useEffect(() => () => {
+    if (timer.current !== null) clearTimeout(timer.current);
+  }, []);
+
+  return shown;
 }
 
 /** 当前回合的助手流式正文；无缓冲且未运行时不渲染（不占时间线空间）。 */
 export function AssistantStream() {
   const buffer = useConversationStore((s) => s.streamBuffer);
   const running = useConversationStore((s) => s.turnRunning);
+  const shown = useThrottledText(buffer);
   if (!buffer && !running) return null;
   return (
     <div className="flex gap-3">
       <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
-        {buffer ? (
-          <MarkdownBody text={normalizeCjkQuotes(stripOptionTags(buffer))} />
+        {shown ? (
+          <MarkdownBody text={normalizeCjkQuotes(stripOptionTags(shown))} />
         ) : (
           <div className="text-[12.5px] text-inkfaint">助手正在组织回复…</div>
         )}

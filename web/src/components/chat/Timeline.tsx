@@ -69,7 +69,10 @@ export function Timeline({
   incomplete?: boolean;
 } = {}) {
   const messages = useConversationStore((s) => s.messages);
-  const streamBuffer = useConversationStore((s) => s.streamBuffer);
+  // 只取布尔（渲染开销闸门）：streamBuffer 每个 delta 都变，直接订阅会让整条时间线
+  // 每 token 重渲染一次（历史消息随之重解析 markdown，O(tokens × 历史)）。
+  // 这里只关心"有没有流式正文"（空态判定），正文本身由 AssistantStream 自己订阅。
+  const hasStreamBuffer = useConversationStore((s) => Boolean(s.streamBuffer));
   const turnRunning = useConversationStore((s) => s.turnRunning);
   const hydrated = useConversationStore((s) => s.hydrated);
   const byCallId = useToolsStore((s) => s.byCallId);
@@ -84,7 +87,7 @@ export function Timeline({
   // hidden 永不渲染；失败不滞留（问题4，由活动条承担）。未注册工具默认 full 保可见。
   const visible = settled.filter((call) =>
     (toolVisibility[call.tool] ?? "full") === "full" && call.status !== "failed");
-  const idle = messages.length === 0 && settled.length === 0 && !streamBuffer && !turnRunning;
+  const idle = messages.length === 0 && settled.length === 0 && !hasStreamBuffer && !turnRunning;
   // 问题2：进入已有会话的工作台时，对话史回填（hydrate）需要时间；回填完成前的
   // idle 窗口显示「加载中」+ 旋转 logo，而非误导性的「尚无对话」；hydrate 落地后仍空才是真空会话。
   const loading = idle && !hydrated;

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { MarkdownBody } from "./AssistantStream";
 import { stripOptionTags } from "../../lib/optionTags";
 import { normalizeCjkQuotes } from "../../lib/cjkQuotes";
@@ -18,7 +19,7 @@ import { normalizeCjkQuotes } from "../../lib/cjkQuotes";
  * 例外二：assistant 半角引号渲染前归一为全角（问题3前端；覆盖归一上线前的存量历史，
  * user 输入不归一——用户亲手输入的引号原样呈现）。
  */
-export function MessageBubble({ role, content }: { role: "user" | "assistant"; content: string }) {
+function MessageBubbleInner({ role, content }: { role: "user" | "assistant"; content: string }) {
   if (role === "user") {
     return (
       <div className="flex justify-end">
@@ -37,3 +38,11 @@ export function MessageBubble({ role, content }: { role: "user" | "assistant"; c
     </div>
   );
 }
+
+/**
+ * memo 包装（性能修复）：props 仅两个字符串，父组件 Timeline 会因为工具事件、
+ * 空态布尔、activity 条变化而重渲染；不 memo 时每条历史消息都要重跑一次
+ * remarkGfm 解析，成本随会话长度线性叠加。
+ */
+export const MessageBubble = memo(MessageBubbleInner);
+
