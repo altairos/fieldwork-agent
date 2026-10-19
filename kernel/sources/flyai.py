@@ -637,13 +637,28 @@ def _normalized_view(target: Any, args: tuple, kwargs: dict) -> dict:
 
     直通 dispatch（工具层已补默认）与聚合内部调用（常省略默认）经此归一后，
     等效查询必得同键。bind 失败（理论签名漂移）降级为 kwargs 原样，绝不抛。
+    **kw-only 委托（测试替身/动态代理）会把实参整体吞进 VAR_KEYWORD 形参
+    （如 hotel_types 落入 view["kw"] 子字典而非顶层）——规格键生成只看顶层，
+    子字典遮蔽曾使民宿/酒店两策略同键互相覆盖、行程引用错绑他次快照；
+    故 VAR_KEYWORD 项展开至顶层（显式形参客户端无此项，零影响）；
+    *args 无法命名、跳过。
     """
     try:
         bound = inspect.signature(target).bind(*args, **kwargs)
     except (TypeError, ValueError):
         return dict(kwargs)
     bound.apply_defaults()
-    return dict(bound.arguments)
+    view: dict[str, Any] = {}
+    for name, value in bound.arguments.items():
+        param = bound.signature.parameters.get(name)
+        if param is not None:
+            if param.kind is inspect.Parameter.VAR_KEYWORD and isinstance(value, dict):
+                view.update(value)
+                continue
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                continue
+        view[name] = value
+    return view
 
 
 class RecordingClient:
