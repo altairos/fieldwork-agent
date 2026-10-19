@@ -103,6 +103,19 @@ def test_cache_index_derived_from_files(json_repo):
     assert json_repo.list_cached_searches("p1") == []
 
 
+def test_cache_index_legacy_record_derives_on_read(json_repo):
+    """R12：存量 Json 缓存文件无 empty/truncated 字段 → 索引时从已读入 result 现场派生。"""
+    # 直接写一个旧形状文件进 cache 目录（对照 test_cache_index_derived_from_files 的写法）
+    payload = {"id": "srch_20260101_000000_legacy0", "query": "q",
+               "tool": "search_ai", "cached_at": "2026-01-01T00:00:00",
+               "result": {"items": [], "total": 0}}
+    entry = json_repo.root / "p1" / "search_cache" / (payload["id"] + ".json")
+    entry.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    idx = json_repo.list_cached_searches("p1")[0]
+    assert idx["empty"] is True and idx["truncated"] is False and idx["total"] == 0
+    assert idx["parent_call_id"] == "" and idx["turn_id"] == "" and idx["query_key"] == ""
+
+
 def test_r01_get_cached_search_scoped_to_project(json_repo):
     """审计二 R01：get_cached_search 收窄项目域——p1 读不到 p2 的快照。"""
     json_repo.create("p2")

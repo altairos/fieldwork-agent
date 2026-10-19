@@ -18,6 +18,7 @@ from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
 from fieldwork_agent.kernel.models import ConfirmationRecord
+from fieldwork_agent.kernel.repository.cache_summary import result_summary
 from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
@@ -25,7 +26,7 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
 from fieldwork_agent.kernel.repository.guard import cache_id_violation, owner_violation
 from fieldwork_agent.kernel.repository.protocol import _UNSET
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MESSAGE_WINDOW = 50
 CACHE_LIMIT_BYTES = 64 * 1024
 
@@ -84,6 +85,12 @@ CREATE TABLE IF NOT EXISTS search_cache (
     tool       TEXT NOT NULL,
     result     TEXT NOT NULL,                   -- JSON；写入前已应用 64KB 截断
     cached_at  TEXT NOT NULL,
+    parent_call_id TEXT,
+    turn_id    TEXT,
+    query_key  TEXT,
+    is_empty   INTEGER,
+    is_truncated INTEGER,
+    total      INTEGER,
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_cache_project ON search_cache(project_id, cached_at);
@@ -140,6 +147,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # 跨版本增量列（存量行由 DEFAULT 值补齐，不改任何既有语义）：
 # - v1→v2（审计二 R02）：projects.proposal_confirmed、proposals.dep_hash
 # - v2→v3（归属隔离）：projects.owner
+# - v3→v4（spec C5 证据索引）：search_cache 六列（可空，NULL=unknown，R12）
 # confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对旧库
 # 在版本分支之前即已建好）；执行见 _ensure_schema 的显式事务
 # （补列与 user_version 同生共死，防「列已加、版本未进」的半迁移库重开锁死）。
@@ -150,6 +158,12 @@ _MIGRATE_COLUMNS = (
      "ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''"),
     ("projects", "owner",
      "ALTER TABLE projects ADD COLUMN owner TEXT"),
+    ("search_cache", "parent_call_id", "ALTER TABLE search_cache ADD COLUMN parent_call_id TEXT"),
+    ("search_cache", "turn_id", "ALTER TABLE search_cache ADD COLUMN turn_id TEXT"),
+    ("search_cache", "query_key", "ALTER TABLE search_cache ADD COLUMN query_key TEXT"),
+    ("search_cache", "is_empty", "ALTER TABLE search_cache ADD COLUMN is_empty INTEGER"),
+    ("search_cache", "is_truncated", "ALTER TABLE search_cache ADD COLUMN is_truncated INTEGER"),
+    ("search_cache", "total", "ALTER TABLE search_cache ADD COLUMN total INTEGER"),
 )
 
 
@@ -553,11 +567,14 @@ class SqliteRepository:
 
     # ------------------------------------------------------------------ 搜索缓存
 
-    def cache_search(self, pid: str, query: str, tool: str, result: dict) -> str:
+    def cache_search(self, pid: str, query: str, tool: str, result: dict, *,
+                     parent_call_id: str = "", turn_id: str = "",
+                     query_key: str = "") -> str:
         """一次性 INSERT（cid 全局唯一、无更新语义，故不走 _upsert_json_record）。
 
         result 超 64KB 整体替换为截断标记；对齐 json_repo：缓存不经 _save 落盘，
-        不推进 projects.updated_at。
+        不推进 projects.updated_at。写入时派生索引摘要（R3/R12）：empty/truncated/
+        total 落列（布尔存 INTEGER、None 存 NULL），索引查询免回读 result blob。
         """
         self._require(pid)
         cid = _new_id("srch")
@@ -568,13 +585,19 @@ class SqliteRepository:
             preview = serialized.encode("utf-8")[:CACHE_LIMIT_BYTES].decode(
                 "utf-8", errors="ignore")
             stored = {"truncated": True, "preview": preview}
+            is_truncated, is_empty, total = True, False, None   # R5/R12：已知截断
         else:
             stored = result
+            is_empty, total = result_summary(result)
+            is_truncated = False
         with self._connect(immediate=True) as conn:
             conn.execute(
-                "INSERT INTO search_cache(id, project_id, query, tool, result, cached_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (cid, pid, query, tool, _dumps(stored), cached_at))
+                "INSERT INTO search_cache(id, project_id, query, tool, result, cached_at,"
+                " parent_call_id, turn_id, query_key, is_empty, is_truncated, total)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (cid, pid, query, tool, _dumps(stored), cached_at,
+                 parent_call_id, turn_id, query_key,
+                 int(is_empty), int(is_truncated), total))
         return cid
 
     def list_cached_searches(self, pid: str) -> list[dict]:
@@ -582,12 +605,19 @@ class SqliteRepository:
         self._require(pid)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, query, tool, cached_at FROM search_cache WHERE project_id=?"
-                " ORDER BY cached_at, rowid",
+                "SELECT id, query, tool, cached_at, parent_call_id, turn_id,"
+                " query_key, is_empty, is_truncated, total FROM search_cache"
+                " WHERE project_id=? ORDER BY cached_at, id",
                 (pid,)).fetchall()
         return [
             {"id": r["id"], "query": r["query"], "tool": r["tool"],
-             "cached_at": r["cached_at"]}
+             "cached_at": r["cached_at"],
+             "parent_call_id": r["parent_call_id"] or "",
+             "turn_id": r["turn_id"] or "",
+             "query_key": r["query_key"] or "",
+             "empty": None if r["is_empty"] is None else bool(r["is_empty"]),
+             "truncated": None if r["is_truncated"] is None else bool(r["is_truncated"]),
+             "total": r["total"]}
             for r in rows
         ]
 
@@ -1018,17 +1048,33 @@ class SqliteRepository:
         """搜索缓存原样入库（保留原 id+query+result+cached_at）。
 
         旧缓存文件的 source_tool 读作 tool（对齐 json_repo list_cached_searches
-        的读时归一）。
+        的读时归一）。C5/R12：派生列同步入库——legacy 文件无派生键时从 result
+        现场派生（与 json 侧索引读时派生同构），core/migrate._verify 对
+        search_cache 首条整条哈希全等依赖此对齐；三关联键缺省空串（与 json
+        侧 ``data.get(...) or ""`` 读出平价）。
         """
+        empty, truncated, total = (entry.get("empty"), entry.get("truncated"),
+                                   entry.get("total"))
+        if empty is None or truncated is None:   # legacy 文件 → 读侧同款现场派生
+            result = entry.get("result")
+            if isinstance(result, dict) and result.get("truncated") is True:
+                truncated, empty, total = True, False, None
+            else:
+                empty, total = result_summary(result)
+                truncated = False
         with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO search_cache(id, project_id, query, tool,"
-                " result, cached_at) VALUES(?,?,?,?,?,?)",
+                " result, cached_at, parent_call_id, turn_id, query_key,"
+                " is_empty, is_truncated, total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (entry.get("id") or _legacy_id(entry), pid,
                  entry.get("query", ""),
                  entry.get("tool") or entry.get("source_tool", ""),
                  _dumps(entry.get("result") or {}),
-                 entry.get("cached_at") or ""))
+                 entry.get("cached_at") or "",
+                 entry.get("parent_call_id", ""), entry.get("turn_id", ""),
+                 entry.get("query_key", ""),
+                 int(empty), int(truncated), total))
 
     def _import_confirmation(self, pid: str, entry: dict) -> None:
         """确认记录原样入库（五字段全存，id 取内容哈希作幂等去重键）。

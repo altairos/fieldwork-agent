@@ -24,7 +24,7 @@ def test_schema_created_with_user_version(tmp_path):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert version == 3
+    assert version == 4
     for t in ("projects", "research_context", "messages", "field_sites",
               "informants", "search_cache", "knowledge", "proposals",
               "confirmations", "schema_meta"):
@@ -217,6 +217,38 @@ def test_cache_truncated_64kb(tmp_path):
     assert len(stored["preview"].encode("utf-8")) <= 64 * 1024
 
 
+def test_cache_index_legacy_row_unknown(tmp_path):
+    """R12：迁移前的旧行新列为 NULL → 索引 empty/truncated/total 为 None（前端 unknown），
+    既有 4 字段不受影响。"""
+    db = tmp_path / "fieldwork.db"
+    with sqlite3.connect(db) as conn:   # 对照 _V1_MIN：先建 v3 旧 schema 库再重开触发迁移
+        conn.executescript(
+            """
+            CREATE TABLE projects (
+                project_id TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, phase TEXT NOT NULL,
+                phase_history TEXT NOT NULL DEFAULT '[]');
+            CREATE TABLE search_cache (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, query TEXT NOT NULL,
+                tool TEXT NOT NULL, result TEXT NOT NULL, cached_at TEXT NOT NULL);
+            PRAGMA user_version=3;
+            """)
+        conn.execute(
+            "INSERT INTO projects(project_id,created_at,updated_at,phase,phase_history)"
+            " VALUES('p1','2026-01-01','2026-01-02','research_positioning','[]')")
+        conn.execute(
+            "INSERT INTO search_cache(id,project_id,query,tool,result,cached_at)"
+            " VALUES(?,?,?,?,?,?)",
+            ("srch_20260101_000000_legacy0", "p1", "q", "search_ai",
+             '{"items":[],"total":0}', "2026-01-01T00:00:00"))
+    repo = SqliteRepository(db_path=db)   # 重开 → v3→v4 迁移补列（旧行新列 NULL）
+    row = repo.list_cached_searches("p1")[0]
+    assert row["empty"] is None and row["truncated"] is None and row["total"] is None
+    assert row["query_key"] == "" and row["parent_call_id"] == "" and row["turn_id"] == ""
+    assert (row["id"], row["query"], row["tool"], row["cached_at"]) == (
+        "srch_20260101_000000_legacy0", "q", "search_ai", "2026-01-01T00:00:00")
+
+
 def test_knowledge_roundtrip_and_search(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     repo.create("p1")
@@ -298,10 +330,10 @@ PRAGMA user_version=1;
 """
 
 
-def test_schema_version_is_three(tmp_path):
+def test_schema_version_is_four(tmp_path):
     repo = make_sqlite_repo(tmp_path)
     with sqlite3.connect(repo.db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert "dep_hash" in {r[1] for r in conn.execute("PRAGMA table_info(proposals)")}
         assert "proposal_confirmed" in {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
         assert "owner" in {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
@@ -310,10 +342,11 @@ def test_schema_version_is_three(tmp_path):
     assert "confirmations" in tables
 
 
-def test_v1_db_upgrades_to_v3_in_place(tmp_path):
+def test_v1_db_upgrades_to_v4_in_place(tmp_path):
     """存量 v1 库：增量补列补表、版本推进、既有行原样保留（绝不 DROP 重建）。
 
-    v1 库重开直达 v3（v2 的 proposal_confirmed/dep_hash 与 v3 的 owner 一并补齐）。"""
+    v1 库重开直达 v4（v2 的 proposal_confirmed/dep_hash、v3 的 owner 与 v4 的
+    search_cache 六列一并补齐）。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
         conn.executescript(_V1_MIN)
@@ -325,7 +358,7 @@ def test_v1_db_upgrades_to_v3_in_place(tmp_path):
             " VALUES('prop_1','p1','proposal','final','a.md','正文','2026-01-02',1)")
     repo = SqliteRepository(db_path=db)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         row = conn.execute(
             "SELECT p.proposal_confirmed, q.dep_hash FROM projects p"
             " JOIN proposals q ON q.project_id = p.project_id"
@@ -350,7 +383,7 @@ def test_half_migrated_v1_db_reopens(tmp_path):
         conn.execute("ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''")
     repo = SqliteRepository(db_path=db)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     assert repo.get_phase("p1") == "field_site_profiles"
 
 
@@ -643,8 +676,8 @@ def test_concurrent_field_site_seq_unique(tmp_path):
 
 # ------------------------------------------------------------------ 归属隔离（v2→v3 升级）
 
-def test_v2_database_upgrades_to_v3(tmp_path):
-    """v2 旧库重开自动升 v3：projects.owner 补列，数据无损。"""
+def test_v2_database_upgrades_to_v4(tmp_path):
+    """v2 旧库重开自动升 v4：projects.owner 与 v4 的 search_cache 六列补齐，数据无损。"""
     db = tmp_path / "fieldwork.db"
     with sqlite3.connect(db) as conn:
         conn.executescript("""
@@ -679,7 +712,7 @@ def test_v2_database_upgrades_to_v3(tmp_path):
     assert repo.get_state("p_old")["owner"] is None   # 旧项目无主
     repo.save_proposal("p_old", "# 旧库新提案")        # 升级后读写正常
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)").fetchall()}
     assert "owner" in cols
 
