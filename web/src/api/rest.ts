@@ -38,6 +38,20 @@ export function isAppTokenError(err: unknown): err is ApiError {
   return true;
 }
 
+/** 登录会话失效 401（web_host/api/owner.py session_expired）：与 isAppTokenError
+ *  正交——该 401 体是 FastAPI HTTPException(detail={...}) 包装的
+ *  `{"detail": {"code": "session_expired", …}}`，code 在 detail 内层。 */
+export function isSessionExpiredError(err: unknown): err is ApiError {
+  if (!(err instanceof ApiError) || err.status !== 401) return false;
+  try {
+    const parsed = JSON.parse(err.message) as { detail?: { code?: string } } | null;
+    return parsed?.detail?.code === "session_expired";
+  } catch { return false; }
+}
+
+let _onSessionExpired: (() => void) | null = null;
+export function setOnSessionExpired(fn: () => void): void { _onSessionExpired = fn; }
+
 /** GET /settings/status 的返回（web_host/api/settings.py）。
  *  JS Key 两字段是文档化例外（settings.py docstring）：高德 JS API 2.0 要求
  *  前端持有 key + securityJsCode，防滥用靠控制台域名白名单，非服务端代理可解。 */
@@ -61,7 +75,11 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...ownerHeaders(), ...init?.headers },
   });
-  if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
+  if (!resp.ok) {
+    const err = new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
+    if (isSessionExpiredError(err) && _onSessionExpired) _onSessionExpired();
+    throw err;
+  }
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
 }
 
