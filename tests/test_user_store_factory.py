@@ -26,8 +26,17 @@ def test_factory_sqlite(tmp_path):
 def test_factory_rejects_weak_kdf(tmp_path):
     c = Cfg(tmp_path, "json")
     c.pbkdf2_iterations = 999
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="below safety floor"):
         make_user_store(c)
+
+
+def test_factory_forwards_policy(tmp_path):
+    for backend in ("json", "sqlite"):
+        c = Cfg(tmp_path, backend)
+        c.pbkdf2_iterations, c.session_ttl_days = 123_456, 7
+        s = make_user_store(c)
+        assert s._iterations == 123_456
+        assert s._ttl_days == 7
 
 
 def test_factory_r1_rejects_accounts_under_projects(tmp_path):
