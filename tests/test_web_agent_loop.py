@@ -2176,6 +2176,9 @@ def test_proposal_confirm_hash_follows_merged_ctx(env):
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
     docs = repo.list_proposals("p1")
     assert len(docs) == 1
+    # M-1：正文按模型主张的 3万 渲染（模板降级路径 budget 字面值），
+    # 指纹跟随正文所本——正文与仓储不一致才是拒绝的真正原因
+    assert "3万" in docs[0]["content"]
     from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
     with pytest.raises(ProposalConfirmError) as ei:
         repo.confirm_proposal("p1", docs[0]["id"])

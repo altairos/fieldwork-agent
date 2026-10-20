@@ -47,7 +47,7 @@ class E2EFlyAI:
 _PROPOSAL_ARGS = {
     "ctx": {
         "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
-        "budget": "2万", "time_window": "7月",
+        "budget": "2万", "time_window": "2026年7月",
         "departure_city": "上海", "target_location": "大理",
     },
     "sites": [{"name": "大理", "confirmed": True, "profile": {"location": "大理"}}],
