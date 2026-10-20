@@ -5,6 +5,7 @@
 """
 import json
 import os
+import subprocess
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".fieldwork_agent"
@@ -26,6 +27,29 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         raise ValueError(f"环境变量 {name}={raw!r} 不是合法整数") from None
+
+
+def _restrict_permissions(path: Path) -> None:
+    """S05：含 API Key 的文件权限收紧（POSIX 600 / Windows 去继承）。
+
+    尽力而为：权限收紧依赖平台工具，失败不应让保存密钥这一主操作失败
+    （文件已写入，下次保存会再试）。ICACLS 只授予当前用户完全控制：
+    ``/inheritance:r`` 去掉继承，``/grant:r <user>:F`` 重设唯一 ACE。
+    """
+    try:
+        if os.name == "nt":
+            user = os.environ.get("USERNAME") or os.environ.get("USER")
+            if not user:
+                return
+            subprocess.run(
+                ["icacls", str(path), "/inheritance:r",
+                 "/grant:r", f"{user}:F"],
+                check=False, capture_output=True, timeout=5,
+            )
+        else:
+            os.chmod(path, 0o600)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 class Config:
@@ -159,6 +183,7 @@ class Config:
         }
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        _restrict_permissions(self.config_file)
 
     @property
     def llm_models(self) -> dict[str, str]:

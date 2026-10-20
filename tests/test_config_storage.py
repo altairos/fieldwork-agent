@@ -1,6 +1,8 @@
 """Config 的磁盘副作用与密钥文件权限（审计 Q04 / S05）。"""
 
+import os
 import shutil
+import stat
 
 from fieldwork_agent.core import config as config_mod
 from fieldwork_agent.core.config import Config
@@ -48,3 +50,30 @@ def test_save_recreates_missing_config_dir(tmp_path, monkeypatch):
     shutil.rmtree(tmp_path / "cfg")
     cfg.save()
     assert (tmp_path / "cfg" / "config.json").is_file()
+
+
+# ---------------------------------------------------------------- S05 密钥文件权限
+
+
+def test_save_hardens_secret_file_permissions(tmp_path, monkeypatch):
+    """S05：含 API Key 的 config.json 落盘后收紧权限（POSIX 600 / Windows 去继承）。"""
+    _patch_dirs(monkeypatch, tmp_path)
+    cfg = Config()
+    cfg.ensure_dirs()
+    if os.name == "nt":
+        calls = []
+        monkeypatch.setattr(config_mod.subprocess, "run",
+                            lambda *a, **kw: calls.append(a))
+        cfg.save()
+        assert calls, "Windows 应调用 icacls 收紧 ACL"
+        argv = calls[0][0]
+        assert argv[0].lower() == "icacls" and "/inheritance:r" in argv
+    else:
+        cfg.save()
+        mode = stat.S_IMODE((tmp_path / "cfg" / "config.json").stat().st_mode)
+        assert mode == 0o600
+
+
+def test_restrict_permissions_is_best_effort(tmp_path):
+    """权限收紧失败/文件不存在不得地雷式抛错（保存密钥是主操作）。"""
+    config_mod._restrict_permissions(tmp_path / "missing.json")
