@@ -28,6 +28,7 @@ _NON_STR_FIELD_TYPES = {
     "candidate_windows": list | None,
     "research_notes": list | None,
     "interview_state": dict | None,
+    "clear_fields": list | None,
 }
 
 

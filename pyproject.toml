@@ -47,6 +47,7 @@ packages = [
     "fieldwork_agent.kernel",
     "fieldwork_agent.kernel.sources",
     "fieldwork_agent.kernel.guidance",
+    "fieldwork_agent.kernel.knowledge",
     "fieldwork_agent.kernel.aggregation",
     "fieldwork_agent.kernel.documents",
     "fieldwork_agent.kernel.repository",

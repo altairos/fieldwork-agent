@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "kind": "development_regression",
+  "corpus_sha256": "38dac820261159df07ed5327c98e08dcd222ca9351f12e938b170af9874232a3",
+  "sources_sha256": {
+    "kernel/models.py": "a9cae44a8fc1aaea4a3f812d928b17c989c21dce24fbe308329e08480716ee47",
+    "kernel/context_patch.py": "5e57f8cd9adeec7df09f5897a669557b1c24219d1bb0e9755ffabe3c19d500eb",
+    "kernel/guidance/extract.py": "7f6385c2dadb202ad3bbcfa7f7fd86b6338fdfddd3c21f727b7e3b8d5870133f",
+    "kernel/guidance/academic.py": "f148f44839853762b06e7a3a99162f7ff7fd1c43d3bae4bad36fc69b6d9a8409"
+  },
+  "total": 25,
+  "passed": 25,
+  "results": [
+    {
+      "id": "academic-01",
+      "passed": true,
+      "patch": {
+        "purpose": "global",
+        "research_orientation": "华南学派",
+        "target_institution": "香港中文大学",
+        "target_department": "历史系"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-02",
+      "passed": true,
+      "patch": {
+        "extras.region": "华北",
+        "research_orientation": "华南学派"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-03",
+      "passed": true,
+      "patch": {
+        "target_location": "福建",
+        "purpose": "global",
+        "extras.region": "福建",
+        "target_institution": "香港中文大学",
+        "target_department": "历史系"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-04",
+      "passed": true,
+      "patch": {
+        "purpose": "global",
+        "target_institution": "港中文",
+        "target_department": "历史系",
+        "target_degree": "博士"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-05",
+      "passed": true,
+      "patch": {
+        "purpose": "global",
+        "target_institution": "中大"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-06",
+      "passed": true,
+      "patch": {
+        "purpose": "global",
+        "target_institution": "CUHK"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-07",
+      "passed": true,
+      "patch": {
+        "discipline": "历史学"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-08",
+      "passed": true,
+      "patch": {},
+      "errors": []
+    },
+    {
+      "id": "academic-09",
+      "passed": true,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-10",
+      "passed": true,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-11",
+      "passed": true,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-12",
+      "passed": true,
+      "patch": {
+        "research_orientation": "华南学派"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-13",
+      "passed": true,
+      "patch": {
+        "target_location": "福州",
+        "departure_city": "北京",
+        "purpose": "global",
+        "target_institution": "香港中文大学",
+        "target_department": "历史系"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-14",
+      "passed": true,
+      "patch": {
+        "target_advisor": "陈老师"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-15",
+      "passed": true,
+      "patch": {},
+      "errors": []
+    },
+    {
+      "id": "academic-16",
+      "passed": true,
+      "patch": {},
+      "errors": []
+    },
+    {
+      "id": "academic-17",
+      "passed": true,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-18",
+      "passed": true,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-19",
+      "passed": true,
+      "patch": {
+        "target_institution": "University of Oxford"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-20",
+      "passed": true,
+      "patch": {
+        "discipline": "历史学",
+        "target_institution": "香港中文大學",
+        "target_department": "歷史學系"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-21",
+      "passed": true,
+      "patch": {
+        "target_degree": "碩士"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-22",
+      "passed": true,
+      "patch": {
+        "target_department": "社会学系"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-23",
+      "passed": true,
+      "patch": {},
+      "errors": []
+    },
+    {
+      "id": "academic-24",
+      "passed": true,
+      "patch": {
+        "target_advisor": ""
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-25",
+      "passed": true,
+      "patch": {
+        "target_location": "福建",
+        "departure_city": "上海",
+        "purpose": "global",
+        "extras.region": "福建",
+        "target_institution": "香港中文大学"
+      },
+      "errors": []
+    }
+  ]
+}

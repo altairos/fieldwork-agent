@@ -29,7 +29,10 @@ _UPDATE_SCHEMA = {
             "保存已确认研究信息与带状态的工作笔记（仅白名单字段）。正式字段禁止推测、禁止补默认值；"
             "修正用完整新值覆盖。候选/文献缺口/否定方向写research_notes（id?、kind、content、origin、"
             "status、basis、references）；采纳/否定需用户依据，文献笔记需真实来源。"
-            "当前焦点/未解决疑问/用户跳过的字段写interview_state（current_focus/open_questions/deferred_fields）。"),
+            "当前焦点/未解决疑问/用户跳过的字段写interview_state（current_focus/open_questions/deferred_fields）。"
+            "学术取向/目标院校/院系/学位/导师分别写research_orientation/target_institution/"
+            "target_department/target_degree/target_advisor，与target_location田野地点分开；"
+            "用户撤回学术目标时用clear_fields显式清空，禁止将推荐或歧义简称自动认定为用户选择。"),
         "parameters": {
             "type": "object",
             "properties": {

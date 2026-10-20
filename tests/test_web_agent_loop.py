@@ -1869,7 +1869,7 @@ def test_continuation_budget_caps_llm_calls(env):
               "usage": {}}]
     llm = FakeLLM([[dict(f) for f in frame] for _ in range(20)])   # 帧给足，防 pop 空
     turn = tm.create_turn("p1")
-    from fieldwork_agent.web_host.agent.loop import run_turn, MAX_CONTINUATIONS
+    from fieldwork_agent.web_host.agent.loop import MAX_CONTINUATIONS, run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "查一下", tm, llm, FakeFlyAI()))
     assert len(llm.calls) <= 1 + MAX_CONTINUATIONS
     events = tm.replay("p1", turn.turn_id, after_seq=0)

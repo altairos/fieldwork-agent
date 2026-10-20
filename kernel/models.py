@@ -370,6 +370,12 @@ class InterviewState(BaseModel):
     deferred_fields: list[str] = Field(default_factory=list, max_length=12)
 
 
+ACADEMIC_CONTEXT_FIELDS = (
+    "research_orientation", "target_institution", "target_department",
+    "target_degree", "target_advisor",
+)
+
+
 class ResearchContext(BaseModel):
     """研究定位槽位；空字符串表示未填，``extras`` 收野生字段。"""
 
@@ -390,6 +396,12 @@ class ResearchContext(BaseModel):
     # 轮 2 方案 B：深挖研究问题（经 update_research_context 写入，计入 A→B 推进；
     # 必须声明为正式槽位——宿主经 model_validate(repo dict) 构造，未声明键会被丢弃）
     research_questions: str = ""
+    # 用户明确表达的学术背景；院校/院系与实际田野地点分别保存。
+    research_orientation: str = ""
+    target_institution: str = ""
+    target_department: str = ""
+    target_degree: str = ""
+    target_advisor: str = ""
     research_question_scope: str = ""  # 宿主生成，旧项目缺省为空以保留读取兼容
     research_notes: list[ResearchNote] = Field(default_factory=list)
     interview_state: InterviewState = Field(default_factory=InterviewState)

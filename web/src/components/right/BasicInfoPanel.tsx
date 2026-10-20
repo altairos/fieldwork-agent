@@ -13,15 +13,19 @@ import type { ProjectSnapshot } from "../../types/models";
  */
 export function BasicInfoPanel() {
   const snapshot = useProjectStore((s) => s.snapshot);
-  return <ResearchContextEditor snapshot={snapshot} />;
+  return <ResearchContextEditor key={snapshot?.project_id ?? "empty"} snapshot={snapshot} />;
 }
 
-/** 可编辑基本信息槽位（= ALLOWED_CONTEXT_FIELDS 的 11 个文本键；NA 布尔单独处理；
- *  轮 2 方案 B 加 research_questions 深挖槽）。 */
+/** 可编辑基本信息槽位；NA 单独处理，学术背景支持显式撤回。 */
 const EDIT_FIELDS: { key: string; label: string }[] = [
   { key: "discipline", label: "学科背景" },
   { key: "topic", label: "研究主题" },
   { key: "research_questions", label: "研究问题" },
+  { key: "research_orientation", label: "学术取向" },
+  { key: "target_institution", label: "目标院校" },
+  { key: "target_department", label: "目标院系" },
+  { key: "target_degree", label: "目标学位" },
+  { key: "target_advisor", label: "目标导师" },
   { key: "site_status", label: "身份/在场方式" },
   { key: "scale", label: "规模" },
   { key: "budget", label: "预算" },
@@ -32,8 +36,13 @@ const EDIT_FIELDS: { key: string; label: string }[] = [
   { key: "purpose", label: "输出用途" },
 ];
 
+const ACADEMIC_FIELDS = new Set([
+  "research_orientation", "target_institution", "target_department", "target_degree", "target_advisor",
+]);
+
 /** 基本信息编辑区：用户显式修正入口（审计 F03 修正入口右栏编辑；与回合内规则抽取互补）。 */
 function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null }) {
+  const editedFields = useRef(new Set<string>());
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [na, setNa] = useState(false);
   // N03：NA 基线（来自快照的已存值）——仅当用户改动勾选时才上行该键，
@@ -48,6 +57,7 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
   // 快照异步到达/外部刷新时同步草稿；用户编辑中（dirty）不覆盖，保存成功后复位
   useEffect(() => {
     if (dirty) return;
+    editedFields.current.clear();
     const ctx = (snapshot?.research_context ?? {}) as Record<string, unknown>;
     const next: Record<string, string> = {};
     for (const f of EDIT_FIELDS) next[f.key] = strOf(ctx[f.key]);
@@ -61,11 +71,18 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
   const save = async () => {
     const pid = snapshot?.project_id;
     if (!pid || saving) return;
-    const patch: Record<string, string | boolean> = {};
+    const patch: Record<string, string | boolean | string[]> = {};
+    const clearFields: string[] = [];
+    const current = snapshot?.research_context ?? {};
     for (const f of EDIT_FIELDS) {
       const v = (draft[f.key] ?? "").trim();
-      if (v !== "") patch[f.key] = v; // 空字段不上行（PUT 空白字段无意义且会被后端清空语义误读）
+      if (v !== "") patch[f.key] = v;
+      else if (editedFields.current.has(f.key) && ACADEMIC_FIELDS.has(f.key)
+        && strOf(current[f.key as keyof typeof current]).trim()) {
+        clearFields.push(f.key);
+      }
     }
+    if (clearFields.length > 0) patch.clear_fields = clearFields;
     // N03：勾选状态变化时明确上行 true/false（含取消勾选发 false 撤销已存 NA）
     if (na !== naBaseline) patch.interviews_not_applicable = na;
     if (na && naReason.trim() !== "") patch.interviews_na_reason = naReason.trim();
@@ -108,6 +125,7 @@ function ResearchContextEditor({ snapshot }: { snapshot: ProjectSnapshot | null 
               aria-label={f.label}
               value={draft[f.key] ?? ""}
               onChange={(e) => {
+                editedFields.current.add(f.key);
                 setDraft({ ...draft, [f.key]: e.target.value });
                 setDirty(true);
               }}

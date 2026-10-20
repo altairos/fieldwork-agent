@@ -6,7 +6,7 @@ Web 回合工具（``web_host/agent/state_tools.py``）、MCP
 ``interviews_not_applicable=True`` 需同时给理由（patch 内或 current 已有）。
 任一字段非法即整次拒绝（原子语义），绝不部分写入。
 """
-from fieldwork_agent.kernel.models import InterviewState, ResearchNote
+from fieldwork_agent.kernel.models import ACADEMIC_CONTEXT_FIELDS, InterviewState, ResearchNote
 from fieldwork_agent.kernel.research_state import (
     prepare_interview_state,
     prepare_notes,
@@ -27,6 +27,8 @@ ALLOWED_CONTEXT_FIELDS = (
     "interviews_na_reason",
     "candidate_windows",
     "research_notes", "interview_state",
+    *ACADEMIC_CONTEXT_FIELDS,
+    "clear_fields",  # 写入动作，净化后转换为空值；不进入 ResearchContext。
 )
 
 
@@ -45,6 +47,10 @@ def context_patch_schema() -> dict:
     memory["additionalProperties"] = False
     return {"type": "object", "additionalProperties": False, "minProperties": 1,
             "properties": {name: (
+                {"type": "array", "minItems": 1, "uniqueItems": True,
+                 "items": {"type": "string", "enum": list(ACADEMIC_CONTEXT_FIELDS)},
+                 "description": "用户明确撤回的学术背景字段；不能与同名新值同时提交"}
+                if name == "clear_fields" else
                 {"type": "array", "minItems": 1, "maxItems": 8, "items": note} if name == "research_notes"
                 else memory if name == "interview_state"
                 else {"type": "boolean"} if name == "interviews_not_applicable"
@@ -68,6 +74,14 @@ def sanitize_context_patch(patch: dict, current: dict | None = None) -> dict:
     for key, value in patch.items():
         if key not in ALLOWED_CONTEXT_FIELDS:
             errors.append(f"未知字段：{key}")
+            continue
+        if key == "clear_fields":
+            if (not isinstance(value, list) or not value
+                    or any(not isinstance(item, str) or item not in ACADEMIC_CONTEXT_FIELDS
+                           for item in value)):
+                errors.append("clear_fields须为非空学术背景字段名列表")
+            elif len(value) != len(set(value)) or any(item in patch for item in value):
+                errors.append("clear_fields不得重复或与本次设置字段重叠")
             continue
         if key in {"research_notes", "interview_state"}:
             try:
@@ -110,7 +124,8 @@ def sanitize_context_patch(patch: dict, current: dict | None = None) -> dict:
         raise ValueError("；".join(errors))
     clean = {k: (structured[k] if k in structured else v if k in ("interviews_not_applicable", "candidate_windows")
                 else v.strip())
-            for k, v in patch.items()}
+            for k, v in patch.items() if k != "clear_fields"}
+    clean.update({name: "" for name in patch.get("clear_fields", [])})
     if withdrawing_question and "research_questions" in (current.get("extras") or {}):
         clean["extras"] = {key: value for key, value in current["extras"].items() if key != "research_questions"}
     if "research_questions" in clean:

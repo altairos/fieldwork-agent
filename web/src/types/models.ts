@@ -191,6 +191,12 @@ export interface ResearchContext {
   purpose: string;
   /** 用户已明确表达或采纳的核心研究问题。 */
   research_questions: string;
+  /** 学术背景增量字段；旧项目可缺省，不以院校所在地推定田野地点。 */
+  research_orientation?: string;
+  target_institution?: string;
+  target_department?: string;
+  target_degree?: string;
+  target_advisor?: string;
   /** 以下字段为增量扩展，旧项目可以缺省；范围指纹由宿主生成。 */
   research_question_scope?: string;
   research_notes?: ResearchNote[];

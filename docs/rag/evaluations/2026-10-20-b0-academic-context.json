@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "kind": "development_regression",
+  "corpus_sha256": "38dac820261159df07ed5327c98e08dcd222ca9351f12e938b170af9874232a3",
+  "sources_sha256": {
+    "kernel/models.py": "f88388db5f2272b5191d0e486e5838d0bc4d5e5035ef5ee8b9a4d46c429ce8aa",
+    "kernel/context_patch.py": "24aa5a409cd77616ddc5303dffa3a57a38017885c41dcb1776b2aebc1207e718",
+    "kernel/guidance/extract.py": "caf946cffce11fa787246200feb200687b1c1154ae44d02f9eb03e4025e1f837"
+  },
+  "total": 25,
+  "passed": 3,
+  "results": [
+    {
+      "id": "academic-01",
+      "passed": false,
+      "patch": {
+        "target_location": "香港",
+        "purpose": "global",
+        "extras.region": "华南"
+      },
+      "errors": [
+        "research_orientation: expected '华南学派', got None",
+        "target_institution: expected '香港中文大学', got None",
+        "target_department: expected '历史系', got None",
+        "unexpected field: target_location",
+        "unexpected field: extras.region"
+      ]
+    },
+    {
+      "id": "academic-02",
+      "passed": false,
+      "patch": {
+        "extras.region": "华北"
+      },
+      "errors": [
+        "research_orientation: expected '华南学派', got None"
+      ]
+    },
+    {
+      "id": "academic-03",
+      "passed": false,
+      "patch": {
+        "target_location": "香港",
+        "purpose": "global",
+        "extras.region": "福建"
+      },
+      "errors": [
+        "target_institution: expected '香港中文大学', got None",
+        "target_department: expected '历史系', got None",
+        "target_location: expected '福建', got '香港'"
+      ]
+    },
+    {
+      "id": "academic-04",
+      "passed": false,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": [
+        "target_institution: expected '港中文', got None",
+        "target_degree: expected '博士', got None"
+      ]
+    },
+    {
+      "id": "academic-05",
+      "passed": false,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": [
+        "target_institution: expected '中大', got None"
+      ]
+    },
+    {
+      "id": "academic-06",
+      "passed": false,
+      "patch": {
+        "purpose": "global"
+      },
+      "errors": [
+        "target_institution: expected 'CUHK', got None"
+      ]
+    },
+    {
+      "id": "academic-07",
+      "passed": false,
+      "patch": {},
+      "errors": [
+        "discipline: expected '历史学', got None"
+      ]
+    },
+    {
+      "id": "academic-08",
+      "passed": false,
+      "patch": {
+        "extras.region": "华南"
+      },
+      "errors": [
+        "unexpected field: extras.region"
+      ]
+    },
+    {
+      "id": "academic-09",
+      "passed": false,
+      "patch": {
+        "target_location": "香港",
+        "purpose": "global"
+      },
+      "errors": [
+        "unexpected field: target_location"
+      ]
+    },
+    {
+      "id": "academic-10",
+      "passed": false,
+      "patch": {
+        "target_location": "北京",
+        "purpose": "global"
+      },
+      "errors": [
+        "unexpected field: target_location"
+      ]
+    },
+    {
+      "id": "academic-11",
+      "passed": true,
+      "patch": {
+        "target_location": "香港",
+        "purpose": "global"
+      },
+      "errors": []
+    },
+    {
+      "id": "academic-12",
+      "passed": false,
+      "patch": {
+        "target_location": "香港",
+        "extras.region": "华南"
+      },
+      "errors": [
+        "research_orientation: expected '华南学派', got None",
+        "unexpected field: target_location",
+        "unexpected field: extras.region"
+      ]
+    },
+    {
+      "id": "academic-13",
+      "passed": false,
+      "patch": {
+        "target_location": "福州",
+        "departure_city": "北京",
+        "purpose": "global"
+      },
+      "errors": [
+        "target_institution: expected '香港中文大学', got None"
+      ]
+    },
+    {
+      "id": "academic-14",
+      "passed": false,
+      "patch": {},
+      "errors": [
+        "target_advisor: expected '陈老师', got None"
+      ]
+    },
+    {
+      "id": "academic-15",
+      "passed": true,
+      "patch": {},
+      "errors": []
+    },
+    {
+      "id": "academic-16",
+      "passed": false,
+      "patch": {
+        "extras.region": "华南"
+      },
+      "errors": [
+        "unexpected field: extras.region"
+      ]
+    },
+    {
+      "id": "academic-17",
+      "passed": false,
+      "patch": {
+        "target_location": "北京",
+        "purpose": "global"
+      },
+      "errors": [
+        "unexpected field: target_location"
+      ]
+    },
+    {
+      "id": "academic-18",
+      "passed": false,
+      "patch": {
+        "target_location": "香港",
+        "purpose": "global"
+      },
+      "errors": [
+        "unexpected field: target_location"
+      ]
+    },
+    {
+      "id": "academic-19",
+      "passed": false,
+      "patch": {},
+      "errors": [
+        "target_institution: expected 'University of Oxford', got None"
+      ]
+    },
+    {
+      "id": "academic-20",
+      "passed": false,
+      "patch": {
+        "target_location": "香港"
+      },
+      "errors": [
+        "target_institution: expected '香港中文大學', got None",
+        "target_department: expected '歷史學系', got None",
+        "unexpected field: target_location"
+      ]
+    },
+    {
+      "id": "academic-21",
+      "passed": false,
+      "patch": {},
+      "errors": [
+        "target_degree: expected '碩士', got None"
+      ]
+    },
+    {
+      "id": "academic-22",
+      "passed": false,
+      "patch": {
+        "discipline": "社会学"
+      },
+      "errors": [
+        "target_department: expected '社会学系', got None"
+      ]
+    },
+    {
+      "id": "academic-23",
+      "passed": true,
+      "patch": {},
+      "errors": []
+    },
+    {
+      "id": "academic-24",
+      "passed": false,
+      "patch": {},
+      "errors": [
+        "target_advisor: expected '', got None"
+      ]
+    },
+    {
+      "id": "academic-25",
+      "passed": false,
+      "patch": {
+        "target_location": "福州",
+        "departure_city": "上海",
+        "purpose": "global",
+        "extras.region": "福建"
+      },
+      "errors": [
+        "target_institution: expected '香港中文大学', got None",
+        "target_location: expected '福建', got '福州'"
+      ]
+    }
+  ]
+}
