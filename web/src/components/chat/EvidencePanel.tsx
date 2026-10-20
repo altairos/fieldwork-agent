@@ -109,7 +109,10 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
                 {row.query || "（未命名查询）"}
               </span>
               <span className="text-[11px] text-inkfaint shrink-0">
-                {truncated ? "已截断" : evidenceTurnLabel(row, currentTurnId)}
+                {truncated ? "已截断"
+                  : row.failed ? "失败"
+                  : row.empty ? "空结果"
+                  : evidenceTurnLabel(row, currentTurnId)}
               </span>
             </button>
             {open[row.key] && (
@@ -137,16 +140,16 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
   );
 }
 
-/** 实时行详情：直接读 tools store 的 data/degraded（同源数据红线：不重复请求）。
- *  failed 行已在 mergeEvidence 准入剔除（C7-3——失败可见性由对话 tab 活动条
- *  承担），此处只会渲染 done 行，无需 error 分支。 */
+/** 实时行详情：直接读 tools store 的 data/degraded/error（同源数据红线：不重复请求）。
+ *  C05：文献失败行会以 error 渲染 LiteratureCard 的失败态与补检 hint；
+ *  其余工具的 failed 行仍在准入剔除（C7-3）。 */
 function LiveDetail({ callId }: { callId?: string }) {
   const call = useToolsStore((s) => s.byCallId[callId ?? ""]);
   if (!call) return null;
   const Card = getToolCard(call.tool);
   return (
     <div className="px-3 pb-3">
-      <Card data={call.data} degraded={call.degraded} />
+      <Card data={call.data} degraded={call.degraded} error={call.error} />
     </div>
   );
 }

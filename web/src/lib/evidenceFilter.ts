@@ -32,6 +32,8 @@ export interface EvidenceRow {
   empty?: boolean;
   truncated?: boolean;
   total?: number;
+  /** C05：文献失败行标记（尾标显示「失败」；其余工具失败行仍不入列） */
+  failed?: boolean;
 }
 
 /** 实时行 query 短语：args.query / args.keyword / args.name 依次取（不占造） */
@@ -85,7 +87,8 @@ export function mergeEvidence(
   // 旧库 unknown 不预过滤，R12）；未注册工具默认不入（不臆造展示）
   const cacheAdmitted = cached.filter(
     (c) => visibilityOf(c.tool) === "collapsed"
-      && c.empty !== true
+      // C05：文献空结果仍入列（卡片空态带补检入口）；其余工具维持剔除
+      && (c.tool === "search_literature" || c.empty !== true)
       && getToolCard(c.tool) !== ToolCardFallback,
   );
 
@@ -108,14 +111,17 @@ export function mergeEvidence(
   }
 
   // 实时行准入（C2/C7-1/C7-2/C7-3）：仅 done（failed 剔除——失败/降级由对话
-  // tab 的 ToolActivityStrip 承担，不在证据 tab 重复）；collapsed 级且有专用卡；
-  // 空结果剔除（answer 不算空）；running 不入列
+  // tab 的 ToolActivityStrip 承担，不在证据 tab 重复；C05 仅对文献检索破例，
+  // 因其失败态是用户唯一可复检入口）；collapsed 级且有专用卡；
+  // 空结果剔除（answer 不算空；同样对文献检索破例）；running 不入列
   const liveAdmitted = live.filter(
     (t) =>
-      t.status === "done" &&
+      // C05：文献失败行仍入列（LiteratureCard 失败态/补检入口可达）；
+      // 其余工具维持 done-only、空结果剔除（失败由对话 tab 活动条承担，C7-3）
+      (t.status === "done" || (t.tool === "search_literature" && t.status === "failed")) &&
       visibilityOf(t.tool) === "collapsed" &&
       getToolCard(t.tool) !== ToolCardFallback &&
-      !liveIsEmpty(t),
+      (t.tool === "search_literature" || !liveIsEmpty(t)),
   );
 
   // 跨层配对：实时 call_id == 缓存 parent_call_id 且 tool 相同 → 实时行不单列（R13）。
@@ -137,7 +143,9 @@ export function mergeEvidence(
     .map((t) => ({
       key: t.call_id, tool: t.tool, query: liveQuery(t.args),
       origin: "live", callId: t.call_id, turnId: t.turnId, seq: t.seq,
-      empty: undefined, truncated: undefined, total: undefined,
+      empty: liveIsEmpty(t) || undefined,
+      failed: t.status === "failed" || undefined,
+      truncated: undefined, total: undefined,
     }));
 
   // 时序：缓存行保索引序（时间序），实时行层内保 store order，整体在后（R15）

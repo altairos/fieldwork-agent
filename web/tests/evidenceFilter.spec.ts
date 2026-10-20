@@ -146,3 +146,33 @@ describe("准入（C2）", () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+describe("C05 文献空/失败行可达（补检入口不被过滤）", () => {
+  it("search_literature 空结果缓存行仍入列（LiteratureCard 空态自带补检 hint）", () => {
+    const rows = mergeEvidence(
+      [cache({ id: "csL", tool: "search_literature", query: "宗族 文献", empty: true })],
+      [],
+    );
+    expect(rows.map((r) => r.key)).toEqual(["csL"]);
+    expect(rows[0].empty).toBe(true);
+  });
+  it("search_literature 失败实时行入列并标记 failed（其余工具维持剔除）", () => {
+    const rows = mergeEvidence(
+      [],
+      [live({ call_id: "cLit", tool: "search_literature", status: "failed", ok: false }),
+       live({ call_id: "cHot", tool: "search_hotels", status: "failed", ok: false })],
+    );
+    expect(rows.map((r) => r.key)).toEqual(["cLit"]);
+    expect(rows[0].failed).toBe(true);
+  });
+  it("不同 query_key 的两次文献检索各占一行（范围/筛选可区分，C04 验收）", () => {
+    const rows = mergeEvidence(
+      [cache({ id: "cs1", tool: "search_literature",
+               query_key: "search_literature|{\"query\":\"宗族\"}" }),
+       cache({ id: "cs2", tool: "search_literature",
+               query_key: "search_literature|{\"query\":\"宗族\",\"year\":\"2020\"}" })],
+      [],
+    );
+    expect(rows).toHaveLength(2);
+  });
+});
