@@ -39,6 +39,8 @@ docs/plans/
 # 前端 web/ 工程
 web/node_modules/
 web/dist/
+# 本地对比构建产物（换 base 重新构建时生成，非发布物）
+web/dist-local/
 web/playwright-report/
 web/test-results/
 web/tsconfig.tsbuildinfo
