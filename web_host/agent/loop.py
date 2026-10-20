@@ -167,7 +167,7 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     buffer = TurnPatchBuffer(repo, pid)
     dispatch = bind_research_searches(
         dispatch, repo, pid, context_provider=buffer.staged_view,
-        on_snapshot=snapshot_ids.append)
+        on_snapshot=snapshot_ids.append, turn_id=turn_id)
     state_schemas, state_handlers = build_state_tools(repo, pid, buffer=buffer)
     tools = tools + state_schemas
     phase = repo.get_phase(pid)

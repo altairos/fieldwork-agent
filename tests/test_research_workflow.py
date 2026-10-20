@@ -320,3 +320,31 @@ def test_cancelled_web_turn_does_not_commit_working_memory(tmp_path):
             yield _answer()
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "继续", tm, Cancelled(), None))
     assert repo.get_research_context("p1") == before
+
+
+def test_literature_snapshot_carries_call_metadata(tmp_path):
+    """C04：文献快照必须携带调用元数据（parent_call_id/turn_id/query_key）。"""
+    from fieldwork_agent.kernel.models import Envelope, LiteraturePage
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.kernel.sources.flyai import current_call_id
+    from fieldwork_agent.runtime.research_workflow import bind_research_searches
+
+    def _fake_dispatch(name, args):
+        return Envelope(ok=True, data=LiteraturePage(total=1, returned_count=1))
+
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    repo.create("p1")
+    wrapped = bind_research_searches(
+        _fake_dispatch, repo, "p1",
+        context_provider=lambda: {"topic": "宗族变迁"}, turn_id="t1")
+    token = current_call_id.set("lit-1")
+    try:
+        env = wrapped("search_literature", {"query": "宗族"})
+    finally:
+        current_call_id.reset(token)
+    assert env.ok
+    [row] = repo.list_cached_searches("p1")
+    assert row["tool"] == "search_literature"
+    assert row["parent_call_id"] == "lit-1"   # 修复前为 ""，实时↔缓存无法配对
+    assert row["turn_id"] == "t1"
+    assert row["query_key"] == 'search_literature|{"query": "宗族"}'
