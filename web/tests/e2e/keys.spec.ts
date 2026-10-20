@@ -73,7 +73,8 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   await page.getByLabel("消息输入").fill("帮我搜一下大理的住宿");
   await page.getByLabel("消息输入").press("Enter");
   // 回合正常回放（mock 门放行：请求头带了页面 key）；
-  // C 节：search_hotels 折叠为摘要条，用折叠卡文本断言回放到达
-  await expect(page.getByRole("button", { name: /酒店搜索 1 条/ })).toBeVisible({ timeout: 15_000 });
+  // C4：collapsed 级搜索卡移入「检索结果」tab（EvidencePanel），切 tab 后断言酒店检索行到达
+  await page.getByRole("tab", { name: "检索结果" }).click();
+  await expect(page.getByRole("button", { name: /酒店搜索/ }).first()).toBeVisible({ timeout: 15_000 });
   expect(headersSeen["x-dashscope-key"]).toBe("sk-e2e-dashscope");
 });
