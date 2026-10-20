@@ -12,6 +12,7 @@
  * - GET /projects、POST /projects、GET /projects/:id、GET /projects/:id/proposal
  *   → 固定假数据（够前端联调即可）
  * - GET /projects/:id/proposals            → 版本列表（Task 8 rest.listProposals 消费）
+ * - GET  /projects/:id/cached-searches[/:cid] → 证据 tab 历史快照索引/详情（CachedSearchSummary/Record）
  * - GET  /projects/:id/proposal/download    → 三格式附件（?format=md|docx|txt，默认 md）
  * - GET  /settings/status                    → key 配置状态（web_host/api/settings.py 同构；
  *   默认 configured:true 建模阿里云部署形态）；POST /__test/settings 供 e2e 翻转
@@ -262,6 +263,20 @@ function ownedProject(res: ServerResponse, req: IncomingMessage, projectId: stri
   return true;
 }
 
+const CACHED_AT = "2026-10-19T03:04:05.000001";
+function fakeCachedSearches() {
+  return [{ id: "cs_hotel_hist", query: "大理 酒店", tool: "search_hotels",
+            cached_at: CACHED_AT, parent_call_id: "", turn_id: "",
+            query_key: "", empty: false, truncated: false, total: 1 }];
+}
+
+/** 快照记录体（详情端点）：id 取路径 cid。 */
+function fakeCachedSearch(cid: string) {
+  return { id: cid, query: "大理 酒店", tool: "search_hotels", cached_at: CACHED_AT,
+           result: { items: [{ name: "大理古城客栈", price: 180 }],
+                     total: 1, cheapest: 180, dearest: 180 } };
+}
+
 function fakeSnapshot(projectId: string) {
   return {
     project_id: projectId,
@@ -351,6 +366,8 @@ let settingsState: {
 const RE_MESSAGES = /^\/projects\/([^/]+)\/messages$/;
 const RE_EVENTS = /^\/projects\/([^/]+)\/turns\/([^/]+)\/events$/;
 const RE_CANCEL = /^\/projects\/([^/]+)\/turns\/([^/]+)\/cancel$/;
+const RE_CACHED_SEARCHES = /^\/projects\/([^/]+)\/cached-searches$/;
+const RE_CACHED_SEARCH = /^\/projects\/([^/]+)\/cached-searches\/([^/]+)$/;
 const RE_PROPOSALS = /^\/projects\/([^/]+)\/proposals$/;
 const RE_DOWNLOAD = /^\/projects\/([^/]+)\/proposal\/download$/;
 const RE_BY_ID_DOWNLOAD = /^\/projects\/([^/]+)\/proposals\/([^/]+)\/download$/;
@@ -446,6 +463,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     }
     record.status = "cancelled";
     sendJson(res, 200, { turn_id: turnId, status: "cancelled" });
+    return;
+  }
+
+  // GET /projects/:id/cached-searches → 证据 tab 历史索引（Task 5 派生字段）
+  if (method === "GET" && (m = RE_CACHED_SEARCHES.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
+    sendJson(res, 200, fakeCachedSearches());
+    return;
+  }
+
+  // GET /projects/:id/cached-searches/:cid → 单条快照记录（行展开懒加载）
+  if (method === "GET" && (m = RE_CACHED_SEARCH.exec(path))) {
+    if (!ownedProject(res, req, decodeURIComponent(m[1]))) return;
+    sendJson(res, 200, fakeCachedSearch(decodeURIComponent(m[2])));
     return;
   }
 

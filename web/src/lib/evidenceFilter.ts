@@ -36,9 +36,10 @@ export interface EvidenceRow {
   failed?: boolean;
 }
 
-/** 实时行 query 短语：args.query / args.keyword / args.name 依次取（不占造） */
+/** 实时行 query 短语：args.query / keyword / name / city / keywords / dest_name
+ * 依次取首个非空串（不占造）；dest_name 是飞猪搜索原语的目标地名（住宿/航班无 query 键）。 */
 function liveQuery(args: Record<string, unknown>): string {
-  for (const k of ["query", "keyword", "name", "city", "keywords"]) {
+  for (const k of ["query", "keyword", "name", "city", "keywords", "dest_name"]) {
     const v = args[k];
     if (typeof v === "string" && v.trim()) return v.trim();
   }
