@@ -153,7 +153,14 @@ def _mount_mcp(app: FastAPI, config=None, repo=None) -> None:
         from fieldwork_agent.mcp_server.http_entry import StreamableHttpService
     except ImportError:
         return
-    service = StreamableHttpService(config=config, repo=repo)
+    # A01：init_deps（含 make_user_store）在 lifespan 内执行，本函数在 create_app
+    # 主体阶段调用时 app.state.user_store 尚未就绪 → 按同一工厂/同一配置独立构建
+    # 一份（JsonUserStore 走 FileLock、Sqlite 每方法新连接，跨实例安全）；仅用于
+    # sess_ 令牌解析，MCP 工具的项目读写仍走 repo。
+    from fieldwork_agent.kernel.repository.user_store_factory import make_user_store
+
+    user_store = make_user_store(config) if config is not None else None
+    service = StreamableHttpService(config=config, repo=repo, user_store=user_store)
     # 不能用 app.mount：新版 Starlette 的 Mount 按 path+"/{path:path}" 编译，
     # Mount("/mcp") 只匹配 "/mcp/<sub>" 而不匹配精确 "/mcp"（MCP 客户端
     # POST 的就是端点本身，会漏到 SPA catch-all 变 405）。Route 精确挂载
