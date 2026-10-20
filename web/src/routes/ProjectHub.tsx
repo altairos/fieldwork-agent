@@ -141,8 +141,12 @@ export function ProjectHub() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
-  // 身份切换（登录/登出/会话失效清令牌）后按新 ownerHeaders 重拉
+  // 身份切换（登录/登出/会话失效清令牌）后按新 ownerHeaders 重拉；
+  // A02：切换瞬间先清空旧身份数据——请求返回前不展示上一个账号的列表，
+  // 退出且网络失败时也落到「无残留」的空态（listError 如实提示）
   useEffect(() => {
+    setProjects(null);
+    setListError(null);
     let alive = true;
     rest
       .listProjects()

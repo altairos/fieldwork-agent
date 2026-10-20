@@ -175,6 +175,40 @@ describe("ProjectHub（极简首页）", () => {
     expect(await screen.findByRole("button", { name: /继续上次 · 我的项目（1）/ })).toBeInTheDocument();
   });
 
+  // A02：切换瞬间清空旧身份数据（修复前旧列表在请求返回前仍可见）
+  test("身份切换瞬间清空旧项目列表，等待新身份数据", async () => {
+    vi.mocked(rest.rest.listProjects)
+      .mockResolvedValueOnce([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any)
+      .mockReturnValueOnce(new Promise(() => {}) as any);   // 新身份请求悬置
+    renderHome();
+    expect(await screen.findByRole("button", { name: /继续上次 · 我的项目（1）/ })).toBeInTheDocument();
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    // 切换瞬间旧列表入口消失（修复前仍显示「我的项目（1）」直到第二次返回）
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /继续上次/ })).toBeNull());
+  });
+
+  // A02：退出且网络失败 → 不残留旧数据，如实提示
+  test("退出后列表重拉失败：旧列表清空且提示错误", async () => {
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u0", email: "old@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    vi.mocked(rest.rest.listProjects)
+      .mockResolvedValueOnce([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any)
+      .mockRejectedValueOnce(new Error("network down"));
+    renderHome();
+    expect(await screen.findByRole("button", { name: /继续上次 · 我的项目（1）/ })).toBeInTheDocument();
+    act(() => { useAuthStore.setState({ user: null }); });   // 退出
+    expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /继续上次/ })).toBeNull();
+  });
+
   // ── 轮 4：首页一句话即对话起点 ──
   // 此前 purpose 只写 research_context 不发 turn，跳转后对话页「尚无对话」，输入被
   // 静默吞进右栏；现在创建项目后把 purpose 原文发为首轮 turn，跳转携带 ?turn= 供
