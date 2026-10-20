@@ -159,7 +159,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     doc_inputs_provenance: dict[str, dict] = {}
     # R02：被“项目已采纳状态”替换掉的渠道名（模型给了但未采纳），工具结果里如实标注
     doc_replaced: dict[str, list[str]] = {}
-    # R02：正文行程未绑定已采纳快照（项目当时无行程）——落盘时尝试改绑本回合快照
+    # T01：本回合已成功产生的 compose_itinerary 结果（原始视图，按发生顺序）——
+    # 同轮后续 compose_proposal 在生成前就采用这份行程，而不是等轮末改绑。
+    turn_itineraries_raw: list[dict] = []
+    # T01：正文行程确实取自本回合行程（生成前已绑定）——轮末只在这份临时数据
+    # 与落盘快照同内容时才把引用换成已解析值，绝不把不同内容直接改绑。
     doc_itinerary_from_turn: dict[str, bool] = {}
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
                                  llm,
@@ -339,7 +343,12 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 ctx_view = buffer.staged_view()
                 # R02：方案四路事实渠道（田野点/报道人/知识库/行程）以项目已采纳状态
                 # 为准——模型自造的替代值不进入正文（否则正文用 B、项目仍为 A）。
-                accepted = (accepted_doc_inputs(repo, pid, ctx_view=ctx_view)
+                # T01：本回合刚排出的行程尚未落盘，但同轮写方案必须在生成前就采用
+                # 它——否则正文用 B、轮末落盘 A，指纹与正文错配。
+                turn_itinerary = (turn_itineraries_raw[-1]
+                                  if turn_itineraries_raw else None)
+                accepted = (accepted_doc_inputs(repo, pid, ctx_view=ctx_view,
+                                                itinerary_override=turn_itinerary)
                             if name == "compose_proposal" else None)
                 replaced: list[str] = []
                 args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view,
@@ -350,11 +359,15 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 # merge_doc_args 合并后的生成 ctx；其余四路为正文实际采用的记录）；
                 # 模型覆盖/替代值未采纳时确认必须被拒
                 if name == "compose_proposal":
-                    doc_inputs_provenance[call_id] = doc_input_fingerprint(args)
+                    provenance = doc_input_fingerprint(args)
+                    doc_inputs_provenance[call_id] = provenance
                     doc_replaced[call_id] = replaced
-                    # 项目尚无已采纳行程时，正文用的是模型给的那份；若本回合
-                    # 自己刚排了行程，落盘时改绑本回合快照（见 _persist_tool_results）
-                    doc_itinerary_from_turn[call_id] = not (accepted or {}).get("itinerary")
+                    # T01：只有正文实际采用本回合行程（生成前已绑定），轮末才允许把
+                    # 临时数据换成已解析快照；内容不同（模型值/并发同批生成）保持
+                    # 原指纹，确认时按指纹不一致拒绝。
+                    doc_itinerary_from_turn[call_id] = bool(turn_itinerary) and (
+                        _canonical_json(provenance.get("itinerary"))
+                        == _canonical_json(turn_itinerary))
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})
@@ -377,6 +390,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 data = env.data
                 if hasattr(data, "model_dump"):
                     data = data.model_dump(mode="json")
+                # T01：本轮行程在落盘前先进入“本轮已产生”视图，供后续轮次的
+                # compose_proposal 生成时采用（成功才收；多次调用取最后一次）
+                if name == "compose_itinerary" and env.ok and isinstance(data, dict):
+                    turn_itineraries_raw.append(data)
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": env.ok,
                                  "data": data,
@@ -887,6 +904,11 @@ def _resolve_live_refs(obj, live_refs: dict[str, str]):
     return obj
 
 
+def _canonical_json(value) -> str:
+    """指纹/内容比对用的规范化序列化（同 runtime.doc_args 口径）。"""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
 def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                           doc_inputs_provenance=None, live_refs_by_call=None,
                           doc_itinerary_from_turn=None):
@@ -895,16 +917,19 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
     N04/R02：``doc_inputs_provenance``（call_id → 正文五渠道生成输入）供
     compose_proposal 落盘时作为 provenance 传给 save_proposal，使依赖指纹
     忠于生成时正文实际采用的输入（ctx 覆盖/四路事实渠道均已含在内）。
-    ``doc_itinerary_from_turn``：正文行程当时未绑定已采纳快照（项目尚无行程），
-    而本回合自己排了行程时，改绑本回合最新快照的已解析内容——否则同轮
-    “排行程 → 写方案”落盘后指纹与“最新行程”永远不一致，方案永远无法确认。
+    ``doc_itinerary_from_turn``：正文行程确实取自本回合“已产生、未落盘”的行程
+    （生成前已由 accepted_doc_inputs 绑定）。落盘快照经 ``@live:`` 规格键解析后，
+    只有临时数据与快照**内容一致**时才把正文指纹里的行程换成已解析值（T01）；
+    内容不同（模型值或同批并发生成）保持原指纹，确认时按指纹不一致拒绝，
+    绝不把不同内容直接改绑。
     N05：``live_refs_by_call``（call_id → 规格键→引用）使每份产物按自己的
     调用实例解析快照（本调用优先，全局 live_refs 作跨调用回退）。
     """
     doc_inputs_provenance = doc_inputs_provenance or {}
     live_refs_by_call = live_refs_by_call or {}
     doc_itinerary_from_turn = doc_itinerary_from_turn or {}
-    turn_itineraries: list[dict] = []   # 本回合 compose_itinerary 已落盘快照（按发生顺序）
+    raw_itineraries: list[dict] = []      # 本回合 compose_itinerary 原始产出（按发生顺序）
+    stored_itineraries: list[dict] = []   # 同上，已解析规格键后的落盘内容
     events = tm.replay(pid, turn_id, after_seq=0)
     for ev in events:
         if ev.event != "tool_completed" or not ev.data.get("ok"):
@@ -919,6 +944,7 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
         # N05：按调用实例解析——本调用记录的规格键优先（同规格不互相覆盖），
         # 全局 live_refs 作跨调用回退（保障无 tag 历史产物仍能解析）
         effective_refs = {**live_refs, **live_refs_by_call.get(call_id, {})}
+        raw_data = data_dict
         data_dict = _resolve_live_refs(data_dict, effective_refs)
         if name == "profile_field_site":
             repo.save_field_site(pid, {"name": data_dict.get("location", ""),
@@ -930,15 +956,21 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
             repo.cache_search(pid, f"itinerary::{dests}", "compose_itinerary", data_dict,
                               parent_call_id=call_id, turn_id=turn_id,
                               query_key=_query_key("itinerary", {"dests": dests}))
-            turn_itineraries.append(data_dict)
+            raw_itineraries.append(raw_data)
+            stored_itineraries.append(data_dict)
         elif name == "compose_proposal":
             markdown = data_dict.get("markdown", "")
             if markdown:
                 # N04/R02：用生成时的五渠道输入作为指纹依据（provenance）——
                 # 字段缺失时（旧调用面）退化为仓储现值
                 provenance = dict(doc_inputs_provenance.get(call_id) or {})
-                if provenance and doc_itinerary_from_turn.get(call_id) and turn_itineraries:
-                    provenance["itinerary"] = turn_itineraries[-1]
+                # T01：正文行程在本回合已产生但尚未落盘，落盘快照后才可换成已解析
+                # 引用；仅当两者内容一致才允许替换（证明正文用的就是这一份）
+                if (provenance and doc_itinerary_from_turn.get(call_id)
+                        and stored_itineraries
+                        and _canonical_json(provenance.get("itinerary"))
+                        == _canonical_json(raw_itineraries[-1])):
+                    provenance["itinerary"] = stored_itineraries[-1]
                 repo.save_proposal(
                     pid, markdown,
                     kind=data_dict.get("kind") or "proposal",

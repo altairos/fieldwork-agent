@@ -5,10 +5,15 @@ import type {
 } from "../types/models";
 import type { ExportFormat } from "../lib/exportFormat";
 import { authHeaders } from "../lib/keys";
-import { ownerHeaders } from "../lib/session";
+import { getAuthEpoch, getSessionToken, isStaleSession, ownerHeaders } from "../lib/session";
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  /** ``staleAuth``（评审 T03）：401 属于**已被替换的另一个会话**（请求发起后换号
+   *  登录）——调用方不得按当前身份处理（不弹重生、不清当前正文）；令牌被清空
+   *  （登出/会话失效）不算换号，同一身份的并发 401 仍按当前会话处理。 */
+  constructor(public status: number, message: string, public staleAuth = false) {
+    super(message);
+  }
 }
 
 /** 从 ApiError.message（后端响应文本）解析 FastAPI `{"detail": "…"}` 文案；非该形状返回 null。 */
@@ -54,9 +59,13 @@ export function isSessionExpiredError(err: unknown): err is ApiError {
 let _onSessionExpired: (() => void) | null = null;
 export function setOnSessionExpired(fn: () => void): void { _onSessionExpired = fn; }
 
-/** 非 req 通道（如 SSE）收到 401 时复用：命中 session_expired 体则触发全局 R15 钩子。 */
-export function notifySessionExpiredIfAny(err: unknown): void {
-  if (isSessionExpiredError(err) && _onSessionExpired) _onSessionExpired();
+/** 非 req 通道（SSE/下载）收到 401 时复用：命中 session_expired 体则触发全局 R15 钩子。
+ *  ``epochAtSend``（T03）：请求/连接发起时的认证代次。缺省不校验（旧调用面），
+ *  传入时仅当前代次的 401 可清会话——迟到的旧身份响应不得清掉新登录会话。 */
+export function notifySessionExpiredIfAny(err: unknown, epochAtSend?: number): void {
+  if (!isSessionExpiredError(err)) return;
+  if (epochAtSend !== undefined && epochAtSend !== getAuthEpoch()) return;
+  if (_onSessionExpired) _onSessionExpired();
 }
 
 /** GET /settings/status 的返回（web_host/api/settings.py）。
@@ -78,13 +87,20 @@ export interface HealthStatus {
 }
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
+  // T03：发起时捕获认证身份（令牌 + 代次）。延迟响应只在“仍是当前会话”的
+  // 前提下才能让当前身份退出；换号后的旧 401 只作为该请求自身的失败。
+  const token = getSessionToken();
+  const epoch = getAuthEpoch();
   const resp = await fetch(url, {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...ownerHeaders(), ...init?.headers },
   });
   if (!resp.ok) {
-    const err = new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
-    notifySessionExpiredIfAny(err);
+    const text = await resp.text().catch(() => resp.statusText);
+    // 归属先于通知判定：notify 会推进代次（清除当前令牌），不可事后比较
+    const staleAuth = resp.status === 401 && isStaleSession(token);
+    const err = new ApiError(resp.status, text, staleAuth);
+    notifySessionExpiredIfAny(err, epoch);
     throw err;
   }
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);

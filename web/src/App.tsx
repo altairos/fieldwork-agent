@@ -12,7 +12,7 @@ import { RightResizeHandle } from "./components/layout/RightResizeHandle";
 import { Tabs, tabIds } from "./components/ui/Tabs";
 import { IconCaret } from "./components/ui/icons";
 import { useAuthGate } from "./hooks/useAuthGate";
-import { disposeGuestProject, useDisposeGuestProject } from "./hooks/useDisposeGuestProject";
+import { useDisposeGuestProject } from "./hooks/useDisposeGuestProject";
 import { useMobileDrawer } from "./hooks/useMobileDrawer";
 import { useProjectBootstrap } from "./hooks/useProjectBootstrap";
 import { useRenameProject } from "./hooks/useRenameProject";
@@ -161,8 +161,8 @@ function Workspace() {
           <LeftRail
             phase={phase}
             onBack={() => {
-              // 匿名回首页也算“退出”：SPA 导航不触发 pagehide，这里显式删除
-              if (guest) disposeGuestProject(projectId);
+              // 匿名回首页也算“退出”：SPA 导航不触发 pagehide；清理由 hook 在卸载时
+              // 按当前地址执行（T04：浏览器后退与本站按钮同一通道，避免重复 DELETE）
               navigate("/");
             }}
             onSelect={(pid) => useUiStore.getState().setActiveTab(PHASE_TAB[pid] ?? "basic-info")}

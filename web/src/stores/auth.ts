@@ -19,9 +19,17 @@ export const useAuthStore = create<AuthState>((set) => ({
   async register(e, p) { const r = await auth.register(e, p); set({ user: r.user, expired: false }); },
   async logout() { try { await auth.logout(); } finally { set({ user: null }); } },
   async checkSession() {
-    if (!getSessionToken()) { set({ user: null }); return; }
-    try { const me = await auth.me(); set({ user: me.anonymous ? null : (me.user ?? null) }); }
+    const token = getSessionToken();
+    if (!token) { set({ user: null }); return; }
+    try {
+      const me = await auth.me();
+      // T03：等待期间已换号（登录/退出）→ 旧 /auth/me 结果不得覆盖新身份
+      if (getSessionToken() !== token) return;
+      set({ user: me.anonymous ? null : (me.user ?? null) });
+    }
     catch (err) {
+      // T03：迟到的旧身份 401 不清新会话（令牌已被替换/清除即视为已归属新作用域）
+      if (getSessionToken() !== token) return;
       if (isSessionExpiredError(err)) { clearSessionToken(); set({ user: null, expired: true }); }
       else set({ user: null });   // 瞬时错误（断网/5xx/守卫 401）：不摧毁仍有效的会话令牌，待下次重试
     }

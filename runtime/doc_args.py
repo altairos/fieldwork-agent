@@ -33,22 +33,29 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def accepted_doc_inputs(repo: Any, pid: str, *, ctx_view: dict | None = None) -> dict:
+def accepted_doc_inputs(repo: Any, pid: str, *, ctx_view: dict | None = None,
+                        itinerary_override: dict | None = None) -> dict:
     """项目已采纳的五渠道事实视图（方案正文的事实来源，评审 R02）。
 
     - ``ctx``：``ctx_view``（仓储 + 回合暂存）优先，缺省直读仓储；
     - ``sites`` / ``informants`` / ``knowledge``：仓储记录全量（顺序即采纳顺序）；
     - ``itinerary``：最新一次 ``compose_itinerary`` 快照的 result；
     - ``itinerary_cid``：该快照 id（无行程时为空串）。
+
+    ``itinerary_override``：宿主传入的本回合已成功产生、但尚未落盘的行程
+    （评审 T01）。同轮“先排行程 → 写方案”时正文必须采用这份行程——否则
+    正文用模型给的 B、轮末却把落盘行程换成 A，指纹与正文错配。传入非 None
+    即优先于仓储快照（此时 ``itinerary_cid`` 为空串：快照尚未落盘）。
     """
     cid = ""
-    itinerary = None
-    for cached in reversed(repo.list_cached_searches(pid)):
-        if cached.get("tool") == "compose_itinerary":
-            cid = cached["id"]
-            record = repo.get_cached_search(pid, cid) or {}
-            itinerary = record.get("result")
-            break
+    itinerary = itinerary_override
+    if itinerary is None:
+        for cached in reversed(repo.list_cached_searches(pid)):
+            if cached.get("tool") == "compose_itinerary":
+                cid = cached["id"]
+                record = repo.get_cached_search(pid, cid) or {}
+                itinerary = record.get("result")
+                break
     return {
         "ctx": dict(ctx_view if ctx_view is not None else repo.get_research_context(pid)),
         "sites": list(repo.list_field_sites(pid)),

@@ -44,8 +44,29 @@ export function getOwnerToken(): string {
 }
 
 export function getSessionToken(): string { return readKey(SESSION_TOKEN_KEY); }
-export function setSessionToken(t: string): void { writeKey(SESSION_TOKEN_KEY, t); }
-export function clearSessionToken(): void { writeKey(SESSION_TOKEN_KEY, ""); }
+
+// 认证代次（评审 T03）：会话令牌每次写入/清除即自增。请求发起时捕获代次，
+// 只有仍属当前代次的 401 才允许触发全局会话清理——迟到的旧身份 401 可以
+// 向自己的调用方报错，但不得清掉后来建立的会话（如换号后的 Bob）。
+let authEpoch = 0;
+export function getAuthEpoch(): number { return authEpoch; }
+
+/** 延迟响应的身份归属：发起时用的是 ``sentToken``，若当前已换成**另一个非空
+ *  会话**（换号登录），则该响应属于旧身份。令牌被清空（登出/会话失效）不算
+ *  换号——同一身份的两个并发 401 都应被当作当前会话处理。 */
+export function isStaleSession(sentToken: string): boolean {
+  const current = getSessionToken();
+  return current !== "" && current !== sentToken;
+}
+
+export function setSessionToken(t: string): void {
+  writeKey(SESSION_TOKEN_KEY, t);
+  authEpoch += 1;
+}
+export function clearSessionToken(): void {
+  writeKey(SESSION_TOKEN_KEY, "");
+  authEpoch += 1;
+}
 
 /** 请求头注入：会话令牌优先（登录态），否则懒生成匿名令牌——归属必须携带（与 authHeaders 的「空值不带头」不同）。 */
 export function ownerHeaders(): Record<string, string> {

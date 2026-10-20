@@ -1762,8 +1762,9 @@ def test_r02_unadopted_channels_cannot_be_confirmed(env):
 
 
 def test_r02_same_turn_itinerary_binds_into_proposal_hash(env):
-    """R02：项目原先无行程时，同回合先 compose_itinerary 再 compose_proposal，
-    落盘指纹改绑本回合已解析行程——否则“排行程→写方案”永远无法确认。"""
+    """R02/T01：项目原先无行程时，同回合先 compose_itinerary 再 compose_proposal——
+    正文必须在生成前就采用本轮行程（模型替代值不入正文），落盘指纹按同一份内容
+    计算，确认可成功。评审 T01：旧实现只改指纹不改正文，正文用 B 也能确认。"""
     repo, tm = env
     repo.update_research_context("p1", {
         "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
@@ -1786,7 +1787,9 @@ def test_r02_same_turn_itinerary_binds_into_proposal_hash(env):
          {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
                                           "arguments": {"ctx": {}, "sites": [],
                                                         "informants": [],
-                                                        "itinerary": {"legs": []}}}],
+                                                        "itinerary": {
+                                                            "legs": [],
+                                                            "note": "BODY_UNADOPTED_ITINERARY"}}}],
           "finish_reason": "tool_calls", "usage": {}}],
         [{"delta": "完成"},
          {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
@@ -1796,9 +1799,124 @@ def test_r02_same_turn_itinerary_binds_into_proposal_hash(env):
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "排行程并出方案", tm, llm, FakeFlyAI()))
     docs = repo.list_proposals("p1")
     assert len(docs) == 1
-    assert any(c["tool"] == "compose_itinerary"
-               for c in repo.list_cached_searches("p1"))
+    # T01 验收：正文采用本轮实际行程，不采用模型给的替代值 B
+    assert "BODY_UNADOPTED_ITINERARY" not in docs[0]["content"]
+    assert "- **departure**：上海" in docs[0]["content"]
+    assert "- **destinations**：['大理']" in docs[0]["content"]
+    # 指纹与正文实际输入（含落盘行程内容）一致，而不是只“能确认”
+    stored = next(repo.get_cached_search("p1", c["id"])["result"]
+                  for c in repo.list_cached_searches("p1")
+                  if c["tool"] == "compose_itinerary")
+    from fieldwork_agent.kernel.repository.confirm_hash import compute_doc_hash
+    expected = compute_doc_hash(
+        repo.get_research_context("p1"), repo.list_field_sites("p1"),
+        repo.list_informants("p1"), repo.list_knowledge("p1"), stored)
+    assert docs[0]["dep_hash"] == expected
     assert repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_t01_same_batch_itinerary_and_proposal_rejects_confirm(env):
+    """T01 验收：同批（并发）先排行程 A、再写方案 B——正文用 B 时不得被认证。
+
+    生成时 A 尚未完成，正文用的是模型值 B；落盘后项目最新行程是 A。旧实现
+    无条件把指纹改绑 A，正文 B 也能确认；现在内容不同即保持原指纹 → 拒绝。
+    """
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    turn = tm.create_turn("p1")
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "i1", "name": "compose_itinerary",
+              "arguments": {"departure": "上海", "destinations": ["大理"],
+                            "start_date": "2026-07-10", "duration_days": 3,
+                            "budget_total": 20000}},
+             {"id": "c1", "name": "compose_proposal",
+              "arguments": {"ctx": {}, "sites": [], "informants": [],
+                            "itinerary": {"legs": [],
+                                          "note": "BODY_UNADOPTED_ITINERARY"}}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "排行程并出方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    # 正文确实是模型给的 B（同批时 A 还未产生）
+    assert "BODY_UNADOPTED_ITINERARY" in docs[0]["content"]
+    from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+    with pytest.raises(ProposalConfirmError) as ei:
+        repo.confirm_proposal("p1", docs[0]["id"])
+    assert ei.value.code == "dep_hash_mismatch"
+
+
+def test_t01_latest_turn_itinerary_wins_across_multiple_calls(env):
+    """T01：同回合多次排行程（A1→A2）后写方案——正文与指纹绑定最新一份 A2；
+    多个方案各自绑定生成时采用的那份，旧方案不被后来行程污染。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    proposal_b = {"ctx": {}, "sites": [], "informants": [],
+                  "itinerary": {"legs": [], "note": "BODY_UNADOPTED_ITINERARY"}}
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c0", "name": "compose_proposal",
+                                          "arguments": dict(proposal_b)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "i1", "name": "compose_itinerary",
+                                          "arguments": {"departure": "上海",
+                                                        "destinations": ["大理"],
+                                                        "start_date": "2026-07-10",
+                                                        "duration_days": 3,
+                                                        "budget_total": 20000}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "i2", "name": "compose_itinerary",
+                                          "arguments": {"departure": "上海",
+                                                        "destinations": ["丽江"],
+                                                        "start_date": "2026-08-01",
+                                                        "duration_days": 2,
+                                                        "budget_total": 15000}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": dict(proposal_b)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "先出方案再改行程", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 2
+    # 旧方案：写于任何行程之前 → 正文/指纹都是 B，项目已有 A2 → 拒确认
+    assert "BODY_UNADOPTED_ITINERARY" in docs[0]["content"]
+    from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+    with pytest.raises(ProposalConfirmError) as ei:
+        repo.confirm_proposal("p1", docs[0]["id"])
+    assert ei.value.code == "dep_hash_mismatch"
+    # 新方案：正文采用最新行程 A2（丽江），可确认
+    assert "BODY_UNADOPTED_ITINERARY" not in docs[1]["content"]
+    assert "- **destinations**：['丽江']" in docs[1]["content"]
+    assert repo.confirm_proposal("p1", docs[1]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
 
 
 def test_r02_same_turn_two_proposals_keep_own_provenance(env):

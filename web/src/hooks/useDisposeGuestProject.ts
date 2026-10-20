@@ -17,7 +17,10 @@ import { getSessionToken, ownerHeaders } from "../lib/session";
  *   否则演示现场一次误刷新就丢光对话；
  * - **bfcache 豁免**：`pagehide.persisted === true` 时跳过，用户可能按返回键回来；
  * - **应用内离开**：返回首页（LeftRail 按钮）与浏览器后退（popstate）都是 SPA 导航，
- *   不触发 pagehide，这里补两个口子；/p/<id> 内部的页间跳转（如方案页）不删。
+ *   不触发 pagehide。评审 T04：页面级 popstate 监听在工作区卸载时会被 Router 一并移除
+ *   （Router 先处理 popstate 并同步卸载），漏删除；现改为**卸载时看当前地址**——
+ *   已离开 `/p/<id>`（含子路径部署）则清理，站内切视图（如方案页）仍在项目路径下不删。
+ *   避免在普通 cleanup 里无条件删除（StrictMode / 站内重挂载不会误删）。
  *
  * 注册/登录成功后 `enabled` 变 false，监听解绑：此时后端 `auth.py::_claim` 已把
  * `anon:<token>` 项目 CAS 迁到 `user:<id>`，绝不能再删。
@@ -29,6 +32,9 @@ export function useDisposeGuestProject(projectId: string, enabled: boolean) {
   useEffect(() => {
     if (!enabled || !projectId) return;
     let reloading = false;
+    // 挂载时是否就在本项目路径下：站内路由下恒为 true；单测里用 MemoryRouter 挂载、
+    // 但窗口地址不在项目上时，卸载不得把“地址不同”误读成“已离开”（T04）。
+    const startedInProject = inProject(appPath(), projectId);
 
     // 手动刷新豁免（工具栏刷新按钮拦不住，只能接受）
     const onKeyDown = (e: KeyboardEvent) => {
@@ -48,26 +54,39 @@ export function useDisposeGuestProject(projectId: string, enabled: boolean) {
       if (getSessionToken()) return;
       disposeGuestProject(projectId);
     };
-    // 浏览器后退退出工作台：popstate 时地址已更新，看是否还在本项目路由下
-    const onPopState = () => {
-      if (reloading || getSessionToken()) return;
-      const home = `/p/${projectId}`;
-      const path = window.location.pathname;
-      // 严格匹配 /p/<id> 或 /p/<id>/...（裸 startsWith 会把 p10 当成 p1）
-      if (path !== home && !path.startsWith(`${home}/`)) disposeGuestProject(projectId);
-    };
 
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("beforeunload", onBeforeUnload);
     window.addEventListener("pagehide", onPageHide);
-    window.addEventListener("popstate", onPopState);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener("pagehide", onPageHide);
-      window.removeEventListener("popstate", onPopState);
+      // T04：浏览器后退/返回首页按钮等 SPA 离开——卸载时地址已更新，且 Router 已接管
+      // popstate（页面级监听来不及触发），因此以当前地址判定。刷新/bfcache 不走组件
+      // 卸载（或地址仍在项目下），StrictMode 重挂载同理，不会误删。
+      if (startedInProject && !inProject(appPath(), projectId)) {
+        disposeGuestProject(projectId);
+      }
     };
   }, [projectId, enabled]);
+}
+
+/** 当前文档的应用内路径（去掉 basename）：子路径部署（/fieldpass/）下
+ *  不能把整段前缀当成“已离开项目”（T04）。 */
+function appPath(): string {
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+  const path = window.location.pathname;
+  if (base && (path === base || path.startsWith(`${base}/`))) {
+    return path.slice(base.length) || "/";
+  }
+  return path;
+}
+
+/** 严格匹配 /p/<id> 或 /p/<id>/...（裸 startsWith 会把 p10 当成 p1）。 */
+function inProject(path: string, projectId: string): boolean {
+  const home = `/p/${projectId}`;
+  return path === home || path.startsWith(`${home}/`);
 }
 
 /**

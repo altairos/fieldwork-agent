@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  ApiError, apiDetail, isAppTokenError, isSessionExpiredError, rest, type ProposalMeta,
+  ApiError, apiDetail, isAppTokenError, isSessionExpiredError, notifySessionExpiredIfAny, rest,
+  type ProposalMeta,
 } from "../api/rest";
 import { AuthDialog } from "../components/auth/AuthDialog";
 import { ChapterNav } from "../components/proposal/ChapterNav";
@@ -12,7 +13,7 @@ import { Header } from "../components/layout/Header";
 import { Button } from "../components/ui/Button";
 import { IconBook, IconDownload } from "../components/ui/icons";
 import { authHeaders } from "../lib/keys";
-import { getSessionToken, ownerHeaders } from "../lib/session";
+import { getAuthEpoch, getSessionToken, isStaleSession, ownerHeaders } from "../lib/session";
 import { useDisposeGuestProject } from "../hooks/useDisposeGuestProject";
 import { useAuthStore } from "../stores/auth";
 import { useExportFormatStore } from "../stores/exportFormat";
@@ -119,7 +120,9 @@ export function ProposalView() {
     } catch (err: unknown) {
       // 认证类失败先处理再校验代次：401 的全局钩子（清会话→ user 变化）会让作用域自增，
       // 若先查作用域，刚发生的会话失效提示会被自己丢掉（R03 验收点）。
-      const authFailed = noteAuthFailure(err);
+      // T03：迟到的旧身份 401 已在请求层标记 staleAuth——不得污染新作用域的提示。
+      const authFailed = !(err instanceof ApiError && err.staleAuth)
+        && noteAuthFailure(err);
       if (scope !== scopeRef.current || seq !== requestRef.current) return;
       if (authFailed) {
         setError(null);
@@ -220,17 +223,33 @@ export function ProposalView() {
   // 下载报告（md/docx/txt，格式随「我的」偏好）：/projects 前缀受 F02 令牌保护，顶层锚点导航带不了自定义头
   // （启用 App Token 必 401）→ fetch + authHeaders() 取 blob 走临时链下载。
   // F13：按当前选中文档的 id 走 by-id 下载端点（历史版本也能下载）。
+  // T02：失败响应不得丢弃——解析后复用 REST 同源的认证处理（全局会话清理 + 本页
+  // 正文退出显示）；T03：按发起时的会话身份判定归属，旧身份 401 不清新会话。
   async function download() {
     if (!doc) return;
     const scope = scopeRef.current;
+    const token = getSessionToken();
+    const epoch = getAuthEpoch();
     setDlError(null);
     try {
       const resp = await fetch(rest.proposalByIdDownloadUrl(projectId, doc.id, format), {
         headers: { ...authHeaders(), ...ownerHeaders() },
       });
-      if (!resp.ok) throw new ApiError(resp.status, "下载失败");
-      if (scope !== scopeRef.current) return;   // R03：身份已切换，旧下载不再落盘
-      const url = URL.createObjectURL(await resp.blob());
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => resp.statusText);
+        const err = new ApiError(resp.status, body, isStaleSession(token));
+        notifySessionExpiredIfAny(err, epoch);
+        // 旧身份的失败既不报当前页面，也不清理新会话
+        if (err.staleAuth) return;
+        // 当前身份的认证类失败：亮重登入口并同步退出私有正文（与确认路径同语义）
+        if (noteAuthFailure(err)) return;
+        throw err;
+      }
+      // 读取 blob 的 await 窗口内换号/退出 → 旧下载不得交付
+      if (scope !== scopeRef.current || epoch !== getAuthEpoch()) return;
+      const blob = await resp.blob();
+      if (scope !== scopeRef.current || epoch !== getAuthEpoch()) return;
+      const url = URL.createObjectURL(blob);
       const a = Object.assign(document.createElement("a"), { href: url, download: "" });
       a.click();
       a.remove();
@@ -276,8 +295,10 @@ export function ProposalView() {
       const to = res.phase_transition?.to;
       setConfirmHint(to ? `方案已确认，阶段推进至 ${to}` : "方案已确认");
     } catch (err: unknown) {
-      // 同 loadDoc：认证失效优先于作用域校验（会话失效会同步推高作用域代次）
-      const authFailed = noteAuthFailure(err);
+      // 同 loadDoc：认证失效优先于作用域校验（会话失效会同步推高作用域代次）；
+      // T03：旧身份迟到的 401（staleAuth）不按当前身份处理
+      const authFailed = !(err instanceof ApiError && err.staleAuth)
+        && noteAuthFailure(err);
       if (authFailed) {
         if (scope === scopeRef.current) setConfirmError("登录已失效，请重新登录后确认方案");
         return;

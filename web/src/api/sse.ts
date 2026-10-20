@@ -1,7 +1,12 @@
 import type { EventEnvelope } from "../types/events";
 import { authHeaders } from "../lib/keys";
-import { ownerHeaders } from "../lib/session";
+import { getAuthEpoch, getSessionToken, isStaleSession, ownerHeaders } from "../lib/session";
 import { ApiError, notifySessionExpiredIfAny } from "./rest";
+
+// 帧分隔符的字符常量（评审 R3）：用字符编码构造，避免手写转义序列在编辑链中走样
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
+const CRLF_RE = new RegExp(CR + LF + "?", "g");
 
 export interface ParseResult { frames: EventEnvelope[]; rest: string; }
 
@@ -12,7 +17,7 @@ export function parseSseFrames(buffer: string): ParseResult {
   // 所有帧会粘成一帧直到流结束——turn_done 迟迟不到，前端一直 busy。
   // 归一后 rest 也取自归一结果：被分包切开的半个 CRLF（孤立 "\r"）留在 rest 里，
   // 下一轮与 "\n" 重新拼成完整换行。
-  const blocks = buffer.replace(/\r\n?/g, "\n").split("\n\n");
+  const blocks = buffer.replace(CRLF_RE, LF).split(LF + LF);
   const rest = blocks.pop() ?? "";          // 最后一段可能不完整，留到下轮
   for (const block of blocks) {
     const lines = block.split("\n");
@@ -101,13 +106,17 @@ export async function streamTurnEvents(
     try {
       const headers: Record<string, string> = { Accept: "text/event-stream", ...authHeaders(), ...ownerHeaders() };
       if (lastId > 0) headers["Last-Event-ID"] = String(lastId);
+      // T03：每次连接捕获认证身份/代次——迟到的旧身份 401 不得清掉后来建立的会话
+      const token = getSessionToken();
+      const epoch = getAuthEpoch();
       const resp = await fetch(url, { headers, signal: opts.signal });
       if (resp.status === 401) {
         // 401 是确定性认证失败（会话/令牌失效），退避重连不可能自愈：不走重连循环，
         // 构造 ApiError 走会话失效判定——命中则触发 R15 钩子（清会话+标失效，与 REST 通道同语义），
         // 无论何种 401 都立即 onError 终止。
-        const err = new ApiError(401, await resp.text().catch(() => ""));
-        notifySessionExpiredIfAny(err);
+        const err = new ApiError(401, await resp.text().catch(() => ""),
+                                 isStaleSession(token));
+        notifySessionExpiredIfAny(err, epoch);
         opts.onError?.(err);
         return;
       }

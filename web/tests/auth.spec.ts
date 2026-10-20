@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, isAppTokenError, isSessionExpiredError } from "../src/api/rest";
+import {
+  ApiError, isAppTokenError, isSessionExpiredError, notifySessionExpiredIfAny, rest,
+} from "../src/api/rest";
 import { auth } from "../src/api/auth";
-import { getSessionToken, setSessionToken } from "../src/lib/session";
+import {
+  clearSessionToken, getAuthEpoch, getSessionToken, setSessionToken,
+} from "../src/lib/session";
 import { useAuthStore } from "../src/stores/auth";
 
 describe("auth client + session expiry", () => {
@@ -47,5 +51,74 @@ describe("auth client + session expiry", () => {
     expect(getSessionToken()).toBe("");
     expect(useAuthStore.getState().expired).toBe(true);
     vi.unstubAllGlobals();
+  });
+
+  it("T03：迟到的旧身份 401 不清新登录会话；当前身份 401 仍正常退出（真实 req 分发）", async () => {
+    const ALICE = { user_id: "u-alice", email: "alice@example.test" };
+    const BOB = { user_id: "u-bob", email: "bob@example.test" };
+    const EXPIRED = JSON.stringify({ detail: { code: "session_expired" } });
+    setSessionToken("sess_alice");
+    useAuthStore.setState({ user: ALICE, expired: false });
+
+    let release!: (r: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", vi.fn(() => pending));
+    const late = rest.getProject("p1").catch((e: unknown) => e);
+
+    // Alice 退出、Bob 登录（真实令牌 + store 状态），再把 Alice 的旧 401 交付
+    clearSessionToken();
+    setSessionToken("sess_bob");
+    useAuthStore.setState({ user: BOB, expired: false });
+    release({
+      ok: false, status: 401, text: async () => EXPIRED,
+    } as Response);
+
+    const err = await late;
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).staleAuth).toBe(true);
+    expect(getSessionToken()).toBe("sess_bob");
+    expect(useAuthStore.getState().user).toEqual(BOB);
+    expect(useAuthStore.getState().expired).toBe(false);
+
+    // 当前 Bob 请求真正失效：仍正常退出
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 401, text: async () => EXPIRED,
+    })));
+    await expect(rest.getProject("p1")).rejects.toBeInstanceOf(ApiError);
+    expect(getSessionToken()).toBe("");
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(useAuthStore.getState().expired).toBe(true);
+  });
+
+  it("T03：notifySessionExpiredIfAny 按发起时代次判定（SSE/下载共用同一规则）", () => {
+    const EXPIRED = new ApiError(401, JSON.stringify({ detail: { code: "session_expired" } }));
+    setSessionToken("sess_bob");
+    useAuthStore.setState({ user: { user_id: "u-bob", email: "b@example.test" }, expired: false });
+    const before = getAuthEpoch();
+    setSessionToken("sess_carol");          // 新会话：旧响应到达
+    notifySessionExpiredIfAny(EXPIRED, before);
+    expect(getSessionToken()).toBe("sess_carol");
+    expect(useAuthStore.getState().user).not.toBeNull();
+    // 当前代次的同体 401 仍触发全局清理
+    notifySessionExpiredIfAny(EXPIRED, getAuthEpoch());
+    expect(getSessionToken()).toBe("");
+    expect(useAuthStore.getState().expired).toBe(true);
+  });
+
+  it("T03：同一会话的并发 401 不被误判为旧身份", async () => {
+    const EXPIRED = JSON.stringify({ detail: { code: "session_expired" } });
+    setSessionToken("sess_same");
+    useAuthStore.setState({ user: { user_id: "u-same", email: "s@example.test" }, expired: false });
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 401, text: async () => EXPIRED,
+    })));
+    const [a, b] = await Promise.all([
+      rest.getProject("p1").catch((e: unknown) => e),
+      rest.getProject("p1").catch((e: unknown) => e),
+    ]);
+    expect((a as ApiError).staleAuth).toBe(false);
+    expect((b as ApiError).staleAuth).toBe(false);   // 第二个 401 同样属于刚失效的当前会话
+    expect(getSessionToken()).toBe("");
+    expect(useAuthStore.getState().expired).toBe(true);
   });
 });

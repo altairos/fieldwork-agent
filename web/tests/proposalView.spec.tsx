@@ -1,8 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProposalView } from "../src/routes/ProposalView";
 import { useAuthStore } from "../src/stores/auth";
+import {
+  clearSessionToken, getSessionToken, setSessionToken,
+} from "../src/lib/session";
 
 const LATEST = {
   id: "prop_2",
@@ -302,5 +305,101 @@ describe("ProposalView 身份作用域与请求代次（R03/R04）", () => {
     expect(screen.queryByText("初版正文")).toBeNull();
     expect(screen.getByRole("button", { name: "draft v1" }))
       .toHaveAttribute("aria-pressed", "false");
+  });
+});
+
+// 下载入口的认证处理（评审 T02/T03）：与确认入口同一套会话失效语义——
+// 解析失败响应体、命中 session_expired 时清凭据并退出正文；旧身份迟到的 401 不清新会话。
+describe("ProposalView 下载入口认证处理（T02/T03）", () => {
+  const ALICE = { user_id: "u-alice", email: "alice@example.test" };
+  const BOB = { user_id: "u-bob", email: "bob@example.test" };
+  const DL = "/projects/p1/proposals/prop_2/download";
+
+  /** 下载端点返回指定失败；401 会话失效后 GET 正文回 404（真实后端匿名不再拥有项目）。 */
+  function stubDownload(failure: { status: number; body: string }) {
+    let revoked = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === DL) {
+        revoked = failure.status === 401;
+        return { ok: false, status: failure.status, text: async () => failure.body } as Response;
+      }
+      if (url === "/projects/p1/proposals") return json(VERSIONS);
+      if (url === "/projects/p1/proposal") {
+        return revoked
+          ? ({ ok: false, status: 404, text: async () => JSON.stringify({ detail: "项目不存在" }) } as Response)
+          : json(LATEST);
+      }
+      if (url === "/projects/p1") return json(SNAP);
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function loginAs(user: { user_id: string; email: string }, token: string) {
+    setSessionToken(token);
+    useAuthStore.setState({ user, expired: false });
+  }
+
+  it("T02：下载遇 401 session_expired → 清凭据、正文退出显示、给重登入口", async () => {
+    loginAs(ALICE, "sess_alice");
+    stubDownload({ status: 401, body: JSON.stringify({ detail: { code: "session_expired" } }) });
+    mount();
+    expect(await screen.findByText("最新版正文")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /下载/ }));
+
+    await waitFor(() => expect(screen.queryByText("最新版正文")).toBeNull());
+    expect(getSessionToken()).toBe("");
+    expect(useAuthStore.getState().expired).toBe(true);
+    expect(screen.getAllByRole("button", { name: "重新登录" }).length).toBeGreaterThanOrEqual(1);
+    expect(document.body.textContent).not.toContain("最新版正文");
+  });
+
+  it("T02：普通下载错误（500）不误报会话失效，正文保留", async () => {
+    loginAs(ALICE, "sess_alice");
+    stubDownload({ status: 500, body: "Internal Error" });
+    mount();
+    expect(await screen.findByText("最新版正文")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /下载/ }));
+
+    expect(await screen.findByText(/下载失败（HTTP 500）/)).toBeTruthy();
+    expect(screen.getByText("最新版正文")).toBeTruthy();
+    expect(getSessionToken()).toBe("sess_alice");
+    expect(useAuthStore.getState().user).toEqual(ALICE);
+    expect(useAuthStore.getState().expired).toBe(false);
+  });
+
+  it("T03：旧身份迟到的下载 401 不清新会话，也不给新身份亮失效提示", async () => {
+    loginAs(ALICE, "sess_alice");
+    let release!: (r: Response) => void;
+    const pending = new Promise<Response>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === DL) return pending;                       // 旧身份的下载：挂起
+      if (url === "/projects/p1/proposals") return json(VERSIONS);
+      if (url === "/projects/p1/proposal") return json(LATEST);
+      if (url === "/projects/p1") return json(SNAP);
+      return json({});
+    }));
+    mount();
+    expect(await screen.findByText("最新版正文")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /下载/ }));
+
+    // 下载未落地前换号：Bob 已取得有效会话，Alice 的旧 401 此刻才到
+    act(() => {
+      clearSessionToken();
+      loginAs(BOB, "sess_bob");
+    });
+    release({
+      ok: false, status: 401,
+      text: async () => JSON.stringify({ detail: { code: "session_expired" } }),
+    } as Response);
+
+    await waitFor(() => expect(screen.getByText("最新版正文")).toBeTruthy());
+    expect(getSessionToken()).toBe("sess_bob");
+    expect(useAuthStore.getState().user).toEqual(BOB);
+    expect(useAuthStore.getState().expired).toBe(false);
+    expect(screen.queryByText(/登录已失效/)).toBeNull();
   });
 });
