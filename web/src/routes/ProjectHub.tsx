@@ -141,6 +141,7 @@ export function ProjectHub() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
+  // 身份切换（登录/登出/会话失效清令牌）后按新 ownerHeaders 重拉
   useEffect(() => {
     let alive = true;
     rest
@@ -155,7 +156,7 @@ export function ProjectHub() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [user]);
 
   /** 删除即整域清除：后端先取消活动回合再删数据；成功后从列表移除，失败如实提示。 */
   async function removeProject(id: string) {

@@ -1,6 +1,21 @@
 // web/src/components/auth/AuthDialog.tsx
 import { useEffect, useState } from "react";
+import { ApiError } from "../../api/rest";
 import { useAuthStore } from "../../stores/auth";
+
+/** 认证失败 → 用户可读文案：优先取后端 detail（字符串或 {code,message} 形状）内层
+ *  message；非 JSON 体/未知形状回落 HTTP 状态话术，绝不把响应体原文甩用户脸上。 */
+function humanError(e: unknown): string {
+  if (e instanceof ApiError) {
+    try {
+      const d = JSON.parse(e.message)?.detail;
+      if (typeof d === "string") return d;
+      if (d && typeof d.message === "string") return d.message;
+    } catch { /* 非 JSON 体走默认 */ }
+    return `请求失败（HTTP ${e.status}），请稍后重试`;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
 
 export function AuthDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -22,7 +37,7 @@ export function AuthDialog({ open, onClose }: { open: boolean; onClose: () => vo
       if (mode === "login") await login(email, password);
       else await register(email, password);
       onClose();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(humanError(e)); }
     finally { setBusy(false); }
   }
 

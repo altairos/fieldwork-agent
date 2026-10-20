@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ProjectHub } from "../src/routes/ProjectHub";
 import { ProposalView } from "../src/routes/ProposalView";
@@ -8,6 +8,7 @@ import { ChapterNav } from "../src/components/proposal/ChapterNav";
 import { saveKeys } from "../src/lib/keys";
 import * as rest from "../src/api/rest";
 import { useExportFormatStore } from "../src/stores/exportFormat";
+import { useAuthStore } from "../src/stores/auth";
 
 vi.mock("../src/api/rest");
 
@@ -16,6 +17,7 @@ beforeEach(() => {
   // ApiKeyCard 挂载即查 key 状态与健康探询：模块 mock 默认返 undefined 会崩 .then，补默认值
   vi.mocked(rest.rest.settingsStatus).mockResolvedValue({ dashscope_configured: true, flyai_configured: true, amap_configured: true, amap_js_configured: true, amap_js_key: "stub-js-key", amap_js_security: "stub-js-security" });
   vi.mocked(rest.rest.health).mockResolvedValue({ status: "ok", auth_required: false });
+  useAuthStore.setState({ user: null });
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -151,6 +153,26 @@ describe("ProjectHub（极简首页）", () => {
     renderHome();
     expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/想研究什么/)).toBeEnabled();
+  });
+
+  // 终审修项：列表 effect 依赖 [user]——登录/登出/会话失效后身份变化，
+  // 按新 ownerHeaders（匿名令牌 ↔ 会话令牌）重拉，不再停留在旧身份的列表
+  test("身份切换（user 变化）后重拉项目列表", async () => {
+    vi.mocked(rest.rest.listProjects)
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any);
+    renderHome();
+    await screen.findByRole("heading", { name: "田野罗盘" });
+    expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(1);
+    // 模拟登录成功：auth store 的 user 从 null → 对象
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    await waitFor(() => expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(2));
+    // 新身份的列表上屏：折叠入口出现
+    expect(await screen.findByRole("button", { name: /继续上次 · 我的项目（1）/ })).toBeInTheDocument();
   });
 
   // ── 轮 4：首页一句话即对话起点 ──
