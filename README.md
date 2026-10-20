@@ -1,7 +1,7 @@
 # 田野罗盘 (Fieldwork Agent)
 
 > 面向人类学/社会学田野调查者的 AI 旅行规划助手
-> 基于飞猪 FlyAI 全品类旅行搜索能力，引导式访谈 → 辅助生成研究方案（Research Proposal）草稿
+> 基于飞猪 FlyAI 全品类旅行搜索、高德地理底座与 OpenAlex 学术文献检索，引导式访谈 → 辅助生成研究方案（Research Proposal）草稿
 
 ## 项目用途
 
@@ -10,6 +10,8 @@
 - **引导式访谈**：五阶段推进（研究定位 → 田野点画像 → 行程规划 → 方案生成 → 已完成），推进判定为确定性纯函数，不由 LLM 宣布。
 - **真实数据检索**：深度集成飞猪 FlyAI 全部 8 个搜索工具（航班/火车/酒店/POI/关键词/AI 语义/万豪酒店/万豪套餐），行程、预算、文化场所均基于实时搜索数据并标注来源。
 - **地理空间底座**：接入高德开放平台 Web 服务 API（地理编码/逆编码/周边检索/关键词搜索/跨城公交/天气共 6 个原语）——田野点画像的地理定位与周边设施段、"枢纽 → 田野点"末端接驳规划（`plan_last_mile`）基于真实地理数据，覆盖境内。
+- **学术文献检索**：内置 `search_literature`（OpenAlex 主源 + ncpssd/PubScholar 中文深链）——将研究问题拆为对象、现象、情境、理论/方法四类要素，生成 2–4 路检索矩阵（同义词 OR、概念组 AND），先 probe 后按偏差收窄或放宽；结果绑定当前研究范围，候选文献不自动采纳为事实。
+- **本地聚合与估算**：田野点画像（含周边设施）、多段行程组装、末端接驳、调研时窗分析（多日期价格采样 × 节庆覆盖 × 预算可行性）、驻村生活成本区间估算（`estimate_living_cost`，按聚落类型 × 就餐方式查表，不返回单点精确值）——均为本地组合计算，不依赖额外服务。
 - **方案产出**：生成结构完整的研究方案 Markdown 草稿（当前为英美式八章体例，适用海外/港澳申请与课程场景；高校开题、国家社科活页体例在规划中）。
 - **三种宿主形态**：交互式 CLI、FastAPI Web 宿主（REST + SSE 实时事件流 + React 前端）、标准 MCP Server。
 
@@ -124,7 +126,7 @@ python -m fieldwork_agent.mcp_server               # 等价（stdio）
 .venv/Scripts/python.exe demo_mcp_client.py        # 演示客户端（手动运行，不进 CI）
 ```
 
-MCP 能力面：30 个工具（21 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
+MCP 能力面：32 个工具（23 个内核能力 + 9 个状态工具）+ 资源面 + 2 个 prompts。
 
 部署形态下 Web 进程同时暴露 Streamable HTTP 端点 `/mcp`（与页面同端口），可直接注册到
 阿里百炼等 MCP 客户端；多租户 key 归属（`x-flyai-key` / `x-dashscope-key` 动态 Header
@@ -174,6 +176,7 @@ fieldwork [my_research] (📍 研究定位) >
 | `open <id>` | 打开已有项目 |
 | `chat <消息>` | 发送对话消息（不带参数进入逐行输入模式；直接输入文本等同） |
 | `generate` | 基于当前所有信息生成研究方案草稿（Markdown，投稿/开题前请人工核校） |
+| `confirm site <id>` / `confirm proposal` | 确认田野点 / 确认方案草稿（触发确定性阶段推进；不带参数查看待确认清单） |
 | `knowledge add <标题>` | 添加自有研究资料到本地知识库 |
 | `knowledge list` | 查看知识库条目 |
 | `status` | 查看当前项目完整状态 |
@@ -194,7 +197,7 @@ curl -X POST http://127.0.0.1:8300/projects/<id>/messages -H "Content-Type: appl
 curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 ```
 
-主要端点：`POST /projects`、`GET /projects/{id}`、`POST /projects/{id}/messages`、`GET /projects/{id}/turns/{tid}/events`（SSE）、`POST /projects/{id}/turns/{tid}/cancel`、`GET /projects/{id}/proposal`（及 `/download`、`/proposals` 历史版本）、`PUT /projects/{id}/research-context`、`GET /settings/status`、`GET /health`、`GET /ready`。
+主要端点：`POST /projects`（创建）、`GET /projects`、`GET /projects/{id}`、`DELETE /projects/{id}`、`GET/POST /projects/{id}/messages`（消息历史/创建回合）、`GET /projects/{id}/turns/{tid}/events`（SSE）、`POST /projects/{id}/turns/{tid}/cancel` 与 `.../retry`、`GET /projects/{id}/cached-searches`（证据与搜索缓存关联）、`GET /projects/{id}/proposal`（及 `/download`、`/proposals` 历史版本与 `/proposals/{doc_id}/download`）、`PUT /projects/{id}/research-context`、`POST /projects/{id}/field-sites/{sid}/confirm`、`POST /projects/{id}/informants`、`POST /projects/{id}/proposal/confirm`、`GET /settings/status`、`GET /health`、`GET /ready`。
 
 ## 关键配置说明
 
@@ -212,6 +215,7 @@ curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 | `FA_EXTRACT_MODEL` | 否 | 结构化抽取模型，默认 `qwen3.8-flash` |
 | `DASHSCOPE_HTTP_BASE_URL` | 否 | DashScope OpenAI 兼容端点，默认官方地址 |
 | `FIELDWORK_ASSETS_DIR` | 否 | Tier S 私有资产目录（见下） |
+| `FA_STORAGE` | 否 | 存储后端：`json`（默认）/ `sqlite`，未知值安全回落 json（当前仅 Web 宿主与 MCP Server 生效，CLI 待接入） |
 
 ### 配置优先级（`core/config.py`）
 
@@ -259,4 +263,4 @@ flyai config set key <YOUR_API_KEY>     # 写入 ~/.flyai/config.json
 4. **Tier S 资产默认不在部署包内**：线上默认使用内置 Tier P 公开简版提示词/访谈库，功能完整但提示词为简版。
 5. **测试盲区（Roadmap 未完成项）**：钉钉同步（`sync dingtalk`）的测试覆盖尚未建立；流式输出和五阶段主流程已有 mock 测试覆盖。
 6. **单人 LLM 决策**：工具决策依赖宿主 LLM function calling（无关键词路由兜底），模型不可用时工具调用链路整体降级。
-7. **数据本地化**：项目数据仅存本地 `~/.fieldwork_agent/`，无多用户/鉴权体系；公网部署须自行配合 `FIELDWORK_APP_TOKEN` 与防火墙策略。
+7. **数据本地化**：项目数据仅存本地 `~/.fieldwork_agent/`；当前无登录/账号体系（账号与身份一期在规划中，项目级 `owner` 归属已在运行时透传），公网部署须自行配合 `FIELDWORK_APP_TOKEN` 与防火墙策略。
