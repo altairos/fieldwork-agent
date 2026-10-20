@@ -11,7 +11,7 @@ import {
 
 describe("session owner token", () => {
   beforeEach(() => localStorage.clear());
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
   it("getOwnerToken 懒生成 32 位 hex 并持久化（两次同值）", () => {
     const a = getOwnerToken();
@@ -24,8 +24,18 @@ describe("session owner token", () => {
     expect(ownerHeaders()).toEqual({ "X-Owner-Token": getOwnerToken() });
   });
 
-  it("randomToken 降级路径（无 crypto.randomUUID 时）仍 32 位 hex", () => {
-    expect(randomToken()).toMatch(/^[0-9a-f]{32}$/);
+  it("无 crypto.randomUUID 时用 getRandomValues 兜底（仍 32 位 hex）", () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: (arr: Uint8Array) => { arr.fill(0xab); return arr; },
+    });
+    expect(randomToken()).toBe("ab".repeat(16));
+  });
+
+  it("无安全随机源时 fail-closed，不得退回 Math.random", () => {
+    const weak = vi.spyOn(Math, "random");
+    vi.stubGlobal("crypto", undefined);
+    expect(() => randomToken()).toThrow(/安全随机源/);
+    expect(weak).not.toHaveBeenCalled();
   });
 
   it("localStorage 抛错时内存兜底：同会话内 token 稳定", () => {

@@ -25,13 +25,20 @@ function writeKey(key: string, val: string): void {
   catch { if (val) memoryFallback.set(key, val); else memoryFallback.delete(key); }
 }
 
-/** 随机令牌：crypto.randomUUID 去连字符（128 bit）；无 crypto 时 Math.random 拼 16 字节 hex。 */
+/** 随机令牌（32 位 hex）：randomUUID 优先，其次 getRandomValues。
+ *  两者都不可用时 **fail-closed**——归属令牌是匿名项目数据的唯一凭据，
+ *  Math.random 不满足密码学随机性（Q05），用它等于让令牌可被猜中。 */
 export function randomToken(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID().replace(/-/g, "");
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") {
+    return c.randomUUID().replace(/-/g, "");
   }
-  return Array.from({ length: 16 }, () =>
-    Math.floor(Math.random() * 256).toString(16).padStart(2, "0")).join("");
+  if (c && typeof c.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    c.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  throw new Error("安全随机源不可用：无法生成归属令牌；请使用支持 Web Crypto 的浏览器");
 }
 
 /** 懒生成：首次调用生成并持久化，之后稳定返回同一 token（清存储即换身份，匿名语义）。 */
