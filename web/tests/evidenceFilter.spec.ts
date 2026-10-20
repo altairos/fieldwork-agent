@@ -165,6 +165,16 @@ describe("C05 文献空/失败行可达（补检入口不被过滤）", () => {
     expect(rows.map((r) => r.key)).toEqual(["cLit"]);
     expect(rows[0].failed).toBe(true);
   });
+  it("search_literature 失败且零命中：入列、标 empty 而非 failed（尾标落「空结果」）", () => {
+    const rows = mergeEvidence(
+      [],
+      [live({ call_id: "cZero", tool: "search_literature", status: "failed", ok: false,
+              data: { items: [], total: 0 } })],
+    );
+    expect(rows.map((r) => r.key)).toEqual(["cZero"]);
+    expect(rows[0].empty).toBe(true);
+    expect(rows[0].failed).toBeUndefined();
+  });
   it("不同 query_key 的两次文献检索各占一行（范围/筛选可区分，C04 验收）", () => {
     const rows = mergeEvidence(
       [cache({ id: "cs1", tool: "search_literature",

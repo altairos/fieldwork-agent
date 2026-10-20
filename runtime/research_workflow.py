@@ -26,10 +26,13 @@ def bind_research_searches(dispatch, repo, pid: str, *, context_provider=None,
             # 与缓存行跨层配对（证据页单行），turn_id/query_key 支撑时间归属与
             # 同题折叠。current_call_id 由 web loop 的 _exec_tool set（线程内可读），
             # CLI 宿主未 set 时为 ""，行为与旧版一致。
+            # C04：query_key 纳入范围指纹——同一检索参数在不同研究范围下各成一
+            # 条快照（否则同题折叠会把跨范围的旧结果吞掉）；与 page.scope_fingerprint
+            # 共用同一个 fingerprint 变量，避免两处各算一遍而漂移。
             cid = repo.cache_search(
                 pid, label, name, page.model_dump(mode="json"),
                 parent_call_id=current_call_id.get(""), turn_id=turn_id,
-                query_key=f"{name}|{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}",
+                query_key=f"{name}|{fingerprint}|{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}",
             )
             if on_snapshot:
                 on_snapshot(cid)

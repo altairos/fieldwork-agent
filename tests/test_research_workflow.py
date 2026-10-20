@@ -334,9 +334,11 @@ def test_literature_snapshot_carries_call_metadata(tmp_path):
 
     repo = JsonRepository(projects_dir=tmp_path / "projects")
     repo.create("p1")
+    snapshots: list[str] = []
     wrapped = bind_research_searches(
         _fake_dispatch, repo, "p1",
-        context_provider=lambda: {"topic": "宗族变迁"}, turn_id="t1")
+        context_provider=lambda: {"topic": "宗族变迁"}, turn_id="t1",
+        on_snapshot=snapshots.append)
     token = current_call_id.set("lit-1")
     try:
         env = wrapped("search_literature", {"query": "宗族"})
@@ -347,4 +349,35 @@ def test_literature_snapshot_carries_call_metadata(tmp_path):
     assert row["tool"] == "search_literature"
     assert row["parent_call_id"] == "lit-1"   # 修复前为 ""，实时↔缓存无法配对
     assert row["turn_id"] == "t1"
-    assert row["query_key"] == 'search_literature|{"query": "宗族"}'
+    # on_snapshot 回传的 cid 就是索引里的那一条（web loop 用它拼 turn_done.snapshot_ids）
+    assert snapshots == [row["id"]]
+    # C04：query_key 形如 名称|范围指纹|参数；指纹取快照自身的 scope_fingerprint，
+    # 证明 query_key 与 page.scope_fingerprint 同源（不硬编码不可预测的 hash）。
+    record = repo.get_cached_search("p1", row["id"])
+    fp = record["result"]["scope_fingerprint"]
+    assert row["query_key"] == f"search_literature|{fp}|" + '{"query": "宗族"}'
+
+
+def test_query_key_distinguishes_research_scope(tmp_path):
+    """C04：同参检索在切换研究范围后各成一键，不被 C02 同题折叠吞掉。"""
+    from fieldwork_agent.kernel.models import Envelope, LiteraturePage
+    from fieldwork_agent.kernel.repository.json_repo import JsonRepository
+    from fieldwork_agent.runtime.research_workflow import bind_research_searches
+
+    def _fake_dispatch(name, args):
+        return Envelope(ok=True, data=LiteraturePage(total=1, returned_count=1))
+
+    repo = JsonRepository(projects_dir=tmp_path / "projects")
+    repo.create("p1")
+    contexts = iter([{"topic": "宗族"}, {"topic": "学校"}])
+    wrapped = bind_research_searches(
+        _fake_dispatch, repo, "p1",
+        context_provider=lambda: next(contexts), turn_id="t1")
+    wrapped("search_literature", {"query": "宗族"})
+    wrapped("search_literature", {"query": "宗族"})
+    rows = repo.list_cached_searches("p1")
+    assert len(rows) == 2
+    assert len({row["query_key"] for row in rows}) == 2
+    for row in rows:
+        fp = repo.get_cached_search("p1", row["id"])["result"]["scope_fingerprint"]
+        assert row["query_key"].startswith(f"search_literature|{fp}|")

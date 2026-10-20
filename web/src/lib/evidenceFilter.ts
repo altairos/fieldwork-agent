@@ -85,7 +85,8 @@ export function mergeEvidence(
 ): EvidenceRow[] {
   // 准入（C2/C7-1/C7-2）：只收 collapsed 级（Task 9 重分类后）且有专用卡
   // （Fallback=裸 JSON，剔除）、索引已判空的不入（empty===true 剔除；null=
-  // 旧库 unknown 不预过滤，R12）；未注册工具默认不入（不臆造展示）
+  // 旧库 unknown 不预过滤，R12）；未注册工具默认不入（不臆造展示）。
+  // C05 例外：文献检索的空结果仍入列——卡片空态自带补检入口，是用户唯一可复检处
   const cacheAdmitted = cached.filter(
     (c) => visibilityOf(c.tool) === "collapsed"
       // C05：文献空结果仍入列（卡片空态带补检入口）；其余工具维持剔除
@@ -134,8 +135,9 @@ export function mergeEvidence(
     );
     if (hit) {
       pairedLiveKeys.add(t.call_id);
-      continue;  // 缓存已覆盖该调用；无缓存的失败调用在准入已剔除（C7-3），
-                 // 不产生占位——R4「成功不被失败遮掉」由此更强地成立
+      continue;  // 缓存已覆盖该调用；未覆盖的失败调用在准入已剔除（C7-3），
+                 // 不产生占位——R4「成功不被失败遮掉」由此更强地成立。
+                 // C05 例外：文献失败行在准入保留，无缓存覆盖时会单列（补检入口）
     }
   }
 
@@ -145,7 +147,7 @@ export function mergeEvidence(
       key: t.call_id, tool: t.tool, query: liveQuery(t.args),
       origin: "live", callId: t.call_id, turnId: t.turnId, seq: t.seq,
       empty: liveIsEmpty(t) || undefined,
-      failed: t.status === "failed" || undefined,
+      failed: (t.status === "failed" && !liveIsEmpty(t)) || undefined,
       truncated: undefined, total: undefined,
     }));
 

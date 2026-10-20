@@ -74,7 +74,8 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
         <div className="hairline rounded-lg bg-card px-3 py-6 text-center">
           <p className="text-[12.5px] text-inksoft">暂无可展示的检索结果</p>
           <p className="mt-1 text-[11.5px] text-inkfaint">
-            随对话推进，工具检索证据会自动归档在此；内部管线与空结果已自动过滤。
+            随对话推进，工具检索证据会自动归档在此；内部管线已自动过滤，
+            文献检索的空结果会保留（卡片内可直接补检）。
           </p>
         </div>
       </div>
