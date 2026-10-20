@@ -57,10 +57,10 @@ test("移动端冒烟：单栏无横溢 + 汉堡抽屉开关 + 右栏折叠面�
   // 展开过面板后仍无横向溢出
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-  // ④ 提案页单栏：八章导航可见（左栏限高容器内）+ 无横溢。导航项与正文 h2 同文案，
-  //    scope 到 ChapterNav nav 避免严格模式双匹配（同 fieldwork.spec ⑥）
-  const url = new URL(page.url());
-  await page.goto(`${url.origin}${url.pathname}/proposal`);
+  // ④ 提案页单栏：点 Header 视图 tab 走 SPA（整页 goto 会触发匿名清理，项目被删后 404）。
+  //   导航项与正文 h2 同文案，scope 到 ChapterNav nav 避免严格模式双匹配
+  await page.getByRole("tab", { name: "方案草稿" }).click();
+  await expect(page).toHaveURL(/\/proposal$/);
   const nav = page.getByRole("navigation", { name: "提案章节导航" });
   await expect(nav.getByText("一 · 选题依据")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

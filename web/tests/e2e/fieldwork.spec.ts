@@ -58,9 +58,11 @@ test("L4 完整剧本：新建项目→工作台回合→工具卡价格→阶�
   // ⑤ 断言阶段推进（SSE phase_transition → field_site_profiles；PhaseBanner 主文切到「阶段 B · 田野点画像」）
   await expect(page.getByText("阶段 B · 田野点画像")).toBeVisible({ timeout: 15_000 });
 
-  // ⑥ 提案：导航到 /p/:id/proposal
-  const url = new URL(page.url());
-  await page.goto(`${url.origin}${url.pathname}/proposal`);
+  // ⑥ 提案：点 Header 视图 tab 走 SPA 进入 /p/:id/proposal。
+  //   不能用整页 goto：匿名会话「离开即清记录」（useDisposeGuestProject）会在 pagehide 删项目，
+  //   整页跳转后再加载该项目只能 404。站内切视图本来就该走路由，不重建文档。
+  await page.getByRole("tab", { name: "方案草稿" }).click();
+  await expect(page).toHaveURL(/\/proposal$/);
   // 八章导航可见（ChapterNav nav；正文 h2 同款文案在 nav 外，scope 到 nav 内避免 strict 双匹配）
   const nav = page.getByRole("navigation", { name: "提案章节导航" });
   await expect(nav.getByText("一 · 选题依据")).toBeVisible();

@@ -30,7 +30,7 @@ test.afterAll(async () => {
   await setMockSettings({ dashscope_configured: true, flyai_configured: true });
 });
 
-test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发送", async ({ page }) => {
+test("无 key：可浏览不可发；工作台登录窗保存后解锁并携带鉴权头发送", async ({ page }) => {
   // 翻转 mock 为「服务端未配」，模拟无环境变量部署
   await setMockSettings({ dashscope_configured: false, flyai_configured: false });
 
@@ -40,7 +40,6 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   await page.locator("textarea").first().fill("研究大理乡村旅居，单人两周，预算一万元");
   await page.getByRole("button", { name: "创建项目" }).click();
   await expect(page).toHaveURL(/\/p\/[^/]+/, { timeout: 10_000 });
-  const projectUrl = page.url();
   // 可浏览：快照加载（Header 项目名来自 research_context.topic；归属相符即 fakeSnapshot）。
   //   getByText 会同时命中右栏「研究主题」textarea 的同值 value（Playwright 按 value 匹配），
   //   scope 到 banner 消歧（目标断言就是 Header 项目名）
@@ -50,22 +49,20 @@ test("无 key：可浏览不可发；首页保存后解锁并携带鉴权头发�
   await expect(page.getByTestId("composer-lock-hint")).toContainText("未配置百炼 API Key");
   await expect(page.getByRole("button", { name: "发送" })).toBeDisabled();
 
-  // ② 首页登录窗（顶栏「登录」入口 → AuthDialog）：展开「高级 · API 密钥」折叠区，
-  //    保存 key → 徽标翻转「浏览器已存」。password 输入用 label 消歧——弹窗
-  //    登录密码框与密钥字段同为 password 型，input[type].first() 会命中密码框
-  await page.goto("/");
-  await page.getByRole("button", { name: "登录", exact: true }).click();
+  // ② 工作台内配 Key：锁提示里的入口直接打开登录窗，并展开「高级 · API 密钥」（initialKeysOpen）。
+  //    不再「回首页配完再 goto 回来」——匿名会话离开即清记录（useDisposeGuestProject），
+  //    整页跳转会把项目删掉，回不来；首页入口现在只对登录用户有意义。
+  //    password 输入用 label 消歧（登录密码框同为 password 型）
+  await page.getByRole("button", { name: /在登录窗/ }).click();
   const dialog = page.getByRole("dialog", { name: "登录或注册" });
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "高级 · API 密钥" }).click();
   await dialog.getByLabel(/百炼 API Key/).fill("sk-e2e-dashscope");
   await dialog.getByRole("button", { name: "保存" }).click();
   await expect(dialog.getByText("浏览器已存").first()).toBeVisible();
   await expect(dialog.getByText("已保存")).toBeVisible();
 
-  // ③ 返回工作台：解锁（本地 key 优先生效，免查直通）→ 发送并断言鉴权头
-  await page.goto(projectUrl);
-  await expect(page.getByRole("banner").getByText("大理乡村旅居研究")).toBeVisible();
+  // ③ 关窗即解锁（useAuthGate.closeAuthDialog 复查本地 key，免查直通）→ 发送并断言鉴权头
+  await dialog.getByRole("button", { name: "关闭" }).click();
   await expect(page.getByLabel("消息输入")).toBeEnabled();
 
   const headersSeen: Record<string, string> = {};
