@@ -65,7 +65,8 @@ def _researcher_nonempty(ctx: ResearchContext) -> bool:
         return True
     fields = (ctx.discipline, ctx.topic, ctx.site_status, ctx.scale, ctx.budget,
               ctx.time_window, ctx.departure_city, ctx.target_location, ctx.travel_date,
-              ctx.purpose, ctx.research_questions)
+              ctx.purpose, ctx.research_questions, ctx.research_orientation,
+              ctx.target_institution, ctx.target_department, ctx.target_degree, ctx.target_advisor)
     return any(str(v).strip() for v in fields)
 
 
@@ -75,6 +76,11 @@ def _bullets_researcher(ctx: ResearchContext) -> list[str]:
         ("学科", ctx.discipline),
         ("研究主题", ctx.topic),
         ("研究问题", ctx.research_questions),
+        ("学术取向", ctx.research_orientation),
+        ("目标院校", ctx.target_institution),
+        ("目标院系", ctx.target_department),
+        ("目标学位", ctx.target_degree),
+        ("目标导师", ctx.target_advisor),
         ("输出用途", ctx.purpose),
         ("田野点确定度", ctx.site_status),
         ("调研规模", ctx.scale),

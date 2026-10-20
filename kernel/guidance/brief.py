@@ -21,7 +21,8 @@ def build_project_brief(state: dict, *,
     filled = [f"{k}={getattr(ctx, k)}" for k in (
         "discipline", "topic", "site_status", "scale", "budget", "time_window",
         "departure_city", "target_location", "travel_date", "purpose",
-        "research_questions")
+        "research_questions", "research_orientation", "target_institution",
+        "target_department", "target_degree", "target_advisor")
         if str(getattr(ctx, k) or "").strip()]
     filled += [f"{k}={v}" for k, v in (ctx.extras or {}).items()]
     lines.append("研究定位：" + ("；".join(filled) if filled else "（空）"))

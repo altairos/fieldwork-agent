@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "kind": "development_regression",
+  "cases": [
+    {
+      "id": "academic-01",
+      "message": "我的取向是华南学派，想申请香港中文大学历史系。",
+      "existing": {},
+      "expected": {
+        "research_orientation": "华南学派",
+        "target_institution": "香港中文大学",
+        "target_department": "历史系"
+      },
+      "forbidden": [
+        "target_location",
+        "extras.region",
+        "discipline"
+      ]
+    },
+    {
+      "id": "academic-02",
+      "message": "我的取向是华南学派，但研究华北。",
+      "existing": {},
+      "expected": {
+        "research_orientation": "华南学派",
+        "extras.region": "华北"
+      },
+      "forbidden": [
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-03",
+      "message": "申请香港中文大学历史系，田野在福建。",
+      "existing": {},
+      "expected": {
+        "target_institution": "香港中文大学",
+        "target_department": "历史系",
+        "target_location": "福建",
+        "extras.region": "福建"
+      },
+      "forbidden": []
+    },
+    {
+      "id": "academic-04",
+      "message": "想申请港中文历史系博士。",
+      "existing": {},
+      "expected": {
+        "target_institution": "港中文",
+        "target_degree": "博士"
+      },
+      "forbidden": [
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-05",
+      "message": "想申请中大。",
+      "existing": {},
+      "expected": {
+        "target_institution": "中大"
+      },
+      "forbidden": [
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-06",
+      "message": "准备申请CUHK。",
+      "existing": {},
+      "expected": {
+        "target_institution": "CUHK"
+      },
+      "forbidden": [
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-07",
+      "message": "我是历史学博士生。",
+      "existing": {},
+      "expected": {
+        "discipline": "历史学"
+      },
+      "forbidden": [
+        "target_degree"
+      ]
+    },
+    {
+      "id": "academic-08",
+      "message": "我不是华南学派。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "research_orientation",
+        "extras.region"
+      ]
+    },
+    {
+      "id": "academic-09",
+      "message": "是否申请香港中文大学？",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "target_institution",
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-10",
+      "message": "不申请北京大学。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "target_institution",
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-11",
+      "message": "如果申请香港中文大学历史系呢？",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "target_institution",
+        "target_department"
+      ]
+    },
+    {
+      "id": "academic-12",
+      "message": "读过《香港社会史》，取向是华南学派。",
+      "existing": {},
+      "expected": {
+        "research_orientation": "华南学派"
+      },
+      "forbidden": [
+        "target_location",
+        "extras.region"
+      ]
+    },
+    {
+      "id": "academic-13",
+      "message": "想申请香港中文大学历史系，从北京出发去福州访谈。",
+      "existing": {},
+      "expected": {
+        "target_institution": "香港中文大学",
+        "departure_city": "北京",
+        "target_location": "福州"
+      },
+      "forbidden": []
+    },
+    {
+      "id": "academic-14",
+      "message": "目标导师是陈老师。",
+      "existing": {},
+      "expected": {
+        "target_advisor": "陈老师"
+      },
+      "forbidden": []
+    },
+    {
+      "id": "academic-15",
+      "message": "请推荐一位目标导师。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "target_advisor"
+      ]
+    },
+    {
+      "id": "academic-16",
+      "message": "她的取向是华南学派。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "research_orientation",
+        "extras.region"
+      ]
+    },
+    {
+      "id": "academic-17",
+      "message": "老师建议我申请北京大学。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "target_institution",
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-18",
+      "message": "我考虑申请香港中文大学。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "target_institution",
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-19",
+      "message": "目标院校是University of Oxford。",
+      "existing": {},
+      "expected": {
+        "target_institution": "University of Oxford"
+      },
+      "forbidden": [
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-20",
+      "message": "目標院校是香港中文大學歷史學系。",
+      "existing": {},
+      "expected": {
+        "target_institution": "香港中文大學",
+        "target_department": "歷史學系"
+      },
+      "forbidden": [
+        "target_location"
+      ]
+    },
+    {
+      "id": "academic-21",
+      "message": "目標學位是碩士。",
+      "existing": {},
+      "expected": {
+        "target_degree": "碩士"
+      },
+      "forbidden": []
+    },
+    {
+      "id": "academic-22",
+      "message": "目标院系是社会学系。",
+      "existing": {},
+      "expected": {
+        "target_department": "社会学系"
+      },
+      "forbidden": []
+    },
+    {
+      "id": "academic-23",
+      "message": "我的取向还不确定。",
+      "existing": {},
+      "expected": {},
+      "forbidden": [
+        "research_orientation"
+      ]
+    },
+    {
+      "id": "academic-24",
+      "message": "取消目标导师。",
+      "existing": {},
+      "expected": {
+        "target_advisor": ""
+      },
+      "forbidden": []
+    },
+    {
+      "id": "academic-25",
+      "message": "申请香港中文大学，从上海出发去福州，田野在福建。",
+      "existing": {},
+      "expected": {
+        "target_institution": "香港中文大学",
+        "departure_city": "上海",
+        "target_location": "福建"
+      },
+      "forbidden": []
+    }
+  ]
+}

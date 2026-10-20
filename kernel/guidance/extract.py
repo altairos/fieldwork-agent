@@ -1,6 +1,6 @@
 """消息信息提取纯函数 — 迁移自 ``core/dialogue_engine.py`` 的两个提取方法。
 
-行为与引擎实现等价（同样的城市/省份词表与正则模式），改动仅三处：
+城市/省份词表与既有增量槽位沿用旧实现；学术背景另走保守规则与专名地点保护：
 - 去掉 ``self`` 与 ``ProjectState`` 依赖，改为模块级纯函数；
 - 原实现中反复出现的“按词表顺序找第一个命中词”循环抽为 ``_first_match``，
   城市/省份词表升为模块常量；
@@ -13,6 +13,8 @@
 """
 
 import re
+
+from fieldwork_agent.kernel.guidance.academic import academic_context_patch, location_text
 
 # 中文城市/地名列表（用于匹配）
 KNOWN_CITIES: list[str] = [
@@ -51,15 +53,17 @@ def _first_match(text: str, words: list[str]) -> str | None:
 def extract_locations(message: str, existing: dict) -> dict[str, str]:
     """从消息中提取出发城市与目的地；``existing`` 已有的键不再生成。"""
     locations: dict[str, str] = {}
+    message = location_text(message)
 
     # ─── 提取目的地 ──────────────────────
     if not existing.get("target_location"):
-        dest_found = None
+        m = re.search(r"(?:田野(?:点|地点)?|调研地点|调查地点)(?:在|是|设在|：|:)\s*([^,，。；;]+)", message)
+        dest_found = _first_match(m.group(1), KNOWN_CITIES + PROVINCES) if m else None
 
         # 模式1: "到/去/前往 + 地名"
         m = re.search(r"(?:到|去|前往|visiting)\s*([^\s,，。]+)", message)
-        if m:
-            dest_found = _first_match(m.group(1), KNOWN_CITIES)
+        if m and not dest_found:
+            dest_found = _first_match(m.group(1), KNOWN_CITIES + PROVINCES)
 
         # 模式2: "地名 + 的 + 村落/社区/乡镇"
         if not dest_found:
@@ -67,7 +71,7 @@ def extract_locations(message: str, existing: dict) -> dict[str, str]:
             if m:
                 dest_found = _first_match(m.group(1), KNOWN_CITIES)
 
-        # 模式3: 直接匹配已知城市列表
+        # 模式3: 直接匹配已知城市列表（学术专名已遮蔽）。
         if not dest_found:
             dest_found = _first_match(message, KNOWN_CITIES)
 
@@ -104,15 +108,21 @@ def extract_researcher_info(message: str) -> dict:
     """
     info: dict[str, str] = {}
     lower = message.lower()
+    semantic_text = location_text(message)
 
     # 学科
-    if "人类学" in message or "anthropology" in lower:
+    discipline_text = re.sub(
+        r"[^,，。；;]*(?:申请|申請|报考|報考|取向|传统|傳統|目标院系|目標院系|目标学位|目標學位|目标导师|目標導師)[^,，。；;]*",
+        "", semantic_text)
+    if "人类学" in discipline_text or "anthropology" in discipline_text.lower():
         info["discipline"] = "人类学"
-    elif "社会学" in message or "sociology" in lower:
+    elif "社会学" in discipline_text or "sociology" in discipline_text.lower():
         info["discipline"] = "社会学"
-    elif "政治学" in message or "politics" in lower:
+    elif "政治学" in discipline_text or "politics" in discipline_text.lower():
         info["discipline"] = "政治学"
-    elif "跨学科" in message or "interdisciplinary" in lower:
+    elif "历史学" in discipline_text or "歷史學" in discipline_text or "history" in discipline_text.lower():
+        info["discipline"] = "历史学"
+    elif "跨学科" in discipline_text or "interdisciplinary" in discipline_text.lower():
         info["discipline"] = "跨学科"
 
     # 调研规模
@@ -144,7 +154,7 @@ def extract_researcher_info(message: str) -> dict:
         info["purpose"] = "global"
 
     # 地点关键词提取
-    region = _first_match(message, _REGION_PLACES)
+    region = _first_match(semantic_text, _REGION_PLACES)
     if region:
         info["extras.region"] = region
 
@@ -177,9 +187,8 @@ def extract_time_window(message: str) -> dict[str, str]:
 def apply_message_extractions(message: str, existing: dict | None = None) -> dict:
     """组合抽取器（CLI/Web 共用，F03 基石）：locations + researcher_info + time_window。
 
-    返回**增量** patch：``existing`` 已填的平铺键不覆盖（与 CLI ``_apply_extract``
-    原语义一致）；``extras.*`` 点号键按 ``existing["extras"][suffix]`` 判填后保留
-    点号形式返回，由宿主拆分落盘。
+    旧槽位返回增量 patch，已填值不覆盖；``extras.*`` 保留点号形式交宿主合并。
+    明确表达的学术背景允许更正或撤回，不自动修改既有地点。
     """
     existing = existing or {}
     extras_existing = existing.get("extras") or {}
@@ -194,4 +203,6 @@ def apply_message_extractions(message: str, existing: dict | None = None) -> dic
     for key, value in extract_time_window(message).items():
         if not str(existing.get(key, "")).strip():
             found[key] = value
+    # 学术背景只从明确表达提取，允许完整更正与显式撤回；其他旧槽位仍保持增量语义。
+    found.update(academic_context_patch(message, existing))
     return found

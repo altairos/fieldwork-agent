@@ -45,6 +45,20 @@ def test_update_context_and_advance(tmp_path):
     assert r["data"]["to_phase"] == "field_site_profiles"
 
 
+def test_academic_context_and_clear_use_shared_contract(tmp_path):
+    h = build_handlers(make_repo(tmp_path))
+    h["create_project"](project_id="p1")
+    result = h["update_research_context"](project_id="p1", patch={
+        "research_orientation": "华南学派", "target_institution": "中大", "target_advisor": "陈老师",
+    })
+    assert result["ok"]
+    result = h["update_research_context"](project_id="p1", patch={"clear_fields": ["target_advisor"]})
+    assert result["ok"]
+    assert result["data"]["target_advisor"] == ""
+    assert result["data"]["target_institution"] == "中大"
+    assert "clear_fields" not in result["data"]
+
+
 def test_unknown_project_is_error_not_crash(tmp_path):
     h = build_handlers(make_repo(tmp_path))
     out = h["get_project"](project_id="ghost")

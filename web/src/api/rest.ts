@@ -183,7 +183,7 @@ export const rest = {
   updateKnowledge: (id: string, entryId: string, patch: { title?: string; content?: string }) =>
     req<KnowledgeEntry>(`/projects/${id}/knowledge/${entryId}`, { method: "PUT", body: JSON.stringify(patch) }),
   // ---- 状态修正与确认（web_host/api/state.py，审计 F03/F04 修正入口）----
-  updateResearchContext: (id: string, patch: Record<string, string | boolean>) =>
+  updateResearchContext: (id: string, patch: Record<string, string | boolean | string[]>) =>
     req<{ research_context: Partial<ResearchContext>; phase_transition: PhaseTransition | null }>(
       `/projects/${id}/research-context`, { method: "PUT", body: JSON.stringify(patch) }),
   confirmFieldSite: (id: string, siteId: string) =>

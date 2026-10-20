@@ -40,6 +40,48 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+test("学术背景编辑和撤回：清空导师显式上行，保留院校与田野地点", async () => {
+  useProjectStore.getState().loadSnapshot({ ...SNAP, research_context: {
+    target_advisor: "陈老师", target_institution: "中大", target_location: "福建",
+  } });
+  const calls = stubFetch([
+    { research_context: { target_advisor: "", target_institution: "中大", target_location: "福建" } },
+    { ...SNAP, research_context: { target_advisor: "", target_institution: "中大", target_location: "福建" } },
+  ]);
+  render(<BasicInfoPanel />);
+  expect(screen.getByLabelText("目标院校")).toHaveValue("中大");
+  expect(screen.getByLabelText("目标地点")).toHaveValue("福建");
+  fireEvent.change(screen.getByLabelText("目标导师"), { target: { value: "" } });
+  fireEvent.click(screen.getByText("保存修正"));
+  await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+  const patch = JSON.parse(String(calls[0].init?.body));
+  expect(patch.clear_fields).toEqual(["target_advisor"]);
+  expect(patch).not.toHaveProperty("target_advisor");
+  expect(patch.target_institution).toBe("中大");
+  expect(patch.target_location).toBe("福建");
+  await waitFor(() => expect(useProjectStore.getState().snapshot?.research_context.target_advisor).toBe(""));
+});
+
+test("编辑期间刷新增加学术字段，不因未触碰的空草稿撤回新值", async () => {
+  useProjectStore.getState().loadSnapshot({ ...SNAP, research_context: { budget: "1万" } });
+  const calls = stubFetch([
+    { research_context: { budget: "2万", target_advisor: "陈老师" } },
+    { ...SNAP, research_context: { budget: "2万", target_advisor: "陈老师" } },
+  ]);
+  const { rerender } = render(<BasicInfoPanel />);
+  fireEvent.change(screen.getByLabelText("预算"), { target: { value: "2万" } });
+  useProjectStore.getState().loadSnapshot({ ...SNAP, research_context: {
+    budget: "1万", target_advisor: "陈老师",
+  } });
+  rerender(<BasicInfoPanel />);
+  fireEvent.click(screen.getByText("保存修正"));
+  await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+  const patch = JSON.parse(String(calls[0].init?.body));
+  expect(patch).not.toHaveProperty("clear_fields");
+  expect(patch).not.toHaveProperty("target_advisor");
+  await waitFor(() => expect(useProjectStore.getState().snapshot?.research_context.target_advisor).toBe("陈老师"));
+});
+
 describe("InformantCard cardActions 注入", () => {
   test("传入 cardActions 时每张候选小卡渲染操作区；不传不渲染", () => {
     const { rerender } = render(

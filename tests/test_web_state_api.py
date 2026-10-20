@@ -34,6 +34,24 @@ async def test_update_research_context(client):
     assert ctx["budget"] == "5万" and ctx["scale"] == "两人同行"
 
 
+async def test_academic_context_and_explicit_clear(client):
+    result = await client.put("/projects/p1/research-context", json={
+        "research_orientation": "华南学派", "target_institution": "中大",
+        "target_department": "历史系", "target_degree": "博士", "target_advisor": "陈老师",
+    })
+    assert result.status_code == 200
+    assert result.json()["research_context"]["target_institution"] == "中大"
+    cleared = await client.put("/projects/p1/research-context", json={"clear_fields": ["target_advisor"]})
+    assert cleared.status_code == 200
+    assert cleared.json()["research_context"]["target_advisor"] == ""
+    invalid = await client.put("/projects/p1/research-context", json={
+        "budget": "5万", "clear_fields": ["target_location"],
+    })
+    assert invalid.status_code == 422
+    current = await client.get("/projects/p1")
+    assert current.json()["research_context"].get("budget", "") != "5万"
+
+
 async def test_structured_research_state_is_available_through_rest(client):
     result = await client.put("/projects/p1/research-context", json={
         "topic": "宗族", "research_questions": "成员如何协商公共事务？",

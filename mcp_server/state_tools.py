@@ -265,7 +265,10 @@ STATE_TOOLS: list[Tool] = [
                      "用户已明确陈述的研究事实（目的地/时长/日期等）应在本轮立即写入持久化，"
                      "不要只在回复中口头复述。research_notes保存有origin/status/basis/references的候选、"
                      "文献缺口与否定方向，按id增量更新，不自动采纳；interview_state保存焦点、未解决疑问"
-                     "与deferred_fields，避免重复追问。",
+                     "与deferred_fields，避免重复追问。"
+                     "学术背景分别写research_orientation/target_institution/target_department/"
+                     "target_degree/target_advisor，院校不是田野地点；保留歧义简称原表达。"
+                     "用户明确撤回时用clear_fields清空对应学术字段，不能保存模型推荐为用户选择。",
          inputSchema={"type": "object",
                       "properties": {"project_id": _PID,
                                      "patch": {**context_patch_schema(),
