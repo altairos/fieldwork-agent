@@ -18,20 +18,24 @@
 - **读时补齐/归一**：新增状态键自动补默认值；旧缓存文件的 ``source_tool`` 读作 ``tool``；
   旧 ``proposal_draft`` / ``final_proposal`` 单值键并入 ``list_proposals``；
 - **不写旧键**：新文档只进 ``proposals[]``，不再回写 ``proposal_draft``（避免双轨真源）；
-- **per-pid 进程内锁（R11）**：同一项目的所有「读-改-写」变更方法在 ``_lock_for(pid)``
-  内串行完成 load→改→save，防并发整份写回把他人已保存的字段（如 owner）回退为旧
-  快照值；纯读方法与 ``create``/``delete_project`` 不包裹（非既有 state 的读改写）。
+- **per-pid 双层锁（R11 + A08）**：同一项目的所有「读-改-写」变更方法在 ``_lock_for(pid)``
+  内串行完成 load→改→save——进程内是 threading.Lock，跨进程/跨实例是
+  ``{root}/.locks/<pid>.lock`` 文件锁；纯读方法与 ``create``/``delete_project``
+  不包裹（非既有 state 的读改写）。
 """
 
+import itertools
 import json
 import os
 import shutil
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from fieldwork_agent.kernel.guidance.phases import PHASES
+from fieldwork_agent.kernel.identity.crypto import FileLock
 from fieldwork_agent.kernel.models import ConfirmationRecord
 from fieldwork_agent.kernel.repository.cache_summary import result_summary
 from fieldwork_agent.kernel.repository.confirm_hash import (
@@ -100,6 +104,9 @@ def _default_state(project_id: str) -> dict:
     }
 
 
+_TMP_SEQ = itertools.count()   # 原子落盘临时文件序号（A08：pid+序号保证唯一）
+
+
 class JsonRepository:
     """以 JSON 文件树为后端的持久化实现（里程碑 1 默认启用，见 spec §5.1）。"""
 
@@ -109,18 +116,27 @@ class JsonRepository:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
-    def _lock_for(self, pid: str) -> threading.Lock:
-        """取（并惰性建）该项目的进程内互斥锁：同 pid 恒返回同一把。
+    @contextmanager
+    def _lock_for(self, pid: str):
+        """同一项目的写操作串行：进程内互斥 + 跨进程文件锁（A08）。
 
-        所有「读-改-写整份 state」的变更方法必须持锁完成 load→改→save，
-        保证同一 pid 的写串行（R11）。锁不可重入：被包裹的方法之间不得
-        相互调用（现有代码只调私有工具与纯读公开方法，安全）。
+        R11 的 threading.Lock 只覆盖同一实例内的线程；REST 与 MCP 虽共享
+        实例，但 CLI/脚本可能另起进程打开同一项目——两层锁叠加后 load→改→
+        save 在进程间也互斥，避免整份 state 回写把他人刚保存的字段退回旧
+        快照。锁文件放 ``{root}/.locks/``：不随项目删除（否则删项目时会撞
+        Windows 对已打开文件的删除限制），list_projects 只认含 state.json
+        的目录，不会把它当项目。
+
+        非重入：被包裹的方法之间不得相互调用（同 R11 约定）。
         """
         with self._locks_guard:
             lock = self._locks.get(pid)
             if lock is None:
                 lock = self._locks[pid] = threading.Lock()
-            return lock
+        with lock:
+            with FileLock(self._projects_dir / ".locks" / f"{pid}.lock",
+                          timeout=30.0):
+                yield
 
     # ------------------------------------------------------------------ 内部工具
 
@@ -178,13 +194,24 @@ class JsonRepository:
 
     @staticmethod
     def _write_json(path: Path, payload: dict) -> None:
-        """原子落盘：先写 tmp 再 os.replace（Windows 同卷可覆盖既有文件）。"""
+        """原子落盘：唯一临时文件 + os.replace（Windows 同卷可覆盖）。
+
+        tmp 名带 pid+进程内序号：固定名 ``state.json.tmp`` 在两个实例同时写时
+        会互相踩写，且 Windows 上并发 os.replace 直接抛 PermissionError（A08）。
+        不用 uuid：uuid4 被业务 ID 生成与测试序列共用，临时文件名不得消耗它。
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.parent / (path.name + ".tmp")
-        tmp.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        os.replace(tmp, path)
+        tmp = path.parent / f".{path.name}.{os.getpid()}.{next(_TMP_SEQ)}.tmp"
+        try:
+            tmp.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            os.replace(tmp, path)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     def _read_chat_log(self, pid: str) -> list[dict]:
         """读全量消息史；坏行跳过（旧文件可能因进程中断留下半行）。"""

@@ -542,3 +542,56 @@ class TestContract:
             t.join()
         assert sorted(results) == [False, True]   # 恰好一个成功
         assert repo.get_state("c2")["owner"] in ("user:a", "user:b")
+
+    # ---------------------------------------------------------------- 跨实例并发（A08）
+
+    def test_concurrent_ctx_patch_across_instances_keeps_both(self, repo_factory, tmp_path):
+        """A08：REST 与 MCP/CLI 可能各持一个仓储实例——跨实例并发写不得丢更新。
+
+        同一实例内的线程由 R11 进程内锁串行；跨实例（含跨进程）必须靠存储层
+        自身的互斥：Json 用文件锁、Sqlite 用 BEGIN IMMEDIATE。实现中立：只用
+        Protocol 方法断言最终状态。
+        """
+        first = repo_factory(tmp_path)
+        first.create("pc")
+        second = repo_factory(tmp_path)
+        barrier = threading.Barrier(2, timeout=10)
+
+        def patch(repo, key):
+            barrier.wait()
+            for i in range(40):
+                repo.update_research_context("pc", {key: i})
+
+        threads = [threading.Thread(target=patch, args=(first, "topic")),
+                   threading.Thread(target=patch, args=(second, "budget"))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        ctx = first.get_research_context("pc")
+        assert ctx["topic"] == 39, "跨实例写丢掉了 topic 的最终值"
+        assert ctx["budget"] == 39, "跨实例写丢掉了 budget 的最终值"
+
+    def test_concurrent_append_across_instances_keeps_all(self, repo_factory, tmp_path):
+        """A08：两个实例同时 append_message，全量史一条不丢、不重。"""
+        first = repo_factory(tmp_path)
+        first.create("pa")
+        second = repo_factory(tmp_path)
+        barrier = threading.Barrier(2, timeout=10)
+
+        def append(repo, tag):
+            barrier.wait()
+            for i in range(30):
+                repo.append_message("pa", "user", f"{tag}-{i}")
+
+        threads = [threading.Thread(target=append, args=(first, "x")),
+                   threading.Thread(target=append, args=(second, "y"))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        contents = [m["content"] for m in first.get_messages("pa", limit=0)]
+        assert len(contents) == 60
+        assert len(set(contents)) == 60
