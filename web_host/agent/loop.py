@@ -1,6 +1,7 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
 import asyncio
 import json
+import logging
 import re
 import time
 from contextlib import suppress
@@ -40,6 +41,8 @@ from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
 from fieldwork_agent.web_host.agent.state_tools import build_state_tools
 from fieldwork_agent.web_host.turn_manager import TERMINAL_STATUSES, TurnManager
+
+_log = logging.getLogger(__name__)
 
 # 无 LLM 降级提示：web 宿主无启动横幅渠道，提示附在回复末尾（CLI 宿主用启动横幅呈现）
 _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
@@ -134,6 +137,14 @@ def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
     return handle.cancel_event.is_set() or (time.monotonic() - start) > max_wall_seconds
 
 
+def _owner_label(owner: str | None) -> str:
+    """日志用归属标签（A06）：只留命名空间（user/anon），绝不落令牌。"""
+    if not owner:
+        return "-"
+    namespace, sep, _rest = owner.partition(":")
+    return f"{namespace}:***" if sep else namespace
+
+
 def _finish_unexpected(tm: TurnManager, pid: str, turn_id: str,
                        exc: BaseException) -> None:
     """A01 兜底：把逃逸异常收敛成 failed 终态（幂等，不覆盖已有终态）。
@@ -172,6 +183,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     ``running``——SSE 只发心跳、流永不关闭，``retry`` 永久 409，只能靠进程重启
     的 ``recover_interrupted`` 恢复。本包装层就是这道兜底。
     """
+    started = time.monotonic()
+    _log.info("turn_start pid=%s turn=%s owner=%s",
+              pid, turn_id, _owner_label(owner))
     try:
         await _run_turn_impl(
             repo, pid, turn_id, user_text, tm, llm, flyai_client,
@@ -179,6 +193,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             max_tool_calls=max_tool_calls, max_wall_seconds=max_wall_seconds)
     except Exception as exc:      # noqa: BLE001 —— 兜底即本层职责；CancelledError 不在此列
         _finish_unexpected(tm, pid, turn_id, exc)
+        _log.error("turn_crashed pid=%s turn=%s exc=%r", pid, turn_id, exc)
+    finally:
+        # A06：失败回合也能按 turn_id 串起 start → 工具/LLM 埋点 → end/status
+        handle = tm.get_turn(pid, turn_id)
+        status = handle.status if handle is not None else "gone"
+        _log.info("turn_end pid=%s turn=%s status=%s duration_ms=%d",
+                  pid, turn_id, status, int((time.monotonic() - started) * 1000))
 
 
 @dataclass
@@ -234,6 +255,11 @@ class _TurnState:
     usage_total: dict = field(default_factory=dict)
 
 
+def _log_llm_request(ctx: _TurnContext, *, tools: int) -> None:
+    """A06：LLM 调用埋点（按 turn_id 把工具/持久化日志串起来）。"""
+    _log.info("llm_request turn=%s tools=%d", ctx.turn_id, tools)
+
+
 async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
                            phase: str, start: float,
                            max_iters: int, max_wall_seconds: float) -> bool:
@@ -269,6 +295,7 @@ async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
                 break
 
             # 流式 LLM
+            _log_llm_request(ctx, tools=len(ctx.tools))
             stream = ctx.llm.chat_stream(ctx.messages, tools=ctx.tools, slot="interview")
             st.iterations += 1
             final_resp = None
@@ -500,6 +527,7 @@ async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
                                "不要重复已写出的内容，不要重新开头，写完即止。"})
         cont_deltas = ""  # 续写流已流出增量：终帧空/报错/流异常三路兜底（终审 B3）
         try:
+            _log_llm_request(ctx, tools=0)
             stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
             st.iterations += 1
             final_resp = None
@@ -551,6 +579,7 @@ async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
                              reason + "请基于以上对话与工具结果，用中文给出简明的"
                                      "阶段性回答；不要再调用工具。"})
         try:
+            _log_llm_request(ctx, tools=0)
             stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
             st.iterations += 1
             final_resp = None
@@ -615,6 +644,7 @@ async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
                                "格式给出选项；不要重复已写出的内容，写完即止。"})
         comp_deltas = ""  # 补完流已流出增量：与截断续写同款三路兜底
         try:
+            _log_llm_request(ctx, tools=0)
             stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
             st.iterations += 1
             comp_resp = None
@@ -976,6 +1006,8 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
     # 继续），RecordingClient 记录时取值：sig["call_id"] 供快照 parent_call_id
     # 与工具调用配对（R13），sig["tag"] 供轮末按调用实例绑定快照（N05）
     token = current_call_id.set(call_id)
+    started = time.monotonic()
+    ok = False
     try:
         if name in local_handlers:
             # 能力工具走 dispatch（args_model 校验折 invalid_arguments）；
@@ -995,8 +1027,12 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers):
                     code="internal_error", message=str(exc)))
         else:
             env = await asyncio.to_thread(dispatch, name, args)
+        ok = bool(env.ok)
         return (call_id, name, env)
     finally:
+        # A06：每次工具调用留一条（name/call_id/成败/耗时），失败回合可回放
+        _log.info("tool_call name=%s call_id=%s ok=%s duration_ms=%d",
+                  name, call_id, ok, int((time.monotonic() - started) * 1000))
         current_call_id.reset(token)
 
 

@@ -1,6 +1,7 @@
 """FastAPI 入口：lifespan 管理单例、CORS(localhost)、路由挂载。"""
 
 import hmac
+import logging
 import os
 import shutil
 import uuid
@@ -14,6 +15,27 @@ APP_TOKEN_HEADER = "X-App-Token"
 # 受保护前缀（审计 F02 + MCP 改造2）：/projects、/settings、/mcp 全族；
 # /health、/ready 与静态前端豁免——页面要先能打开、健康探针不该被令牌拦住。
 _PROTECTED_PREFIXES = ("/projects", "/settings", "/mcp", "/auth")
+
+_LOGGING_CONFIGURED = False
+
+
+def _configure_logging() -> None:
+    """A06：给应用日志挂 stderr handler。
+
+    uvicorn 只配置自己的 logger；应用 logger 的 INFO 会因 root 无 handler 而丢失
+    （仅 WARNING+ 进 lastResort）。级别可用 ``FA_LOG_LEVEL`` 调（默认 INFO）；
+    幂等：重复 create_app 不叠加 handler。
+    """
+    global _LOGGING_CONFIGURED
+    logger = logging.getLogger("fieldwork_agent")
+    level_name = os.getenv("FA_LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, level_name, logging.INFO))
+    if not _LOGGING_CONFIGURED:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s"))
+        logger.addHandler(handler)
+        _LOGGING_CONFIGURED = True
 
 
 def _is_protected(path: str) -> bool:
@@ -73,6 +95,8 @@ def _assert_single_process(cfg) -> None:
 
 def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     from fieldwork_agent.web_host.deps import init_deps
+
+    _configure_logging()
 
     # 提前解析 cfg/repo：MCP /mcp 挂载与 Web API 必须共享同一 repo 实例
     # （JsonRepository 进程内缓存 / Sqlite 连接），lifespan 里不再各建一份
