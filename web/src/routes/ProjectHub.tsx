@@ -12,12 +12,13 @@ import type { ProjectSummary } from "../types/models";
  * 视觉中央一句话输入：kicker + 品牌「田野罗盘」+ 提示语「描述你的田野调研想法」+
  *   大输入框（Enter 创建 / Shift+Enter 换行 / IME 组合中的 Enter 不触发）+
  *   三个示例 chips（点击填入完整示例文案并聚焦输入框）。
- * 右上角常驻入口即账户区（未登录「登录」升朱砂主钮 → AuthDialog 注册/登录，
+ * 账户区：未登录时「登录」朱砂主钮居中置示例 chips 下方 → AuthDialog 注册/登录，
  *   密钥配置收进登录窗「高级 · API 密钥」折叠区，KeyDialog 退役；已登录
- *   邮箱 + 退出，账号隔离一期 Ruling P-1/P-2；导出格式在提案页下载区，
+ *   邮箱 + 退出留在右上角，账号隔离一期 Ruling P-1/P-2；导出格式在提案页下载区，
  *   配色走对话页 Header，均不放首页）。
- * 已有项目收进输入区下方折叠入口「继续先前项目（N）」（朱砂描边按钮，较文本链更显眼）：默认收起、
- *   无项目不渲染；列表加载失败如实提示但绝不阻塞创建（输入区始终可用，不等列表）。
+ * 中央下方槽位复用：未登录=「登录」朱砂主钮；已登录且有项目=「继续先前项目」折叠入口
+ *   （朱砂描边按钮，不显数量）：默认收起、无项目不渲染；列表加载失败如实提示但绝不阻塞
+ *   创建（输入区始终可用，不等列表）。
  * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
  *   首轮消息) → navigate(/p/:id?turn=…)，对话页接住回合订阅回放（不再「尚无对话」）；
  *   建回合失败不阻塞进入，降级为无 query 跳转。跨项目 reset 由 Workspace 挂载
@@ -197,32 +198,22 @@ export function ProjectHub() {
 
   return (
     <div className="min-h-full flex flex-col">
-      {/* 顶栏：常驻账户区（未登录「登录」朱砂主钮 / 已登录邮箱+退出） */}
-      <div className="flex justify-end items-center gap-2 px-4 sm:px-6 py-4">
-        {user ? (
-          <>
-            <span title={user.email} className="max-w-[14ch] truncate text-[12.5px] text-inksoft">
-              {user.email}
-            </span>
-            {/* 网络失败不打扰：本地清理已在 store 的 finally 完成 */}
-            <button
-              type="button"
-              onClick={() => void logout().catch(() => {})}
-              className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
-            >
-              退出
-            </button>
-          </>
-        ) : (
+      {/* 顶栏：仅登录态展示账户区（邮箱+退出）；未登录登录主钮移至中央示例区下方 */}
+      {user && (
+        <div className="flex justify-end items-center gap-2 px-4 sm:px-6 py-4">
+          <span title={user.email} className="max-w-[14ch] truncate text-[12.5px] text-inksoft">
+            {user.email}
+          </span>
+          {/* 网络失败不打扰：本地清理已在 store 的 finally 完成 */}
           <button
             type="button"
-            onClick={() => setAuthOpen(true)}
-            className="h-9 px-4 rounded-md bg-cinnabar text-ontint text-[12.5px] hover:bg-tintpress transition cursor-pointer"
+            onClick={() => void logout().catch(() => {})}
+            className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
           >
-            登录
+            退出
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* 中央输入区：不等项目列表，挂载即可输入 */}
       <div className="flex-1 w-full max-w-[640px] mx-auto px-4 flex flex-col justify-center pb-16">
@@ -263,9 +254,9 @@ export function ProjectHub() {
           </button>
         </div>
 
-        {/* 示例 chips：点击填入完整示例并聚焦输入框 */}
-        <div className="flex flex-wrap items-center gap-2 mt-3.5">
-          <span className="text-[11.5px] text-inkfaint">试试：</span>
+        {/* 示例 chips：点击填入完整示例并聚焦输入框（整行居中） */}
+        <div className="flex flex-wrap items-center justify-center gap-2 mt-3.5">
+          <span className="text-[11.5px] text-inkfaint">还没有想法？先随便点一个：</span>
           {EXAMPLES.map((ex) => (
             <button
               key={ex.label}
@@ -281,24 +272,31 @@ export function ProjectHub() {
           ))}
         </div>
 
-        {createError && (
-          <div className="hairline rounded-lg bg-cinnabarwash/50 text-cinnabar text-[12.5px] px-4 py-3 mt-4">
-            {createError}
-          </div>
-        )}
-
-        {/* 已有项目：低调折叠入口（默认收起；无项目不渲染；失败如实提示） */}
-        {projects !== null && projects.length > 0 ? (
-          <div className="mt-12">
+        {/* 中央槽位（登录钮与继续入口共位）：未登录=登录主钮（AuthDialog 内含注册切换与
+            密钥折叠区）；已登录且有项目=「继续先前项目」折叠入口（不显数量） */}
+        {!user ? (
+          <div className="flex justify-center mt-6">
             <button
               type="button"
-              aria-expanded={listOpen}
-              onClick={() => setListOpen((v) => !v)}
-              className="h-10 px-4 rounded-md border border-cinnabar/35 bg-cinnabarwash/60 text-cinnabar text-[13px] font-medium hover:bg-cinnabarwash hover:border-cinnabar/50 transition inline-flex items-center gap-2 cursor-pointer"
+              onClick={() => setAuthOpen(true)}
+              className="h-9 px-4 rounded-md bg-cinnabar text-ontint text-[12.5px] hover:bg-tintpress transition cursor-pointer"
             >
-              继续先前项目（{projects.length}）
-              <IconCaret className={`caret w-3.5 h-3.5 ${listOpen ? "rotate-90" : ""}`} />
+              登录
             </button>
+          </div>
+        ) : projects !== null && projects.length > 0 ? (
+          <div className="mt-6">
+            <div className="flex justify-center">
+              <button
+                type="button"
+                aria-expanded={listOpen}
+                onClick={() => setListOpen((v) => !v)}
+                className="h-10 px-4 rounded-md border border-cinnabar/35 bg-cinnabarwash/60 text-cinnabar text-[13px] font-medium hover:bg-cinnabarwash hover:border-cinnabar/50 transition inline-flex items-center gap-2 cursor-pointer"
+              >
+                继续先前项目
+                <IconCaret className={`caret w-3.5 h-3.5 ${listOpen ? "rotate-90" : ""}`} />
+              </button>
+            </div>
             {listOpen && (
               <div className="mt-3 space-y-2">
                 {projects.map((p) => (
@@ -313,9 +311,18 @@ export function ProjectHub() {
               </div>
             )}
           </div>
-        ) : listError ? (
-          <div className="mt-12 text-[12px] text-cinnabar leading-snug">{listError}</div>
         ) : null}
+
+        {createError && (
+          <div className="hairline rounded-lg bg-cinnabarwash/50 text-cinnabar text-[12.5px] px-4 py-3 mt-4">
+            {createError}
+          </div>
+        )}
+
+        {/* 列表加载失败：如实提示，不阻塞创建/登录 */}
+        {listError && (
+          <div className="mt-6 text-[12px] text-cinnabar leading-snug text-center">{listError}</div>
+        )}
       </div>
 
       <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />

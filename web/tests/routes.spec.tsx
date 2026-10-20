@@ -21,8 +21,8 @@ beforeEach(() => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 首页极简重设计：视觉中央一个输入框 + 示例 chips + 登录弹层入口；
-// 项目列表收进「继续先前项目」折叠入口；学科/模板/侧栏说明等冗余区块移除。
+// 首页极简重设计：视觉中央一个输入框 + 示例 chips；中央槽位按身份复用（未登录=登录
+// 弹层入口；已登录且有项目=「继续先前项目」折叠入口）；学科/模板/侧栏说明等冗余区块移除。
 // ──────────────────────────────────────────────────────────────────────────
 describe("ProjectHub（极简首页）", () => {
   /** 位置探针：显示 pathname+search，供断言跳转是否携带 ?turn=（轮 4 首问） */
@@ -121,13 +121,16 @@ describe("ProjectHub（极简首页）", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  test("已有项目：折叠入口显示数量，展开后点项目进入对话页", async () => {
+  test("已登录且已有项目：折叠入口不显数量，展开后点项目进入对话页", async () => {
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
     vi.mocked(rest.rest.listProjects).mockResolvedValue([
       { project_id: "p1", phase: "itinerary_planning", research_context: { discipline: "社会学", topic: "宗族变迁" }, counts: { sites: 2, informants: 4, proposals: 1 } },
     ] as any);
     renderHome();
-    // 默认折叠：入口可见，项目本身不渲染
-    const toggle = await screen.findByRole("button", { name: /继续先前项目（1）/ });
+    // 默认折叠：入口与登录钮同位可见（不显数量），项目本身不渲染
+    const toggle = await screen.findByRole("button", { name: "继续先前项目" });
     expect(screen.queryByText(/宗族变迁/)).toBeNull();
     fireEvent.click(toggle);
     // 锚定开头：删除钮 aria-label 含“删除项目 宗族变迁”，会与纯正则多匹配
@@ -135,15 +138,34 @@ describe("ProjectHub（极简首页）", () => {
     expect(await screen.findByTestId("workspace")).toBeInTheDocument();
   });
 
+  test("中央槽位互斥：未登录只显「登录」，已登录且有项目只显「继续先前项目」", async () => {
+    vi.mocked(rest.rest.listProjects).mockResolvedValue([
+      { project_id: "p1", phase: "itinerary_planning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+    ] as any);
+    renderHome();
+    // 未登录：即使后端返回项目，槽位也只显登录钮（不再另露「继续先前项目」）
+    expect(await screen.findByRole("button", { name: "登录" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull();
+    // 登录后：槽位切为「继续先前项目」（数量后缀已移除），登录钮消失
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    expect(await screen.findByRole("button", { name: "继续先前项目" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "登录" })).toBeNull();
+  });
+
   // ── 任务1b：项目卡显示链 title || topic || 未命名项目（projectId 永不作显示名） ──
   test("项目卡显示链：title 优先 / 回退 topic / 兑底未命名项目", async () => {
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
     vi.mocked(rest.rest.listProjects).mockResolvedValue([
       { project_id: "p1", phase: "itinerary_planning", research_context: { topic: "宗族变迁", title: "宗族调研手记" }, counts: { sites: 0, informants: 0, proposals: 0 } },
       { project_id: "p2", phase: "research_positioning", research_context: { topic: "非遗传承" }, counts: { sites: 0, informants: 0, proposals: 0 } },
       { project_id: "p3", phase: "research_positioning", research_context: {}, counts: { sites: 0, informants: 0, proposals: 0 } },
     ] as any);
     renderHome();
-    fireEvent.click(await screen.findByRole("button", { name: /继续先前项目（3）/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "继续先前项目" }));
     expect(await screen.findByText("宗族调研手记")).toBeInTheDocument(); // title 优先
     expect(screen.getByText("非遗传承")).toBeInTheDocument();           // 无 title 回退 topic
     expect(screen.getByText("未命名项目")).toBeInTheDocument();          // 皆空兑底
@@ -175,22 +197,25 @@ describe("ProjectHub（极简首页）", () => {
     });
     await waitFor(() => expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(2));
     // 新身份的列表上屏：折叠入口出现
-    expect(await screen.findByRole("button", { name: /继续先前项目（1）/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "继续先前项目" })).toBeInTheDocument();
   });
 
   // A02：切换瞬间清空旧身份数据（修复前旧列表在请求返回前仍可见）
   test("身份切换瞬间清空旧项目列表，等待新身份数据", async () => {
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u0", email: "old@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
     vi.mocked(rest.rest.listProjects)
       .mockResolvedValueOnce([
         { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
       ] as any)
       .mockReturnValueOnce(new Promise(() => {}) as any);   // 新身份请求悬置
     renderHome();
-    expect(await screen.findByRole("button", { name: /继续先前项目（1）/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "继续先前项目" })).toBeInTheDocument();
     act(() => {
       useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
     });
-    // 切换瞬间旧列表入口消失（修复前仍显示「继续先前项目（1）」直到第二次返回）
+    // 切换瞬间旧列表入口消失（修复前仍显示「继续先前项目」直到第二次返回）
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull());
   });
@@ -206,8 +231,10 @@ describe("ProjectHub（极简首页）", () => {
       ] as any)
       .mockRejectedValueOnce(new Error("network down"));
     renderHome();
-    expect(await screen.findByRole("button", { name: /继续先前项目（1）/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "继续先前项目" })).toBeInTheDocument();
     act(() => { useAuthStore.setState({ user: null }); });   // 退出
+    // 未登录：槽位切回登录钮，继续入口（及旧身份列表）不再显示
+    expect(await screen.findByRole("button", { name: "登录" })).toBeInTheDocument();
     expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull();
   });
