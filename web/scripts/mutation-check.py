@@ -8,10 +8,16 @@
    测试照样全绿，差点把一个假护栏当成真护栏提交。
 
 每条变异只跑它该打红的那个测试文件；跑完无论成败都会还原，并断言文件已逐字节还原。
+
+Q06：模块导入不再执行任何变异（``main`` + ``__main__`` 保护）；运行时以内存
+备份为准，Ctrl-C / 异常由 ``finally`` 还原，SIGTERM/SIGBREAK 与进程正常退出
+由信号处理器/``atexit`` 兜底；旧版中断遗留的 ``.bak`` 会在下次运行时自愈。
 """
+import atexit
 import os
 import re
 import shutil
+import signal
 import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # web/
@@ -73,25 +79,71 @@ def run(test_file):
     return p.returncode, summary, out
 
 
-for name, rel, old, new, test_file in MUTATIONS:
-    path = os.path.join(ROOT, rel)
-    original = open(path, encoding="utf-8").read()
-    if old not in original:
-        print(f"[SKIP] {name}: 未找到锚点 {old[:50]!r}")
-        continue
-    shutil.copyfile(path, path + ".bak")
-    try:
-        open(path, "w", encoding="utf-8", newline="\n").write(original.replace(old, new, 1))
-        code, summary, out = run(test_file)
-        verdict = "变红(符合预期)" if code != 0 else "!! 仍然全绿（护栏无效）"
-        print(f"[{verdict}] {name} -> {summary}")
-        if code == 0:
-            print("---- 输出尾部 ----")
-            print("\n".join(out.strip().splitlines()[-15:]))
-    finally:
-        shutil.copyfile(path + ".bak", path)
-        os.remove(path + ".bak")
-        # 校验已还原
-        assert open(path, encoding="utf-8").read() == original, f"还原失败: {path}"
+# 当前被改写的文件 → 原始内容；用于进程退出/信号路径的兜底还原
+_ACTIVE: dict[str, str] = {}
 
-print("done")
+
+def _restore(path: str) -> None:
+    original = _ACTIVE.pop(path, None)
+    if original is None:
+        return
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(original)
+
+
+def _restore_all(*_args) -> None:
+    for path in list(_ACTIVE):
+        _restore(path)
+
+
+def _install_signal_handlers() -> None:
+    """SIGTERM/SIGBREAK 不会触发 finally，用处理器先还原再退出；
+    非主线程注册会 ValueError（测试/嵌入场景）——守卫不因此失败。"""
+    def handler(signum, _frame):
+        _restore_all()
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, getattr(signal, "SIGBREAK", None)):
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
+
+
+def main():
+    atexit.register(_restore_all)
+    _install_signal_handlers()
+    for name, rel, old, new, test_file in MUTATIONS:
+        path = os.path.join(ROOT, rel)
+        legacy = path + ".bak"
+        if os.path.exists(legacy):      # 自愈旧版脚本中断留下的备份
+            shutil.copyfile(legacy, path)
+            os.remove(legacy)
+            print(f"[FIX] 已还原上次中断留下的备份: {rel}")
+        with open(path, encoding="utf-8") as fh:
+            original = fh.read()
+        if old not in original:
+            print(f"[SKIP] {name}: 未找到锚点 {old[:50]!r}")
+            continue
+        _ACTIVE[path] = original
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(original.replace(old, new, 1))
+            code, summary, out = run(test_file)
+            verdict = "变红(符合预期)" if code != 0 else "!! 仍然全绿（护栏无效）"
+            print(f"[{verdict}] {name} -> {summary}")
+            if code == 0:
+                print("---- 输出尾部 ----")
+                print("\n".join(out.strip().splitlines()[-15:]))
+        finally:
+            _restore(path)
+            with open(path, encoding="utf-8") as fh:
+                assert fh.read() == original, f"还原失败: {path}"
+
+    print("done")
+
+
+if __name__ == "__main__":
+    main()
