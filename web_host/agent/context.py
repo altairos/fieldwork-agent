@@ -47,9 +47,17 @@ _OPTIONS_REMINDER = (
 )
 
 
-def build_snapshot(repo: ProjectRepository, pid: str) -> str:
-    """F04 有界项目摘要：kernel brief 推导（搜索缓存收 repo 索引传入）。"""
+def build_snapshot(repo: ProjectRepository, pid: str, *,
+                   ctx_view: dict | None = None) -> str:
+    """F04 有界项目摘要：kernel brief 推导（搜索缓存收 repo 索引传入）。
+
+    ``ctx_view``（T02）：回合开始暂存的确定性抽取（用户消息里的 purpose/
+    地点等）优先于仓储——本轮快照与文档生成看到同一份 ctx，避免轮末写入
+    把已生成方案变成“生成即过期”。
+    """
     state = repo.get_state(pid)
+    if ctx_view is not None:
+        state = {**state, "research_context": ctx_view}
     return build_project_brief(
         state, cached_searches=repo.list_cached_searches(pid))
 
@@ -62,8 +70,9 @@ def build_system_prompt(phase: str, snapshot: str) -> str:
 
 
 def build_messages(repo: ProjectRepository, pid: str, user_text: str,
-                   phase: str, history_limit: int = 30) -> list[dict]:
-    snapshot = build_snapshot(repo, pid)
+                   phase: str, history_limit: int = 30, *,
+                   ctx_view: dict | None = None) -> list[dict]:
+    snapshot = build_snapshot(repo, pid, ctx_view=ctx_view)
     system = build_system_prompt(phase, snapshot)
     history = repo.get_messages(pid, limit=history_limit)
     msgs = [{"role": "system", "content": system}]

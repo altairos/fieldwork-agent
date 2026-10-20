@@ -715,11 +715,12 @@ class JsonRepository:
             provenance.get("knowledge", self.list_knowledge(pid)),
             provenance.get("itinerary", itinerary))
 
-    def _confirm_candidates(self, pid: str, state: dict) -> tuple[str, str]:
-        """当前仓储的两种指纹：新代（行程取内容）与旧代（行程取 cid）。
+    def _confirm_candidates(self, pid: str, state: dict) -> tuple[str, str, str]:
+        """当前仓储的三种指纹：v3（事实输入）、v2（旧代含软字段）、
+        旧代（行程只装 cid）。
 
         确认/失效判定只要命中任一即视为未变——存量文档保留可确认性，
-        新写文档则按内容判定。
+        新写文档则按事实输入判定。
         """
         _, itinerary = self._latest_itinerary(pid)
         ctx = state.get("research_context") or {}
@@ -728,6 +729,8 @@ class JsonRepository:
         knowledge = self.list_knowledge(pid)
         return (
             compute_doc_hash(ctx, sites, informants, knowledge, itinerary),
+            compute_doc_hash(ctx, sites, informants, knowledge, itinerary,
+                             include_soft_ctx=True),
             compute_confirm_hash(ctx, sites, informants, knowledge,
                                  self._latest_itinerary_cid(pid)),
         )

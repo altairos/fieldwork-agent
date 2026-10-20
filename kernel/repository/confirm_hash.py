@@ -62,25 +62,45 @@ def compute_confirm_hash(ctx: dict, sites: list, informants: list,
 
 
 # 新代指纹的形状标记：与旧代 payload 不可能碰撞（旧代没有该键）
-_DOC_INPUTS_SCHEMA = "doc_inputs_v2"
+_DOC_INPUTS_SCHEMA = "doc_inputs_v3"
+_LEGACY_DOC_INPUTS_SCHEMA = "doc_inputs_v2"
+
+# v3 不进入事实指纹的 ctx 字段：工作笔记/对话记忆、项目显示名、体例偏好、
+# 候选时窗与派生问题指纹。它们不改变方案的事实依据；在 compose 之后被保存
+# （评审 T02：同一轮先出方案、后写 purpose）不应把事实输入未变的方案判为过期。
+# purpose 虽在正文里作为“输出用途”标签出现，但体例由显式 mode 参数决定，
+# 属偏好而非事实输入；要换体例应重新生成，而不是把旧方案判为失效。
+_SOFT_CTX_FIELDS = frozenset({
+    "research_notes", "interview_state", "title", "purpose",
+    "candidate_windows", "research_question_scope",
+})
+# v2 兼容口径：仅排除工作笔记/对话记忆
+_LEGACY_CTX_FIELDS = frozenset({"research_notes", "interview_state"})
 
 
 def compute_doc_hash(ctx: dict, sites: list, informants: list,
-                     knowledge: list, itinerary=None) -> str:
-    """方案正文五渠道生成输入指纹（评审 R02）。
+                     knowledge: list, itinerary=None, *,
+                     include_soft_ctx: bool = False) -> str:
+    """方案正文五渠道生成输入指纹（评审 R02 / T02）。
 
-    每路都取**正文实际采用的输入**：ctx 为合并后的生成 ctx，田野点/报道人/
-    知识库为正文引用到的列表，行程为其内容（dict/None）——而不是"当前最新
-    快照 id"。于是：
+    每路都取**正文实际采用的事实输入**：ctx 为合并后的生成 ctx（v3 排除
+    purpose/title 等体例偏好与展示字段，见 ``_SOFT_CTX_FIELDS``），田野点/
+    报道人/知识库为正文引用到的列表，行程为其内容（dict/None）——而不是
+    "当前最新快照 id"。于是：
 
     - 正文用了项目未采纳的田野点/报道人/知识/行程 → 与确认时的项目状态不同 → 拒确认；
     - 生成后又新增/替换了行程 → 内容不同 → 旧确认失效（不再依赖 id 是否变）；
     - 同轮先后生成多份行程 → 指纹绑定正文用的那一份，而不是保存时最新的那份。
+
+    ``include_soft_ctx=True`` 复现 v2 旧口径（含 purpose/title 等软字段），
+    仅供确认时识别修复前生成的存量文档；新写文档一律用 v3。
     """
+    excluded = _LEGACY_CTX_FIELDS if include_soft_ctx else _SOFT_CTX_FIELDS
     payload = {
-        "schema": _DOC_INPUTS_SCHEMA,
+        "schema": (_LEGACY_DOC_INPUTS_SCHEMA if include_soft_ctx
+                   else _DOC_INPUTS_SCHEMA),
         "ctx": _canonical({k: v for k, v in (ctx or {}).items()
-                           if k not in {"research_notes", "interview_state"}}),
+                           if k not in excluded}),
         "sites": _canonical(sites or []),
         "informants": _canonical(informants or []),
         "knowledge": _canonical(knowledge or []),

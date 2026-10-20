@@ -210,6 +210,9 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
     # T01：正文行程确实取自本回合行程（生成前已绑定）——轮末只在这份临时数据
     # 与落盘快照同内容时才把引用换成已解析值，绝不把不同内容直接改绑。
     doc_itinerary_from_turn: dict[str, bool] = {}
+    # T02：本轮已生成方案——轮末确定性抽取不再写回（用户消息中的抽取已在
+    # 回合开始暂存并进入生成输入），防止生成后写 ctx 把方案变成“生成即过期”。
+    doc_generated_this_turn = False
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
                                  llm,
                                  amap_recorder if amap_recorder is not None
@@ -224,6 +227,10 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
     # F05：回合级 patch 暂存——状态工具与时窗回写先进 buffer，轮末正常结束
     # commit 落盘、取消 discard，项目状态不受残缺回合影响
     buffer = TurnPatchBuffer(repo, pid)
+    # T02/F03：确定性抽取（用户消息里的 purpose/地点/规模等）在回合开始就
+    # 暂存进本轮 buffer——快照、检索上下文与文档生成读同一份 staged_view；
+    # 否则轮末才写回，会落在已生成方案之后（评审：生成即过期）。
+    _stage_extractions(repo, pid, user_text, buffer)
     dispatch = bind_research_searches(
         dispatch, repo, pid, context_provider=buffer.staged_view,
         on_snapshot=snapshot_ids.append, turn_id=turn_id)
@@ -233,7 +240,8 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
 
     # R4：用户消息即时持久化（F09 修正：先 build 后 append——
     # build_messages 读 history 后自行 append 当前消息，顺序颠倒会双发）
-    messages = build_messages(repo, pid, user_text, phase)
+    messages = build_messages(repo, pid, user_text, phase,
+                              ctx_view=buffer.staged_view())
     # N12：用户消息绑定 turn_id（入 metadata）——retry 据此校验尾部归属，不误删他人轮
     repo.append_message(pid, "user", user_text, {"turn_id": turn_id})
 
@@ -439,6 +447,11 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
                 # compose_proposal 生成时采用（成功才收；多次调用取最后一次）
                 if name == "compose_itinerary" and env.ok and isinstance(data, dict):
                     turn_itineraries_raw.append(data)
+                # T02：成功生成方案后，轮末不再用消息抽取回写 ctx——抽取已在
+                # 回合开始暂存并参与生成，轮末回写只会制造生成后的输入变更。
+                if (name == "compose_proposal" and env.ok
+                        and isinstance(data, dict) and data.get("markdown")):
+                    doc_generated_this_turn = True
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": env.ok,
                                  "data": data,
@@ -701,7 +714,10 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                                   doc_inputs_provenance, live_refs_by_call,
                                   doc_itinerary_from_turn)
-            _apply_extractions(repo, pid, user_text)
+            # T02：生成过方案的轮次，消息抽取已在回合开始暂存并随 buffer 提交；
+            # 轮末再写会在文档生成之后改 ctx（旧实现“生成即过期”的来源）。
+            if not doc_generated_this_turn:
+                _apply_extractions(repo, pid, user_text)
             _schedule_autoname(repo, pid, llm)   # N09：后台任务卸载，不阻塞事件循环/主回合
             transition = check_and_advance(repo, pid)
             if transition:
@@ -1053,6 +1069,33 @@ def check_and_advance(repo, pid) -> dict | None:
         repo.set_phase(pid, result.to_phase)
         return {"from": old, "to": result.to_phase}
     return None
+
+
+def _stage_extractions(repo, pid, user_text, buffer):
+    """回合开始确定性抽取（F03/T02）：用户消息中的研究信息先进本轮 buffer。
+
+    旧实现只在轮末写回：若本轮生成了方案，写回发生在生成之后，正文用的是
+    旧 ctx、落盘状态却是新 ctx（评审 T02：生成即过期）。轮首先暂存后，快照、
+    检索上下文与文档生成读同一份 staged_view；取消/失败轮次随 buffer 丢弃。
+    """
+    from fieldwork_agent.kernel.guidance.extract import apply_message_extractions
+    current = buffer.staged_view()
+    found = apply_message_extractions(user_text, current)
+    if not found:
+        return
+    patch: dict[str, Any] = {}
+    extras = dict(current.get("extras") or {})
+    extras_changed = False
+    for key, value in found.items():
+        if key.startswith("extras."):
+            extras[key.split(".", 1)[1]] = value
+            extras_changed = True
+        else:
+            patch[key] = value
+    if extras_changed:
+        patch["extras"] = extras
+    if patch:
+        buffer.stage(patch)
 
 
 def _apply_extractions(repo, pid, user_text):

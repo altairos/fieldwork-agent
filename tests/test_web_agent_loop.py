@@ -1630,13 +1630,20 @@ def test_doc_tool_sees_same_turn_staged_patch(env):
 
 
 # N04：同一 tool_calls 批次内写→文档的时序与正文/指纹一致性
-_PROPOSAL_ARGS_EMPTY_CTX = {
-    "ctx": {},   # 模型给空 ctx，由 merge_doc_args 从 staged_view 补齐
-    "sites": [{"name": "大理", "confirmed": True, "profile": {"location": "大理"}}],
-    "itinerary": {"legs": []},
-    "informants": [{"code": "INF-01", "type": "宗族长老",
-                    "relation": "同乡会引荐", "contact": "", "notes": ""}],
-}
+def _proposal_args_empty_ctx() -> dict:
+    """模型给空 ctx/空渠道，由 merge_doc_args 从 staged_view 与已采纳状态补齐。
+
+    每次返回全新 dict：merge_doc_args 会就地改写 args（含嵌套 ctx），
+    测试间共享同一常量会互相污染（N04 之后的用例拿到上一轮的新主题）。
+    """
+    return {
+        "ctx": {},
+        "sites": [{"name": "大理", "confirmed": True,
+                   "profile": {"location": "大理"}}],
+        "itinerary": {"legs": []},
+        "informants": [{"code": "INF-01", "type": "宗族长老",
+                        "relation": "同乡会引荐", "contact": "", "notes": ""}],
+    }
 
 
 def test_n04_same_batch_write_then_proposal_uses_new_ctx(env):
@@ -1664,7 +1671,7 @@ def test_n04_same_batch_write_then_proposal_uses_new_ctx(env):
                                       "research_questions": "RQ_NEW"},
                             "reason": "用户确认"}},
              {"id": "c2", "name": "compose_proposal",
-              "arguments": _PROPOSAL_ARGS_EMPTY_CTX}],
+              "arguments": _proposal_args_empty_ctx()}],
           "finish_reason": "tool_calls", "usage": {}}],
         [{"delta": "已生成"},
          {"content": "已生成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
@@ -1744,7 +1751,7 @@ def test_r02_unadopted_channels_cannot_be_confirmed(env):
     llm = ChatFakeLLM([
         [{"delta": ""},
          {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
-                                          "arguments": _PROPOSAL_ARGS_EMPTY_CTX}],
+                                          "arguments": _proposal_args_empty_ctx()}],
           "finish_reason": "tool_calls", "usage": {}}],
         [{"delta": "已生成"},
          {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
@@ -1961,6 +1968,120 @@ def test_r02_same_turn_two_proposals_keep_own_provenance(env):
         repo.confirm_proposal("p1", docs[0]["id"])
     assert ei.value.code == "dep_hash_mismatch"
     assert repo.confirm_proposal("p1", docs[1]["id"])
+
+
+# T02：ctx 生成后变化与“生成即过期”——purpose/title 属偏好/展示字段，
+# 不应把事实输入未变的方案判为过期；用户消息中的 purpose 须在生成前生效。
+
+def test_t02_user_purpose_extracted_before_proposal(env):
+    """T02：用户消息里的“课程作业”应在方案生成前进入 ctx——正文与指纹
+    都采用 course；轮末抽取不再把 purpose 写到生成之后（旧实现生成即过期）。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _proposal_args_empty_ctx()}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "这是课程作业，请生成研究方案",
+                         tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert "**输出用途**：course" in docs[0]["content"]
+    assert repo.get_research_context("p1")["purpose"] == "course"
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_t02_purpose_change_after_proposal_does_not_stale(env):
+    """T02：方案生成后同一轮再保存 purpose（评审报告的真实顺序）——
+    purpose 是体例偏好而非事实输入，不得让事实渠道未变的方案过期。
+
+    现状：update_research_context 成功写入，confirm 返回 dep_hash_mismatch。
+    修复后：写入保留，方案仍可确认；旧方案不会被“生成即过期”。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理", "purpose": "global"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _proposal_args_empty_ctx()}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "update_research_context",
+                                          "arguments": {"patch": {"purpose": "course"},
+                                                        "reason": "用户确认用途"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert repo.get_research_context("p1")["purpose"] == "course"
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
+    # 事实渠道变化仍然使确认失效（不把“非事实字段豁免”扩大成永不失效）
+    repo.update_research_context("p1", {"budget": "9万"})
+    assert repo.is_proposal_confirmation_stale("p1") is True
+
+
+def test_t02_title_autoname_after_proposal_does_not_stale(env):
+    """T02：自动命名在轮末写入 title（不进入正文）——不得让方案过期。
+
+    评审的三份方案也可能被自动命名误伤：title 是项目显示名，不是正文输入。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _proposal_args_empty_ctx()}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+    # 模拟轮末自动命名：title 变化不影响事实指纹
+    repo.update_research_context("p1", {"title": "西南宗族田野调研"})
+    assert repo.is_proposal_confirmation_stale("p1") is False
+    # 正文事实变化仍失效
+    repo.update_research_context("p1", {"budget": "9万"})
+    assert repo.is_proposal_confirmation_stale("p1") is True
 
 
 # ------------------------------- F05 取消保护 / F06 最终回答收敛 / F07 批前截断

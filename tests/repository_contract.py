@@ -363,6 +363,33 @@ class TestContract:
             repo.confirm_proposal("p1", itin_id)
         assert ei2.value.code == "dep_hash_mismatch"
 
+    def test_soft_ctx_fields_do_not_stale_proposal(self, repo):
+        """T02：purpose/title 等体例偏好/展示字段变化不使方案过期；
+        预算等正文事实字段变化仍然失效。v3 指纹双后端一致。"""
+        from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+        repo.update_research_context("p1", {"topic": "宗族", "purpose": "global",
+                                            "budget": "2万"})
+        adopted = {
+            "ctx": repo.get_research_context("p1"),
+            "sites": repo.list_field_sites("p1"),
+            "informants": repo.list_informants("p1"),
+            "knowledge": repo.list_knowledge("p1"),
+            "itinerary": None,
+        }
+        did = repo.save_proposal("p1", "# 方案", version="final", provenance=adopted)
+        repo.confirm_proposal("p1", did)
+        # 生成后同一轮保存 purpose / 自动命名写 title：不算研究输入变化
+        repo.update_research_context("p1", {"purpose": "course",
+                                            "title": "自动命名项目"})
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        repo.confirm_proposal("p1", did)
+        # 事实字段变化仍使确认失效
+        repo.update_research_context("p1", {"budget": "9万"})
+        assert repo.is_proposal_confirmation_stale("p1") is True
+        with pytest.raises(ProposalConfirmError) as ei:
+            repo.confirm_proposal("p1", did)
+        assert ei.value.code == "dep_hash_mismatch"
+
     def test_confirm_without_doc_id_picks_latest_proposal_kind(self, repo):
         """P2-1：空 doc_id 取“最新一份 proposal”，跳过 interview_guide 等其他 kind。
 

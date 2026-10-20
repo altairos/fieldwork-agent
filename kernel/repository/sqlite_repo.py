@@ -942,8 +942,9 @@ class SqliteRepository:
             provenance.get("knowledge", self._read_knowledge(conn, pid)),
             provenance.get("itinerary", itinerary))
 
-    def _confirm_candidates(self, pid: str, conn) -> tuple[str, str]:
-        """当前仓储的两种指纹：新代（行程取内容）与旧代（行程取 cid）。"""
+    def _confirm_candidates(self, pid: str, conn) -> tuple[str, str, str]:
+        """当前仓储的三种指纹：v3（事实输入）、v2（旧代含软字段）、
+        旧代（行程只装 cid）。修复前生成的文档按 v2 识别，新文档按 v3。"""
         _, itinerary = self._latest_itinerary(conn, pid)
         ctx = self._read_research_context(conn, pid)
         sites = self._read_field_sites(conn, pid)
@@ -951,6 +952,8 @@ class SqliteRepository:
         knowledge = self._read_knowledge(conn, pid)
         return (
             compute_doc_hash(ctx, sites, informants, knowledge, itinerary),
+            compute_doc_hash(ctx, sites, informants, knowledge, itinerary,
+                             include_soft_ctx=True),
             compute_confirm_hash(ctx, sites, informants, knowledge,
                                  self._latest_itinerary_cid(conn, pid)),
         )
