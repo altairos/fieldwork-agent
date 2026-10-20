@@ -118,6 +118,8 @@ class JsonUserStore:
             sess = self._read(self._sessions)
             if not self.get_user(user_id):
                 raise KeyError(f"未知用户: {user_id}")
+            # A05：登录是低频写，顺手摊销清理过期会话（读路径不再全量重写）。
+            sess = {k: v for k, v in sess.items() if v["expires_at"] >= now.isoformat()}
             sess[hash_token(raw)] = {"user_id": user_id, "created_at": now.isoformat(),
                                      "expires_at": exp, "last_seen_at": now.isoformat()}
             self._write(self._sessions, sess)
@@ -130,11 +132,19 @@ class JsonUserStore:
         now = datetime.now()
         with self._locked(self._sessions):                 # R4：续期与撤销在同一锁内串行
             sess = self._read(self._sessions)
-            sess = {k: v for k, v in sess.items() if v["expires_at"] >= now.isoformat()}
             rec = sess.get(th)
+            # A05：读路径不重写文件（未命中时以前也会写一次，等于每请求一次全量落盘）。
+            # 过期行由续期这条低频写路径摊销清理。
             if rec is None:
+                return None
+            if rec["expires_at"] < now.isoformat():
+                sess.pop(th, None)
                 self._write(self._sessions, sess)
                 return None
+            remaining = datetime.fromisoformat(rec["expires_at"]) - now
+            if remaining >= timedelta(days=self._ttl_days / 2):
+                return rec["user_id"]
+            sess = {k: v for k, v in sess.items() if v["expires_at"] >= now.isoformat()}
             rec["last_seen_at"] = now.isoformat()
             rec["expires_at"] = (now + timedelta(days=self._ttl_days)).isoformat()
             self._write(self._sessions, sess)

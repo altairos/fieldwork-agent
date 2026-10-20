@@ -115,6 +115,8 @@ class SqliteUserStore:
         with self._connect(immediate=True) as c:
             if not c.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
                 raise KeyError(f"未知用户: {user_id}")
+            # A05：登录是低频写，顺手摊销清理过期会话（读路径不再全表条件删）。
+            c.execute("DELETE FROM sessions WHERE expires_at < ?", (now.isoformat(),))
             c.execute("INSERT INTO sessions(token_hash,user_id,created_at,expires_at,last_seen_at)"
                       " VALUES(?,?,?,?,?)", (hash_token(raw), user_id, now.isoformat(), exp,
                                             now.isoformat()))
@@ -125,14 +127,32 @@ class SqliteUserStore:
             return None
         th = hash_token(raw_token)
         now = datetime.now()
+        # A05：读路径不取写锁——每请求 BEGIN IMMEDIATE + UPDATE 会把认证变成
+        # 写热点，与回合执行/SSE 心跳争同一把库锁。只有剩余 TTL 不足一半时
+        # 才续期，并在那条低频写路径上摊销清理过期行。
+        with self._connect() as c:
+            r = c.execute(
+                "SELECT user_id, expires_at FROM sessions WHERE token_hash=?",
+                (th,)).fetchone()
+        if r is None:
+            return None
+        expires = datetime.fromisoformat(r["expires_at"])
+        if expires <= now:
+            with self._connect(immediate=True) as c:   # 已过期：清掉这条记录
+                c.execute("DELETE FROM sessions WHERE token_hash=?", (th,))
+            return None
+        if expires - now >= timedelta(days=self._ttl_days / 2):
+            return r["user_id"]
         with self._connect(immediate=True) as c:      # 滑动续期是写：immediate 串行化（R4）
-            c.execute("DELETE FROM sessions WHERE expires_at < ?", (now.isoformat(),))
-            r = c.execute("SELECT user_id FROM sessions WHERE token_hash=?", (th,)).fetchone()
-            if r is None:
+            r = c.execute(
+                "SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>=?",
+                (th, now.isoformat())).fetchone()
+            if r is None:      # 读后到续期前被撤销/过期
                 return None
             exp = (now + timedelta(days=self._ttl_days)).isoformat()
             c.execute("UPDATE sessions SET last_seen_at=?, expires_at=? WHERE token_hash=?",
                       (now.isoformat(), exp, th))
+            c.execute("DELETE FROM sessions WHERE expires_at < ?", (now.isoformat(),))
             return r["user_id"]
 
     def revoke_session(self, raw_token: str) -> None:
