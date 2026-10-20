@@ -138,3 +138,34 @@ async def test_register_claims_legacy_anon_sess_projects(app):
             "anon_token": "sess_legacy0001"})
         assert r.status_code == 201
         assert r.json()["claim"]["claimed"] == 1
+
+
+# ---------------------------------------------------------------- A03：PBKDF2 外移线程池
+async def test_login_pbkdf2_does_not_block_event_loop(app):
+    """A03：登录（PBKDF2 600k）期间事件循环心跳不被阻塞（阈值 150ms）。"""
+    import asyncio
+
+    async with make_client(app, owner_token=None) as c:
+        await c.post("/auth/register",
+                     json={"email": "hb@b.com", "password": "s3cret-pass"})
+        gaps: list[float] = []
+        stop = asyncio.Event()
+
+        async def ticker():
+            loop = asyncio.get_running_loop()
+            last = loop.time()
+            while not stop.is_set():
+                await asyncio.sleep(0.005)
+                now = loop.time()
+                gaps.append(now - last)
+                last = now
+
+        task = asyncio.create_task(ticker())
+        await asyncio.sleep(0.02)          # ticker 先进入稳定节拍
+        r = await c.post("/auth/login",
+                         json={"email": "hb@b.com", "password": "s3cret-pass"})
+        stop.set()
+        await task
+    assert r.status_code == 200
+    # 同步 PBKDF2 单次实测 0.2-0.6s（审计实测心跳 188/546ms）；to_thread 后与 5ms 基准同量级
+    assert max(gaps) < 0.15, f"事件循环被阻塞 {max(gaps):.3f}s"

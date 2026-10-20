@@ -1,5 +1,7 @@
 # web_host/api/auth.py
 """账号体系端点：注册/登录/登出/me + 登录认领（CAS，R2）。"""
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fieldwork_agent.kernel.repository.guard import OWNER_TOKEN_RE
 from fieldwork_agent.web_host.api.owner import owner_from_request
@@ -50,11 +52,14 @@ async def register(body: Credentials, request: Request):
     anon_token = _validated_anon_token(body.anon_token)
     store = get_user_store(request)
     try:
-        user = store.create_user(body.email, body.password)
+        # A03：PBKDF2（600k 迭代）是同步 CPU 密集调用，直接在事件循环里跑会
+        # 阻塞并发请求（含 /turns 心跳 SSE）——外移线程池，迭代数不变
+        user = await asyncio.to_thread(store.create_user, body.email, body.password)
     except ValueError as e:
         raise HTTPException(400, {"code": "invalid_registration", "message": str(e)}) from e
     token = store.create_session(user["user_id"], cfg.session_ttl_days)
-    claim = _claim(get_repo(request), f"user:{user['user_id']}", anon_token)
+    claim = await asyncio.to_thread(
+        _claim, get_repo(request), f"user:{user['user_id']}", anon_token)
     return {"session_token": token, "user": user, "claim": claim}
 
 
@@ -63,11 +68,13 @@ async def login(body: Credentials, request: Request):
     anon_token = _validated_anon_token(body.anon_token)
     store = get_user_store(request)
     cfg = request.app.state.config
-    user = store.get_user_by_email(body.email)
-    if user is None or not store.verify_password(user["user_id"], body.password):
+    user = await asyncio.to_thread(store.get_user_by_email, body.email)
+    if user is None or not await asyncio.to_thread(
+            store.verify_password, user["user_id"], body.password):
         raise HTTPException(401, {"code": "invalid_credentials", "message": "邮箱或密码不正确"})
     token = store.create_session(user["user_id"], cfg.session_ttl_days)
-    claim = _claim(get_repo(request), f"user:{user['user_id']}", anon_token)
+    claim = await asyncio.to_thread(
+        _claim, get_repo(request), f"user:{user['user_id']}", anon_token)
     return {"session_token": token, "user": user, "claim": claim}
 
 
