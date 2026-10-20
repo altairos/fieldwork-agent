@@ -326,10 +326,11 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view)
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
-                # N04：compose_proposal 落盘指纹的 ctx 路依据＝生成时仓储依赖视图
-                # （非模型合并后的 ctx，也非保存时推测）
+                # C01：落盘指纹的 ctx 路依据＝文档正文实际所本（merge_doc_args
+                # 合并后 ctx：仓储依赖视图 + 模型非空覆盖）；仓储值只作底座，
+                # 模型覆盖未采纳时确认必须被拒（审计 C01）
                 if name == "compose_proposal":
-                    doc_ctx_provenance[call_id] = dict(ctx_view)
+                    doc_ctx_provenance[call_id] = dict(args.get("ctx") or ctx_view or {})
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})

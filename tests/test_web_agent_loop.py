@@ -2148,3 +2148,39 @@ def test_run_turn_key_error_keeps_old_hint(env):
     err = [e for e in events if e.event == "error"][0]
     assert err.data["code"] == "llm_error"
     assert "Key" in err.data["hint"]
+
+
+def test_proposal_confirm_hash_follows_merged_ctx(env):
+    """C01：方案指纹忠于正文实际所本（合并后 ctx），而非仓储旧值。
+
+    仓储 budget=2万、模型 compose_proposal 入参主张 budget=3万时，正文按 3万
+    渲染；生成即确认必须被拒（文档所本与仓储不一致），把仓储同步为 3万后通过。
+    """
+    repo, tm = env
+    args = json.loads(json.dumps(_PROPOSAL_ARGS))   # deep copy
+    args["ctx"]["budget"] = "3万"
+    # 仓储先全量置为模型 ctx，再改回 2万——只留 budget 一路差异
+    repo.update_research_context("p1", args["ctx"])
+    repo.update_research_context("p1", {"budget": "2万"})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": args}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+    with pytest.raises(ProposalConfirmError) as ei:
+        repo.confirm_proposal("p1", docs[0]["id"])
+    assert ei.value.code == "dep_hash_mismatch"
+    # 仓储同步为文档实际所本 → 确认通过
+    repo.update_research_context("p1", {"budget": "3万"})
+    repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
