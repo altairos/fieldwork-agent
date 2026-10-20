@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import time
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
@@ -37,7 +38,7 @@ from fieldwork_agent.runtime.turn_buffer import TurnPatchBuffer
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
 from fieldwork_agent.web_host.agent.state_tools import build_state_tools
-from fieldwork_agent.web_host.turn_manager import TurnManager
+from fieldwork_agent.web_host.turn_manager import TERMINAL_STATUSES, TurnManager
 
 # 无 LLM 降级提示：web 宿主无启动横幅渠道，提示附在回复末尾（CLI 宿主用启动横幅呈现）
 _DEGRADED_NOTE = ("\n\n（提示：当前未配置 DashScope API Key，处于降级模式，"
@@ -132,12 +133,56 @@ def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
     return handle.cancel_event.is_set() or (time.monotonic() - start) > max_wall_seconds
 
 
+def _finish_unexpected(tm: TurnManager, pid: str, turn_id: str,
+                       exc: BaseException) -> None:
+    """A01 兜底：把逃逸异常收敛成 failed 终态（幂等，不覆盖已有终态）。
+
+    项目删除竞态下 handle 已不存在 → 无处可写，静默退出；已取消/已完成的
+    回合不得被改写，否则会把正常终态污染成失败。
+    """
+    handle = tm.get_turn(pid, turn_id)
+    if handle is None or handle.status in TERMINAL_STATUSES:
+        return
+    # 两步各自兜底：事件写不进去（磁盘满/权限）也必须走到 finish，
+    # 否则“已兜底”仍等于“永停 running”。
+    with suppress(Exception):
+        tm.append_event(pid, turn_id, "error",
+                        {"code": "internal_error",
+                         "message": f"回合异常终止: {exc}", "hint": ""})
+    with suppress(Exception):
+        # TurnManager.finish 先改内存状态再写盘：即便写盘失败，
+        # 内存侧也已终态（_event_stream 以 status 判流关闭）。
+        tm.finish(pid, turn_id, "failed")
+
+
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
                    amap_client: Any = None,
                    owner: str | None = None,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    max_wall_seconds: float = 60.0) -> None:
+    """回合执行入口：保证**任何**未捕获异常都收敛为终态（A01）。
+
+    ``_run_turn_impl`` 只保护主循环与轮末持久化两段；「续流修复 / 安全终检 /
+    终态写入」都在它们之外。异常一旦逃逸，``tm.finish`` 永不执行，回合永停
+    ``running``——SSE 只发心跳、流永不关闭，``retry`` 永久 409，只能靠进程重启
+    的 ``recover_interrupted`` 恢复。本包装层就是这道兜底。
+    """
+    try:
+        await _run_turn_impl(
+            repo, pid, turn_id, user_text, tm, llm, flyai_client,
+            amap_client=amap_client, owner=owner, max_iters=max_iters,
+            max_tool_calls=max_tool_calls, max_wall_seconds=max_wall_seconds)
+    except Exception as exc:      # noqa: BLE001 —— 兜底即本层职责；CancelledError 不在此列
+        _finish_unexpected(tm, pid, turn_id, exc)
+
+
+async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
+                         tm: TurnManager, llm: Any, flyai_client: Any, *,
+                         amap_client: Any = None,
+                         owner: str | None = None,
+                         max_iters: int = 8, max_tool_calls: int = 20,
+                         max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
     # owner 供二期记忆读写；本期惰性
     recorder = (RecordingClient(flyai_client, tag_provider=_CURRENT_CALL_ID.get)
