@@ -57,6 +57,14 @@ class Config:
         # 仅环境变量——不进 save()/_load_config（令牌属部署边界，非用户偏好，不落盘）。
         self.app_token: str = os.getenv("FIELDWORK_APP_TOKEN", "")
 
+        # 公网绑定声明（S01）：为真时启动期硬性要求 app_token 非空。
+        # create_app 看不到 uvicorn 的真实 host，故由部署物显式声明——systemd
+        # 对外监听即设 FIELDWORK_PUBLIC_BIND=1。默认关（本地开发/测试零影响），
+        # 假值集合风格同 registration_open（空串/0/false/no/off 均视为关）。
+        self.public_bind: bool = os.getenv(
+            "FIELDWORK_PUBLIC_BIND", "0").strip().lower() not in (
+                "0", "false", "no", "off", "")
+
         # 百炼套餐类型（coding/token）：套餐 Key（sk-sp-）配专属 OpenAI 兼容端点。
         # 仅环境变量——同 app_token 先例：服务端全局默认，页面回合级 header 可覆盖。
         self.dashscope_plan: str = os.getenv("FA_DASHSCOPE_PLAN", "")

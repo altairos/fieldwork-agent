@@ -30,6 +30,27 @@ def _app_token_ok(request: Request) -> bool:
     return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
 
 
+def _assert_public_access_is_guarded(cfg) -> None:
+    """S01：对外监听却没有访问令牌 → 拒绝启动（fail-closed）。
+
+    ``_app_token_ok`` 在令牌为空时恒 True（本地开发友好）。一旦部署物把服务
+    暴露到公网，这个默认就从「方便」变成「任何访问者都能读写项目、消耗服务端
+    付费 LLM 额度」。``create_app`` 看不到 uvicorn 的真实绑定地址，故由部署物
+    声明 ``FIELDWORK_PUBLIC_BIND=1`` 表明「这是对外服务」，启动期据此硬性要求
+    令牌；本地开发与测试不设该变量，行为完全不变。
+    """
+    token = (getattr(cfg, "app_token", "") or "").strip()
+    if getattr(cfg, "public_bind", False) and not token:
+        raise RuntimeError(
+            "FIELDWORK_PUBLIC_BIND=1 但 FIELDWORK_APP_TOKEN 为空："
+            "对外监听的实例必须设置访问令牌，否则任何访问者都能读写项目并消耗"
+            "服务端 LLM 额度。生成令牌后写入环境变量并重启，"
+            "再到页面「API 密钥」卡填入同一令牌：\n"
+            '  python -c "import secrets; print(secrets.token_urlsafe(32))"\n'
+            "仅本地开发请移除 FIELDWORK_PUBLIC_BIND 或设为 0。"
+        )
+
+
 def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     from fieldwork_agent.web_host.deps import init_deps
 
@@ -39,6 +60,8 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     if cfg is None:
         from fieldwork_agent.core.config import Config
         cfg = Config()
+    # S01：先于任何副作用（建目录/连库）判定——公网裸绑定宁可不启动
+    _assert_public_access_is_guarded(cfg)
     shared_repo = repo
     if shared_repo is None:
         from fieldwork_agent.kernel.repository.factory import make_repository

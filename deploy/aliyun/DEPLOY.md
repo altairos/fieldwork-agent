@@ -87,11 +87,35 @@ App Token 纪律检查（未配置则警告，见第 0 节）→ 按实际路径
 
 ```bash
 vi /opt/fieldwork-agent/deploy/aliyun/fieldwork-web.env
+# 必填 FIELDWORK_APP_TOKEN=...（见下，留空服务不会启动）
 # 填入 DASHSCOPE_API_KEY=sk-xxxx   （可选 FLYAI_API_KEY=）
-# 可选 FIELDWORK_APP_TOKEN=（公网部署建议设置，前端设置卡填同一令牌）
 # 保存后重启：
 systemctl restart fieldwork-web.service
 ```
+
+### 4.1 访问令牌是必填项（S01，不填则拒绝启动）
+
+服务单元对外监听（`--host 0.0.0.0`）且已声明 `FIELDWORK_PUBLIC_BIND=1`，
+启动期强制要求 `FIELDWORK_APP_TOKEN` 非空。留空时 `systemctl status` 会看到：
+
+```text
+RuntimeError: FIELDWORK_PUBLIC_BIND=1 但 FIELDWORK_APP_TOKEN 为空：…
+```
+
+这是刻意的 fail-closed：旧默认是「令牌留空 = 全站开放」，配上公网直连 2143，
+等于任何人可读写他人项目、并用服务端 DashScope 额度发起付费回合。
+
+```bash
+# 生成令牌（只需一次，记下来）
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 写入 env 文件后重启
+sed -i "s|^FIELDWORK_APP_TOKEN=.*|FIELDWORK_APP_TOKEN=<刚生成的令牌>|" \
+  /opt/fieldwork-agent/deploy/aliyun/fieldwork-web.env
+systemctl restart fieldwork-web.service
+```
+
+最后到页面首页的「API 密钥」卡填入**同一个令牌**并保存，否则浏览器请求会被 401 拦下。
+仅内网裸跑时才需要注释服务单元里的 `FIELDWORK_PUBLIC_BIND=1`。
 
 env 文件已 `chmod 600`，且不在打包/提交范围内，密钥不会外泄。
 
@@ -178,8 +202,14 @@ Web 进程同时暴露 MCP 端点 **`/mcp`**（Streamable HTTP，与页面同端
 3. 申请免费 SSL 证书（阿里云 SSL 或 certbot），启用配置里的 443 段与证书路径。
 4. `nginx -t && systemctl enable --now nginx`；防火墙放行 80/443。
 5. Nginx 反代已针对 **SSE 关闭 `proxy_buffering`**，流式逐字输出正常。
+6. **必须收回 2143 的公网放行**：只留 Nginx 反代本机 127.0.0.1:2143。
+   否则 `http://<IP>:2143` 仍可直连，**绕过 HTTPS**——口令、`sess_` 会话令牌、
+   `X-App-Token` 与三家供应商 Key 全走明文。这一步不是可选项。
 
-之后可把 2143 的公网放行收回（只留 Nginx 反代本机 127.0.0.1:2143）。
+```bash
+# 收回公网放行（阿里云控制台安全组删除 2143 规则），服务器内防火墙同步：
+firewall-cmd --remove-port=2143/tcp --permanent && firewall-cmd --reload
+```
 
 ---
 

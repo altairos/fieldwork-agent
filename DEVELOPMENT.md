@@ -96,6 +96,10 @@ tests/
   域名白名单防护，参考 [jscode 指南](https://lbs.amap.com/api/javascript-api-v2/guide/abc/jscode)）；
   缺失时 `/settings/status` 返回 `amap_js_configured: false`，前端 `AmapMapPanel`
   降级为坐标文字卡（坐标与设施清单仍可读）。
+- **公网绑定声明（S01）**：`FIELDWORK_PUBLIC_BIND=1` 表示本实例对外监听，
+  启动期强制要求 `FIELDWORK_APP_TOKEN` 非空，否则 `create_app` 抛 `RuntimeError`
+  拒绝启动（避免“令牌留空 = 全站开放”配上公网直连）；不设该变量时行为不变。
+  部署物已在 `deploy/aliyun/fieldwork-web.service` 声明，本地开发无需关心。
 - **能力开关**：`dashscope_available` / `flyai_available` / `amap_available` / `dingtalk_available` 供上层降级判断。
 
 设置 flyai 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：
