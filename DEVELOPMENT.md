@@ -84,7 +84,10 @@ tests/
 `Config`（[`core/config.py`](core/config.py)）的加载优先级：
 
 - **DashScope / 模型**：环境变量初始化 → 若存在 `~/.fieldwork_agent/config.json` 则**覆盖** env。
-  键：`DASHSCOPE_API_KEY`、`FA_CHAT_MODEL`(默认 `qwen-max`)、`FA_SYSTEM_MODEL`(默认 `qwen-turbo`)。
+  密钥键：`DASHSCOPE_API_KEY`。模型三槽（对话推进 / 长文方案 / 结构化抽取）：
+  env 为 `FA_INTERVIEW_MODEL`、`FA_PROPOSAL_MODEL`、`FA_EXTRACT_MODEL`
+  （默认 `qwen3.8-flash` / `qwen-max` / `qwen3.8-flash`），config.json 对应
+  `interview_model` / `proposal_model` / `extract_model` 覆盖 env。
 - **FlyAI**：环境变量 `FLYAI_API_KEY` 优先；缺失时回退读取 `~/.flyai/config.json` 的 `key`。
 - **高德**：环境变量 `AMAP_API_KEY` 初始化 → `~/.fieldwork_agent/config.json` 的
   `amap_api_key` 同样覆盖 env。`AMapClient(api_key="")` 无 Key 时所有原语在 `_call`
