@@ -768,11 +768,6 @@ _PREAMBLE_NUDGE = ("你上一条回复只是前导语（说明接下来要做什
 MAX_CONTINUATIONS = 3
 
 
-def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
-    """续流前统一闸门：取消或墙钟触顶（命名对齐 main 分支 N13，便于合并）。"""
-    return handle.cancel_event.is_set() or time.monotonic() - start > max_wall_seconds
-
-
 def _looks_like_preamble(text: str) -> bool:
     """前导语判定：以未完标点收尾，或短句且含承诺词、但未以句末标点收尾。"""
     # 可回应的选项已构成决策提示（兼容旧“先定两项：+选项”），不强制修复成工具调用。
