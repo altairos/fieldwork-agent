@@ -9,7 +9,8 @@ import { ToolCardFallback } from "../components/cards/ToolCardFallback";
  * 三个正交概念（spec 评审 R13）：
  * - 证据身份：叶子=cid；跨层配对要求 call_id==parent_call_id 且 tool 相同；
  *   同(parent,tool)多缓存快照不互配（聚合内部双策略快照各占一行）。
- * - 同题分组：query_key 后端写入时生成（归一化参数 canonical JSON），
+ * - 同题分组：query_key 后端写入时生成（归一化参数 canonical JSON；文献检索键
+ *   另含后端写入的研究范围指纹段，C04——切范围后同参检索不被旧结果吞掉），
  *   同 key 缓存行折叠；key 为空（旧数据）不参与去重。
  * - 时序：全用服务端时间轴。cached_at 为 µs 精度 isoformat，字典序即时间序；
  *   索引已保此序（Task 5）；实时行无服务端时间，层内保 tools store order，
@@ -32,7 +33,7 @@ export interface EvidenceRow {
   empty?: boolean;
   truncated?: boolean;
   total?: number;
-  /** C05：文献失败行标记（尾标显示「失败」；其余工具失败行仍不入列） */
+  /** 文献失败行标记（零命中不算失败，尾标落「空结果」；其余工具失败行仍不入列） */
   failed?: boolean;
 }
 
@@ -46,7 +47,8 @@ function liveQuery(args: Record<string, unknown>): string {
   return "";
 }
 
-/** C7-2 实时判空（仅 done 行，R10）：data 无 items 且 total===0 且无 answer——
+/** C7-2 实时判空（仅 done 行，R10；C05 后失败文献行也用于判空）：data 无 items 且
+ *  total===0 且无 answer——
  *  answer 不算空（R1：AI 答案是有价值内容）；无 items 键的非 ItemPage 形状不误杀。 */
 function liveIsEmpty(t: ToolCall): boolean {
   const d = t.data;
