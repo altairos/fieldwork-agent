@@ -33,9 +33,9 @@ import { ProposalView } from "./routes/ProposalView";
  *   （Composer 自身不再建第二个回合，避免并发 SSE 流）。
  * 初始快照：`GET /projects/{id}` → `project.loadSnapshot`（右栏五面板的 REST 侧数据源）；
  *   失败经 ui store 的 error 事件如实上屏（PhaseBanner 的降级横幅），不静默吞错、不伪造空快照。
- * 跨项目 reset（Task 7 遗留，Task 8 补齐）：projectId 变化时先清空 conversation/tools/ui/project
- *   四个 store，避免上一个项目的对话/工具卡/横幅状态串台；该 effect 声明在快照加载之前，
- *   React 按声明顺序执行，保证「先清后载」。
+ * 跨项目/跨身份 reset（Task 7 遗留，Task 8 补齐，A02 扩展）：projectId 或登录用户变化时
+ *   先清空 conversation/tools/ui/project 四个 store，避免上一个项目/上一身份的对话/工具卡/
+ *   横幅状态串台；该 effect 声明在快照加载之前，React 按声明顺序执行，保证「先清后载」。
  * 无 key 拦截（可浏览不可发）：挂载时查本地 key + GET /settings/status，
  * 本地无百炼 key 且服务端未配 → Composer locked；状态查询失败不锁
  * （后端 403 llm_key_required 兑底，见 useTurn keyMissing）。
@@ -49,6 +49,8 @@ import { ProposalView } from "./routes/ProposalView";
 function Workspace() {
   const { id } = useParams();
   const projectId = id ?? "";
+  // A02：工作区状态归属「项目 × 身份」——登录用户与 projectId 同为 reset 维度
+  const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
   const phase = useProjectStore((s) => s.phase);
   // 项目显示名（任务1）：title（用户改名 / agent 自动命名）优先，未命名回退 topic；
@@ -75,13 +77,14 @@ function Workspace() {
   // 把手组件作用域够不着），把手只上抛新值
   const [rightWidth, setRightWidth] = useState(loadRightWidth);
 
-  // 跨项目 reset：按 projectId 变化清空四 store（幂等，StrictMode 双执行安全）
+  // 跨项目/跨身份 reset：按 projectId 或登录用户变化清空四 store（幂等，StrictMode 双执行安全）。
+  // 身份切换（登录/登出/会话失效）同样重置，避免上一身份的工作区状态串台（A02）。
   useEffect(() => {
     useConversationStore.getState().reset();
     useToolsStore.getState().reset();
     useUiStore.getState().reset();
     useProjectStore.getState().reset();
-  }, [projectId]);
+  }, [projectId, user]);
 
   // P5 bfcache 恢复：回首页保存 key 后后退回本页时，页面从缓存原样恢复（React
   // 不重挂载，上面的判定 effect 不重跑）→ persisted pageshow 重查一次，

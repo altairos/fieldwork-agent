@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "../src/App";
 import { saveKeys } from "../src/lib/keys";
 import { useConversationStore } from "../src/stores/conversation";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
 import { useUiStore } from "../src/stores/ui";
+import { useAuthStore } from "../src/stores/auth";
 import type { ProjectSnapshot } from "../src/types/models";
 
 /**
@@ -347,5 +348,39 @@ describe("Workspace 降级横幅撤除精确性（兄弟请求互不误撤）", 
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
 
     expect(screen.getByText(/对话历史加载失败/)).toBeInTheDocument();
+  });
+});
+
+describe("Workspace 身份切换（A02）", () => {
+  test("登录用户变化：清空 conversation/tools/ui/project 四 store（上一身份不串台）", async () => {
+    stubFetch({ rest: SNAP, messages: [{ role: "user", content: "上一身份的消息" }] });
+    render(<App />);
+    expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
+    expect(useProjectStore.getState().snapshot).not.toBeNull();
+
+    // 造出上一身份遗留的工作区状态（四 store 各留痕）
+    act(() => {
+      useConversationStore.getState().hydrate([{ role: "user", content: "上一身份的对话" }]);
+      useToolsStore.getState().applyEvent({
+        event: "tool_started", call_id: "cA02", tool: "search_ai",
+        args: { query: "上一身份的检索" }, purpose: "",
+      } as never);
+      useUiStore.getState().setActiveTab("sites");
+    });
+    expect(useConversationStore.getState().messages).toHaveLength(1);
+    expect(useToolsStore.getState().order).toEqual(["cA02"]);
+    expect(useUiStore.getState().activeTab).toBe("sites");
+
+    // 身份切换（登录/登出/会话失效最终都落到 user 值变化）
+    act(() => useAuthStore.setState({ user: { user_id: "u1", email: "a@b.c" } }));
+
+    await waitFor(() => expect(useProjectStore.getState().snapshot).toBeNull());
+    expect(useConversationStore.getState().messages).toEqual([]);
+    expect(useConversationStore.getState().streamBuffer).toBe("");
+    expect(useToolsStore.getState().order).toEqual([]);
+    expect(useToolsStore.getState().byCallId).toEqual({});
+    expect(useUiStore.getState().activeTab).toBe("basic-info");
+
+    act(() => useAuthStore.setState({ user: null }));  // 清场：不影响后续用例
   });
 });
