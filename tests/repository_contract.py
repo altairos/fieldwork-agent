@@ -447,6 +447,18 @@ class TestContract:
         with pytest.raises(KeyError):
             repo.set_phase("nope", "field_site_profiles")
 
+    @pytest.mark.parametrize(
+        "bad_pid", ["../escape", "a/b", "a\\b", "..", ".", "C:evil", "x" * 65])
+    def test_unsafe_project_id_rejected(self, repo, bad_pid):
+        """A10：非法 project_id 在仓储层即 ValueError（外壳漏守卫也不得穿越/落库）。"""
+        with pytest.raises(ValueError):
+            repo.get_state(bad_pid)
+        with pytest.raises(ValueError):
+            repo.create(bad_pid)
+        with pytest.raises(ValueError):
+            repo.delete_project(bad_pid)
+        assert [p["project_id"] for p in repo.list_projects()] == ["p1"]
+
     def test_state_survives_reopen(self, repo_factory, tmp_path):
         first = repo_factory(tmp_path)
         first.create("p1")

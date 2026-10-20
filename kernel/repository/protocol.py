@@ -5,6 +5,7 @@
 
 - **dict 进出**：Protocol 不绑定 pydantic 模型，宿主自行与 ``kernel.models`` 转换，
   避免持久层与数据契约互相牵制；
+- **非法 ``project_id`` → ``ValueError``**（A10 仓储层兜底：空串/超长/路径分隔符/``.``、``..`` 等形状问题，是外壳守卫之外的第二道）；
 - **未知 ``project_id`` → ``KeyError``**；**非法阶段 → ``ValueError``**；
 - **消息单轨制**：全量消息史是唯一真源，``get_messages`` 只读全量史；
   状态里的窗口只是缓存副本，不参与读取（旧 ``get_recent_messages`` 双轨合并已废弃）；

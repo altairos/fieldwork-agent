@@ -586,3 +586,19 @@ def test_owner_key_backfilled_on_legacy_project(json_repo):
     data.pop("owner")
     state_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert json_repo.get_state("p_legacy")["owner"] is None
+
+
+# ---------------------------------------------------------------- A10 仓储层 ID 校验
+
+
+def test_unsafe_project_id_writes_nothing_outside_root(tmp_path):
+    """A10：绕过外壳直呼仓储，非法 ID 也不得在根目录外留下目录/锁/状态文件。"""
+    bare = JsonRepository(projects_dir=tmp_path / "projects")
+    with pytest.raises(ValueError):
+        bare.create("../escape")
+    with pytest.raises(ValueError):
+        bare.append_message("../escape", "user", "x")
+    assert not (tmp_path / "escape").exists()
+    assert not (tmp_path / "state.json").exists()
+    assert not (tmp_path / "escape.lock").exists()
+    assert not (tmp_path / "projects").exists()

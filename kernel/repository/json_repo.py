@@ -129,6 +129,7 @@ class JsonRepository:
 
         非重入：被包裹的方法之间不得相互调用（同 R11 约定）。
         """
+        self._check_pid(pid)   # A10：锁文件名也由 pid 拼成，必须先于任何拼接
         with self._locks_guard:
             lock = self._locks.get(pid)
             if lock is None:
@@ -145,7 +146,20 @@ class JsonRepository:
         """项目根目录（非 Protocol 成员，仅供宿主排障与契约套件的截断用例直读）。"""
         return self._projects_dir
 
+    def _check_pid(self, pid: str) -> None:
+        """A10：仓储层自己的 ID 校验（拦截在外壳与任何路径拼接之前）。
+
+        外壳守卫（guard.py 的 ``project_id_violation``）仍是第一道；这里重复
+        一次是因为任何新增调用方（新端点/脚本/CLI）漏掉守卫时，仓储不得把
+        ``../x`` 直接拼成项目目录。``root`` 传入后连带做 containment，项目
+        目录内预置的符号链接也逃不出去。
+        """
+        reason = path_id_violation(pid, field="project_id", root=self._projects_dir)
+        if reason:
+            raise ValueError(f"非法 project_id（{reason}）: {pid!r}")
+
     def _project_dir(self, pid: str) -> Path:
+        self._check_pid(pid)
         return self._projects_dir / pid
 
     def _state_file(self, pid: str) -> Path:

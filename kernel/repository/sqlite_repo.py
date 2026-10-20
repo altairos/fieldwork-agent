@@ -24,7 +24,11 @@ from fieldwork_agent.kernel.repository.confirm_hash import (
     compute_confirm_hash,
     compute_doc_hash,
 )
-from fieldwork_agent.kernel.repository.guard import cache_id_violation, owner_violation
+from fieldwork_agent.kernel.repository.guard import (
+    cache_id_violation,
+    owner_violation,
+    path_id_violation,
+)
 from fieldwork_agent.kernel.repository.protocol import _UNSET
 
 SCHEMA_VERSION = 5
@@ -364,7 +368,20 @@ class SqliteRepository:
             "CREATE INDEX IF NOT EXISTS idx_cache_project"
             " ON search_cache(project_id, cached_at)")
 
+    @staticmethod
+    def _check_pid(pid: str) -> None:
+        """A10：与 JsonRepository 同步的 ID 形状校验。
+
+        SQLite 不拼路径，穿越面不存在；但仓储协议对同一输入的报错必须一致——
+        否则外层漏守卫时 JSON 抛 ValueError、SQLite 静默落库一个怪 ID，
+        契约测试就只能在一种后端上通过。
+        """
+        reason = path_id_violation(pid, field="project_id")
+        if reason:
+            raise ValueError(f"非法 project_id（{reason}）: {pid!r}")
+
     def _require(self, pid: str) -> None:
+        self._check_pid(pid)
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT 1 FROM projects WHERE project_id=?", (pid,)).fetchone()
@@ -380,6 +397,7 @@ class SqliteRepository:
 
     def create(self, project_id: str, owner: str | None = None) -> None:
         """幂等建项目：已存在则原样保留存量（INSERT OR IGNORE 天然不覆盖 owner）。"""
+        self._check_pid(project_id)
         reason = owner_violation(owner)
         if reason:
             raise ValueError(f"非法 owner（{reason}）: {owner}")
@@ -418,6 +436,7 @@ class SqliteRepository:
 
     def set_owner(self, pid: str, owner: str | None) -> None:
         """改写归属（账号认领预留）；幂等（同值直接返回，不动 updated_at）；未知项目 KeyError。"""
+        self._check_pid(pid)
         reason = owner_violation(owner)
         if reason:
             raise ValueError(f"非法 owner（{reason}）: {owner}")
@@ -433,6 +452,7 @@ class SqliteRepository:
                 (owner, _now(), pid))
 
     def set_owner_if(self, pid: str, expected: str | None, new: str | None) -> bool:
+        self._check_pid(pid)
         for o in (expected, new):
             reason = owner_violation(o)
             if reason:
@@ -526,6 +546,7 @@ class SqliteRepository:
         return row["phase"]
 
     def set_phase(self, pid: str, phase: str) -> None:
+        self._check_pid(pid)
         if phase not in PHASES:
             raise ValueError(f"未知阶段: {phase}")
         now = _now()
@@ -733,6 +754,7 @@ class SqliteRepository:
         旧版以全局 PK 跳项目定位（同一库内可拿到他人快照）；新签名与
         ``json_repo`` 逐字一致：非法 cid / 跨项目 / 不存在均返回 ``None``（不抛）。
         """
+        self._check_pid(pid)
         if cache_id_violation(cid):
             return None
         with self._connect() as conn:
@@ -799,7 +821,8 @@ class SqliteRepository:
         return matched
 
     def delete_knowledge(self, pid: str, entry_id: str) -> None:
-        """不存在不报错（幂等）；对齐 json_repo：无 _require、不推 updated_at。"""
+        """不存在不报错（幂等）；对齐 json_repo：未知项目也不 _require、不推 updated_at。"""
+        self._check_pid(pid)
         with self._connect(immediate=True) as conn:
             conn.execute(
                 "DELETE FROM knowledge WHERE project_id=? AND id=?", (pid, entry_id))
@@ -813,6 +836,7 @@ class SqliteRepository:
     ) -> dict:
         """对齐 json_repo：编辑不存在 → KeyError（UPDATE 0 行或读回无果同报）；
         未指定字段不动；不推 updated_at。"""
+        self._check_pid(pid)
         with self._connect(immediate=True) as conn:
             if title is not None or content is not None:
                 sets, params = [], []
