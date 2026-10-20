@@ -557,3 +557,13 @@ async def test_retry_requires_user_and_assistant_tail(app, client):
     rr = await client.post(f"/projects/p1/turns/{tid}/retry")
     assert rr.status_code == 409
     assert "retry_not_applicable" in rr.text
+
+
+def test_create_turn_request_rejects_overlong_idempotency_key():
+    """A02：幂等键常驻内存索引，超长键必须在上游被拒。"""
+    from fieldwork_agent.web_host.api.turns import CreateTurnRequest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CreateTurnRequest(text="hi", idempotency_key="k" * 129)
+    assert CreateTurnRequest(text="hi", idempotency_key="k" * 128).idempotency_key

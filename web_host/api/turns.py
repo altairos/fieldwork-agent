@@ -21,14 +21,16 @@ from fieldwork_agent.web_host.sse import (
     sse_response,
 )
 from fieldwork_agent.web_host.turn_manager import TERMINAL_STATUSES
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["turns"])
 
 
 class CreateTurnRequest(BaseModel):
     text: str
-    idempotency_key: str | None = None
+    # A02：幂等键会常驻 `_idempotency` 内存索引，不设上限可被超长串放大；
+    # 128 对 uuid/时间戳类键绰绰有余。超长键由 pydantic 直接折 422。
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 # 页面 key 请求头（首页「API 密钥」卡存 localStorage，rest.ts 统一注入）

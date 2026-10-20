@@ -1,6 +1,7 @@
 # tests/test_web_turn_manager.py
 import asyncio
 import json
+import time
 
 import pytest
 from fieldwork_agent.web_host.turn_manager import TurnManager
@@ -149,3 +150,48 @@ def test_recover_interrupted_leaves_terminal_turns_untouched(tm):
         meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         on_disk.add(meta["status"])
     assert on_disk == set(statuses)
+
+
+# --------------------------------------------------- A02：内存态回收
+def test_prune_terminal_evicts_after_retention(tm):
+    """终态回合按 TTL 退场：否则长期运行按回合数线性增长，只在删项目时清。"""
+    from fieldwork_agent.web_host import turn_manager as tm_mod
+
+    t = tm.create_turn("p1", idempotency_key="k1")
+    tm.finish("p1", t.turn_id, "completed")
+    assert tm.prune_terminal(now=time.time() + tm_mod.TERMINAL_RETENTION + 1) == 1
+    assert tm.get_turn("p1", t.turn_id) is None
+    assert tm.lookup_idempotent("p1", "k1") is None
+
+
+def test_prune_terminal_keeps_running_turns(tm):
+    t = tm.create_turn("p1")
+    assert tm.prune_terminal(now=time.time() + 10**6) == 0
+    assert tm.get_turn("p1", t.turn_id) is not None
+
+
+def test_prune_terminal_keeps_fresh_terminal_turns(tm):
+    """刚结束的不能马上清：SSE 重连与幂等重试还要靠它。"""
+    t = tm.create_turn("p1")
+    tm.finish("p1", t.turn_id, "completed")
+    assert tm.prune_terminal() == 0
+    assert tm.get_turn("p1", t.turn_id) is not None
+
+
+def test_create_turn_amortizes_prune(tm):
+    """不需要后台任务：新回合创建时顺手清一次过期项。"""
+    from fieldwork_agent.web_host import turn_manager as tm_mod
+
+    old = tm.create_turn("p1")
+    tm.finish("p1", old.turn_id, "completed")
+    old.finished_at = time.time() - tm_mod.TERMINAL_RETENTION - 1
+    tm.create_turn("p1")
+    assert tm.get_turn("p1", old.turn_id) is None
+
+
+def test_unsubscribe_drops_empty_subscriber_entry(tm):
+    """订阅表也不能留空壳 key，否则每回合泄一个空列表。"""
+    t = tm.create_turn("p1")
+    q = tm.subscribe("p1", t.turn_id)
+    tm.unsubscribe("p1", t.turn_id, q)
+    assert tm._subscribers.get(f"p1:{t.turn_id}") is None

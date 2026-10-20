@@ -15,6 +15,11 @@ from pydantic import ValidationError
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
+# A02：终态回合在内存里再留这么久，之后随新回合创建顺手回收。
+# 不能更短：SSE 断线重连与幂等重试还要靠 handle 判断终态；
+# 事件本体在 events.jsonl 里不删，历史回看走 /messages 而非这个表。
+TERMINAL_RETENTION = 30 * 60.0
+
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
     """同目录临时文件写入后 os.replace 原子替换，避免崩溃留下半写 JSON。
@@ -44,6 +49,7 @@ class TurnHandle:
     status: str = "running"
     idempotency_key: str | None = None
     created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None      # A02：进入终态的时间，供回收判定
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     seq_counter: int = 0
 
@@ -84,6 +90,9 @@ class TurnManager:
         existing = self.lookup_idempotent(pid, idempotency_key)
         if existing is not None:
             return existing, False
+
+        # A02：新回合创建时顺手回收过期终态（摊销成本，不需要后台任务）
+        self.prune_terminal()
 
         tid = uuid.uuid4().hex[:16]
         handle = TurnHandle(turn_id=tid, pid=pid, idempotency_key=idempotency_key)
@@ -149,8 +158,34 @@ class TurnManager:
         if handle is None:
             return
         handle.status = status
+        handle.finished_at = time.time()
         self._write_meta(handle)
         self._broadcast(pid, tid, None)
+
+    def prune_terminal(self, *, now: float | None = None,
+                       ttl: float = TERMINAL_RETENTION) -> int:
+        """回收超期的终态回合（A02），返回回收数量。
+
+        这三个字典原先只在 `purge_project`（删项目）时清理，回合正常结束不移除
+        任何条目——长期运行按回合数线性增长。磁盘上的 `events.jsonl` 不动，
+        所以 SSE 断线重连超过 TTL 会得到 404，但历史仍可由 `/messages` 读出。
+        """
+        current = time.time() if now is None else now
+        dead = [(key.split(":", 1)[0], handle.turn_id)
+                for key, handle in self._turns.items()
+                if handle.status in TERMINAL_STATUSES
+                and handle.finished_at is not None
+                and current - handle.finished_at > ttl]
+        if not dead:
+            return 0
+        stale = set(dead)
+        for pid, tid in dead:
+            self._turns.pop(f"{pid}:{tid}", None)
+            self._subscribers.pop(f"{pid}:{tid}", None)
+        self._idempotency = {
+            key: tid for key, tid in self._idempotency.items()
+            if (key.split(":", 1)[0], tid) not in stale}
+        return len(dead)
 
     def cancel(self, pid: str, tid: str) -> bool:
         """取消回合；已终态则返回 False。"""
@@ -213,11 +248,13 @@ class TurnManager:
         return q
 
     def unsubscribe(self, pid: str, tid: str, queue: asyncio.Queue) -> None:
-        """取消订阅。"""
+        """取消订阅。空壳 key 一并移除——否则每回合泄一个空列表。"""
         key = f"{pid}:{tid}"
         subs = self._subscribers.get(key, [])
         if queue in subs:
             subs.remove(queue)
+        if not subs:
+            self._subscribers.pop(key, None)
 
     def _broadcast(self, pid: str, tid: str, item) -> None:
         """向所有订阅者广播事件或 None 哨兵。"""
