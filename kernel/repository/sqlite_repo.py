@@ -22,6 +22,7 @@ from fieldwork_agent.kernel.repository.cache_summary import result_summary
 from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
+    compute_doc_hash,
 )
 from fieldwork_agent.kernel.repository.guard import cache_id_violation, owner_violation
 from fieldwork_agent.kernel.repository.protocol import _UNSET
@@ -837,12 +838,14 @@ class SqliteRepository:
     def save_proposal(
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
         *, provenance_ctx: dict | None = None,
+        provenance: dict | None = None,
     ) -> str:
         """版本累积：每次 INSERT 新记录，绝不覆盖既有（契约要求）。
 
         对齐 json_repo：登记走 state["proposals"] + _save 落盘 → 同事务推进
         projects.updated_at；content 事实源存 DB（裁决4），不再落 .md 文件。
-        N04：provenance_ctx 非 None 时，依赖指纹的 ctx 路用生成时实际值。
+        ``provenance``（评审 R02）：正文五渠道生成输入，落盘指纹按它算；
+        ``provenance_ctx`` 为旧调用面的 ctx 单路别名。
         """
         self._require(pid)
         record_id = _new_id("prop")
@@ -850,8 +853,7 @@ class SqliteRepository:
         filename = f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md"
         saved_at = _now()
         with self._connect(immediate=True) as conn:   # R04：指纹+存在性检查+seq 分配同锁
-            dep_hash = self._current_confirm_hash(
-                pid, conn=conn, provenance_ctx=provenance_ctx)
+            dep_hash = self._doc_inputs_hash(pid, conn, provenance, provenance_ctx)
             exists = conn.execute(
                 "SELECT 1 FROM proposals WHERE project_id=? AND filename=?",
                 (pid, filename)).fetchone()
@@ -903,11 +905,10 @@ class SqliteRepository:
 
     def _current_confirm_hash(self, pid: str, conn=None, *,
                               provenance_ctx: dict | None = None) -> str:
-        """五路依赖指纹（R09）。传 conn 时在该（写）事务内现读——确认校验/
-        存档指纹与写入同锁原子（审计 R04：写锁覆盖状态 API）。
+        """旧代五路依赖指纹（R09，行程只装最新快照 id）。
 
-        N04：``provenance_ctx`` 非 None 时 ctx 路用生成时实际值（正文所本），
-        其余四路仍现读仓储——使指纹忠于正文实际依赖而非保存时推测。
+        传 conn 时在该（写）事务内现读——确认校验/存档指纹与写入同锁原子
+        （审计 R04：写锁覆盖状态 API）。仅用于识别存量文档的旧指纹。
         """
         if conn is None:
             with self._connect() as ro:
@@ -920,6 +921,58 @@ class SqliteRepository:
             self._read_informants(conn, pid),
             self._read_knowledge(conn, pid),
             self._latest_itinerary_cid(conn, pid))
+
+    def _doc_inputs_hash(self, pid: str, conn, provenance: dict | None,
+                         provenance_ctx: dict | None = None) -> str:
+        """落盘指纹：有 provenance 按正文生成输入算（新代），否则按仓储现读算（旧代）。
+
+        provenance 中缺省的渠道回落到仓储现值（旧调用面只需传 ctx）。
+        """
+        if provenance is None:
+            return self._current_confirm_hash(
+                pid, conn=conn, provenance_ctx=provenance_ctx)
+        ctx = provenance.get("ctx", provenance_ctx
+                             if provenance_ctx is not None
+                             else self._read_research_context(conn, pid))
+        _, itinerary = self._latest_itinerary(conn, pid)
+        return compute_doc_hash(
+            ctx,
+            provenance.get("sites", self._read_field_sites(conn, pid)),
+            provenance.get("informants", self._read_informants(conn, pid)),
+            provenance.get("knowledge", self._read_knowledge(conn, pid)),
+            provenance.get("itinerary", itinerary))
+
+    def _confirm_candidates(self, pid: str, conn) -> tuple[str, str]:
+        """当前仓储的两种指纹：新代（行程取内容）与旧代（行程取 cid）。"""
+        _, itinerary = self._latest_itinerary(conn, pid)
+        ctx = self._read_research_context(conn, pid)
+        sites = self._read_field_sites(conn, pid)
+        informants = self._read_informants(conn, pid)
+        knowledge = self._read_knowledge(conn, pid)
+        return (
+            compute_doc_hash(ctx, sites, informants, knowledge, itinerary),
+            compute_confirm_hash(ctx, sites, informants, knowledge,
+                                 self._latest_itinerary_cid(conn, pid)),
+        )
+
+    def _latest_itinerary(self, conn, pid: str) -> tuple[str, dict | None]:
+        """最新一次 compose_itinerary 快照的 (id, result)（无则 ('', None)）。
+
+        与 ``_latest_itinerary_cid`` 同源定序；result 在同一 conn 内读，
+        避免写事务中另开连接。
+        """
+        cid = self._latest_itinerary_cid(conn, pid)
+        if not cid:
+            return "", None
+        row = conn.execute(
+            "SELECT result FROM search_cache WHERE project_id=? AND id=?",
+            (pid, cid)).fetchone()
+        if row is None:
+            return cid, None
+        try:
+            return cid, json.loads(row["result"])
+        except (TypeError, ValueError):
+            return cid, None
 
     # ---------------------------------------- 确认与失效（审计二 R09，镜像 json_repo）
 
@@ -1021,15 +1074,15 @@ class SqliteRepository:
             if record["kind"] != "proposal":
                 raise ProposalConfirmError(
                     f"文档类型为 {record['kind']}，只能确认 proposal 文档", "wrong_kind")
-            current = self._current_confirm_hash(pid, conn=conn)
+            current = self._confirm_candidates(pid, conn)
             if not record["dep_hash"]:
                 raise ProposalConfirmError(
                     "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
-            if record["dep_hash"] != current:
+            if record["dep_hash"] not in current:
                 raise ProposalConfirmError(
                     "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
             rec = ConfirmationRecord(
-                kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+                kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current[0])
             payload = rec.model_dump(mode="json")
             conn.execute(
                 "INSERT OR REPLACE INTO confirmations(project_id, id, kind, subject,"
@@ -1065,12 +1118,13 @@ class SqliteRepository:
             latest = conn.execute(
                 "SELECT id FROM proposals WHERE project_id=? AND kind='proposal'"
                 " ORDER BY seq DESC LIMIT 1", (pid,)).fetchone()
+            candidates = self._confirm_candidates(pid, conn)
         subject, latest_id = conf["subject"], (latest["id"] if latest else "")
         if subject and latest_id and subject != latest_id:
             return True
         if not conf["dep_hash"]:
             return True
-        return conf["dep_hash"] != self._current_confirm_hash(pid)
+        return conf["dep_hash"] not in candidates
 
     # -------------------------------------------------- 迁移 raw-import（仅供 core.migrate 调用，不属 Protocol）
     #

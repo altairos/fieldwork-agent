@@ -1641,12 +1641,20 @@ _PROPOSAL_ARGS_EMPTY_CTX = {
 
 def test_n04_same_batch_write_then_proposal_uses_new_ctx(env):
     """N04：同批先 update_research_context 再 compose_proposal(ctx={})，
-    文档正文必须用本轮新值（旧实现拿到轮前旧值），且落盘指纹与正文一致可确认。"""
+    文档正文必须用本轮新值（旧实现拿到轮前旧值），且落盘指纹与正文一致可确认。
+
+    R02：四路事实渠道以项目已采纳状态为正文依据——先 seed 田野点/报道人/行程
+    （相当于用户已在项目中采纳），模型同批只聚焦 ctx 主题。"""
     repo, tm = env
     repo.update_research_context("p1", {
         "discipline": "社会学", "topic": "OLD_TOPIC", "scale": "单人调研",
         "budget": "2万", "time_window": "7月", "departure_city": "上海",
         "target_location": "大理", "purpose": "global", "research_questions": "RQ_OLD"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
     llm = ChatFakeLLM([
         # 单帧双工具调用（同批）：先写主题，再出方案（ctx 空 → 由 staged_view 补）
         [{"delta": ""},
@@ -1676,6 +1684,165 @@ def test_n04_same_batch_write_then_proposal_uses_new_ctx(env):
     # 依赖指纹与正文一致 → 确认可成功（正文旧/指纹新的错配已消除）
     assert repo.confirm_proposal("p1", docs[0]["id"])
     assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_r02_proposal_body_uses_adopted_state_not_substitutes(env):
+    """R02：四路事实渠道以项目已采纳状态为正文依据——模型提供的替代值
+    不入正文，工具结果如实标注未采纳，且生成即可确认（正文与项目一致）。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "项目已采纳点A", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-A", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "行程", "compose_itinerary",
+                      {"legs": [], "summary": "项目已采纳行程A"})
+    model_args = {
+        "ctx": {},
+        "sites": [{"name": "模型自造点B", "confirmed": True, "profile": {}}],
+        "itinerary": {"legs": [], "summary": "模型自造行程B"},
+        "informants": [{"code": "INF-B", "type": "宗族长老",
+                         "relation": "同乡会引荐", "contact": "", "notes": ""}],
+    }
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": model_args}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    content = docs[0]["content"]
+    assert "项目已采纳点A" in content and "模型自造点B" not in content
+    assert "项目已采纳行程A" in content and "模型自造行程B" not in content
+    assert "INF-A" in content and "INF-B" not in content
+    completed = [e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                 if e.event == "tool_completed"][0]
+    assert "未采纳" in (completed.data.get("degraded") or "")
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+    assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_r02_unadopted_channels_cannot_be_confirmed(env):
+    """R02：项目尚无已采纳记录时，模型自带的渠道虽可生成正文，但不得被
+    认证——确认按项目状态校验，指纹不一致即拒绝（正文用 B、项目仍是 A 的
+    错配不允许发生）。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _PROPOSAL_ARGS_EMPTY_CTX}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+    with pytest.raises(ProposalConfirmError) as ei:
+        repo.confirm_proposal("p1", docs[0]["id"])
+    assert ei.value.code == "dep_hash_mismatch"
+
+
+def test_r02_same_turn_itinerary_binds_into_proposal_hash(env):
+    """R02：项目原先无行程时，同回合先 compose_itinerary 再 compose_proposal，
+    落盘指纹改绑本回合已解析行程——否则“排行程→写方案”永远无法确认。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "宗族变迁", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "i1", "name": "compose_itinerary",
+                                          "arguments": {"departure": "上海",
+                                                        "destinations": ["大理"],
+                                                        "start_date": "2026-07-10",
+                                                        "duration_days": 3,
+                                                        "budget_total": 20000}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": {"ctx": {}, "sites": [],
+                                                        "informants": [],
+                                                        "itinerary": {"legs": []}}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "排行程并出方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 1
+    assert any(c["tool"] == "compose_itinerary"
+               for c in repo.list_cached_searches("p1"))
+    assert repo.confirm_proposal("p1", docs[0]["id"])
+
+
+def test_r02_same_turn_two_proposals_keep_own_provenance(env):
+    """R02：同回合先后生成两份方案（中途改 ctx）——每份指纹绑定自己的
+    生成输入；旧方案拒绝、新方案可确认（不被保存时的仓储现状污染）。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "discipline": "社会学", "topic": "OLD_TOPIC", "scale": "单人调研",
+        "budget": "2万", "time_window": "7月", "departure_city": "上海",
+        "target_location": "大理"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
+    proposal_args = {"ctx": {}, "sites": [], "informants": [],
+                     "itinerary": {"legs": []}}
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": proposal_args}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c2", "name": "update_research_context",
+              "arguments": {"patch": {"topic": "NEW_TOPIC"}, "reason": "用户改题"}},
+             {"id": "c3", "name": "compose_proposal",
+              "arguments": dict(proposal_args)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成两份方案", tm, llm, FakeFlyAI()))
+    docs = repo.list_proposals("p1")
+    assert len(docs) == 2
+    assert "OLD_TOPIC" in docs[0]["content"] and "NEW_TOPIC" not in docs[0]["content"]
+    assert "NEW_TOPIC" in docs[1]["content"]
+    from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+    with pytest.raises(ProposalConfirmError) as ei:
+        repo.confirm_proposal("p1", docs[0]["id"])
+    assert ei.value.code == "dep_hash_mismatch"
+    assert repo.confirm_proposal("p1", docs[1]["id"])
 
 
 # ------------------------------- F05 取消保护 / F06 最终回答收敛 / F07 批前截断
@@ -2166,6 +2333,13 @@ def test_proposal_confirm_hash_follows_merged_ctx(env):
     # 仓储先全量置为模型 ctx，再改回 2万——只留 budget 一路差异
     repo.update_research_context("p1", args["ctx"])
     repo.update_research_context("p1", {"budget": "2万"})
+    # R02：四路事实渠道以项目已采纳状态为准——seed 与模型入参同值的记录，
+    # 确认被拒只由 ctx（budget）差异决定，而非未采纳的渠道
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老",
+                               "relation": "同乡会引荐", "contact": "", "notes": ""})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
     llm = ChatFakeLLM([
         [{"delta": ""},
          {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",

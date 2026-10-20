@@ -37,6 +37,7 @@ from fieldwork_agent.kernel.repository.cache_summary import result_summary
 from fieldwork_agent.kernel.repository.confirm_hash import (
     ProposalConfirmError,
     compute_confirm_hash,
+    compute_doc_hash,
 )
 from fieldwork_agent.kernel.repository.guard import (
     cache_id_violation,
@@ -592,7 +593,15 @@ class JsonRepository:
     def save_proposal(
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
         *, provenance_ctx: dict | None = None,
+        provenance: dict | None = None,
     ) -> str:
+        """落盘一份提案文档（版本累积，绝不覆盖）。
+
+        ``provenance``（评审 R02）：正文五渠道生成输入
+        （ctx/sites/informants/knowledge/itinerary），落盘指纹按它算——
+        即“正文到底用了什么”，而不是保存时现读的仓储推测值。
+        ``provenance_ctx`` 为旧调用面的 ctx 单路别名。
+        """
         with self._lock_for(pid):
             state = self._load(pid)
             uid = uuid.uuid4().hex[:8]
@@ -603,10 +612,9 @@ class JsonRepository:
                 "filename": f"{kind}_{version}_{datetime.now():%Y%m%d_%H%M%S}.md",
                 "saved_at": _now(),
                 # 审计二 R09：保存时落五路依赖指纹，确认时校验。
-                # N04：provenance_ctx 非 None 时用生成时实际使用的 ctx 算指纹
-                # （而非保存时按当前仓储推测），防止正文旧、指纹新的错配。
-                "dep_hash": self._current_confirm_hash(
-                    pid, state, provenance_ctx=provenance_ctx),
+                # N04：provenance 非 None 时用正文实际生成输入算指纹（而非保存时
+                # 按当前仓储推测），防止正文旧、指纹新的错配；R02：扩到五渠道。
+                "dep_hash": self._doc_inputs_hash(pid, state, provenance, provenance_ctx),
             }
             path = self._output_dir(pid) / record["filename"]
             if path.exists():
@@ -675,10 +683,9 @@ class JsonRepository:
 
     def _current_confirm_hash(self, pid: str, state: dict, *,
                               provenance_ctx: dict | None = None) -> str:
-        """当前五路依赖指纹（审计二 R09）：ctx/田野点/报道人/知识库/最新行程快照。
+        """旧代五路依赖指纹（ctx/田野点/报道人/知识库/最新行程快照 id）。
 
-        N04：``provenance_ctx`` 非 None 时，ctx 路用生成时实际值（文档正文所本），
-        其余四路仍取当前仓储——使指纹忠于“正文实际依赖”而非保存时推测。
+        仅用于识别存量文档的旧指纹；写出侧走 ``_doc_inputs_hash``。
         """
         return compute_confirm_hash(
             provenance_ctx if provenance_ctx is not None
@@ -687,6 +694,51 @@ class JsonRepository:
             self.list_informants(pid),
             self.list_knowledge(pid),
             self._latest_itinerary_cid(pid))
+
+    def _doc_inputs_hash(self, pid: str, state: dict,
+                         provenance: dict | None,
+                         provenance_ctx: dict | None = None) -> str:
+        """落盘指纹：有 provenance 按正文生成输入算（新代），否则按仓储现读算（旧代）。
+
+        provenance 中缺省的渠道回落到仓储现值（旧调用面只需传 ctx）。
+        """
+        if provenance is None:
+            return self._current_confirm_hash(pid, state, provenance_ctx=provenance_ctx)
+        ctx = provenance.get("ctx", provenance_ctx
+                             if provenance_ctx is not None
+                             else (state.get("research_context") or {}))
+        _, itinerary = self._latest_itinerary(pid)
+        return compute_doc_hash(
+            ctx,
+            provenance.get("sites", self.list_field_sites(pid)),
+            provenance.get("informants", self.list_informants(pid)),
+            provenance.get("knowledge", self.list_knowledge(pid)),
+            provenance.get("itinerary", itinerary))
+
+    def _confirm_candidates(self, pid: str, state: dict) -> tuple[str, str]:
+        """当前仓储的两种指纹：新代（行程取内容）与旧代（行程取 cid）。
+
+        确认/失效判定只要命中任一即视为未变——存量文档保留可确认性，
+        新写文档则按内容判定。
+        """
+        _, itinerary = self._latest_itinerary(pid)
+        ctx = state.get("research_context") or {}
+        sites = self.list_field_sites(pid)
+        informants = self.list_informants(pid)
+        knowledge = self.list_knowledge(pid)
+        return (
+            compute_doc_hash(ctx, sites, informants, knowledge, itinerary),
+            compute_confirm_hash(ctx, sites, informants, knowledge,
+                                 self._latest_itinerary_cid(pid)),
+        )
+
+    def _latest_itinerary(self, pid: str) -> tuple[str, dict | None]:
+        """最新一次 compose_itinerary 快照的 (id, result)（无则 ('', None)）。"""
+        cid = self._latest_itinerary_cid(pid)
+        if not cid:
+            return "", None
+        record = self.get_cached_search(pid, cid) or {}
+        return cid, record.get("result")
 
     def _latest_itinerary_cid(self, pid: str) -> str:
         """最新一次 compose_itinerary 快照 id（无则空串）——五路指纹之⑤。
@@ -720,15 +772,15 @@ class JsonRepository:
             if record.get("kind", "proposal") != "proposal":
                 raise ProposalConfirmError(
                     f"文档类型为 {record.get('kind')}，只能确认 proposal 文档", "wrong_kind")
-            current = self._current_confirm_hash(pid, state)
+            current = self._confirm_candidates(pid, state)
             if not record.get("dep_hash"):
                 raise ProposalConfirmError(
                     "该文档缺少依赖指纹（旧版生成）：请重新生成后再确认", "dep_hash_missing")
-            if record["dep_hash"] != current:
+            if record["dep_hash"] not in current:
                 raise ProposalConfirmError(
                     "研究输入已变化，该文档的确认已过期：请重新生成方案", "dep_hash_mismatch")
             rec = ConfirmationRecord(
-                kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current)
+                kind="proposal", subject=doc_id, confirmed_at=_now(), dep_hash=current[0])
             state.setdefault("confirmations", []).append(rec.model_dump(mode="json"))
             state["proposal_confirmed"] = True
             state["updated_at"] = rec.confirmed_at
@@ -762,4 +814,4 @@ class JsonRepository:
         dep_hash = records[-1].get("dep_hash", "")
         if not dep_hash:
             return True  # legacy 确认记录无指纹，保守视失效
-        return dep_hash != self._current_confirm_hash(pid, state)
+        return dep_hash not in self._confirm_candidates(pid, state)

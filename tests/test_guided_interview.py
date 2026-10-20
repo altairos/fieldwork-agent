@@ -134,6 +134,41 @@ def test_web_interview_can_end_without_forced_tools_or_questions(tmp_path, conte
         assert not done.data["quick_reply_groups"]
 
 
+@pytest.mark.parametrize("host", ["cli", "web"])
+def test_exploratory_rounds_do_not_force_closure_or_adopt_candidates(tmp_path, fake_config, host):
+    """探索可跨轮继续；宿主不补问、不推进阶段，也不把助手角度记成已采纳问题。"""
+    replies = [
+        "可以比较咖啡馆作为独处空间与熟人交往场所的差别。前者关注人如何暂时退出熟人关系，"
+        "后者关注关系如何在店内延续；观察座位、停留与交谈方式，能为两种解释提供不同线索。",
+        "还可以沿经营劳动展开：店主希望营造的氛围，与维持客流所需的日常工作未必一致。"
+        "跟随一次开店到打烊的过程，可以把空间形象和具体劳动联系起来，暂不必把它定成选题。",
+    ]
+    llm = ScriptedLLM([_reply(reply) for reply in replies])
+    if host == "cli":
+        agent = FieldAgent(fake_config)
+        pid = agent.create_project("exploration")
+        agent.llm = llm
+        repo = agent.repo
+    else:
+        repo = JsonRepository(tmp_path / "projects")
+        pid = "exploration"
+        repo.create(pid)
+        tm = TurnManager(tmp_path / "projects")
+    repo.update_research_context(pid, {"title": "探索测试", "topic": "县城咖啡馆"})
+    for message, expected in zip(("先聊聊这个题目有什么值得琢磨", "先不定问题，再展开另一个角度"), replies, strict=True):
+        if host == "cli":
+            result = agent.chat(message)
+            assert result["reply"] == expected and not result["tool_events"]
+        else:
+            turn = tm.create_turn(pid)
+            asyncio.run(run_turn(repo, pid, turn.turn_id, message, tm, llm, None))
+            assert not any(e.event == "tool_started" for e in tm.replay(pid, turn.turn_id, 0))
+        assert repo.get_messages(pid)[-1]["content"] == expected
+        assert repo.get_phase(pid) == "research_positioning"
+        assert not repo.get_research_context(pid).get("research_questions")
+    assert len(llm.calls) == 2
+
+
 def test_preamble_repair_can_finish_with_one_question(tmp_path):
     repo = JsonRepository(projects_dir=tmp_path / "projects")
     repo.create("p1")

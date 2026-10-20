@@ -19,7 +19,11 @@ from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.research_state import turn_memory_patch
 from fieldwork_agent.kernel.source_requests import SourceBudget
 from fieldwork_agent.kernel.sources.flyai import RecordingClient, current_call_id
-from fieldwork_agent.runtime.doc_args import merge_doc_args
+from fieldwork_agent.runtime.doc_args import (
+    accepted_doc_inputs,
+    doc_input_fingerprint,
+    merge_doc_args,
+)
 from fieldwork_agent.runtime.literature import LiteratureSearchBudget
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
@@ -150,9 +154,13 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     drained = 0
     drained_amap = 0
     call_args_map: dict[str, dict] = {}
-    # N04：文档工具生成时的仓储依赖视图（ctx 路 provenance）——落盘指纹据此
-    # 而非保存时推测；正常轮与保存时仓储一致，仅并发外部修改时有别。
-    doc_ctx_provenance: dict[str, dict] = {}
+    # N04/R02：文档工具生成时的五渠道输入（ctx/田野点/报道人/知识库/行程）——
+    # 落盘指纹据此而非保存时推测；正常轮与保存时仓储一致，仅并发外部修改时有别。
+    doc_inputs_provenance: dict[str, dict] = {}
+    # R02：被“项目已采纳状态”替换掉的渠道名（模型给了但未采纳），工具结果里如实标注
+    doc_replaced: dict[str, list[str]] = {}
+    # R02：正文行程未绑定已采纳快照（项目当时无行程）——落盘时尝试改绑本回合快照
+    doc_itinerary_from_turn: dict[str, bool] = {}
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
                                  llm,
                                  amap_recorder if amap_recorder is not None
@@ -329,14 +337,24 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 # update_research_context 再调文档工具时立即看到新值（与
                 # get_project_brief 的 staged_view 语义一致）
                 ctx_view = buffer.staged_view()
-                args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view)
+                # R02：方案四路事实渠道（田野点/报道人/知识库/行程）以项目已采纳状态
+                # 为准——模型自造的替代值不进入正文（否则正文用 B、项目仍为 A）。
+                accepted = (accepted_doc_inputs(repo, pid, ctx_view=ctx_view)
+                            if name == "compose_proposal" else None)
+                replaced: list[str] = []
+                args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view,
+                                      accepted=accepted, replaced=replaced)
                 call_name_map[call_id] = name
                 call_args_map[call_id] = args
-                # C01：落盘指纹的 ctx 路依据＝文档正文实际所本（merge_doc_args
-                # 合并后 ctx：仓储依赖视图 + 模型非空覆盖）；仓储值只作底座，
-                # 模型覆盖未采纳时确认必须被拒（审计 C01）
+                # C01/R02：落盘指纹依据＝正文实际所本的五渠道输入（ctx 为
+                # merge_doc_args 合并后的生成 ctx；其余四路为正文实际采用的记录）；
+                # 模型覆盖/替代值未采纳时确认必须被拒
                 if name == "compose_proposal":
-                    doc_ctx_provenance[call_id] = dict(args.get("ctx") or ctx_view or {})
+                    doc_inputs_provenance[call_id] = doc_input_fingerprint(args)
+                    doc_replaced[call_id] = replaced
+                    # 项目尚无已采纳行程时，正文用的是模型给的那份；若本回合
+                    # 自己刚排了行程，落盘时改绑本回合快照（见 _persist_tool_results）
+                    doc_itinerary_from_turn[call_id] = not (accepted or {}).get("itinerary")
                 tm.append_event(pid, turn_id, "tool_started",
                                 {"call_id": call_id, "tool": name,
                                  "args": args, "purpose": ""})
@@ -361,7 +379,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     data = data.model_dump(mode="json")
                 tm.append_event(pid, turn_id, "tool_completed",
                                 {"call_id": call_id, "ok": env.ok,
-                                 "data": data, "degraded": env.degraded, "source_usage": env.usage,
+                                 "data": data,
+                                 "degraded": _degraded_with_channel_note(
+                                     env, name, call_id, doc_replaced),
+                                 "source_usage": env.usage,
                                  "error": _error_dict(env)})
                 messages.append({"role": "tool", "tool_call_id": call_id,
                                  "content": _tool_content(name, env)})
@@ -616,7 +637,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 buffer.stage(turn_memory_patch(buffer.staged_view(), user_text, accumulated_reply))
             buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
             _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
-                                  doc_ctx_provenance, live_refs_by_call)
+                                  doc_inputs_provenance, live_refs_by_call,
+                                  doc_itinerary_from_turn)
             _apply_extractions(repo, pid, user_text)
             _schedule_autoname(repo, pid, llm)   # N09：后台任务卸载，不阻塞事件循环/主回合
             transition = check_and_advance(repo, pid)
@@ -726,6 +748,27 @@ def _looks_dangling(reply: str) -> bool:
 
 
 _SENTINEL = object()
+
+# R02：四路事实渠道的中文名（工具结果里如实标注“未采纳内容未入正文”）
+_DOC_CHANNEL_LABELS = {"sites": "田野点", "informants": "访谈对象",
+                       "knowledge": "知识材料", "itinerary": "行程"}
+
+
+def _degraded_with_channel_note(env, name, call_id, doc_replaced):
+    """工具结果 degraded 文案：方案正文改用了项目已采纳状态时如实标注（R02）。
+
+    不是降级失败：只是让“模型给的替代值未被采纳”对人和机器都可见，
+    避免回复声称已按某份未采纳的田野点/行程写方案，而正文实际是项目状态。
+    """
+    degraded = env.degraded
+    if not env.ok or name != "compose_proposal":
+        return degraded
+    replaced = (doc_replaced or {}).get(call_id) or []
+    if not replaced:
+        return degraded
+    names = "、".join(_DOC_CHANNEL_LABELS.get(c, c) for c in replaced)
+    note = f"正文按项目已采纳的{names}生成；模型提供的替代值未采纳，先在项目中采纳后再生成"
+    return f"{degraded}；{note}" if degraded else note
 
 
 def _next_or_sentinel(it):
@@ -845,17 +888,23 @@ def _resolve_live_refs(obj, live_refs: dict[str, str]):
 
 
 def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
-                          doc_ctx_provenance=None, live_refs_by_call=None):
+                          doc_inputs_provenance=None, live_refs_by_call=None,
+                          doc_itinerary_from_turn=None):
     """轮末把成功工具结果落盘；数据先经 _resolve_live_refs 替换规格键（R08）。
 
-    N04：``doc_ctx_provenance``（call_id → 生成时仓储依赖视图）供 compose_proposal
-    落盘时作为 provenance_ctx 传给 save_proposal，使依赖指纹忠于生成时的
-    仓储依赖版本而非保存时推测（并发外部修改时能正确判失效）。
+    N04/R02：``doc_inputs_provenance``（call_id → 正文五渠道生成输入）供
+    compose_proposal 落盘时作为 provenance 传给 save_proposal，使依赖指纹
+    忠于生成时正文实际采用的输入（ctx 覆盖/四路事实渠道均已含在内）。
+    ``doc_itinerary_from_turn``：正文行程当时未绑定已采纳快照（项目尚无行程），
+    而本回合自己排了行程时，改绑本回合最新快照的已解析内容——否则同轮
+    “排行程 → 写方案”落盘后指纹与“最新行程”永远不一致，方案永远无法确认。
     N05：``live_refs_by_call``（call_id → 规格键→引用）使每份产物按自己的
     调用实例解析快照（本调用优先，全局 live_refs 作跨调用回退）。
     """
-    doc_ctx_provenance = doc_ctx_provenance or {}
+    doc_inputs_provenance = doc_inputs_provenance or {}
     live_refs_by_call = live_refs_by_call or {}
+    doc_itinerary_from_turn = doc_itinerary_from_turn or {}
+    turn_itineraries: list[dict] = []   # 本回合 compose_itinerary 已落盘快照（按发生顺序）
     events = tm.replay(pid, turn_id, after_seq=0)
     for ev in events:
         if ev.event != "tool_completed" or not ev.data.get("ok"):
@@ -881,15 +930,20 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
             repo.cache_search(pid, f"itinerary::{dests}", "compose_itinerary", data_dict,
                               parent_call_id=call_id, turn_id=turn_id,
                               query_key=_query_key("itinerary", {"dests": dests}))
+            turn_itineraries.append(data_dict)
         elif name == "compose_proposal":
             markdown = data_dict.get("markdown", "")
             if markdown:
-                # N04：用生成时仓储依赖视图作为指纹依据（provenance）
+                # N04/R02：用生成时的五渠道输入作为指纹依据（provenance）——
+                # 字段缺失时（旧调用面）退化为仓储现值
+                provenance = dict(doc_inputs_provenance.get(call_id) or {})
+                if provenance and doc_itinerary_from_turn.get(call_id) and turn_itineraries:
+                    provenance["itinerary"] = turn_itineraries[-1]
                 repo.save_proposal(
                     pid, markdown,
                     kind=data_dict.get("kind") or "proposal",
                     version=data_dict.get("version") or "draft",
-                    provenance_ctx=doc_ctx_provenance.get(call_id))
+                    provenance=provenance or None)
         elif name == "compose_interview_guide":
             # guide 返回 {类型: 正文} → 拼单文档落盘
             parts = ["# 访谈提纲", ""]

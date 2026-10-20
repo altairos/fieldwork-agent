@@ -325,6 +325,44 @@ class TestContract:
             repo.confirm_proposal("p1", did_bad)
         assert ei.value.code == "dep_hash_mismatch"
 
+    def test_save_proposal_provenance_channels_drive_dep_hash(self, repo):
+        """R02：provenance 的四路事实渠道按“正文实际采用值”入指纹——与项目
+        已采纳状态一致时确认成功；未采纳的替代值/不同行程内容一律拒绝
+        dep_hash_mismatch（防“正文用 B、项目仍是 A 也能确认”）。双后端一致。
+        """
+        from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+        repo.update_research_context("p1", {"topic": "宗族变迁", "budget": "2万"})
+        repo.save_field_site("p1", {"name": "喜洲", "confirmed": True})
+        repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老"})
+        repo.add_knowledge("p1", "宗族网络", "文献摘要")
+        cid = repo.cache_search("p1", "itinerary::大理", "compose_itinerary",
+                                {"legs": [{"from": "上海", "to": "大理",
+                                           "date": "2026-07-10"}]})
+        adopted = {
+            "ctx": repo.get_research_context("p1"),
+            "sites": repo.list_field_sites("p1"),
+            "informants": repo.list_informants("p1"),
+            "knowledge": repo.list_knowledge("p1"),
+            "itinerary": repo.get_cached_search("p1", cid)["result"],
+        }
+        ok_id = repo.save_proposal("p1", "# 方案A", version="final", provenance=adopted)
+        repo.confirm_proposal("p1", ok_id)
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        # 模型替代田野点未被采纳：指纹记录替代值，项目状态未变 → 确认拒绝
+        bad_sites = {**adopted, "sites": [{"name": "模型自造点B", "confirmed": True}]}
+        bad_id = repo.save_proposal("p1", "# 方案B", version="final",
+                                    provenance=bad_sites)
+        with pytest.raises(ProposalConfirmError) as ei:
+            repo.confirm_proposal("p1", bad_id)
+        assert ei.value.code == "dep_hash_mismatch"
+        # 行程按内容而非快照 id：同 cid 下内容不同也算依赖变化（不被 cid 掩盖）
+        bad_itin = {**adopted, "itinerary": {"legs": []}}
+        itin_id = repo.save_proposal("p1", "# 方案C", version="final",
+                                     provenance=bad_itin)
+        with pytest.raises(ProposalConfirmError) as ei2:
+            repo.confirm_proposal("p1", itin_id)
+        assert ei2.value.code == "dep_hash_mismatch"
+
     def test_confirm_without_doc_id_picks_latest_proposal_kind(self, repo):
         """P2-1：空 doc_id 取“最新一份 proposal”，跳过 interview_guide 等其他 kind。
 
