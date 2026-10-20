@@ -224,3 +224,31 @@ export function IconTrash(props: IconProps) {
     </Line>
   );
 }
+
+// ── 登录弹层（AuthDialog）改版追加 ──
+
+/** 眼睛（密码显示） · line 140 #ic-eye */
+export function IconEye(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </Line>
+  );
+}
+
+/** 眼睛斜杠（密码隐藏） · line 141 #ic-eye-off */
+export function IconEyeOff(props: IconProps) {
+  return (
+    <Line {...props}>
+      <path d="m4 4 16 16" />
+      <path d="M10.6 5.7c.5-.1.9-.2 1.4-.2 6 0 9.5 6.5 9.5 6.5a17.8 17.8 0 0 1-2.7 3.5M6.7 6.7C4 8.5 2.5 12 2.5 12S6 18.5 12 18.5c1.5 0 2.9-.4 4.1-1" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </Line>
+  );
+}
+
+/** 叉（关闭） · line 142 #ic-x */
+export function IconClose(props: IconProps) {
+  return <Line {...props}><path d="M6 6l12 12M18 6 6 18" /></Line>;
+}

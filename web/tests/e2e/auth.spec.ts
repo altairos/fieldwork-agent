@@ -38,7 +38,8 @@ test("匿名建项 → 注册认领 → 跨上下文隔离", async ({ page, brow
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: /没有账号/ }).click();
   await page.getByLabel("邮箱").fill("alice@example.com");
-  await page.getByLabel("密码").fill("s3cret-pass");
+  // exact：显隐钮 aria-label「显示密码/隐藏密码」与密码框构成子串关系（AuthDialog 改版）
+  await page.getByLabel("密码", { exact: true }).fill("s3cret-pass");
   await page.getByRole("button", { name: "注册", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeHidden({ timeout: 10_000 });
   await page.goto("/");
@@ -56,7 +57,7 @@ test("匿名建项 → 注册认领 → 跨上下文隔离", async ({ page, brow
     await pageB.getByRole("button", { name: "登录", exact: true }).click();
     await pageB.getByRole("button", { name: /没有账号/ }).click();
     await pageB.getByLabel("邮箱").fill("bob@example.com");
-    await pageB.getByLabel("密码").fill("another-pass1");
+    await pageB.getByLabel("密码", { exact: true }).fill("another-pass1");
     await pageB.getByRole("button", { name: "注册", exact: true }).click();
     // 等 register 落定（成功才关弹窗）再导航：避免请求被页面跳转中断
     await expect(pageB.getByRole("dialog")).toBeHidden({ timeout: 10_000 });

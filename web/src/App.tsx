@@ -1,5 +1,5 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
-import { BrowserRouter, Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { isAppTokenError, rest } from "./api/rest";
 import { AuthDialog } from "./components/auth/AuthDialog";
 import { Composer } from "./components/chat/Composer";
@@ -9,7 +9,6 @@ import { Header } from "./components/layout/Header";
 import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
 import { RightResizeHandle, loadRightWidth, RIGHT_W_KEY } from "./components/layout/RightResizeHandle";
-import { KeyDialog } from "./components/settings/KeyDialog";
 import { IconCaret } from "./components/ui/icons";
 import { useTurn } from "./hooks/useTurn";
 import { getKeys, hasDashScopeKey } from "./lib/keys";
@@ -43,8 +42,10 @@ import { ProposalView } from "./routes/ProposalView";
  *   Header 汉堡钮触发，backdrop/Escape 关闭）；右栏折叠为底部面板（rightCollapsed，
  *   把手切换）；桌面（lg+）布局不变（CSS 断点控制，JS 状态只管移动形态）。
  * App Token 401（服务端启用 FIELDWORK_APP_TOKEN 后浏览器未存/失效）：横幅给人话
- *   指引（不透传后端 JSON）并就地弹 KeyDialog；保存新令牌后关闭即带新令牌重拉
- *   快照与消息史（authRetry 重跑本 effect），免整页刷新。
+ *   指引（不透传后端 JSON）并就地弹登录窗「高级 · API 密钥」折叠区；保存新令牌后
+ *   关闭即带新令牌重拉快照与消息史（authRetry 重跑本 effect），免整页刷新。
+ * 登录会话失效（401 session_expired，R15 全局钩子置位 expired）：自动弹 AuthDialog
+ *   重新登录（不展开高级区，会话失效与令牌/Key 无关）。
  */
 function Workspace() {
   const { id } = useParams();
@@ -63,14 +64,14 @@ function Workspace() {
   const rightCollapsed = useUiStore((s) => s.rightCollapsed);
   const toggleLeft = useUiStore((s) => s.toggleLeft);
   const toggleRight = useUiStore((s) => s.toggleRight);
-  // 发送链路守卫 401 → 就地弹密钥层（免回首页）；箭头体延迟求值 openKeyDialog
-  // （其 const 定义在下方，此处直引会碰 TDZ）。
-  const turn = useTurn(projectId, { onAuthError: () => openKeyDialog() });
+  // 发送链路守卫 401（App 令牌/Key 类）→ 就地弹登录窗并自动展开高级密钥区（免回
+  // 首页）；箭头体延迟求值 openAuthDialog（其 const 定义在下方，此处直引会碰 TDZ）。
+  const turn = useTurn(projectId, { onAuthError: () => openAuthDialog(true) });
   const turnAdopt = turn.adopt;   // 解构出稳定引用再进 effect 依赖（turn 对象每渲染新引用）
   const [searchParams] = useSearchParams();
   const [composerLocked, setComposerLocked] = useState(false);
-  const [keyDialogOpen, setKeyDialogOpen] = useState(false);
-  const [authDialogOpen, setAuthDialogOpen] = useState(false);   // 登录/注册弹窗（账号隔离一期）
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);   // 登录/注册弹窗（Header + 401 分流共用）
+  const [authKeysOpen, setAuthKeysOpen] = useState(false);   // 401 分流打开登录窗时自动展开「高级 · API 密钥」
   const [authRetry, setAuthRetry] = useState(0);   // 401 弹层保存新令牌后 +1 → 重拉数据
   const tokenBeforeDialog = useRef("");             // 弹层打开前的令牌快照（关闭时比对）
   // P3 右栏拖拽调宽：宽度状态由 Workspace 持有（--right-w 须设在 grid 祖先容器，
@@ -129,18 +130,31 @@ function Workspace() {
     };
   }, [projectId]);
 
-  // 401 就地弹密钥层（不必回首页找入口）；关闭时若保存过新令牌 → 就地重试；
+  // 401 就地弹登录窗（不必回首页找入口）；关闭时若保存过新令牌 → 就地重试；
   // P5：弹层里补填了百炼 Key → 就地解锁（原判定只在挂载时查一次，
-  // 回首页保存后返回未重查 → 误显“未配置百炼 API Key”）
-  const openKeyDialog = () => {
+  // 回首页保存后返回未重查 → 误显“未配置百炼 API Key”）。Header 手动登录
+  // 路径复用同一关闭逻辑：appToken 未变且无新百炼 Key → 两条件皆 no-op，只关弹窗。
+  const openAuthDialog = (initialKeysOpen: boolean) => {
     tokenBeforeDialog.current = getKeys().appToken;
-    setKeyDialogOpen(true);
+    setAuthKeysOpen(initialKeysOpen);
+    setAuthDialogOpen(true);
   };
-  const closeKeyDialog = () => {
-    setKeyDialogOpen(false);
+  const closeAuthDialog = () => {
+    setAuthDialogOpen(false);
     if (getKeys().appToken !== tokenBeforeDialog.current) setAuthRetry((n) => n + 1);
     if (hasDashScopeKey()) setComposerLocked(false);
   };
+  // 会话失效（401 session_expired，R15 全局钩子置位 expired）→ 自动弹登录窗重新登录；
+  // 不展开高级区（会话失效与令牌/Key 无关）。acknowledgeExpired 立即复位防重复弹，
+  // 登录成功后 store 亦置 expired:false（双保险）。
+  const expired = useAuthStore((s) => s.expired);
+  useEffect(() => {
+    if (!expired) return;
+    useAuthStore.getState().acknowledgeExpired();
+    tokenBeforeDialog.current = getKeys().appToken;
+    setAuthKeysOpen(false);
+    setAuthDialogOpen(true);
+  }, [expired]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -157,7 +171,7 @@ function Workspace() {
         if (!alive) return;
         if (isAppTokenError(err)) {
           reportAuthError("snapshot_failed");
-          openKeyDialog();
+          openAuthDialog(true);
           return;
         }
         useUiStore.getState().applyEvent({
@@ -181,7 +195,7 @@ function Workspace() {
         if (!alive) return;
         if (isAppTokenError(err)) {
           reportAuthError("history_failed");
-          openKeyDialog();
+          openAuthDialog(true);
           return;
         }
         useUiStore.getState().applyEvent({
@@ -283,16 +297,12 @@ function Workspace() {
                 未配置百炼 API Key：
                 <button
                   type="button"
-                  onClick={openKeyDialog}
+                  onClick={() => openAuthDialog(true)}
                   className="text-indigo underline underline-offset-2 mx-0.5"
                 >
-                  填写百炼 API Key
+                  在登录窗「高级 · API 密钥」中填写
                 </button>
-                ，或回
-                <Link to="/" className="text-indigo underline underline-offset-2 mx-0.5">
-                  首页「密钥」
-                </Link>
-                填写并保存后返回本页。
+                ，保存后返回本页即可解锁。
               </span>
             }
           />
@@ -324,22 +334,21 @@ function Workspace() {
           </div>
         </div>
       </div>
-      {/* 401 就地弹密钥层：保存新令牌后关闭即带新令牌重拉（免整页刷新） */}
-      <KeyDialog open={keyDialogOpen} onClose={closeKeyDialog} />
-      {/* 登录/注册弹窗（账号隔离一期）：Header「登录」钮打开，成功即关 */}
-      <AuthDialog open={authDialogOpen} onClose={() => setAuthDialogOpen(false)} />
+      {/* 登录/注册弹窗：Header「登录」钮 + 401 分流（会话失效/App 令牌类）共用；
+          关闭时保存过新令牌 → 就地重拉快照与消息史（免整页刷新） */}
+      <AuthDialog open={authDialogOpen} onClose={closeAuthDialog} initialKeysOpen={authKeysOpen} />
     </div>
   );
 }
 
 /** App Token 守卫 401（web_host/app.py 审计 F02）的共用降级：人话横幅如实保留来源
- *  code，不透传后端 JSON 响应体；弹层由调用方就地打开。 */
+ *  code，不透传后端 JSON 响应体；登录窗由调用方就地打开并展开高级密钥区。 */
 function reportAuthError(code: "snapshot_failed" | "history_failed") {
   useUiStore.getState().applyEvent({
     event: "error",
     code,
     message: "访问令牌缺失或已失效，无法加载项目数据",
-    hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+    hint: "请在登录窗「高级 · API 密钥」中填写访问令牌并保存",
   });
 }
 

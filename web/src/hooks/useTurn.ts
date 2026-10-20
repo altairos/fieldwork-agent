@@ -121,8 +121,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     // 失败 → failTurn 回滚乐观 UI：移除刚 push 的用户消息 + turnRunning=false + 清 buffer，
     // 否则打字光标永久脉冲且对话流留下后端未接受的消息。
     // 409（已有回合在执行）与 403（llm_key_required，服务端无 key 且请求头未带）
-    // 各自进专属提示态；守卫 401（App Token）给人话横幅不透传后端 JSON，
-    // 并回调调用方就地弹密钥层（App 注入 openKeyDialog）；其余如实上屏。
+    // 各自进专属提示态；守卫 401（App 令牌/Key 类）给人话横幅不透传后端 JSON，
+    // 并回调调用方就地弹登录窗「高级 · API 密钥」（App 注入 openAuthDialog）；
+    // 其余如实上屏。
     let turnId: string;
     try {
       turnId = (await rest.createTurn(projectId, text)).turn_id;
@@ -136,7 +137,7 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           event: "error",
           code: "send_failed",
           message: "访问令牌缺失或已失效，发送被拒绝",
-          hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+          hint: "请在登录窗「高级 · API 密钥」中填写访问令牌并保存",
         });
         onAuthErrorRef.current?.();
       }
@@ -202,7 +203,7 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
         useUiStore.getState().applyEvent({
           event: "error", code: "send_failed",
           message: "访问令牌缺失或已失效，重新生成被拒绝",
-          hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+          hint: "请在登录窗「高级 · API 密钥」中填写访问令牌并保存",
         });
         onAuthErrorRef.current?.();
       } else {

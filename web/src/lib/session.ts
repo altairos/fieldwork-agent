@@ -51,3 +51,14 @@ export function clearSessionToken(): void { writeKey(SESSION_TOKEN_KEY, ""); }
 export function ownerHeaders(): Record<string, string> {
   return { "X-Owner-Token": getSessionToken() || getOwnerToken() };   // 登录态优先，回落匿名
 }
+
+// ── 记住邮箱（登录弹层改版）──
+
+const REMEMBERED_EMAIL_KEY = "fieldwork.remembered_email";
+
+/** 已记住的邮箱（登录弹层打开时预填），无则空串。 */
+export function readRememberedEmail(): string { return readKey(REMEMBERED_EMAIL_KEY); }
+/** 登录成功且勾选「记住邮箱」时写入——只存邮箱，永不存密码。 */
+export function writeRememberedEmail(email: string): void { writeKey(REMEMBERED_EMAIL_KEY, email); }
+/** 登录成功但未勾选时清除（writeKey 空串即删 key，与读侧对称）。 */
+export function clearRememberedEmail(): void { writeKey(REMEMBERED_EMAIL_KEY, ""); }

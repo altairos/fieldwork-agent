@@ -161,9 +161,9 @@ describe("Workspace 无 key 拦截（可浏览不可发）", () => {
     render(<App />);
     expect(await screen.findByTestId("composer-lock-hint")).toHaveTextContent("未配置百炼 API Key");
 
-    // 提示内按钮就地弹层（免回首页）
-    fireEvent.click(screen.getByRole("button", { name: "填写百炼 API Key" }));
-    expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
+    // 提示内按钮就地弹登录窗并自动展开高级密钥区（免回首页）
+    fireEvent.click(screen.getByRole("button", { name: "在登录窗「高级 · API 密钥」中填写" }));
+    expect(await screen.findByRole("dialog", { name: "登录或注册" })).toBeInTheDocument();
 
     // 弹层里填 key 保存，关闭 → 解锁
     fireEvent.change(screen.getByLabelText(/百炼 API Key/), { target: { value: "sk-late" } });
@@ -256,12 +256,13 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
     return fn;
   }
 
-  test("快照/消息史 401：横幅给人话指引（不透传原始 JSON）并自动弹出密钥弹层", async () => {
+  test("快照/消息史 401：横幅给人话指引（不透传原始 JSON）并自动弹出登录窗（高级区展开）", async () => {
     stubAuthGuard({ rest: SNAP });
     render(<App />);
 
-    // 弹层自动打开——用户不必回首页找「密钥」入口
-    expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
+    // 弹窗自动打开且高级密钥区已展开（initialKeysOpen=true）——用户不必回首页找「密钥」入口
+    const dialog = await screen.findByRole("dialog", { name: "登录或注册" });
+    expect(within(dialog).getByRole("button", { name: /高级 · API 密钥/ })).toHaveAttribute("aria-expanded", "true");
     // 横幅是人话指引；原始 JSON（app_token_required 等响应体文本）不上屏
     expect(await screen.findByText(/访问令牌缺失或已失效/)).toBeInTheDocument();
     expect(screen.queryByText(/app_token_required/)).not.toBeInTheDocument();
@@ -270,7 +271,10 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
   test("弹层中保存新令牌后关闭：就地重试恢复快照与消息史，横幅撤下", async () => {
     const fn = stubAuthGuard({ rest: SNAP, messages: [{ role: "user" as const, content: "帮我定位选题" }] });
     render(<App />);
-    const dialog = await screen.findByRole("dialog", { name: "密钥与登录" });
+    const dialog = await screen.findByRole("dialog", { name: "登录或注册" });
+    // 降级横幅落地 = 两路 401 catch 链（含 ApiKeySection 挂载回显）已稳定；
+    // 在挂载渲染尾巴里 fireEvent.change 会被受控回写吞掉（值恒空），先等稳定再操作
+    await screen.findByText(/访问令牌缺失或已失效/);
 
     fireEvent.change(within(dialog).getByLabelText(/访问令牌/), { target: { value: "tok-good" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
@@ -280,17 +284,17 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
     expect(await screen.findByText("帮我定位选题")).toBeInTheDocument();
     expect(screen.queryByText(/访问令牌缺失或已失效/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "密钥与登录" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "登录或注册" })).not.toBeInTheDocument();
     expect(fn.mock.calls.filter((c) => String(c[0]) === "/projects/p1").length).toBe(2);
   });
 
   test("未改令牌直接关闭弹层：不重试，横幅如实保留", async () => {
     const fn = stubAuthGuard({ rest: SNAP });
     render(<App />);
-    const dialog = await screen.findByRole("dialog", { name: "密钥与登录" });
+    const dialog = await screen.findByRole("dialog", { name: "登录或注册" });
 
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "密钥与登录" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "登录或注册" })).not.toBeInTheDocument());
     expect(screen.getByText(/访问令牌缺失或已失效/)).toBeInTheDocument();
     expect(fn.mock.calls.filter((c) => String(c[0]) === "/projects/p1").length).toBe(1);
   });

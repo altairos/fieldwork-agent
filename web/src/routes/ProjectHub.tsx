@@ -3,8 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { rest } from "../api/rest";
 import { AuthDialog } from "../components/auth/AuthDialog";
 import { DEFAULT_PHASES } from "../components/layout/LeftRail";
-import { KeyDialog } from "../components/settings/KeyDialog";
-import { IconCaret, IconClock, IconLock, IconSend, IconTrash } from "../components/ui/icons";
+import { IconCaret, IconClock, IconSend, IconTrash } from "../components/ui/icons";
 import { useAuthStore } from "../stores/auth";
 import type { ProjectSummary } from "../types/models";
 
@@ -13,9 +12,10 @@ import type { ProjectSummary } from "../types/models";
  * 视觉中央一句话输入：kicker + 品牌「田野罗盘」+ 提示语「描述你的田野调研想法」+
  *   大输入框（Enter 创建 / Shift+Enter 换行 / IME 组合中的 Enter 不触发）+
  *   三个示例 chips（点击填入完整示例文案并聚焦输入框）。
- * 右上角常驻入口：「密钥」钮 → KeyDialog 弹层（仅密钥配置；导出格式/配色等偏好
- *   不放首页——导出格式在提案页下载区，配色走对话页 Header）+ 账户区（未登录
- *   「登录」→ AuthDialog 注册/登录；已登录邮箱 + 退出，账号隔离一期 Ruling P-1/P-2）。
+ * 右上角常驻入口即账户区（未登录「登录」升朱砂主钮 → AuthDialog 注册/登录，
+ *   密钥配置收进登录窗「高级 · API 密钥」折叠区，KeyDialog 退役；已登录
+ *   邮箱 + 退出，账号隔离一期 Ruling P-1/P-2；导出格式在提案页下载区，
+ *   配色走对话页 Header，均不放首页）。
  * 已有项目收进输入区下方低调折叠入口「继续上次 · 我的项目（N）」：默认收起、
  *   无项目不渲染；列表加载失败如实提示但绝不阻塞创建（输入区始终可用，不等列表）。
  * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
@@ -134,7 +134,6 @@ export function ProjectHub() {
   const [purpose, setPurpose] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const [keyOpen, setKeyOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -198,16 +197,8 @@ export function ProjectHub() {
 
   return (
     <div className="min-h-full flex flex-col">
-      {/* 顶栏：常驻入口——密钥钮 + 账户区（未登录「登录」/已登录邮箱+退出） */}
+      {/* 顶栏：常驻账户区（未登录「登录」朱砂主钮 / 已登录邮箱+退出） */}
       <div className="flex justify-end items-center gap-2 px-4 sm:px-6 py-4">
-        <button
-          type="button"
-          onClick={() => setKeyOpen(true)}
-          className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
-        >
-          <IconLock className="w-4 h-4" />
-          密钥
-        </button>
         {user ? (
           <>
             <span title={user.email} className="max-w-[14ch] truncate text-[12.5px] text-inksoft">
@@ -226,7 +217,7 @@ export function ProjectHub() {
           <button
             type="button"
             onClick={() => setAuthOpen(true)}
-            className="h-9 px-3.5 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center gap-1.5 hover:bg-cardsunk transition cursor-pointer"
+            className="h-9 px-4 rounded-md bg-cinnabar text-ontint text-[12.5px] hover:bg-tintpress transition cursor-pointer"
           >
             登录
           </button>
@@ -327,7 +318,6 @@ export function ProjectHub() {
         ) : null}
       </div>
 
-      <KeyDialog open={keyOpen} onClose={() => setKeyOpen(false)} />
       <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );
