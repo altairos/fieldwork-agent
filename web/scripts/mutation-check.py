@@ -9,7 +9,10 @@
 
 每条变异只跑它该打红的那个测试文件；跑完无论成败都会还原，并断言文件已逐字节还原。
 """
-import io, re, subprocess, sys, shutil, os
+import os
+import re
+import shutil
+import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # web/
 # Windows 下 npx 是 .cmd，python 直接调不到；直接用 node 跑 vitest 的入口脚本。
@@ -72,13 +75,13 @@ def run(test_file):
 
 for name, rel, old, new, test_file in MUTATIONS:
     path = os.path.join(ROOT, rel)
-    original = io.open(path, encoding="utf-8").read()
+    original = open(path, encoding="utf-8").read()
     if old not in original:
         print(f"[SKIP] {name}: 未找到锚点 {old[:50]!r}")
         continue
     shutil.copyfile(path, path + ".bak")
     try:
-        io.open(path, "w", encoding="utf-8", newline="\n").write(original.replace(old, new, 1))
+        open(path, "w", encoding="utf-8", newline="\n").write(original.replace(old, new, 1))
         code, summary, out = run(test_file)
         verdict = "变红(符合预期)" if code != 0 else "!! 仍然全绿（护栏无效）"
         print(f"[{verdict}] {name} -> {summary}")
@@ -89,6 +92,6 @@ for name, rel, old, new, test_file in MUTATIONS:
         shutil.copyfile(path + ".bak", path)
         os.remove(path + ".bak")
         # 校验已还原
-        assert io.open(path, encoding="utf-8").read() == original, f"还原失败: {path}"
+        assert open(path, encoding="utf-8").read() == original, f"还原失败: {path}"
 
 print("done")
