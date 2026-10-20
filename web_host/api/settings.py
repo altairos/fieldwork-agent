@@ -6,6 +6,14 @@
 例外：高德 JS API 2.0 机制要求前端持有 key + securityJsCode（N6 地图
 面板），故 amap_js_key/amap_js_security 下发明文——防滥用靠控制台域名
 白名单，而非服务端保密。
+
+S06 决策（风险接受，2026-10-21）：这两个字段服务于**匿名会话**的地图面板
+（匿名项目是产品能力），按高德官方用法本就要下发到浏览器；改成布尔值会
+直接打断地图。暴露面由两道边界兜住：``/settings`` 全族在
+``_PROTECTED_PREFIXES`` 内，公网部署又被 S01 强制要求 ``FIELDWORK_APP_TOKEN``
+（否则拒绝启动），未持令牌者拿不到该响应；本地无令牌模式只监听本机。
+回归用例：``test_web_app_token.py``（无令牌 401）与 ``test_web_turns_api.py``
+（字段形状）。
 """
 
 from fastapi import APIRouter, Request
