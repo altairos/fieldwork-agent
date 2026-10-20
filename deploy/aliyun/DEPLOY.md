@@ -14,6 +14,10 @@
   `uvicorn fieldwork_agent.web_host.app:create_app --factory --http h11 --host 0.0.0.0 --port 2143`。
   `--http h11` 是**硬要求**：百炼探测节点（Java 客户端）默认发 h2c 明文升级头，uvicorn 默认
   httptools 实现会拒为 400（详见第 7 节末尾注意事项）。
+- **必须单进程**：`TurnManager` 的回合状态 / SSE 订阅 / 写锁都在进程内存，`events.jsonl`
+  是无跨进程锁的追加写。**禁止给 uvicorn 加 `--workers`**，也不要设
+  `FA_WEB_WORKERS` / `UVICORN_WORKERS` / `WEB_CONCURRENCY` > 1——`create_app` 启动期
+  会检测到并拒绝启动（A04）。扩容需先把状态迁到共享后端再另行设计。
 - 运行密钥走**环境变量**（systemd `EnvironmentFile`）：
   - `DASHSCOPE_API_KEY`（Web 直访**必填**，通义千问/百炼）——没有它页面 LLM 不可用，对话/方案
     生成失效；纯 MCP 托管模式可留空（调用方用 `x-dashscope-key` 动态 Header 自带 key，见第 7 节）。

@@ -154,6 +154,12 @@ CLI (core/cli.py)
 模型，将其 `tool_calls` 经 `client_kernel_dispatch` 分派回内核能力。
 `Config` 为无状态底座，被 `core` 层读取。
 
+**部署硬约束：单进程（A04）**。`web_host` 的 `TurnManager` 把回合状态、SSE 订阅队列
+与写锁都放在进程内存，`events.jsonl` 也是无跨进程锁的追加写——多 worker/多副本会
+立即产生事件丢失、`seq` 冲突与写锁失效。`create_app` 启动期检查
+`FA_WEB_WORKERS` / `UVICORN_WORKERS` / `WEB_CONCURRENCY`，大于 1 直接拒绝启动；
+部署命令禁止加 `--workers`。扩容需先把这些状态迁到共享后端（Redis/DB）再另行设计。
+
 **五阶段流程**（`kernel/guidance/phases.PHASES`）：
 `research_positioning → field_site_profiles → itinerary_planning → proposal_generation → finished`
 推进判定是**纯函数 `check_advance`**，由宿主在每轮末尾确定性执行（绝不由 LLM 宣布）：

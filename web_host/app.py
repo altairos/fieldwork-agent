@@ -51,6 +51,26 @@ def _assert_public_access_is_guarded(cfg) -> None:
         )
 
 
+def _assert_single_process(cfg) -> None:
+    """A04：TurnManager 是进程内有状态组件，多 worker 会分裂回合状态。
+
+    回合注册表、SSE 订阅队列与写锁都在内存，``events.jsonl`` 也是无跨进程
+    锁的追加写；两个 worker 会各自持有不同副本，产生事件丢失、``seq`` 冲突
+    与写锁失效。uvicorn ``--workers`` 的 CLI 参数在进程内不可见，故这里
+    检查同类部署常设的环境变量（``FA_WEB_WORKERS`` / ``UVICORN_WORKERS`` /
+    ``WEB_CONCURRENCY``），部署物则明确禁止加 ``--workers``。
+    """
+    workers = int(getattr(cfg, "web_workers", 1) or 1)
+    if workers > 1:
+        raise RuntimeError(
+            f"检测到多 worker 配置（workers={workers}）：本服务是**有状态单进程**"
+            "架构——回合状态、SSE 订阅与写锁都在进程内存，events.jsonl 无跨进程"
+            "锁。多 worker 会导致事件丢失、seq 冲突与写锁失效，拒绝启动。"
+            "请去掉 --workers，并取消 FA_WEB_WORKERS/UVICORN_WORKERS/"
+            "WEB_CONCURRENCY 的大于 1 配置；扩容需先把状态迁到共享后端。"
+        )
+
+
 def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     from fieldwork_agent.web_host.deps import init_deps
 
@@ -62,6 +82,7 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
         cfg = Config()
     # S01：先于任何副作用（建目录/连库）判定——公网裸绑定宁可不启动
     _assert_public_access_is_guarded(cfg)
+    _assert_single_process(cfg)
     shared_repo = repo
     if shared_repo is None:
         # Q04：Config 构造期不再建目录；由自建仓储的组合根显式补上（/ready 探针

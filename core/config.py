@@ -89,6 +89,14 @@ class Config:
             "FIELDWORK_PUBLIC_BIND", "0").strip().lower() not in (
                 "0", "false", "no", "off", "")
 
+        # 单进程硬约束（A04）：TurnManager 的回合状态/SSE 订阅/写锁都在进程
+        # 内存，events.jsonl 为无跨进程锁的追加写——多 worker 会立即产生事件
+        # 丢失、seq 冲突与写锁失效。uvicorn --workers 的 CLI 参数在进程内不可
+        # 见，故同时认这两个常用环境变量；部署命令本身禁止加 --workers。
+        self.web_workers: int = _env_int(
+            "FA_WEB_WORKERS",
+            _env_int("UVICORN_WORKERS", _env_int("WEB_CONCURRENCY", 1)))
+
         # 百炼套餐类型（coding/token）：套餐 Key（sk-sp-）配专属 OpenAI 兼容端点。
         # 仅环境变量——同 app_token 先例：服务端全局默认，页面回合级 header 可覆盖。
         self.dashscope_plan: str = os.getenv("FA_DASHSCOPE_PLAN", "")
