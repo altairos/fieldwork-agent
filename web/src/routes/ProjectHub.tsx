@@ -240,7 +240,7 @@ export function ProjectHub() {
         <div className="text-center mb-7">
           <div className="text-[11px] tracking-[.2em] text-cinnabar mb-2 num">FIELDWORK COMPASS</div>
           <div className="flex items-center justify-center gap-3">
-            <img src="/fieldwork-logo-full.svg" alt="" aria-hidden="true" className="w-9 h-9 sm:w-10 sm:h-10" />
+            <img src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`} alt="" aria-hidden="true" className="w-9 h-9 sm:w-10 sm:h-10" />
             <h1 className="font-serif text-[30px] sm:text-[34px] font-semibold leading-tight -translate-y-0.5">田野罗盘</h1>
           </div>
           <p className="text-[13px] text-inksoft mt-2">面向社科研究者的田野调查方案制订与筹备工具</p>

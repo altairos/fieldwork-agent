@@ -12,11 +12,13 @@ import { RightResizeHandle } from "./components/layout/RightResizeHandle";
 import { Tabs, tabIds } from "./components/ui/Tabs";
 import { IconCaret } from "./components/ui/icons";
 import { useAuthGate } from "./hooks/useAuthGate";
+import { disposeGuestProject, useDisposeGuestProject } from "./hooks/useDisposeGuestProject";
 import { useMobileDrawer } from "./hooks/useMobileDrawer";
 import { useProjectBootstrap } from "./hooks/useProjectBootstrap";
 import { useRenameProject } from "./hooks/useRenameProject";
 import { useRightWidth } from "./hooks/useRightWidth";
 import { useTurn } from "./hooks/useTurn";
+import { getSessionToken } from "./lib/session";
 import { useAuthStore } from "./stores/auth";
 import { useProjectStore } from "./stores/project";
 import { useUiStore, PHASE_TAB, type MiddleTab } from "./stores/ui";
@@ -38,7 +40,7 @@ const ProposalView = lazy(() =>
 function RouteFallback() {
   return (
     <div className="h-full grid place-items-center">
-      <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 animate-spin opacity-70" />
+      <img src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`} alt="" className="w-6 h-6 animate-spin opacity-70" />
     </div>
   );
 }
@@ -79,6 +81,13 @@ function Workspace() {
   const [searchParams] = useSearchParams();
 
   const phase = useProjectStore((s) => s.phase);
+  // 匿名会话（未注册）离开时清除项目记录：只有注册账号名下的对话才长期保存
+  // （App Token 是参赛演示用，匿名记录不留存 —— 见 useDisposeGuestProject 顶部注释）
+  // 会话令牌尚在时不算匿名：慢网下 checkSession 未回时 user 恒为 null，
+  // 照 !user 判定会在关页瞬间删掉登录用户的项目。
+  const user = useAuthStore((s) => s.user);
+  const guest = !user && !getSessionToken();
+  useDisposeGuestProject(projectId, guest);
   // 项目显示名（任务1）：title（用户改名 / agent 自动命名）优先，未命名回退 topic；
   // 两者皆空由调用处兑底「未命名项目」——绝不回退 project_id（字母+数字不面向用户）。
   const projectName = useProjectStore(
@@ -151,7 +160,11 @@ function Workspace() {
         >
           <LeftRail
             phase={phase}
-            onBack={() => navigate("/")}
+            onBack={() => {
+              // 匿名回首页也算“退出”：SPA 导航不触发 pagehide，这里显式删除
+              if (guest) disposeGuestProject(projectId);
+              navigate("/");
+            }}
             onSelect={(pid) => useUiStore.getState().setActiveTab(PHASE_TAB[pid] ?? "basic-info")}
           />
         </div>
@@ -191,6 +204,8 @@ function Workspace() {
           <Composer
             turn={turn}
             locked={composerLocked}
+            guest={guest}
+            onRegister={() => openAuthDialog(false)}
             lockHint={
               <span>
                 未配置百炼 API Key：
@@ -246,7 +261,7 @@ export default function App() {
   useEffect(() => { void useAuthStore.getState().checkSession(); }, []);
 
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "") || "/"}>
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/" element={<ProjectHub />} />

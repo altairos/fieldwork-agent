@@ -111,21 +111,26 @@ export function useAmapLoader(): {
   return { state, key, security, amap };
 }
 
-/** 降级文字卡：坐标 + 点位清单照常可读（红线：信息不因地图缺席而丢失）。 */
+/** 降级文字卡：坐标 + 点位清单照常可读（红线：信息不因地图缺席而丢失）。
+ * `showMarkerChips=false` 供已在卡内自列点位清单的调用方（如田野点画像的
+ * 按设施类型分组清单）避免同一批名称渲染两遍。
+ */
 function DegradedCard({
   reason,
   center,
   markers,
+  showMarkerChips = true,
 }: {
   reason: string;
   center: string;
   markers: MapMarker[];
+  showMarkerChips?: boolean;
 }) {
   return (
     <div className="rounded-lg bg-cardsunk hairline p-3 space-y-2">
       <div className="text-[11.5px] text-inksoft">{reason}，以下坐标与点位供参考。</div>
       <div className="num text-[11px] text-inkfaint">{center}</div>
-      {markers.length > 0 && (
+      {showMarkerChips && markers.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {markers.map((mk, i) => (
             <Chip key={`${mk.title}-${i}`} tone="neutral" className={mk.kind ? "" : ""}>
@@ -143,11 +148,14 @@ export function AmapMapPanel({
   markers = [],
   line = null,
   height = 160,
+  showMarkerChips = true,
 }: {
   center?: string; // 画像点 / 接驳枢纽坐标；缺（geo 缺段）→ 纯文字提示
   markers?: MapMarker[];
   line?: [string, string] | null; // 接驳示意：枢纽 → 田野点两点直线
   height?: number;
+  /** 降级态是否列点位名（调用方已自列清单时传 false，避免同一批名称重复渲染） */
+  showMarkerChips?: boolean;
 }) {
   // 无 center（geo 缺段）：不发 settings 请求、不进 loader（测试钉死 loadMock 不被调）
   if (!center) {
@@ -157,7 +165,15 @@ export function AmapMapPanel({
       </div>
     );
   }
-  return <AmapMapStage center={center} markers={markers} line={line} height={height} />;
+  return (
+    <AmapMapStage
+      center={center}
+      markers={markers}
+      line={line}
+      height={height}
+      showMarkerChips={showMarkerChips}
+    />
+  );
 }
 
 function AmapMapStage({
@@ -165,11 +181,13 @@ function AmapMapStage({
   markers,
   line,
   height,
+  showMarkerChips,
 }: {
   center: string;
   markers: MapMarker[];
   line: [string, string] | null;
   height: number;
+  showMarkerChips: boolean;
 }) {
   const { state, amap } = useAmapLoader();
   const holder = useRef<HTMLDivElement | null>(null);
@@ -208,6 +226,7 @@ function AmapMapStage({
         reason={state === "unavailable" ? "未配置高德 JS API Key" : "地图加载失败"}
         center={center}
         markers={markers}
+        showMarkerChips={showMarkerChips}
       />
     );
   }

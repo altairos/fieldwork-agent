@@ -6,6 +6,7 @@ import { FlightCard } from "./FlightCard";
 import { HotelCard } from "./HotelCard";
 import { InformantCard } from "./InformantCard";
 import { ItineraryCard } from "./ItineraryCard";
+import { LastMileCard } from "./LastMileCard";
 import { LiteratureCard } from "./LiteratureCard";
 import { LivingCostCard } from "./LivingCostCard";
 
@@ -22,11 +23,14 @@ import type { ToolCardProps } from "./types";
  * 工具卡片注册表 — `tool name → card component`（红线②：卡片消费 `tool_completed.data`，
  * 是中栏时间线与右栏面板的唯一同源数据）。
  *
- * **键集 = 内核真实能力名（15 项）+ 宿主层状态工具（1 项），逐字对齐，不臆造**：
+ * **键集 = 内核真实能力名（18 项）+ 宿主层状态工具（1 项），逐字对齐，不臆造**：
  * 实测 `fieldwork_agent.kernel.CAPABILITIES()`（kernel/registry.py 单一注册表），
  * kernel registry 面 / `mcp_server/mapping.py` TOOL_GROUPS / `core/orchestrator.py`
- * _CAPABILITY_DISPATCH / 本表 四处一致（8 搜索原语 + 4 聚合 + 3 文档 = 15，
- * 其中 4 聚合含 analyze_fieldwork_window 与 estimate_living_cost）。
+ * _CAPABILITY_DISPATCH / 本表 四处一致（5 聚合 + 3 文档 + 8 搜索原语 + 文献 + 高德地点 = 18）。
+ *
+ * **2026-10-20 补登 `plan_last_mile`**：该能力一直存在于内核与 MCP 映射，但本表与
+ * `lib/toolMeta` 可见性表双双漏登，生产会话里它落 ToolCardFallback，用户看到的是
+ * 「未适配的结构化视图」+ 裸 JSON。现补上专属卡（LastMileCard）与 full 分级。
  * 轮 2 症状②例外：`update_research_context` 是宿主层状态工具
  * （web_host/agent/state_tools.py 每回合注入 loop，非内核能力），
  * 是唯一超出内核键集的注册项——不注册则状态写入落 Fallback 裸 JSON。
@@ -51,6 +55,9 @@ export const toolCardRegistry: Record<string, ComponentType<ToolCardProps>> = {
   // 聚合能力
   profile_field_site: SiteProfileCard,
   compose_itinerary: ItineraryCard,
+  // 末端接驳（高德两次正算 + v3 跨城公交）：生产会话曾落 Fallback「未适配的结构化视图」，
+  // 原因是本表与 lib/toolMeta 可见性表双双漏登该能力（内核侧 registry/mapping 早已有键）。
+  plan_last_mile: LastMileCard,
   analyze_fieldwork_window: WindowCard,
   estimate_living_cost: LivingCostCard,
   // 文档能力（提案与访谈提纲共用文档卡：payload 分别是 ProposalDoc / {类型: 正文}）

@@ -140,6 +140,18 @@ describe("MessageBubble / AssistantStream", () => {
     rerender(<AssistantStream />);
     expect(screen.getByText(/正在核对报价/)).toBeInTheDocument();
   });
+  test("生成中：头像旋转 + 「罗盘正在生成回答…」状态行（用户反馈：否则像卡死）", () => {
+    act(() => useConversationStore.setState({ streamBuffer: "先说结论", turnRunning: true }));
+    const { container } = render(<AssistantStream />);
+    expect(container.querySelector("img.animate-spin")).not.toBeNull();
+    expect(screen.getByText("罗盘正在生成回答…")).toBeInTheDocument();
+  });
+  test("无正文时提示改用罗盘口吻（助手→罗盘）", () => {
+    act(() => useConversationStore.setState({ streamBuffer: "", turnRunning: true }));
+    render(<AssistantStream />);
+    expect(screen.getByText("罗盘正在组织回复…")).toBeInTheDocument();
+    expect(screen.queryByText(/助手正在组织回复/)).not.toBeInTheDocument();
+  });
   test("AssistantStream 流式期间剥离 [[options]] 标记（含半截，防闪烁，B 节）", () => {
     act(() => useConversationStore.setState({ streamBuffer: "正在提问[[options]]是|否", turnRunning: true }));
     render(<AssistantStream />);
@@ -336,6 +348,15 @@ describe("Timeline 工具结果卡（同源 tools store）", () => {
     render(<Timeline />);
     expect(screen.queryByText(/工具未返回数据/)).not.toBeInTheDocument();
   });
+  test("田野点画像不进对话流（右栏面板承担，2026-10-20 用户反馈）", () => {
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c1", tool: "profile_field_site", args: { location: "喜洲镇" }, purpose: "画像" });
+    s.applyEvent({ event: "tool_completed", call_id: "c1", ok: true, data: SITE_PROFILE, degraded: null });
+    render(<Timeline />);
+    expect(screen.queryByText("田野点画像")).not.toBeInTheDocument();
+    expect(screen.queryByText(/严家大院/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/未适配的结构化视图/)).not.toBeInTheDocument();
+  });
   test("失败的 full 级工具不渲染结果卡（访谈对象候选窗不滞留对话流）", () => {
     const s = useToolsStore.getState();
     s.applyEvent({ event: "tool_started", call_id: "c1", tool: "suggest_informants", args: {}, purpose: "生成候选" });
@@ -354,11 +375,13 @@ describe("PhaseBanner", () => {
     render(<PhaseBanner />);
     expect(screen.getByText(/行程规划/)).toBeInTheDocument();
   });
-  test("pendingSuggestion 原文出现在横幅，且不自动切 Tab", () => {
+  test("阶段推进：横幅只显阶段与解锁说明，右栏直接切到该阶段面板", () => {
+    useProjectStore.getState().loadSnapshot(snapshot({ phase: "itinerary_planning" }));
     useUiStore.getState().applyEvent({ event: "phase_transition", from: "field_site_profiles", to: "itinerary_planning" });
     render(<PhaseBanner />);
-    expect(screen.getByText(/已进入「行程规划」阶段/)).toBeInTheDocument();
-    expect(useUiStore.getState().activeTab).toBe("basic-info");
+    expect(screen.getByText(/行程规划/)).toBeInTheDocument();
+    expect(screen.queryByText(/建议切换到/)).not.toBeInTheDocument();
+    expect(useUiStore.getState().activeTab).toBe("budget");   // 自动切，无需手点
   });
   test("降级横幅如实转述 code/message/hint，可关闭", () => {
     useUiStore.getState().applyEvent({ event: "error", code: "flyai_unavailable", message: "数据源不可用", hint: "稍后重试" });
@@ -397,9 +420,18 @@ describe("Composer", () => {
     expect(cancelled).toBe(1);
     expect(screen.getByText(/已有回合在执行/)).toBeInTheDocument();
   });
-  test("底部注明阶段推进文案（所需信息齐备后才进入下一阶段）", () => {
-    render(<Composer turn={turnHandle()} />);
-    expect(screen.getByText(/所需信息齐备后，才会进入下一阶段/)).toBeInTheDocument();
+  test("匿名会话底注为注册提示（匿名记录离开即清除），已登录时不渲染", () => {
+    const onRegister = vi.fn();
+    const { unmount } = render(<Composer turn={turnHandle()} guest onRegister={onRegister} />);
+    expect(screen.getByText(/未注册的对话记录会在离开本页时清除/)).toBeInTheDocument();
+    // 旧底注已下线
+    expect(screen.queryByText(/所需信息齐备后，才会进入下一阶段/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("注册 / 登录"));
+    expect(onRegister).toHaveBeenCalledTimes(1);
+
+    unmount();
+    render(<Composer turn={turnHandle()} />);   // 已登录（guest 默认 false）
+    expect(screen.queryByText(/未注册的对话记录/)).not.toBeInTheDocument();
   });
   test("点击输入壳空白聚焦 textarea（问题4：点空白无反应）", () => {
     render(<Composer turn={turnHandle()} />);
@@ -560,6 +592,40 @@ describe("右栏面板：BasicInfoPanel / InformantsPanel / KnowledgePanel", () 
     expect(screen.getByText(/严家大院/)).toBeInTheDocument();
     expect(screen.getByText(/已确认/)).toBeInTheDocument();
   });
+  test("右栏补齐原中栏独占的区块：设施示意/内核建议/住宿比较/空间检索", async () => {
+    useProjectStore.getState().loadSnapshot(snapshot({
+      phase: "field_site_profiles",
+      field_sites: [{ name: "喜洲镇", confirmed: true, profile: null }],
+    }));
+    const rich = {
+      location: "喜洲镇",
+      geo: { location: "100.196,25.047", province: "云南省" },
+      facilities: { items: [{ name: "喜洲卫生院", extra: { location: "100.20,25.05", facility_kind: "卫生院" } }], total: 1 },
+      transport: null, accommodation: null, culture: [], amenities: null,
+      summary: {
+        section_counts: {}, transport_min: null, accommodation_nightly_min: null,
+        hints: { accommodation: "平台未见住宿供给：建议以最近枢纽城市住宿为基地" },
+      },
+      lodging_comparison: [{ name: "近舍", cost_estimate: 864, commute_minutes_per_visit_day: 20,
+        constraints: { status: "unknown", missing_fields: ["连续房态"] } }],
+      spatial_results: [{ query: { label: "生产场景", research_purpose: "了解学习过程",
+        keywords: ["作坊"], administrative_scope: "喜洲镇" },
+        items: [{ name: "甲作坊" }], stop_reason: "候选已足够", evidence_boundary: "进入条件待核实" }],
+    };
+    const s = useToolsStore.getState();
+    s.applyEvent({ event: "tool_started", call_id: "c9", tool: "profile_field_site", args: { location: "喜洲镇" }, purpose: "画像" });
+    s.applyEvent({ event: "tool_completed", call_id: "c9", ok: true, data: rich, degraded: null });
+    // 地图块会发 settings 请求（无桩 → 降级），await act 冲干净异步更新
+    await act(async () => { render(<FieldSitesPanel />); });
+    expect(screen.getByText("周边设施示意")).toBeInTheDocument();   // 设施坐标点位
+    expect(screen.getByText("喜洲卫生院")).toBeInTheDocument();
+    expect(screen.getByText(/平台未见住宿供给/)).toBeInTheDocument(); // 内核二段式建议
+    expect(screen.getByText(/住宿与通勤比较/)).toBeInTheDocument();
+    expect(screen.getByText(/房费与通勤合计情景估算/)).toBeInTheDocument();
+    expect(screen.getByText(/候选观察场所/)).toBeInTheDocument();
+    expect(screen.getByText("甲作坊")).toBeInTheDocument();
+    expect(screen.getByText("高德底座")).toBeInTheDocument();       // 来源徽标
+  });
 });
 
 describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
@@ -587,19 +653,12 @@ describe("RightDock 五面板接线（Tab id = ui store RightTab）", () => {
     expect(await screen.findByText(/已存条目 · 0/)).toBeInTheDocument();
     expect(screen.queryByText(/社会学/)).not.toBeInTheDocument();
   });
-  test("切换建议：稍后=不切 Tab；查看=acceptSuggestion 才切（设计红线）", () => {
+  test("阶段推进 → 右栏直接切到对应面板（不再弹「查看/稍后」toast）", () => {
     useProjectStore.getState().loadSnapshot(snapshot({ phase: "field_site_profiles" }));
     useUiStore.getState().applyEvent({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" });
-    const { rerender } = render(<RightDock />);
-    expect(useUiStore.getState().activeTab).toBe("basic-info"); // 不自动切
-    fireEvent.click(screen.getByText("稍后"));
-    expect(useUiStore.getState().pendingSuggestion).toBeNull();
-    expect(useUiStore.getState().activeTab).toBe("basic-info");
-
-    act(() => useUiStore.getState().applyEvent({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" }));
-    rerender(<RightDock />);
-    fireEvent.click(screen.getByText("查看"));
+    render(<RightDock />);
     expect(useUiStore.getState().activeTab).toBe("sites");
+    expect(screen.queryByText("稍后")).not.toBeInTheDocument();
     expect(screen.getByText(/尚无田野点|喜洲/)).toBeInTheDocument();
   });
 });

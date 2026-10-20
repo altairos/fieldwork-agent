@@ -12,7 +12,8 @@ import { Header } from "../components/layout/Header";
 import { Button } from "../components/ui/Button";
 import { IconBook, IconDownload } from "../components/ui/icons";
 import { authHeaders } from "../lib/keys";
-import { ownerHeaders } from "../lib/session";
+import { getSessionToken, ownerHeaders } from "../lib/session";
+import { useDisposeGuestProject } from "../hooks/useDisposeGuestProject";
 import { useAuthStore } from "../stores/auth";
 import { useExportFormatStore } from "../stores/exportFormat";
 import type { ProposalDoc } from "../types/models";
@@ -52,6 +53,10 @@ function kindLabel(kind: string): string {
 export function ProposalView() {
   const { id } = useParams();
   const projectId = id ?? "";
+  // 匿名离开清除记录：方案页是独立路由，工作台的监听此时已卸载，这条不能漏
+  // （与 App 的 Workspace 共用同一 hook；已登录时 enabled=false 静默不生效）
+  const viewer = useAuthStore((s) => s.user);
+  useDisposeGuestProject(projectId, !viewer && !getSessionToken());
   const navigate = useNavigate();
   const [doc, setDoc] = useState<Doc | null>(null);
   const [versions, setVersions] = useState<ProposalMeta[]>([]);

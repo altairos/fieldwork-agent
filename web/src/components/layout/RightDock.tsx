@@ -6,24 +6,22 @@ import { FieldSitesPanel } from "../right/FieldSitesPanel";
 import { InformantsPanel } from "../right/InformantsPanel";
 import { KnowledgePanel } from "../right/KnowledgePanel";
 import { Tabs, tabIds, type TabItem } from "../ui/Tabs";
-import { IconCompass, IconSpark } from "../ui/icons";
+import { IconCompass } from "../ui/icons";
 
 /**
  * RightDock — 右栏上下文面板容器（实时状态）。
  * 设计板同源：workspace 右栏 lines 529-674：
  *   容器 `bg-paperdeep border-l border-hairline flex flex-col min-w-0 relative`（line 530）
- *   切换建议 toast（lines 532-538）：`absolute top-2 left-3 right-3 z-10 rounded-lg bg-card shadow-pop hairline p-3`
- *     + spark 朱砂图标 + 「查看/稍后」— 设计红线①：不自动强切 Tab，用户点「查看」(acceptSuggestion) 才切
- *     （ui store 的不变量：phase_transition 只置 pendingSuggestion，绝不改 activeTab）
- *   面板头（lines 540-548）：「上下文面板 · 实时状态」tracking 标签 + rp-tab 组（基本信息/田野点/访谈对象/预算/知识库）
- *   内容区（line 551）：`flex-1 overflow-y-auto scroll p-4`，按 activeTab 渲染五面板（Task 7 接线）。
- *   底部声明栏（2026-10-18）：五个 Tab 常驻一致——实时口径说明自 KnowledgePanel 内容流
- *   上提为 dock 级 footer，任一面板都可见，文案一字不改。
+ *   切换建议 toast（设计板 lines 532-538）——**已移除**（用户反馈）：阶段推进时右栏
+ *     直接切到该阶段对应面板（stores/ui.ts 的 phase_transition 分支），不再弹 toast
+ *     让用户手点「查看」；那一步既多余又容易被忽略。
+ *   面板头（lines 540-548）：「上下文面板 · 实时状态」tracking 标签 + rp-tab 组
+ *   内容区（line 551）：`flex-1 overflow-y-auto scroll p-4`，按 activeTab 渲染五面板。
+ *   底部声明栏（2026-10-18）：五个 Tab 常驻一致。
  *
  * Tab id 对齐（brief 红线）：TABS 的 id 与 PANELS 的键**一律取 ui store 的 RightTab 联合类型**
  * （basic-info/sites/informants/budget/knowledge）；`Record<RightTab, …>` 是穷尽映射，
  * 若任一侧 id 漂移（如旧 site/informant/kb）TS 直接报错，杜绝接线错位。
- * 默认消费 useUiStore 的 activeTab/pendingSuggestion；也可用 props 受控覆盖（children 为插槽逃生口）。
  */
 /** tab ↔ tabpanel 的 id 契约（与 Tabs 的 idBase 同源，两侧拼错不可能） */
 const IDS = tabIds("rightdock");
@@ -56,9 +54,6 @@ export function RightDock({
 }) {
   const storeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
-  const suggestion = useUiStore((s) => s.pendingSuggestion);
-  const acceptSuggestion = useUiStore((s) => s.acceptSuggestion);
-  const dismissSuggestion = useUiStore((s) => s.dismissSuggestion);
 
   const tab = activeTab ?? storeTab;
   const handleChange = (id: string) => {
@@ -66,32 +61,10 @@ export function RightDock({
     if (onTabChange) onTabChange(next);
     else setActiveTab(next);
   };
-  const suggestionLabel = suggestion ? TABS.find((t) => t.id === suggestion.tab)?.label ?? suggestion.tab : null;
   const Panel = PANELS[tab] ?? BasicInfoPanel;
 
   return (
     <div className="fw-glass g1 border-l border-hairline flex flex-col w-full min-w-0 min-h-0 relative">
-      {/* 切换建议 toast（不自动切，用户点「查看」才切） */}
-      {suggestion && (
-        <div className="absolute top-2 left-3 right-3 z-10 rounded-lg fw-glass g2 hairline p-3 flex items-start gap-2.5">
-          <IconSpark className="w-4 h-4 text-cinnabar mt-0.5 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="text-[12px] text-ink leading-snug">
-              {suggestion.reason}，建议切换到「{suggestionLabel}」面板查看
-            </div>
-            <div className="flex gap-2 mt-1.5">
-              {/* tapzone：触屏热区外扩至 ≥24px（批次 B；纯文字钮视觉保持不变） */}
-              <button type="button" onClick={acceptSuggestion} className="tapzone text-[11.5px] text-cinnabar font-medium">
-                查看
-              </button>
-              <button type="button" onClick={dismissSuggestion} className="tapzone text-[11.5px] text-inkfaint">
-                稍后
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="px-4 pt-3 pb-2 border-b border-hairline">
         <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">上下文面板 · 实时状态</div>
         <Tabs tabs={TABS} active={tab} onChange={handleChange} idBase="rightdock" />

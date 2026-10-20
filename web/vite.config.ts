@@ -6,6 +6,9 @@ const MARKDOWN_PKGS =
   /^(react-markdown|remark-.+|rehype-.+|micromark.*|mdast-.+|hast-.+|unified|unist-.+|vfile.*|bail|trough|devlop|is-plain-obj|extend|style-to-object|inline-style-parser|character-entities.*|decode-named-character-reference|property-information|space-separated-tokens|comma-separated-tokens|html-url-attributes|markdown-table|ccount|escape-string-regexp|trim-lines|longest-streak|zwitch)$/;
 
 export default defineConfig({
+  // 子路径部署（nginx https://miovelle.cn/fieldpass/）：构建时注入 VITE_BASE=/fieldpass/，
+  // 让 index.html 与 JS 内 public 资源都带前缀；默认 "/" 保持本地 8300/8301/e2e 不变。
+  base: process.env.VITE_BASE || "/",
   plugins: [react()],
   server: {
     proxy: {

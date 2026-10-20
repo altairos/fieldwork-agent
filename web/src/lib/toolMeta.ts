@@ -21,6 +21,7 @@ export type ToolVisibility = "full" | "collapsed" | "hidden";
 export const TOOL_VISIBILITY: Record<string, ToolVisibility> = {
   // full：聚合/文档产出（用户核心交付物）
   profile_field_site: "full",
+  plan_last_mile: "full",
   compose_itinerary: "full",
   analyze_fieldwork_window: "full",
   estimate_living_cost: "full",
@@ -101,4 +102,19 @@ export function visibilityOf(tool: string): ToolVisibility {
 /** 是否应当在时间线/活动条/证据 tab 中完全不出现（hidden 的成功与失败均不显示，spec C3）。 */
 export function isHiddenTool(tool: string): boolean {
   return visibilityOf(tool) === "hidden";
+}
+
+/**
+ * 中栏「对话」tab 内联渲染的例外（用户反馈，2026-10-20）：
+ * 田野点画像由右栏「田野点」面板整块承担（快照 + 本回合 live 画像同源），
+ * 中栏再渲染一遍是同一份 payload 的重复投影，只会把对话流顶得更长。
+ *
+ * 只影响**时间线内联**：可见性仍是 full（不触发检索结果红点、证据 tab 准入不变），
+ * 注册表映射也不变——将来若要恢复内联，删掉这里的键即可。
+ */
+export const TIMELINE_OMIT: ReadonlySet<string> = new Set(["profile_field_site"]);
+
+/** 时间线是否内联该工具的结果卡（full 且不在 TIMELINE_OMIT 中）。 */
+export function showsInlineInTimeline(tool: string): boolean {
+  return visibilityOf(tool) === "full" && !TIMELINE_OMIT.has(tool);
 }

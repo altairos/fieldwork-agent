@@ -15,6 +15,9 @@ import { IconAlert, IconCaret } from "../ui/icons";
  *
  * title = 工具语义名，subtitle = 关键标识（地点/区间/天数），两者分列独立文本节点，
  * 便于时间线扫读，也便于测试与读屏定位。
+ *
+ * 紧凑化（用户反馈：结构化视图太吃页面空间）：头部 py-2.5→py-2、内容区 p-4→p-3、
+ * 头部左右 4→3 —— 单卡上下少 8px、左右少 8px；嵌套卡（画像/行程）叠两层时收益翻倍。
  */
 export function CardShell({
   title,
@@ -37,7 +40,7 @@ export function CardShell({
 }) {
   return (
     <details open={open} className="hairline rounded-lg bg-card overflow-hidden shadow-card">
-      <summary className="px-4 py-2.5 flex items-center gap-2 bg-cardsunk/60 border-b border-hairline">
+      <summary className="px-3 py-2 flex items-center gap-2 bg-cardsunk/60 border-b border-hairline">
         <IconCaret className="w-4 h-4 text-cinnabar caret shrink-0" />
         {icon && <span className="w-4 h-4 text-inksoft shrink-0">{icon}</span>}
         <span className="text-[13px] font-medium text-ink shrink-0">{title}</span>
@@ -47,7 +50,7 @@ export function CardShell({
           {statusChip}
         </span>
       </summary>
-      <div className="p-4">{children}</div>
+      <div className="p-3">{children}</div>
     </details>
   );
 }
@@ -85,6 +88,34 @@ export function Notice({
 }
 
 /**
+ * RawFields — 「更多原始字段」折叠。
+ *
+ * 语义摘要（fields.itemDigest）只展示对选点有意义的字段；未识别的原始字段不丢，
+ * 默认收起放在列表底部，需要逐条复核时展开（用户反馈：字段不该常驻页面，但也不能删）。
+ */
+export function RawFields({
+  rows,
+}: {
+  rows: Array<{ name: string; more: Array<[string, string]> }>;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <details className="mt-1.5">
+      <summary className="cursor-pointer text-[10.5px] text-inkfaint">更多原始字段</summary>
+      <ul className="mt-1 space-y-1 text-[10.5px] text-inkfaint">
+        {rows.map((row, i) => (
+          <li key={`${row.name}-${i}`} className="break-words">
+            <span className="text-inksoft">{row.name}</span>
+            {"："}
+            {row.more.map(([label, value]) => `${label} ${value}`).join(" · ")}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/**
  * NoData — `data` 为 null/undefined（工具失败或降级未返回数据）时的统一兜底，
  * 保证卡片永不白屏、永不抛错（设计红线②：卡片是唯一同源数据，缺数据要如实说明）。
  */
@@ -93,7 +124,7 @@ export function NoData({ hint }: { hint?: string }) {
     <EmptyState
       icon={<IconAlert className="w-4 h-4" />}
       title="工具未返回数据"
-      hint={hint ?? "本次调用失败或降级，无可展示的结果；请查看头部标记与助手说明。"}
+      hint={hint ?? "本次调用失败或降级，无可展示的结果；请查看头部标记与罗盘说明。"}
     />
   );
 }

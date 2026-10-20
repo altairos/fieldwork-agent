@@ -5,6 +5,7 @@ import { useConversationStore } from "../../stores/conversation";
 import { useToolsStore, type ToolCall } from "../../stores/tools";
 import { getToolCard } from "../cards/registry";
 import { toolLabel } from "../../lib/toolMeta";
+import { useStickBottom } from "../../hooks/useStickBottom";
 import { IconCaret } from "../ui/icons";
 
 /**
@@ -12,6 +13,8 @@ import { IconCaret } from "../ui/icons";
  * 混合数据源：tools store 实时层（同回合）+ rest.listCachedSearches 索引（跨回合）。
  * 合并规则见 lib/evidenceFilter（跨层配对/同题折叠/服务端时间轴，R13/R11/R15）。
  * 重拉时机：挂载时 + 回合结束（turnRunning true→false）。
+ *
+ * 滚动：与对话 tab 同款贴底（useStickBottom）——两 tab 懒挂载，切回来默认落在最新一条。
  */
 export function EvidencePanel({ projectId }: { projectId: string }) {
   const [summaries, setSummaries] = useState<CachedSearchSummary[]>([]);
@@ -27,6 +30,7 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
   const turnRunningRef = useRef(turnRunning);
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
+  const scroll = useStickBottom<HTMLDivElement>();
 
   const reload = useCallback(async () => {
     try {
@@ -70,7 +74,7 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
 
   if (rows.length === 0 && !loadFailed) {
     return (
-      <div className="flex-1 overflow-y-auto scroll">
+      <div ref={scroll.ref} onScroll={scroll.onScroll} className="flex-1 overflow-y-auto scroll">
         <div className="hairline rounded-lg bg-card px-3 py-6 text-center">
           <p className="text-[12.5px] text-inksoft">暂无可展示的检索结果</p>
           <p className="mt-1 text-[11.5px] text-inkfaint">
@@ -83,7 +87,11 @@ export function EvidencePanel({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto scroll px-3 py-3 space-y-2">
+    <div
+      ref={scroll.ref}
+      onScroll={scroll.onScroll}
+      className="flex-1 overflow-y-auto scroll px-3 py-3 space-y-2"
+    >
       {loadFailed && (
         <p className="hairline rounded-lg bg-card px-3 py-2 text-[11.5px] text-inksoft">
           检索记录加载失败，请稍后重试；以下仅显示本轮实时结果。

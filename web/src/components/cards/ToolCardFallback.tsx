@@ -29,7 +29,7 @@ export function ToolCardFallback({ data, degraded }: ToolCardProps) {
       open={false}
     >
       {data === null || data === undefined ? (
-        <NoData hint="该工具本次未返回数据（失败或降级）；详见头部标记与助手说明。" />
+        <NoData hint="该工具本次未返回数据（失败或降级）；详见头部标记与罗盘说明。" />
       ) : (
         <pre className="num text-[11.5px] leading-relaxed text-inksoft bg-cardsunk hairline rounded-md p-3 overflow-x-auto whitespace-pre-wrap break-all">
           {safeStringify(data)}

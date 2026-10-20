@@ -58,6 +58,10 @@ export function toItemPage(data: unknown): ItemPage {
       jump_url: r.jump_url == null ? null : strOf(r.jump_url),
       pic_url: r.pic_url == null ? null : strOf(r.pic_url),
       extra: asRecord(r.extra),
+      // 时间/席别等排班信息：此前被丢掉，导致条目行永远拿不到 travelDetails（发车/到达时间），
+      // 末端接驳卡的时长也一并丢失。原样透传，不加工、不推断。
+      schedule: r.schedule == null ? null : (r.schedule as SearchItem["schedule"]),
+      evidence: r.evidence == null ? undefined : (r.evidence as SearchItem["evidence"]),
     };
   });
   const priced = items.map((i) => i.price).filter((p): p is number => p !== null);
@@ -68,20 +72,6 @@ export function toItemPage(data: unknown): ItemPage {
     ? (priced.length ? Math.max(...priced) : null)
     : numOf(rec.dearest);
   return { items, total: numOf(rec.total) ?? items.length, cheapest, dearest };
-}
-
-/**
- * SearchItem.extra 摘要：取前 3 个标量键值（时长/换乘/星级等来源信息），
- * 原样呈现不加工；非标量值跳过。设计板 line 568「直飞 55min · search」同款副行。
- */
-export function extraLine(extra: Record<string, unknown>, limit = 3): string {
-  const parts: string[] = [];
-  for (const [key, value] of Object.entries(extra)) {
-    if (parts.length >= limit) break;
-    if (typeof value === "string" && value.trim()) parts.push(`${key} ${value}`);
-    else if (typeof value === "number" && Number.isFinite(value)) parts.push(`${key} ${value}`);
-  }
-  return parts.join(" · ");
 }
 
 /** 列表截断上限：卡片是时间线内的摘要，长列表只显前 N 条并注明总数。 */

@@ -1,10 +1,21 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
-import { Price } from "../ui/Price";
-import { IconBed, IconCheck, IconPin, IconPlane, IconTemple } from "../ui/icons";
+import { IconBed, IconCheck, IconPin, IconPlane, IconSpark, IconTemple } from "../ui/icons";
 import { ItemList } from "../cards/SearchResultCard";
-import { asArray, asRecord, boolOf, numOf, strOf, toItemPage } from "../cards/data";
+import { asRecord, boolOf, strOf } from "../cards/data";
+import { LodgingComparison } from "../cards/LodgingComparison";
+import {
+  CultureGroups,
+  FacilitiesPanel,
+  geoLocation,
+  ProfileBlock,
+  ProfileHints,
+  profileNumbers,
+  SectionMeta,
+  SummaryTriple,
+} from "../cards/SiteProfileParts";
+import { SpatialResults } from "../cards/SpatialResults";
 import { formatDate } from "../../lib/datetime";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
@@ -13,24 +24,20 @@ import { rest } from "../../api/rest";
 /**
  * FieldSitesPanel — 右栏「田野点」面板（实时状态）。
  *
- * 设计板同源：右栏 SiteProfilePanel lines 552-616
- *   站点头 lines 554-560：`flex items-center justify-between mb-3` + 名 `font-serif text-[16px] font-600
- *     flex items-center gap-1.5`（line 556，pin 朱砂）+ 副行 `text-[11px] text-inkfaint`（line 557）
- *     + 右侧 `chip bg-bamboowash text-bamboo border-bamboo/25`「已确认」（line 559）→ 复用 Task 5 `Chip`
- *   交通块 lines 562-577：`hairline rounded-lg bg-card p-3 mb-3` + 块头 `text-[11.5px] text-inksoft mb-2
- *     flex items-center gap-1.5`（line 564 靛蓝 plane）+ 条目行 lines 566-570 → 复用 Task 6 `ItemList`
- *   住宿块 lines 579-596：块头右侧元信息（line 581 `≤¥300 · 3 家`）+ `¥150/晚`（line 585 `/晚`
- *     `text-[9.5px] text-inkfaint`）→ `ItemList thumb unitSuffix="/晚"`
- *   文化资源图谱 lines 598-608：`chip bg-indigowash text-indigo border-indigo/15`（line 602）→ `Chip tone="indigo"`
- *   summary_hints 三格 lines 611-615：`rounded-lg bg-cardsunk hairline p-3 grid grid-cols-3 text-center`，
- *     中格 `border-x border-hairline`，标签 `text-[10px] text-inkfaint mt-0.5`
+ * 定位（2026-10-20 用户反馈）：中栏不再内联田野点画像卡（lib/toolMeta.TIMELINE_OMIT），
+ * 本面板成为画像的**唯一出口**，因此把原先只在中栏卡里出现的六块补齐：
+ * 周边设施地图、内核二段式建议、当地配套与活动、住宿与通勤比较、候选观察场所、
+ * 分节计数 + 高德底座/文本回退来源徽标。呈现块与 SiteProfileCard 共用
+ * `cards/SiteProfileParts`，两处不会各说各话。
+ *
+ * 设计板同源：右栏 SiteProfilePanel lines 552-616（站点头 / 交通块 / 住宿块 /
+ * 文化 chip 网格 / summary_hints 三格）。
  *
  * 同源红线②：面板数据 = `snapshot.field_sites`（REST 初始快照）**叠加**本回合
- * `profile_field_site` 的 `tool_completed.data`（tools store），即中栏 SiteProfileCard 渲染的
- * 同一份 payload；面板 0 处 fetch、0 处数字加工（极值取内核 `summary.*_min`，缺失才回落 items 实价）。
- * 宿主在 loop.py L158-160 把 `{"name": data.location, "confirmed": False, "profile": data}` 落盘，
- * 故 record.name === profile.location，按名精确对齐（不做模糊匹配、不猜）；本回合新出画像在快照
- * 刷新前以「本回合新画像」条目呈现（宿主落盘 confirmed=False，故记为待确认）。
+ * `profile_field_site` 的 `tool_completed.data`（tools store），面板 0 处 fetch、
+ * 0 处数字加工（极值取内核 `summary.*_min`，缺失才回落 items 实价）。
+ * 宿主在 loop.py L158-160 把 `{"name": data.location, "confirmed": False, "profile": data}`
+ * 落盘，故 record.name === profile.location，按名精确对齐（不做模糊匹配、不猜）。
  * 红线④：价格一律走 `Price`（null → "暂无报价"，绝不 ¥0）。
  */
 
@@ -54,77 +61,33 @@ function profileOf(raw: unknown): Record<string, unknown> | null {
   return Object.keys(rec).length > 0 ? rec : null;
 }
 
-/** 画像分节块（设计板 lines 563-564 / 580-581 / 599-600 的块头 + 卡中卡）。 */
-function Block({
-  icon,
-  title,
-  meta,
-  children,
-}: {
-  icon: ReactNode;
-  title: string;
-  meta?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="hairline rounded-lg bg-card p-3 mb-3">
-      <div className="text-[11.5px] text-inksoft mb-2 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5">
-          {icon}
-          {title}
-        </span>
-        {meta && <span className="text-[10.5px] text-inkfaint num">{meta}</span>}
-      </div>
-      {children}
-    </div>
-  );
-}
-
 function SiteBlock({ site, onConfirm, confirming }: {
   site: SiteView;
   onConfirm?: (site: SiteView) => void;
   confirming?: string | null;
 }) {
   const rec = site.profile ?? {};
-  const summary = asRecord(rec.summary);
-  const counts = asRecord(summary.section_counts);
-  const transport = toItemPage(rec.transport);
-  const accommodation = toItemPage(rec.accommodation);
-  const culture = asArray(rec.culture);
-  // summary 的最低价缺失时才回落分段实价极值；显式 null 保留（内核明确「无报价」）
-  const transportMin =
-    summary.transport_min === undefined ? transport.cheapest : numOf(summary.transport_min);
-  const nightlyMin =
-    summary.accommodation_nightly_min === undefined
-      ? accommodation.cheapest
-      : numOf(summary.accommodation_nightly_min);
-  const cultureCount = numOf(counts.culture) ?? culture.length;
+  const nums = profileNumbers(rec);
+  const geoLoc = geoLocation(rec);
   const generatedAt = strOf(rec.generated_at);
 
-  // 文化点位按内核标注的 category 分组（同 SiteProfileCard，不重新分类、不猜语义）
-  const groups = new Map<string, string[]>();
-  for (const raw of culture) {
-    const c = asRecord(raw);
-    const name = strOf(c.name);
-    if (!name) continue;
-    const cat = strOf(c.category);
-    groups.set(cat, [...(groups.get(cat) ?? []), name]);
-  }
-
   return (
-    <section className="mb-5 last:mb-0">
+    <section className="mb-4 last:mb-0">
       {/* 站点头（设计板 lines 554-560） */}
-      <div className="flex items-center justify-between gap-2 mb-3">
+      <div className="flex items-center justify-between gap-2 mb-2.5">
         <div className="min-w-0">
-          <div className="font-serif text-[16px] font-semibold flex items-center gap-1.5 text-ink">
+          <div className="font-serif text-[15px] font-semibold flex items-center gap-1.5 text-ink">
             <IconPin className="w-4 h-4 text-cinnabar shrink-0" />
             <span className="truncate">{site.name || "未命名田野点"}</span>
           </div>
           {generatedAt && (
-            <div className="num text-[11px] text-inkfaint">{`画像生成于 ${formatDate(generatedAt)}`}</div>
+            <div className="num text-[10.5px] text-inkfaint">{`画像生成于 ${formatDate(generatedAt)}`}</div>
           )}
         </div>
-        <span className="shrink-0 flex items-center gap-1.5">
+        <span className="shrink-0 flex flex-wrap items-center justify-end gap-1.5">
+          {site.profile !== null && (geoLoc
+            ? <Chip tone="indigo">高德底座</Chip>
+            : <Chip tone="ochre">文本回退</Chip>)}
           {site.liveOnly && <Chip tone="indigo">本回合新画像</Chip>}
           {site.degraded && <Chip tone="ochre">降级 · {site.degraded}</Chip>}
           {site.confirmed ? (
@@ -153,77 +116,72 @@ function SiteBlock({ site, onConfirm, confirming }: {
         </div>
       ) : (
         <>
-          {/* 交通（设计板 lines 562-577） */}
-          <Block
+          <SummaryTriple
+            transportMin={nums.transportMin}
+            nightlyMin={nums.nightlyMin}
+            cultureCount={nums.cultureCount}
+          />
+
+          <ProfileHints hints={asRecord(nums.summary.hints)} className="mt-2.5 mb-2.5" />
+
+          <FacilitiesPanel profile={rec} className="mt-2.5" />
+
+          <ProfileBlock
             icon={<IconPlane className="w-4 h-4 text-indigo" />}
             title="交通可达"
-            meta={`${transport.items.length} 条`}
+            meta={`${nums.transport.items.length} 条`}
           >
             <ItemList
-              items={transport.items}
+              items={nums.transport.items}
               icon={<IconPlane className="w-4 h-4" />}
               limit={3}
               emptyText="未取得交通报价（未给出发城市或数据源无结果）"
             />
-          </Block>
+          </ProfileBlock>
 
-          {/* 住宿（设计板 lines 579-596） */}
-          <Block
+          <ProfileBlock
             icon={<IconBed className="w-4 h-4 text-cinnabar" />}
             title="长住住宿"
-            meta={`${accommodation.items.length} 家`}
+            meta={`${nums.accommodation.items.length} 家`}
           >
             <ItemList
-              items={accommodation.items}
+              items={nums.accommodation.items}
               icon={<IconBed className="w-4 h-4" />}
               thumb
               unitSuffix="/晚"
               limit={3}
               emptyText="未取得住宿报价"
             />
-          </Block>
+          </ProfileBlock>
 
-          {/* 文化资源图谱（设计板 lines 598-608） */}
-          <Block
+          <ProfileBlock
+            icon={<IconSpark className="w-4 h-4 text-inksoft" />}
+            title="当地配套与活动"
+            meta={`${nums.amenities.items.length} 条`}
+          >
+            <ItemList items={nums.amenities.items} limit={3} emptyText="未取得配套条目" />
+          </ProfileBlock>
+
+          <ProfileBlock
             icon={<IconTemple className="w-4 h-4 text-indigo" />}
             title="文化资源图谱"
-            meta={`${culture.length} 处`}
+            meta={`${nums.culture.length} 处`}
           >
-            {groups.size === 0 ? (
-              <div className="text-[11.5px] text-inkfaint">未取得文化点位</div>
-            ) : (
-              <div className="space-y-2">
-                {[...groups.entries()].map(([cat, names]) => (
-                  <div key={cat || "未分类"}>
-                    {cat && <div className="text-[10.5px] text-inkfaint mb-1">{cat}</div>}
-                    <div className="flex flex-wrap gap-1.5">
-                      {names.map((name, i) => (
-                        <Chip key={`${name}-${i}`} tone="indigo">
-                          {name}
-                        </Chip>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Block>
+            <CultureGroups culture={nums.culture} />
+          </ProfileBlock>
 
-          {/* summary_hints 三格（设计板 lines 611-615） */}
-          <div className="rounded-lg bg-cardsunk hairline p-3 grid grid-cols-3 text-center">
-            <div>
-              <Price value={transportMin} source="cheapest" />
-              <div className="text-[10px] text-inkfaint mt-0.5">交通最低</div>
+          {Array.isArray(rec.lodging_comparison) && rec.lodging_comparison.length > 0 && (
+            <div className="hairline rounded-lg bg-card p-2.5 mb-2.5">
+              <LodgingComparison data={rec.lodging_comparison} />
             </div>
-            <div className="border-x border-hairline">
-              <Price value={nightlyMin} source="cheapest" />
-              <div className="text-[10px] text-inkfaint mt-0.5">住宿/晚起</div>
+          )}
+          {Array.isArray(rec.spatial_results) && rec.spatial_results.length > 0 && (
+            <div className="hairline rounded-lg bg-card p-2.5 mb-2.5">
+              <SpatialResults data={rec.spatial_results} />
             </div>
-            <div>
-              <div className="num text-[15px] text-ink font-semibold">{cultureCount}</div>
-              <div className="text-[10px] text-inkfaint mt-0.5">文化点位</div>
-            </div>
-          </div>
+          )}
+
+          <SectionMeta counts={nums.counts} generatedAt={generatedAt} />
         </>
       )}
     </section>
@@ -324,7 +282,7 @@ export function FieldSitesPanel() {
 
   return (
     <div>
-      <div className="font-serif text-[15px] font-semibold mb-3">{`田野点 · ${sites.length}`}</div>
+      <div className="font-serif text-[15px] font-semibold mb-2.5">{`田野点 · ${sites.length}`}</div>
       {refreshBanner}
       {confirmError && <div className="text-[11px] text-ochre mb-2">{confirmError}</div>}
       {sites.map((site, i) => (

@@ -52,8 +52,8 @@ MUTATIONS = [
      "  }, []);",
      "tests/quickReplies.spec.tsx"),
     ("P1-3 stores 重新依赖组件层", "src/stores/ui.ts",
-     'import { phaseLabel } from "../lib/phases";',
-     'import { phaseLabel } from "../lib/phases";\nimport { getToolCard } from "../components/cards/registry";',
+     'import { visibilityOf } from "../lib/toolMeta";',
+     'import { visibilityOf } from "../lib/toolMeta";\nimport { getToolCard } from "../components/cards/registry";',
      "tests/toolMeta.spec.ts"),
 ]
 

@@ -98,7 +98,7 @@ export function AuthDialog({ open, onClose, initialKeysOpen = false }: {
         className="relative hairline rounded-xl shadow-pop sheet-in bg-card/80 backdrop-blur-[8px] w-full max-w-[400px] max-h-full overflow-y-auto scroll"
       >
         <div className="flex items-center gap-2.5 px-5 pt-5 pb-4">
-          <img src="/fieldwork-logo-full.svg" alt="" aria-hidden="true" className="w-7 h-7 shrink-0" />
+          <img src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`} alt="" aria-hidden="true" className="w-7 h-7 shrink-0" />
           <div className="flex-1 min-w-0 leading-tight">
             <div className="font-serif text-[16.5px] font-semibold">
               {mode === "login" ? "欢迎回来" : "创建账号"}

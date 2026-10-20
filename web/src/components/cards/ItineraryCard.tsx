@@ -6,7 +6,8 @@ import { IconBed, IconCaret, IconCompass, IconPlane, IconTrain } from "../ui/ico
 import { BudgetBar, toBudget } from "./BudgetCard";
 import { CardShell, NoData } from "./CardShell";
 import { AmapMapPanel } from "./AmapMapPanel";
-import { asArray, asRecord, boolOf, extraLine, numOf, strOf } from "./data";
+import { asArray, asRecord, boolOf, numOf, strOf } from "./data";
+import { itemDigest } from "./fields";
 import type { ToolCardProps } from "./types";
 import { travelDetails } from "./travelDetails";
 
@@ -231,7 +232,10 @@ export function ItineraryCard({ data, degraded }: ToolCardProps) {
                     hasChosen && chosenName
                       ? linkName(chosenName, strOf(chosen.jump_url))
                       : "",
-                    hasChosen ? [extraLine(asRecord(chosen.extra), 2), travelDetails(chosen)].filter(Boolean).join(" · ") : "",
+                    hasChosen
+                      ? [itemDigest({ name: chosenName, extra: asRecord(chosen.extra) }).summary,
+                         travelDetails(chosen)].filter(Boolean).join(" · ")
+                      : "",
                   ];
                   const sub = parts
                     .filter((s) => s !== "")

@@ -1,7 +1,8 @@
 import { getToolCard } from "../cards/registry";
-import { visibilityOf } from "../../lib/toolMeta";
+import { showsInlineInTimeline } from "../../lib/toolMeta";
 import { EmptyState } from "../ui/EmptyState";
 import { IconCompass } from "../ui/icons";
+import { useStickBottom } from "../../hooks/useStickBottom";
 import { useConversationStore } from "../../stores/conversation";
 import { useProjectStore } from "../../stores/project";
 import { useToolsStore } from "../../stores/tools";
@@ -26,6 +27,8 @@ import { ToolActivityStrip } from "./ToolActivityStrip";
  * 移入中栏「检索结果」tab（EvidencePanel，Task 12 接线）、hidden 不显示（成功与失败均不显示，
  * 内部状态写入自会由助手正文解释）；未注册工具默认 full。成功活动不再进活动条（见
  * ToolActivityStrip），由这里的卡片承担结果呈现。
+ * 例外（2026-10-20 用户反馈）：田野点画像（profile_field_site）不再内联——右栏「田野点」面板
+ * 是它的唯一出口，中栏重复投影只会把对话流顶长（判定在 lib/toolMeta.showsInlineInTimeline）。
  * 中间态注记（Task 10 → 12）：本提交后、EvidencePanel 接线前，collapsed 卡在两个 tab
  * 都不可见——同一分支内的过渡提交，不部署，可接受。
  *
@@ -79,6 +82,8 @@ export function Timeline({
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
   const phase = useProjectStore((s) => s.phase);
+  // 切 tab 回来即贴底（两 tab 都是懒挂载，否则每次从最早一条开始翻）
+  const scroll = useStickBottom<HTMLDivElement>();
 
   const settled = order
     .map((id) => byCallId[id])
@@ -86,8 +91,8 @@ export function Timeline({
   // done 但数据为空的卡保留（NoData 对“成功但无数据”仍有信息量）；全部被过滤时不渲染外层缩进容器。
   // 对话 tab 只内联 full 级（spec C4）：collapsed 级移入「检索结果」tab（EvidencePanel），
   // hidden 永不渲染；失败不滞留（问题4，由活动条承担）。未注册工具默认 full 保可见。
-  const visible = settled.filter((call) =>
-    visibilityOf(call.tool) === "full" && call.status !== "failed");
+  // 肖像例外（用户反馈）：田野点画像由右栏「田野点」面板承担，中栏不再重复渲染。
+  const visible = settled.filter((call) => showsInlineInTimeline(call.tool) && call.status !== "failed");
   const idle = messages.length === 0 && settled.length === 0 && !hasStreamBuffer && !turnRunning;
   // 问题2：进入已有会话的工作台时，对话史回填（hydrate）需要时间；回填完成前的
   // idle 窗口显示「加载中」+ 旋转 logo，而非误导性的「尚无对话」；hydrate 落地后仍空才是真空会话。
@@ -95,7 +100,11 @@ export function Timeline({
   const empty = idle && hydrated;
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto scroll px-6 py-5 space-y-5">
+    <div
+      ref={scroll.ref}
+      onScroll={scroll.onScroll}
+      className="flex-1 min-h-0 overflow-y-auto scroll px-6 py-5 space-y-5"
+    >
       {messages.map((m, i) => (
         <MessageBubble key={`${m.role}-${i}`} role={m.role} content={m.content} />
       ))}
@@ -144,7 +153,7 @@ export function Timeline({
 
       {loading && (
         <EmptyState
-          icon={<img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 animate-spin" />}
+          icon={<img src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`} alt="" className="w-6 h-6 animate-spin" />}
           title="加载中"
           hint="正在恢复本项目的对话与上下文…"
         />

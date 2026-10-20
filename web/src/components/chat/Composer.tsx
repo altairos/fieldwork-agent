@@ -20,8 +20,9 @@ import { QuickReplies } from "./QuickReplies";
  *   发送键 line 520 `h-9 w-9 grid place-items-center rounded-md bg-cinnabar` → 复用 Task 5 `Button`
  *     primary（其配色即 line 520 的 bg-cinnabar / #F7EFE6 / hover #96382a，token 外值已在 Button 内注行号）
  *   底注 line 522-524：`flex items-center gap-3 mt-2 text-[10.5px] text-inkfaint`
- *     「所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。」
- *     （原右侧「模型可配置 · function calling」易被误读为可自选 LLM，已删除）
+ *     原为「所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。」，现改为
+ *     **注册提示**（2026-10-20 用户反馈）：匿名会话的对话记录离开即清除，只有注册
+ *     账号名下的对话长期保存——底注是唯一常驻的告知位；已登录时不渲染。
  *
  * 交互：回车发送 / Shift+Enter 换行 / 输入法组合中（isComposing）不发送；busy 时发送键禁用并显示「取消」；
  * conflict（POST /messages 409）如实提示“已有回合在执行”（useTurn 的 conflict 状态），不重试、不静默吞错；
@@ -49,6 +50,8 @@ export function Composer({
   projectId,
   locked = false,
   lockHint,
+  guest = false,
+  onRegister,
 }: {
   turn?: TurnHandle;
   projectId?: string;
@@ -56,6 +59,10 @@ export function Composer({
   locked?: boolean;
   /** 锁定提示内容（Workspace 提供：登录窗高级区入口） */
   lockHint?: ReactNode;
+  /** true = 匿名（未注册）会话：底注改为注册提示（匿名记录离开即清除） */
+  guest?: boolean;
+  /** 底注「注册 / 登录」按钮：打开登录窗（Workspace 注入 openAuthDialog） */
+  onRegister?: () => void;
 }) {
   const own = useTurn(projectId ?? "");
   const api: TurnHandle = turn ?? own;
@@ -155,10 +162,22 @@ export function Composer({
         </div>
       )}
 
-      {/* 底注：辅助说明（窄屏 flex-wrap 防挤溢） */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[10.5px] text-inkfaint">
-        <span>所需信息齐备后，才会进入下一阶段。AI 不会自由发挥。</span>
-      </div>
+      {/* 底注（2026-10-20）：匿名会话改为注册提示——记录保留与否是用户唯一需要知道的事。
+          已登录时不渲染（对话已归属账号，无需提醒）。 */}
+      {guest && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2 text-[10.5px] text-inkfaint">
+          <span>演示模式：未注册的对话记录会在离开本页时清除，注册后可长期保存调研过程。</span>
+          {onRegister && (
+            <button
+              type="button"
+              onClick={onRegister}
+              className="tapzone text-cinnabar hover:underline"
+            >
+              注册 / 登录
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

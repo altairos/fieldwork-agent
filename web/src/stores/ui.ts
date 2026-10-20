@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { phaseLabel } from "../lib/phases";
 import { visibilityOf } from "../lib/toolMeta";
 import { useToolsStore } from "./tools";
 import type { SseEvent } from "../types/events";
@@ -10,7 +9,6 @@ export type RightTab = "basic-info" | "sites" | "informants" | "budget" | "knowl
 export type MiddleTab = "chat" | "evidence";
 interface UiState {
   activeTab: RightTab;
-  pendingSuggestion: { tab: RightTab; reason: string } | null;   // 切换建议(不自动切)
   degradedBanner: ErrorEvent | null;
   /** 中栏「对话/检索结果」当前 tab（spec C1）；新 collapsed 证据到达只置红点不自动切（红线） */
   middleTab: MiddleTab;
@@ -25,8 +23,6 @@ interface UiState {
   setActiveTab: (t: RightTab) => void;
   setMiddleTab: (t: MiddleTab) => void;
   setComposerDraft: (t: string | null) => void;
-  acceptSuggestion: () => void;      // 用户点"去查看"→ 切 tab 并清建议
-  dismissSuggestion: () => void;
   dismissBanner: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
@@ -38,17 +34,17 @@ export const PHASE_TAB: Record<string, RightTab> = {
   field_site_profiles: "sites", itinerary_planning: "budget", proposal_generation: "basic-info",
 };
 export const useUiStore = create<UiState>()((set, get) => ({
-  activeTab: "basic-info", pendingSuggestion: null, degradedBanner: null,
+  activeTab: "basic-info", degradedBanner: null,
   middleTab: "chat", evidenceHint: false,
   leftCollapsed: true, rightCollapsed: true,
   composerDraft: null,
   applyEvent: (ev) => set(() => {
     if (ev.event === "phase_transition") {
       const tab = PHASE_TAB[ev.to];
-      // 阶段 id → 中文名（唯一来源 lib/phases；未知 id 回落原值）
-      const label = phaseLabel(ev.to);
-      // 关键不变量：不自动改 activeTab，只置建议
-      return tab ? { pendingSuggestion: { tab, reason: `已进入「${label}」阶段` } } : {};
+      // 阶段切换 → 右栏**直接**切到该阶段对应面板（用户反馈：原来是 toast 建议用户手点
+      // 「查看」，多一步且容易被忽略）。无映射的阶段（未知 id）保留当前 tab 不动。
+      // 注意：仅 SSE phase_transition 触发；进入工作台时按快照回填 phase 不动 tab。
+      return tab ? { activeTab: tab } : {};
     }
     if (ev.event === "error") {
       return { degradedBanner: { code: ev.code, message: ev.message, hint: ev.hint } };
@@ -66,10 +62,8 @@ export const useUiStore = create<UiState>()((set, get) => ({
   setActiveTab: (t) => set({ activeTab: t }),
   setMiddleTab: (t) => set((st) => ({ middleTab: t, evidenceHint: t === "evidence" ? false : st.evidenceHint })),
   setComposerDraft: (t) => set({ composerDraft: t }),
-  acceptSuggestion: () => { const s = get().pendingSuggestion; if (s) set({ activeTab: s.tab, pendingSuggestion: null }); },
-  dismissSuggestion: () => set({ pendingSuggestion: null }),
   dismissBanner: () => set({ degradedBanner: null }),
   toggleLeft: () => set((st) => ({ leftCollapsed: !st.leftCollapsed })),
   toggleRight: () => set((st) => ({ rightCollapsed: !st.rightCollapsed })),
-  reset: () => set({ activeTab: "basic-info", pendingSuggestion: null, degradedBanner: null, middleTab: "chat", evidenceHint: false, leftCollapsed: true, rightCollapsed: true, composerDraft: null }),
+  reset: () => set({ activeTab: "basic-info", degradedBanner: null, middleTab: "chat", evidenceHint: false, leftCollapsed: true, rightCollapsed: true, composerDraft: null }),
 }));

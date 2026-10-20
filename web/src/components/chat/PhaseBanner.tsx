@@ -17,22 +17,19 @@ import { useUiStore } from "../../stores/ui";
  * 降级横幅取设计板 ochre 家族（line 265 `bg-ochrewash text-ochre border-ochre/25` + line 132 alert 图标），
  *   承载 ui store 的 `degradedBanner`（error 事件）：如实转述 code/message/hint，用户可关闭。
  *
- * 红线①：横幅只**呈现**阶段与建议，不切 Tab、不改 activeTab；pendingSuggestion 文案由
- * ui store 归约（阶段 id → 中文名），此处不改写；切换动作只在右栏 toast 的「查看」。
+ * 红线①：横幅只**呈现**阶段与降级，不切 Tab——阶段切换时的右栏面板跳转由 ui store 的
+ * phase_transition 分支直接完成（用户反馈：原先是 toast 建议用户手点「查看」）。
  */
 export function PhaseBanner() {
   const phase = useProjectStore((s) => s.phase);
-  const suggestion = useUiStore((s) => s.pendingSuggestion);
   const banner = useUiStore((s) => s.degradedBanner);
   const dismissBanner = useUiStore((s) => s.dismissBanner);
 
   const meta = DEFAULT_PHASES.find((p) => p.id === phase);
   const title = meta ? `阶段 ${meta.letter} · ${meta.label}` : `阶段 ${phase}`;
-  const note = suggestion
-    ? suggestion.reason
-    : meta
-      ? (meta.unlock ? `本阶段条件达成后解锁：${meta.unlock}` : (meta.desc ?? "阶段推进由可验证条件判定"))
-      : "阶段推进由可验证条件判定";
+  const note = meta
+    ? (meta.unlock ? `本阶段条件达成后解锁：${meta.unlock}` : (meta.desc ?? "阶段推进由可验证条件判定"))
+    : "阶段推进由可验证条件判定";
 
   return (
     <>

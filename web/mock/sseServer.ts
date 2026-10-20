@@ -254,9 +254,11 @@ const FAKE_CONTEXT = {
 
 // ---------------------------------------------------------------- 归属存储（spec 对齐：创建需令牌 + 列表过滤 + 404 隔离）
 
-interface StoredProject { id: string; owner: string; }
+interface StoredProject { id: string; owner: string; phase: string; }
 
-/** 内存项目登记：id → 归属（anon:<token> 或登录认领后 user:<id>）。mock 轻量——只记归属，内容恒返回假数据。 */
+/** 内存项目登记：id → 归属（anon:<token> 或登录认领后 user:<id>）+ 阶段。
+ *  阶段由 SSE phase_transition 帧推进（与真实后端 set_phase 同语义）——
+ *  turn_done 后的快照回读必须看到已推进的阶段，否则会覆盖回旧值。 */
 const projects = new Map<string, StoredProject>();
 
 // ---------------------------------------------------------------- 账号与会话（账号隔离一期 /auth 四端点）
@@ -327,14 +329,15 @@ function fakeCachedSearch(cid: string) {
 }
 
 function fakeSnapshot(projectId: string) {
+  const phase = projects.get(projectId)?.phase ?? "research_positioning";
   return {
     project_id: projectId,
-    phase: "research_positioning",
+    phase,
     research_context: FAKE_CONTEXT,
     field_sites: [{ name: "大理古城", confirmed: false, profile: null }],
     informants: [],
     proposals: [],
-    phase_history: [{ from: "", to: "research_positioning", at: "2026-10-15T09:00:00Z" }],
+    phase_history: [{ from: "", to: phase, at: "2026-10-15T09:00:00Z" }],
     updated_at: "2026-10-15T09:30:00Z",
   };
 }
@@ -365,7 +368,7 @@ function fakeProposal() {
  * 回合脚本已发完后重连（无 Last-Event-ID）则重放全部（幂等演示），
  * 对齐 Plan 3 turns.py 的 replay-after_seq 行为。脚本发完即关闭流。
  */
-function streamTurn(res: ServerResponse, req: IncomingMessage, turnId: string, frames: ScriptFrame[], frameDelayMs: number): void {
+function streamTurn(res: ServerResponse, req: IncomingMessage, projectId: string, turnId: string, frames: ScriptFrame[], frameDelayMs: number): void {
   const lastEventId = parseLastEventId(req.headers["last-event-id"]);
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -383,6 +386,13 @@ function streamTurn(res: ServerResponse, req: IncomingMessage, turnId: string, f
       return;
     }
     const frame = frames[index];
+    // 阶段推进帧同时落入项目状态（对齐 web_host 的 set_phase）：
+    // 前端在 turn_done 后回读快照，若这里不推进会拿到旧阶段并覆盖 store。
+    if (frame.event === "phase_transition") {
+      const rec = projects.get(projectId);
+      const to = (frame.payload as { to?: unknown }).to;
+      if (rec && typeof to === "string" && to !== "") rec.phase = to;
+    }
     res.write(encodeFrame(turnId, index + 1, frame.event, frame.payload));
     index += 1;
   }, frameDelayMs);
@@ -582,7 +592,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     const turnId = decodeURIComponent(m[2]);
     const record = turns.get(turnId);
     // 未知 tid 也现编一份脚本（演示容错，方便直接 GET 冒烟）
-    streamTurn(res, req, turnId, record ? record.frames : buildScript(turnId), frameDelayMs);
+    streamTurn(res, req, decodeURIComponent(m[1]), turnId,
+               record ? record.frames : buildScript(turnId), frameDelayMs);
     return;
   }
 
@@ -705,7 +716,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     }
     sendJson(res, 200, [...projects.values()].filter((p) => p.owner === owner).map((p) => ({
       project_id: p.id,
-      phase: "research_positioning",
+      phase: p.phase,
       created_at: "2026-10-15T09:00:00Z",
       updated_at: "2026-10-15T09:30:00Z",
       research_context: FAKE_CONTEXT,
@@ -729,7 +740,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
       return;
     }
     const projectId = body.project_id || `field_${Date.now()}`;
-    projects.set(projectId, { id: projectId, owner });
+    projects.set(projectId, { id: projectId, owner, phase: "research_positioning" });
     sendJson(res, 201, { project_id: projectId, phase: "research_positioning" });
     return;
   }
@@ -738,6 +749,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     const pid = decodeURIComponent(m[1]);
     if (!ownedProject(res, req, pid)) return;
     sendJson(res, 200, fakeSnapshot(pid));
+    return;
+  }
+
+  // DELETE /projects/:id（web_host/api/projects.py::delete_project 同构）：
+  // 匿名会话离开时前端会调它清除记录，mock 不实现会让 dev/e2e 里删除静默 404。
+  if (method === "DELETE" && (m = RE_PROJECT.exec(path))) {
+    const pid = decodeURIComponent(m[1]);
+    if (!ownedProject(res, req, pid)) return;
+    projects.delete(pid);
+    res.statusCode = 204;
+    res.end();
     return;
   }
 

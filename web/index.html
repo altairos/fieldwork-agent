@@ -5,12 +5,13 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>田野罗盘</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,600&display=swap"
-      rel="stylesheet"
-    />
+    <!--
+      字体：不再外链 Google Fonts（2026-10-20）。
+      原因：该请求在国内网络下失败时，浏览器会静默回落到微软雅黑——
+      整站宋体气质丢失，且这是"看不见的失败"，排查成本高。
+      现在直接用系统已装的 Noto Serif SC（Windows 字体库里的 NotoSerifSC-VF.ttf），
+      缺失时按 fontFamily 里的 STSong / SimSun 顺序回落，行为可预期。
+    -->
     <script>
       // 防 FOUC：首帧渲染前从 localStorage 恢复主题到 html[data-theme]
       //（themes.css 入口）；非法/无值回落默认 cinnabar。与 main.tsx 的

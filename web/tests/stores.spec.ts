@@ -263,14 +263,14 @@ describe("conversation store turn_done 查重（hydrate×回放双写保护，�
   });
 });
 
-describe("project + ui 阶段推进(右栏不自动切)", () => {
-  test("phase_transition 改 phase，ui.activeTab 不变，pendingSuggestion 置位", () => {
+describe("project + ui 阶段推进(右栏自动切面板)", () => {
+  test("phase_transition 改 phase，右栏同步切到该阶段面板", () => {
     useUiStore.getState().setActiveTab("basic-info");
     useProjectStore.getState().applyEvent(ev({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" }));
     useUiStore.getState().applyEvent(ev({ event: "phase_transition", from: "research_positioning", to: "field_site_profiles" }));
     expect(useProjectStore.getState().phase).toBe("field_site_profiles");
-    expect(useUiStore.getState().activeTab).toBe("basic-info");       // 不自动切
-    expect(useUiStore.getState().pendingSuggestion).not.toBeNull();     // 只给建议
+    // 2026-10-20 用户反馈：不再弹建议让用户手点「查看」，直接切到该阶段对应面板
+    expect(useUiStore.getState().activeTab).toBe("sites");
   });
   test("error 事件置 degradedBanner，不中断已有内容", () => {
     useUiStore.getState().applyEvent(ev({ event: "error", code: "internal_error", message: "boom", hint: "重试" }));

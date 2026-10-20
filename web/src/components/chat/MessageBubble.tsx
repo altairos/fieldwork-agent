@@ -31,7 +31,7 @@ function MessageBubbleInner({ role, content }: { role: "user" | "assistant"; con
   }
   return (
     <div className="flex gap-3">
-      <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
+      <img src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`} alt="" className="w-6 h-6 shrink-0 mt-0.5" />
       <div className="min-w-0 flex-1">
         <MarkdownBody text={normalizeCjkQuotes(stripOptionTags(content))} />
       </div>

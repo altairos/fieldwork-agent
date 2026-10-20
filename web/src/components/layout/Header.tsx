@@ -75,7 +75,7 @@ export function Header({
         )}
         {/* 品牌区（移动端只留 logo，双行文字 md+ 展开） */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <img src="/fieldwork-logo-full.svg" alt="" className="w-7 h-7" />
+          <img src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`} alt="" className="w-7 h-7" />
           <div className="leading-tight hidden md:block">
             <div className="font-serif text-[15px] font-semibold tracking-wide">田野罗盘</div>
             <div className="text-[10px] text-inkfaint tracking-[.18em] num">FIELDWORK COMPASS</div>

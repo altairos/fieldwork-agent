@@ -21,6 +21,11 @@ import { normalizeCjkQuotes } from "../../lib/cjkQuotes";
  *
  * 打字机效果 = streamBuffer 增量追加即重渲染（message_delta 由 conversation store 归约，Task 3）；
  * turnRunning 时尾部挂朱砂光标脉冲（animate-pulse，与 PulseDot 进行中态同一动效语义）。
+ *
+ * 「正在生成」双信号（用户反馈：模型在工具空档期长时间无字，界面像卡死）：
+ * - 头像 `animate-spin`（与 RouteFallback/时间线加载态同一动效语言）；
+ * - 正文尾部状态行「罗盘正在生成回答…」（role=status/aria-live，读屏可感知）。
+ * 二者都只跟 turnRunning 走，所以工具调用空档期同样可见。
  * 红线：只渲染内核下发的文本，不改写、不补数字；[[options]] 标记（含半截流式）渲染前剥离，
  * 防流式期间按钮标记闪烁（B 节问题 4；标记语义由 QuickReplies chips 承载）；
  * 渲染前另做全角引号归一（问题3前端，lib/cjkQuotes，覆盖流式与存量历史）。
@@ -147,18 +152,33 @@ export function AssistantStream() {
   if (!buffer && !running) return null;
   return (
     <div className="flex gap-3">
-      <img src="/fieldwork-logo-full.svg" alt="" className="w-6 h-6 shrink-0 mt-0.5" />
+      <img
+        src={`${import.meta.env.BASE_URL}fieldwork-logo-full.svg`}
+        alt=""
+        className={`w-6 h-6 shrink-0 mt-0.5 ${running ? "animate-spin" : ""}`.trim()}
+      />
       <div className="min-w-0 flex-1">
         {shown ? (
           <MarkdownBody text={normalizeCjkQuotes(stripOptionTags(shown))} />
         ) : (
-          <div className="text-[12.5px] text-inkfaint">助手正在组织回复…</div>
+          <div className="text-[12.5px] text-inkfaint">罗盘正在组织回复…</div>
         )}
         {running && (
           <span
             className="inline-block w-1.5 h-4 align-text-bottom ml-0.5 bg-cinnabar/70 animate-pulse"
             aria-hidden="true"
           />
+        )}
+        {/* 有正文时的进行中说明：工具空档期正文不再推进，这一行是「没卡死」的唯一线索 */}
+        {running && shown && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-cinnabar"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-cinnabar animate-pulse shrink-0" aria-hidden="true" />
+            罗盘正在生成回答…
+          </div>
         )}
       </div>
     </div>

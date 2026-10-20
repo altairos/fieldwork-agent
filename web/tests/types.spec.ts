@@ -223,9 +223,12 @@ describe("mock sse server smoke", () => {
     expect(created.status).toBe(201);
     expect(JSON.parse(created.body)).toMatchObject({ phase: "research_positioning" });
 
+    // 前面的 SSE 回合已在 p1 发送 phase_transition → mock 与真实后端一样把
+    // 阶段落入项目状态；快照回读必须与推进结果一致（否则 turn_done 后回读
+    // 会覆盖回旧阶段，E2E 阶段断言失真）
     const snapshot = await call(port, "GET", "/projects/p1", { headers: { ...OWNER } });
     expect(snapshot.status).toBe(200);
-    expect(JSON.parse(snapshot.body)).toMatchObject({ project_id: "p1", phase: "research_positioning" });
+    expect(JSON.parse(snapshot.body)).toMatchObject({ project_id: "p1", phase: "field_site_profiles" });
 
     const proposal = await call(port, "GET", "/projects/p1/proposal", { headers: { ...OWNER } });
     expect(proposal.status).toBe(200);

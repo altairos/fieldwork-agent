@@ -71,6 +71,7 @@ describe("BudgetCard coverage", () => {
 const KERNEL_TOOLS = [
   "profile_field_site",
   "compose_itinerary",
+  "plan_last_mile",
   "analyze_fieldwork_window",
   "estimate_living_cost",
   "compose_proposal",
@@ -92,7 +93,7 @@ const KERNEL_TOOLS = [
 const HOST_STATE_TOOLS = ["update_research_context"];
 
 describe("registry 与内核对齐", () => {
-  test("注册表键集 = 内核 17 能力名 + 宿主状态工具（无臆造 key）", () => {
+  test("注册表键集 = 内核 18 能力名 + 宿主状态工具（无臆造 key）", () => {
     expect(Object.keys(toolCardRegistry).sort()).toEqual(
       [...KERNEL_TOOLS, ...HOST_STATE_TOOLS].sort(),
     );
