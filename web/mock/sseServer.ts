@@ -435,6 +435,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
   if (method === "POST" && path === "/auth/register") {
     const body = await readJsonBody(req);   // {email, password, anon_token?}
     const email = String(body.email ?? "").trim();
+    const password = String(body.password ?? "");
+    if (email === "" || password.trim() === "") {
+      sendJson(res, 400, { detail: { code: "invalid_request", message: "邮箱与密码不能为空" } });
+      return;
+    }
     if (users.has(email)) {
       sendJson(res, 400, { detail: { code: "email_taken", message: "该邮箱已注册，请直接登录" } });
       return;
@@ -442,7 +447,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     const user: StoredUser = {
       userId: `user_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       email,
-      password: String(body.password ?? ""),
+      password,
       createdAt: new Date().toISOString(),
     };
     users.set(email, user);

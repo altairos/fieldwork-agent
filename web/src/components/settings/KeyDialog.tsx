@@ -3,7 +3,7 @@ import { ApiKeySection } from "./ApiKeyCard";
 import { IconLock } from "../ui/icons";
 
 /**
- * KeyDialog — 首页「密钥 / 登录」弹层：只承载 ApiKeySection（百炼 Key / 访问令牌 / 高级选项）。
+ * KeyDialog — 首页「密钥」弹层：只承载 ApiKeySection（百炼 Key / 访问令牌 / 高级选项）。
  * 首页极简重设计：导出格式与配色偏好不放弹层（导出格式在提案页下载区、配色走对话页 Header）。
  * 仅 open 时挂载（关闭即卸载，ApiKeySection 草稿态随之丢弃）；关闭三通道：
  * 右上「关闭」钮 / Escape / 点击遮罩；打开时焦点落在「关闭」钮。

@@ -259,7 +259,7 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
     stubAuthGuard({ rest: SNAP });
     render(<App />);
 
-    // 弹层自动打开——用户不必回首页找「密钥 / 登录」入口
+    // 弹层自动打开——用户不必回首页找「密钥」入口
     expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
     // 横幅是人话指引；原始 JSON（app_token_required 等响应体文本）不上屏
     expect(await screen.findByText(/访问令牌缺失或已失效/)).toBeInTheDocument();

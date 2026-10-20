@@ -18,6 +18,16 @@ DEFAULT_LLM_MODELS: dict[str, str] = {
 }
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"环境变量 {name}={raw!r} 不是合法整数") from None
+
+
 class Config:
     """全局配置"""
 
@@ -64,8 +74,8 @@ class Config:
         # R1：默认取 projects_dir 的兄弟目录，绝不在 projects_dir 子树内
         self.user_store_dir: Path = Path(
             os.getenv("FA_USER_STORE_DIR", str(CONFIG_DIR / "accounts")))
-        self.session_ttl_days: int = int(os.getenv("FA_SESSION_TTL_DAYS", "30"))
-        self.pbkdf2_iterations: int = int(os.getenv("FA_PBKDF2_ITERATIONS", "600000"))
+        self.session_ttl_days: int = _env_int("FA_SESSION_TTL_DAYS", 30)
+        self.pbkdf2_iterations: int = _env_int("FA_PBKDF2_ITERATIONS", 600000)
         # 注册开关是安全边界：归一化（strip+lower，同 FA_STORAGE 风格）后按常见
         # 假值集合判定，避免 FA_REGISTRATION_OPEN=false/no/off 被静默当成"开"。
         self.registration_open: bool = os.getenv(

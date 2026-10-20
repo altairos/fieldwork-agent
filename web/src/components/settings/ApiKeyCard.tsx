@@ -5,7 +5,7 @@ import { Button } from "../ui/Button";
 import { IconCheck } from "../ui/icons";
 
 /**
- * ApiKeySection — API 密钥配置节：首页「密钥 / 登录」弹层（KeyDialog）内承载。
+ * ApiKeySection — API 密钥配置节：首页「密钥」弹层（KeyDialog）内承载。
  * （「我的」卡解体后，导出格式迁提案页下载区、配色走对话页 Header。）
  * 百炼 Key 必填（无 key 不进入对话，见 Workspace 拦截）；飞猪/高德 Key 为可选高级项——
  * 计费核验：飞猪 AI 开放平台不计费，服务端已配共享正式 Key，开箱即用，

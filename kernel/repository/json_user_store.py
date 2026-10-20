@@ -53,7 +53,10 @@ class JsonUserStore:
 
     def _write(self, path: Path, data: dict) -> None:
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())                  # 数据块先于 rename 落盘，断电不致变砖
         os.replace(tmp, path)                     # 原子替换
 
     def _locked(self, path: Path):
