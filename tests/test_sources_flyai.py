@@ -59,6 +59,42 @@ def test_search_hotel_argv_and_envelope(monkeypatch):
                              "--sort", "price_asc"]
 
 
+# ---------------------------------------------------------------- S07 argv 注入守卫
+
+
+def _guarded_client(monkeypatch):
+    calls = []
+    client = FlyAIClient()
+    monkeypatch.setattr(
+        client, "_run_command",
+        lambda args: calls.append(args) or {"status": 0, "data": {"itemList": []}})
+    return client, calls
+
+
+@pytest.mark.parametrize("evil", ["--sort-type", "-x", "--origin"])
+def test_argv_value_starting_with_dash_rejected(monkeypatch, evil):
+    """S07：值以 - 开头会被下游 CLI 当选项解析（参数走私），出网前拒绝。"""
+    client, calls = _guarded_client(monkeypatch)
+    future = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+    env = client.search_flights(evil, "北京", future)
+    assert not env.ok and env.error.code == "invalid_arguments"
+    assert calls == []
+
+
+def test_argv_control_chars_rejected(monkeypatch):
+    client, calls = _guarded_client(monkeypatch)
+    env = client.search_keyword("a\x00b")
+    assert not env.ok and env.error.code == "invalid_arguments"
+    assert calls == []
+
+
+def test_argv_guard_allows_normal_values(monkeypatch):
+    client, calls = _guarded_client(monkeypatch)
+    future = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+    env = client.search_flights("昆明", "北京", future)
+    assert env.ok and calls and calls[0][0] == "search-flight"
+
+
 def test_search_flights_argv_full_order(monkeypatch):
     """可选参数按旧 tools/flyai_tools.py 的顺序拼装，空值不出现。"""
     monkeypatch.setattr(flyai_module, "_today", lambda: dt.date(2026, 10, 18))

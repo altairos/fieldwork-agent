@@ -187,6 +187,40 @@ def _future_date_envelope(value: str, field: str, today: date) -> Envelope | Non
               f"若计划 {day.month} 月 {day.day} 日出发，请改用 {suggested.isoformat()} 重试")))
 
 
+def _invalid_arguments(message: str) -> Envelope:
+    """S07：argv 形状/值非法 → 机器可读错误（不出网、不进缓存）。"""
+    return Envelope(ok=False, error=ToolError(
+        code="invalid_arguments", message=message,
+        hint="参数值不得以 - 开头或含控制字符；请改用普通文本后重试"))
+
+
+def _argv_violation(args: list) -> str:
+    """S07：argv 注入检查（合法返回空串）。
+
+    本模块只拼 ``[命令, --选项, 值, --选项, 值, ...]``：命令与选项名来自
+    常量，值来自 LLM。值若以 ``-`` 开头，会被 flyai CLI 当成另一个选项
+    （如 ``origin="--sort-type"`` 吞掉紧随其后的值，改变查询语义）；控制
+    字符则可能截断参数。
+    """
+    if not isinstance(args, list) or not args:
+        return "argv 为空"
+    if any(not isinstance(arg, str) for arg in args):
+        return "argv 含非字符串参数"
+    if args[0].startswith("-"):
+        return f"命令名非法: {args[0][:40]!r}"
+    if len(args) % 2 != 1:
+        return "argv 选项缺少值"
+    for opt in args[1::2]:
+        if not opt.startswith("--"):
+            return f"argv 选项位置非法: {opt[:40]!r}"
+    for value in args[2::2]:
+        if value.startswith("-"):
+            return f"参数值不得以 - 开头: {value[:40]!r}"
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            return f"参数值不得含控制字符: {value[:40]!r}"
+    return ""
+
+
 def _error_envelope(message: str) -> Envelope:
     """把 ``_run_command`` 的错误字符串映射为机器可读错误码。"""
     low = message.lower()
@@ -311,6 +345,9 @@ class FlyAIClient:
 
     def _execute(self, args: list) -> Envelope:
         """跑一条 flyai 命令并归一化为包络。"""
+        reason = _argv_violation(args)
+        if reason:
+            return _invalid_arguments(reason)
         return cached_request(self, cache_key(self, args), 300,
                               lambda: self._execute_uncached(args))
 
