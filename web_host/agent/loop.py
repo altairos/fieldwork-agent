@@ -991,9 +991,14 @@ def _maybe_autoname(repo, pid, llm):
             return
         # N09：返回时复核——title 仍空（用户未在窗口内命名）且项目版本未变（无并发
         # 编辑）才写入，绝不覆盖命名窗口期间的用户改名/编辑。
-        if str(repo.get_research_context(pid).get("title") or "").strip():
+        fresh_ctx = repo.get_research_context(pid)
+        if str(fresh_ctx.get("title") or "").strip():
             return
         if repo.get_state(pid).get("updated_at") != version_before:
+            return
+        # 时钟精度兜底（Windows CI 的 datetime.now() 分辨率约 15.6ms，两次写入可能
+        # 落到同一 tick，updated_at 比对失效）：上下文内容指纹变了同样视为版本已变。
+        if fresh_ctx != ctx:
             return
         repo.update_research_context(pid, {"title": name})
     except Exception:
