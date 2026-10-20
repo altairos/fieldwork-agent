@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
+from fieldwork_agent.kernel.guidance.safety import INPUT_REFUSAL, check_user_input
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.research_state import turn_memory_patch
@@ -170,6 +171,25 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     messages = build_messages(repo, pid, user_text, phase)
     # N12：用户消息绑定 turn_id（入 metadata）——retry 据此校验尾部归属，不误删他人轮
     repo.append_message(pid, "user", user_text, {"turn_id": turn_id})
+
+    # 内容安全输入拦截（create/retry 汇于 run_turn，一处覆盖两路径）：
+    # 用户消息保留原文落库（审计留痕），命中 → 固定拒答 + completed 终态；
+    # 不消耗模型调用、不跑抽取/记忆/阶段推进（拒答轮不污染研究上下文）。
+    verdict = check_user_input(user_text)
+    if verdict.blocked:
+        tm.append_event(pid, turn_id, "message_delta", {"text": INPUT_REFUSAL})
+        tm.append_event(pid, turn_id, "safety_blocked",
+                        {"side": "input", "category": verdict.category})
+        repo.append_message(pid, "assistant", INPUT_REFUSAL,
+                            {"turn_id": turn_id, "safety_blocked": True})
+        tm.append_event(pid, turn_id, "turn_done",
+                        {"reply_id": turn_id, "usage": {}, "snapshot_ids": [],
+                         "quick_replies": [], "quick_reply_groups": [],
+                         "finish_reason": "stop", "incomplete": False,
+                         "safety_blocked": True})
+        tm.finish(pid, turn_id, "completed")
+        return
+
 
     iterations = 0
     total_calls = 0

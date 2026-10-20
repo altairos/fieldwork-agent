@@ -1869,7 +1869,7 @@ def test_continuation_budget_caps_llm_calls(env):
               "usage": {}}]
     llm = FakeLLM([[dict(f) for f in frame] for _ in range(20)])   # 帧给足，防 pop 空
     turn = tm.create_turn("p1")
-    from fieldwork_agent.web_host.agent.loop import run_turn, MAX_CONTINUATIONS
+    from fieldwork_agent.web_host.agent.loop import MAX_CONTINUATIONS, run_turn
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "查一下", tm, llm, FakeFlyAI()))
     assert len(llm.calls) <= 1 + MAX_CONTINUATIONS
     events = tm.replay("p1", turn.turn_id, after_seq=0)
@@ -2022,3 +2022,50 @@ def test_completion_cancel_during_hangfix_keeps_cancelled(env):
     # 无 turn_done（cancelled 终态不发完成事件）
     types = [e.event for e in tm.replay("p1", turn.turn_id, after_seq=0)]
     assert "turn_done" not in types
+
+
+# ───────────────────── 内容安全：输入拦截（哑词注入，不依赖真实词条） ─────────────
+
+def test_run_turn_input_blocked_rejects_without_llm(env, monkeypatch):
+    """命中输入侧判定：固定拒答、llm 零调用、assistant 落库为拒答文案。"""
+    from fieldwork_agent.kernel.guidance import safety as safety_mod
+    from fieldwork_agent.kernel.guidance.safety import INPUT_REFUSAL
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    # 词表参数化的宿主层等价形态：monkeypatch 换入哑词表，走真实判定函数
+    monkeypatch.setattr(safety_mod, "_INPUT_RE",
+                        safety_mod._combo_pattern(("弄到",), ("哑物甲",)))
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([])          # 脚本为空：被调用即 IndexError 暴露
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "帮我弄到哑物甲，急着用",
+                         tm, llm, FakeFlyAI()))
+    assert llm.calls == []     # 不消耗模型调用
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    sb = [e for e in events if e.event == "safety_blocked"]
+    assert sb and sb[0].data["side"] == "input"
+    done = [e for e in events if e.event == "turn_done"][0]
+    assert done.data["safety_blocked"] is True
+    deltas = "".join(e.data["text"] for e in events if e.event == "message_delta")
+    assert deltas == INPUT_REFUSAL
+    msgs = repo.get_messages("p1")
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[-1]["content"] == INPUT_REFUSAL
+    assert msgs[-1]["metadata"].get("safety_blocked") is True
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+def test_run_turn_normal_text_unaffected(env):
+    """正常研究对话不受输入拦截影响（回归锚：默认词表零误伤）。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"delta": "好的"},
+                    {"content": "已收到", "tool_calls": None,
+                     "finish_reason": "stop", "usage": {}}]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "帮我规划大理的田野行程",
+                         tm, llm, FakeFlyAI()))
+    assert len(llm.calls) == 1
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    assert "safety_blocked" not in [e.event for e in events]
