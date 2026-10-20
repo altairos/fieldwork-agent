@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProposalView } from "../src/routes/ProposalView";
+import { useAuthStore } from "../src/stores/auth";
 
 const LATEST = {
   id: "prop_2",
@@ -102,6 +103,12 @@ function mount() {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+beforeEach(() => {
+  // 身份作用域用例的前置：默认匿名，仅登录态用例自行置位
+  useAuthStore.setState({ user: null, expired: false });
+  try { localStorage.clear(); } catch { /* jsdom 无 localStorage 时忽略 */ }
+});
 
 describe("ProposalView 版本/kind 加载与方案确认", () => {
   it("初载渲染最新版正文与 final chip（回归保护，现状即绿）", async () => {
@@ -208,5 +215,92 @@ describe("ProposalView 版本/kind 加载与方案确认", () => {
     expect(await screen.findAllByText("未命名项目")).toBeTruthy();
     expect(screen.getAllByText("未命名项目").length).toBe(2);
     expect(screen.queryByText(/p1/)).toBeNull();
+  });
+});
+
+describe("ProposalView 身份作用域与请求代次（R03/R04）", () => {
+  const ALICE = { user_id: "u-alice", email: "alice@example.test" };
+
+  /** 会话失效后匿名已无法读该项目（真实后端 404）；确认端点返回 401 session_expired。 */
+  function stubExpiredSession() {
+    let revoked = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/projects/p1/proposal/confirm") {
+          revoked = true;
+          return {
+            ok: false,
+            status: 401,
+            text: async () =>
+              JSON.stringify({ detail: { code: "session_expired", message: "登录会话已失效" } }),
+          } as Response;
+        }
+        if (url === "/projects/p1/proposals") return json(VERSIONS);
+        if (url === "/projects/p1/proposal") {
+          // 会话被撤销后，匿名身份不再拥有该项目 → 404
+          return revoked
+            ? ({ ok: false, status: 404, text: async () => JSON.stringify({ detail: "项目不存在" }) } as Response)
+            : json(LATEST);
+        }
+        if (url === "/projects/p1") return json(SNAP);
+        return json({});
+      }),
+    );
+  }
+
+  it("R03：确认遇 401 session_expired → 会话清理与私有正文退出同步发生，并给重登入口", async () => {
+    useAuthStore.setState({ user: ALICE });
+    stubExpiredSession();
+    mount();
+    expect(await screen.findByText("最新版正文")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认方案" }));
+
+    // 正文立即退出显示（审计 R03：privateDocVisible=false）
+    await waitFor(() => expect(screen.queryByText("最新版正文")).toBeNull());
+    // 全局会话失效钩子已清登录态
+    expect(useAuthStore.getState().user).toBeNull();
+    // 重登入口可达（横幅与正文区各一个「重新登录」，Header 回到「登录」）
+    expect(screen.getAllByRole("button", { name: "重新登录" }).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("button", { name: "登录" }).length).toBeGreaterThanOrEqual(1);
+    // 旧正文不得以任何形式留在文档里（privateDocVisible=false）
+    expect(document.body.textContent).not.toContain("最新版正文");
+    expect(document.body.textContent).not.toContain("段落");
+  });
+
+  it("R04：先点 v1 后点 v2，v1 慢响应不得覆盖最后选择（正文/高亮同源）", async () => {
+    const D1 = { ...V1, markdown: "# 初版正文\n\n段落。" };
+    const D2 = { ...LATEST, id: "prop_3", version: "draft", markdown: "# 第二版正文\n\n段落。" };
+    let releaseV1!: (r: Response) => void;
+    const v1Pending = new Promise<Response>((resolve) => { releaseV1 = resolve; });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/projects/p1/proposals/prop_1") return v1Pending;           // v1：挂起
+        if (url === "/projects/p1/proposals/prop_3") return json(D2);            // v2：立即返回
+        if (url === "/projects/p1/proposals") {
+          return json([{ ...D1, created_at: "2026-10-15T10:00:00" },
+                       { ...D2, created_at: "2026-10-16T10:00:00" }]);
+        }
+        if (url === "/projects/p1/proposal") return json(LATEST);
+        if (url === "/projects/p1") return json(SNAP);
+        return json({});
+      }),
+    );
+    mount();
+    expect(await screen.findByText("最新版正文")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "draft v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "draft v2" }));
+    expect(await screen.findByText("第二版正文")).toBeTruthy();
+
+    // v1 的慢响应此刻才到：不得覆盖 v2
+    releaseV1(json({ ...D1, id: "prop_1" }) as Response);
+    await waitFor(() => expect(screen.getByRole("button", { name: "draft v2" }))
+      .toHaveAttribute("aria-pressed", "true"));
+    expect(screen.queryByText("初版正文")).toBeNull();
+    expect(screen.getByRole("button", { name: "draft v1" }))
+      .toHaveAttribute("aria-pressed", "false");
   });
 });

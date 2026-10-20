@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useTurn } from "../src/hooks/useTurn";
+import { useAuthStore } from "../src/stores/auth";
 import { useConversationStore } from "../src/stores/conversation";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
@@ -99,6 +100,7 @@ beforeEach(() => {
   useToolsStore.getState().reset();
   useProjectStore.getState().reset();
   useUiStore.getState().reset();
+  useAuthStore.setState({ user: null, expired: false });
 });
 
 afterEach(() => {
@@ -536,6 +538,114 @@ describe("useTurn — cancel 复位 conversation store（P2-9）", () => {
   });
 });
 
+
+describe("useTurn — R01 身份作用域：旧身份回合不得写进新身份页面", () => {
+  const ALICE = { user_id: "u-alice", email: "alice@example.test" };
+  const BOB = { user_id: "u-bob", email: "bob@example.test" };
+
+  /** 可手动放行的 SSE：先吐 initial 帧，之后每次 read 由释放的 chunk 兑现。 */
+  function gatedSse(initial: string[]) {
+    const encoder = new TextEncoder();
+    const queue = initial.map((c) => encoder.encode(c));
+    const pending: ((r: { value: Uint8Array; done: boolean }) => void)[] = [];
+    const cancel = vi.fn(async () => {});
+    const read = vi.fn(() => {
+      if (queue.length) return Promise.resolve({ value: queue.shift() as Uint8Array, done: false });
+      return new Promise<{ value: Uint8Array; done: boolean }>((resolve) => pending.push(resolve));
+    });
+    return {
+      resp: { ok: true, status: 200, body: { getReader: () => ({ read, cancel }) } },
+      release: (chunk: string) => {
+        const resolve = pending.shift();
+        resolve?.({ value: encoder.encode(chunk), done: false });
+      },
+      cancel,
+    };
+  }
+
+  test("首帧后注销并换号：旧流被 abort，晚到的私密帧不写入新身份页面", async () => {
+    useAuthStore.setState({ user: ALICE });
+    const sse = gatedSse(['id: 1\nevent: message_delta\ndata: {"turn_id":"t1","seq":1,"text":"ALICE_PUBLIC"}\n\n']);
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/messages")) return jsonResp(CREATED, true, 200);
+      signals.push(init?.signal as AbortSignal);
+      return sse.resp;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { void result.current.send("Alice 的问题"); await tick(); });
+    expect(useConversationStore.getState().streamBuffer).toBe("ALICE_PUBLIC");
+    expect(signals).toHaveLength(1);
+
+    // 流未完成时注销并换号（真实链路：useProjectBootstrap 先清四个 store 再重拉）
+    await act(async () => {
+      useAuthStore.setState({ user: null });
+      useConversationStore.getState().reset();
+      useAuthStore.setState({ user: BOB });
+      await tick();
+    });
+    expect(signals[0].aborted).toBe(true);          // 旧连接已释放
+
+    // 旧回合的后续帧此刻才到达（真实 SSE 的 abort 与 re-render 之间存在窗口）
+    await act(async () => {
+      sse.release('id: 2\nevent: message_delta\ndata: {"turn_id":"t1","seq":2,"text":"ALICE_PRIVATE_AFTER_LOGOUT"}\n\n');
+      await tick(); await tick();
+    });
+    const st = useConversationStore.getState();
+    expect(st.streamBuffer).toBe("");
+    expect(st.messages).toEqual([]);               // 新身份页面无任何旧身份内容
+  });
+
+  test("POST 飞行中换号：回合创建成功也不订阅 SSE、不写 store", async () => {
+    useAuthStore.setState({ user: ALICE });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith("/messages")) { await gate; return jsonResp(CREATED, true, 200); }
+      return { ok: true, status: 200, body: { getReader: () => ({ read: vi.fn(async () => ({ value: undefined, done: true })), cancel: vi.fn(async () => {}) }) } };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => {
+      void result.current.send("Alice 的问题");
+      await tick();
+    });
+    // POST 仍挂起时换号
+    await act(async () => {
+      useAuthStore.setState({ user: null });
+      useConversationStore.getState().reset();
+      useAuthStore.setState({ user: BOB });
+      await tick();
+    });
+    await act(async () => { release(); await tick(); await tick(); });
+
+    const events = fetchMock.mock.calls.filter(([u]) => String(u).includes("/events"));
+    expect(events).toHaveLength(0);                 // 回合代次已死：不订阅
+    expect(useConversationStore.getState().messages).toEqual([]);
+  });
+
+  test("同身份期间 store 重建同值 user 对象不会误断在飞回合", async () => {
+    useAuthStore.setState({ user: ALICE });
+    const sse = gatedSse([]);
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/messages")) return jsonResp(CREATED, true, 200);
+      signals.push(init?.signal as AbortSignal);
+      return sse.resp;
+    }));
+    const { result } = renderHook(() => useTurn("p1"));
+    await act(async () => { void result.current.send("继续"); await tick(); });
+    // checkSession 会用同值新对象回填 user：身份键不变，不应 abort
+    await act(async () => {
+      useAuthStore.setState({ user: { ...ALICE } });
+      await tick();
+    });
+    expect(signals[0].aborted).toBe(false);
+  });
+});
 
 // ------------------------------- 重新生成（Task 11）
 

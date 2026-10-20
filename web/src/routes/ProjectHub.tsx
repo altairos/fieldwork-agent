@@ -4,6 +4,7 @@ import { rest } from "../api/rest";
 import { AuthDialog } from "../components/auth/AuthDialog";
 import { DEFAULT_PHASES } from "../components/layout/LeftRail";
 import { IconCaret, IconClock, IconSend, IconTrash } from "../components/ui/icons";
+import { getKeys } from "../lib/keys";
 import { useAuthStore } from "../stores/auth";
 import type { ProjectSummary } from "../types/models";
 
@@ -19,6 +20,9 @@ import type { ProjectSummary } from "../types/models";
  * 中央下方槽位复用：未登录=「登录」朱砂主钮；已登录且有项目=「继续先前项目」折叠入口
  *   （朱砂描边按钮，不显数量）：默认收起、无项目不渲染；列表加载失败如实提示但绝不阻塞
  *   创建（输入区始终可用，不等列表）。
+ * 列表重拉维度（评审 R05）：登录身份变化 **或** 登录窗内保存了新 App Token——后者不改变
+ *   user，只靠 user 依赖会让列表停在旧令牌的 401 失败态；失败提示旁给可达的重试入口，
+ *   不强制刷新整页。
  * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
  *   首轮消息) → navigate(/p/:id?turn=…)，对话页接住回合订阅回放（不再「尚无对话」）；
  *   建回合失败不阻塞进入，降级为无 query 跳转。跨项目 reset 由 Workspace 挂载
@@ -138,6 +142,9 @@ export function ProjectHub() {
   const [authOpen, setAuthOpen] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // 列表重拉维度（评审 R05）：user 变化（登录/登出/会话失效）与「令牌保存」各占一维
+  const [listRetry, setListRetry] = useState(0);
+  const tokenAtDialogOpen = useRef("");
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
 
@@ -160,7 +167,20 @@ export function ProjectHub() {
     return () => {
       alive = false;
     };
-  }, [user]);
+  }, [user, listRetry]);
+
+  /** 打开登录窗：快照当前令牌，关窗时比对（同 useAuthGate 的 authRetry 语义）。 */
+  function openAuth() {
+    tokenAtDialogOpen.current = getKeys().appToken;
+    setAuthOpen(true);
+  }
+
+  /** 关窗：保存了新 App Token（服务端启用令牌时的正确值）就应立即重拉列表，
+   *  不能等 user 变化或整页刷新（评审 R05）。 */
+  function closeAuth() {
+    setAuthOpen(false);
+    if (getKeys().appToken !== tokenAtDialogOpen.current) setListRetry((n) => n + 1);
+  }
 
   /** 删除即整域清除：后端先取消活动回合再删数据；成功后从列表移除，失败如实提示。 */
   async function removeProject(id: string) {
@@ -278,7 +298,7 @@ export function ProjectHub() {
           <div className="flex justify-center mt-6">
             <button
               type="button"
-              onClick={() => setAuthOpen(true)}
+              onClick={openAuth}
               className="h-9 px-4 rounded-md bg-cinnabar text-ontint text-[12.5px] hover:bg-tintpress transition cursor-pointer"
             >
               登录
@@ -319,13 +339,30 @@ export function ProjectHub() {
           </div>
         )}
 
-        {/* 列表加载失败：如实提示，不阻塞创建/登录 */}
+        {/* 列表加载失败：如实提示 + 可达的重试入口（R05：令牌/网络修正后就地恢复，
+            不必刷新整页），不阻塞创建/登录 */}
         {listError && (
-          <div className="mt-6 text-[12px] text-cinnabar leading-snug text-center">{listError}</div>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[12px] text-cinnabar leading-snug">
+            <span>{listError}</span>
+            <button
+              type="button"
+              onClick={() => setListRetry((n) => n + 1)}
+              className="shrink-0 h-7 px-2.5 rounded-md hairline bg-card text-[11.5px] text-inksoft hover:bg-cardsunk transition cursor-pointer"
+            >
+              重试
+            </button>
+            <button
+              type="button"
+              onClick={openAuth}
+              className="shrink-0 h-7 px-2.5 rounded-md border border-cinnabar/35 bg-cinnabarwash/60 text-[11.5px] text-cinnabar hover:bg-cinnabarwash transition cursor-pointer"
+            >
+              填写访问令牌
+            </button>
+          </div>
         )}
       </div>
 
-      <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
+      <AuthDialog open={authOpen} onClose={closeAuth} />
     </div>
   );
 }

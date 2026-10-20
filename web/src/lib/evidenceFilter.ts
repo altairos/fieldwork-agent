@@ -99,6 +99,8 @@ export function mergeEvidence(
   // 同题折叠（C02）：query_key 非空的只留最新一条（索引序=时间序，后到者胜——
   // 旧实现留首条，新结果刷新后仍被折叠消失）；空 key 旧数据全保留。
   // 两遍法：先记每个 key 的最后一条 id，再过滤。
+  // 注意（评审 R06）：折叠结果只用于**输出**；跨层配对必须拿折叠前的全量缓存行判定，
+  // 否则已折叠旧快照对应的实时行会因“找不到缓存”而被当作未配对实时结果重新出现。
   const latestByKey = new Map<string, string>();
   for (const c of cacheAdmitted) {
     if (c.query_key) latestByKey.set(c.query_key, c.id);
@@ -130,12 +132,17 @@ export function mergeEvidence(
 
   // 跨层配对：实时 call_id == 缓存 parent_call_id 且 tool 相同 → 实时行不单列（R13）。
   // 同(parent,tool)多缓存行不互配——配对只发生在 实时↔缓存 之间。
+  // R06：配对集合取自**折叠前**的全量合格缓存行——同一会话内两次同题查询时，
+  // 旧快照已被同题折叠移出默认列表，但它对应的实时行同样属于历史，不能以
+  // “未配对”身份重新附加到最新结果之后（否则刷新前多一行、刷新后消失）。
+  const cachedCalls = new Set(
+    cacheAdmitted
+      .filter((c) => c.parent_call_id)
+      .map((c) => `${c.tool}\u0000${c.parent_call_id}`),
+  );
   const pairedLiveKeys = new Set<string>();
   for (const t of liveAdmitted) {
-    const hit = cacheRows.some(
-      (r) => r.callId === t.call_id && r.tool === t.tool,
-    );
-    if (hit) {
+    if (cachedCalls.has(`${t.tool}\u0000${t.call_id}`)) {
       pairedLiveKeys.add(t.call_id);
       continue;  // 缓存已覆盖该调用；未覆盖的失败调用在准入已剔除（C7-3），
                  // 不产生占位——R4「成功不被失败遮掉」由此更强地成立。

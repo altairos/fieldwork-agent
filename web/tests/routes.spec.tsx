@@ -180,6 +180,47 @@ describe("ProjectHub（极简首页）", () => {
     expect(screen.getByPlaceholderText(/想研究什么/)).toBeEnabled();
   });
 
+  // 评审 R05：服务端启用 App Token 时，初始无令牌 → 列表 401；在弹层「高级 · API 密钥」
+  // 保存正确令牌后应就地重拉（不刷新整页）：列表 effect 必须带「令牌变更」这一重拉维度。
+  test("保存 App Token 后项目列表就地重拉（错误消退，无需刷新）", async () => {
+    localStorage.clear();
+    vi.mocked(rest.rest.listProjects)
+      .mockRejectedValueOnce(new Error("401 app_token_required"))
+      .mockResolvedValue([] as any);
+    renderHome();
+    expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
+    expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(1);
+
+    // 打开登录窗 → 展开高级密钥区 → 填入访问令牌 → 保存 → 关闭弹层
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    fireEvent.click(await screen.findByRole("button", { name: /高级 · API 密钥/ }));
+    fireEvent.change(screen.getByLabelText(/访问令牌/), { target: { value: "audit-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+
+    await waitFor(() => expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(/项目列表加载失败/)).toBeNull());
+    localStorage.clear();
+  });
+
+  // 评审 R05：失败态给可达的重试入口（网络/令牌修正后就地恢复，不必刷新整页）
+  test("列表失败后点「重试」就地恢复已有项目", async () => {
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    vi.mocked(rest.rest.listProjects)
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValue([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any);
+    renderHome();
+    expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: "继续先前项目" })).toBeInTheDocument();
+    expect(screen.queryByText(/项目列表加载失败/)).toBeNull();
+  });
+
   // 终审修项：列表 effect 依赖 [user]——登录/登出/会话失效后身份变化，
   // 按新 ownerHeaders（匿名令牌 ↔ 会话令牌）重拉，不再停留在旧身份的列表
   test("身份切换（user 变化）后重拉项目列表", async () => {

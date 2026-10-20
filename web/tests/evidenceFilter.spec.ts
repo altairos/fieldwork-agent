@@ -86,6 +86,29 @@ describe("mergeEvidence 去重与时序（R11/R15）", () => {
     );
     expect(rows).toHaveLength(2);
   });
+
+  // 评审 R06：同题折叠先于跨层配对 → 被折掉的旧快照对应的实时行找不到缓存，
+  // 又以“未配对实时结果”重新出现在最新结果之后（刷新后又消失）。
+  // 修复：配对集合取折叠前的全量合格缓存行，默认组内始终只剩最新一条。
+  it("同题两次查询（缓存+实时都完整）默认组内只剩最新，刷新前后一致", () => {
+    const k = "search_hotels|{\"dest\":\"大理\"}";
+    const cached = [
+      cache({ id: "old", tool: "search_hotels", query: "大理 酒店", query_key: k,
+              cached_at: "2026-10-19T10:00:00.000001", parent_call_id: "call-old", turn_id: "t-old" }),
+      cache({ id: "new", tool: "search_hotels", query: "大理 酒店", query_key: k,
+              cached_at: "2026-10-20T10:00:00.000001", parent_call_id: "call-new", turn_id: "t-new" }),
+    ];
+    const liveBoth = [
+      live({ call_id: "call-old", tool: "search_hotels", args: { dest_name: "大理" },
+             turnId: "t-old", data: { items: [{ name: "客栈", price: 100 }], total: 1 } }),
+      live({ call_id: "call-new", tool: "search_hotels", args: { dest_name: "大理" },
+             turnId: "t-new", data: { items: [{ name: "客栈", price: 200 }], total: 1 } }),
+    ];
+    const during = mergeEvidence(cached, liveBoth).map((r) => r.key);
+    const afterReload = mergeEvidence(cached, []).map((r) => r.key);
+    expect(during).toEqual(["new"]);            // 旧调用不得以实时行回归
+    expect(during).toEqual(afterReload);          // 刷新前后默认展示一致
+  });
   it("实时行用 tools store order 层内稳定（R15 规划期修正）", () => {
     const rows = mergeEvidence(
       [],

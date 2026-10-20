@@ -2,17 +2,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { rest, ApiError, isAppTokenError, apiDetail } from "../api/rest";
 import { streamTurnEvents } from "../api/sse";
 import { dispatchEvent } from "../lib/dispatch";
+import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversation";
 import { useProjectStore } from "../stores/project";
 import { useUiStore } from "../stores/ui";
 import type { EventEnvelope } from "../types/events";
 
+/** 当前登录身份键：登录取 user_id，匿名/已注销取空串。
+ *
+ * 用作回合的**身份维度**（评审 R01）：注销、会话失效清令牌、换号都会改变它；
+ * 而 checkSession 用同值新对象回填 user 时键不变——不会误断在飞回合。
+ */
+function currentIdentity(): string {
+  return useAuthStore.getState().user?.user_id ?? "";
+}
+
 /**
  * 回合句柄（R4 两步式：POST /messages 创建回合 → GET SSE 订阅事件流；
  * adopt 领养首页已创建的首轮回合，只订阅不创建）。
  *
- * 生命周期：组件卸载或 projectId 变化时中止进行中的流——否则旧项目的 SSE 回调会继续把事件
- * 写进（已被跨项目 reset 清空的）全局 store，造成状态串台，并泄漏一条常驻连接。
+ * 生命周期：组件卸载、projectId 变化**或登录身份变化**时中止进行中的流——否则旧项目的
+ * SSE 回调会继续把事件写进（已被跨项目 reset 清空的）全局 store，造成状态串台，并泄漏一条
+ * 常驻连接。身份维度不可省（评审 R01）：useProjectBootstrap 在身份变化时会清空四个 store，
+ * 若此处不断流，旧身份回合的后续帧会把上一账号的私有内容重新填进新身份的页面。
  */
 export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -38,20 +50,33 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
   const onAuthErrorRef = useRef(opts?.onAuthError);
   useEffect(() => { onAuthErrorRef.current = opts?.onAuthError; });
 
-  // 卸载 / projectId 变化 → abort 旧流（cleanup 先于新 effect 执行，符合"换项目先断旧流"语义）
+  // 响应式身份键：订阅 user（不同值才重建），既驱动下方 abort effect，也参与所有守卫。
+  const identity = useAuthStore((s) => s.user?.user_id ?? "");
+
+  // 卸载 / projectId / 登录身份变化 → abort 旧流（cleanup 先于新 effect 执行，
+  // 符合"换项目/换账号先断旧流"语义）。旧回合句柄同步作废，避免 cancel/retry 误指上一身份。
   useEffect(() => {
     return () => {
-      generationRef.current++;      // N10：换项目/卸载即作废在途回读，旧响应不写新页 store
+      generationRef.current++;      // N10：换项目/换身份/卸载即作废在途回读，旧响应不写新页 store
       abortRef.current?.abort();
+      turnIdRef.current = null;
     };
-  }, [projectId]);
+  }, [projectId, identity]);
+
+  // ── 身份 + 代次守卫（评审 R01）：流事件与终态回读都不得跨身份写回 ──
+  // 闭包里的 identity 是**发起时**的身份；回调返回时若已换号，一律弃置。
+  // 身份检查不能并入 staleGuard：那里的项目守卫依赖 store.projectId，而事件分派
+  // 在快照载入前也要生效。
+  const identityGuard = useCallback((gen: number) => (
+    gen !== generationRef.current || identity !== currentIdentity()
+  ), [identity]);
 
   // ── N10：send/adopt 共用的终态回读与流订阅（统一逻辑，不再各修各的）──
-  // 回读返回时若代次已变（切换项目/新回合）或项目已切换，一律弃置，绝不写新页面 store。
+  // 回读返回时若代次已变（切换项目/身份/新回合）或项目已切换，一律弃置，
+  // 绝不写新页面 store。
   const staleGuard = useCallback((gen: number) => (
-    gen !== generationRef.current
-    || useProjectStore.getState().projectId !== projectId
-  ), [projectId]);
+    identityGuard(gen) || useProjectStore.getState().projectId !== projectId
+  ), [identityGuard, projectId]);
 
   // 工具产物（田野点画像等）轮末才落盘、流内事件不含持久化记录 → 首见 turn_done 后回读快照。
   const refreshSnapshot = useCallback(async (gen: number) => {
@@ -90,6 +115,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
       await streamTurnEvents(projectId, turnId, {
         signal: ctrl.signal,
         onEvent: (env: EventEnvelope) => {
+          // 评审 R01：身份/项目/代次已变 → 旧帧不入全局 store（不进 dispatchEvent，
+          // 也不落 seen 集）。abort 与 re-render 之间存在窗口，这里是最后一道闸。
+          if (identityGuard(gen)) return;
           // dispatchEvent 返回新 Set 才是首见帧（引用语义）——重连重放不重复触发回读
           const prev = seenRef.current;
           seenRef.current = dispatchEvent(env, seenRef.current);
@@ -104,6 +132,8 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
           }
         },
         onError: () => {
+          // 身份已切换：旧流的失败不上新身份的页面（store 已被跨身份 reset 清空）
+          if (identityGuard(gen)) return;
           // N14：SSE 层失败（重连耗尽/流在终态前截断）收不到任何终态帧，conversation 仍停在
           // turnRunning——此处主动复位（残缺 buffer 丢弃、user 消息保留），与 error 帧终态一致；
           // onClose 只改 busy，不能代替 conversation 终态。
@@ -114,16 +144,20 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
         onClose: () => { setBusy(false); },
       });
     } catch (err) {
-      useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
+      if (!identityGuard(gen))
+        useUiStore.getState().applyEvent({ event: "error", code: "send_failed", message: String(err), hint: "" });
     } finally {
       setBusy(false);
       if (opts.rehydrateMessages) void rehydrateMessages(gen);
     }
-  }, [projectId, refreshSnapshot, rehydrateMessages]);
+  }, [projectId, refreshSnapshot, rehydrateMessages, identityGuard]);
 
   const send = useCallback(async (text: string) => {
     if (!text.trim() || inFlightRef.current) return;
     inFlightRef.current = true;
+    // R01：代次在 **POST 之前** 捕获——POST 飞行中换号/换项目时，回合创建成功后
+    // 必须按发起时代次作废，不能只保护收尾 GET。
+    const gen = ++generationRef.current;
     try {
       setConflict(false);
       setKeyMissing(false);
@@ -142,6 +176,8 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
         turnId = (await rest.createTurn(projectId, text)).turn_id;
       } catch (err) {
         setBusy(false);
+        // R01：身份已切换 → 旧请求的失败（含 failTurn 回滚）不得落到新身份的页面
+        if (identityGuard(gen)) return;
         useConversationStore.getState().failTurn();
         if (err instanceof ApiError && err.status === 409) setConflict(true);
         else if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
@@ -158,6 +194,9 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
         return;
       }
 
+      // R01：POST 落地前已换号/换项目 → 不订阅、不写 store（服务端回合留给原身份处理）
+      if (identityGuard(gen)) return;
+
       // ── 第二步：订阅 SSE 事件流（与 adopt 共用 streamAndRefresh）──
       // 此阶段消息已被后端接受，异常只如实上屏；绝不调 failTurn（会弹掉真实对话内容）。
       // 流内错误由 onError 回调处理，turnRunning 由 error/turn_done 事件与 onClose 负责；
@@ -168,12 +207,11 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
       setRetryable(false);
       setIncomplete(false);
       seenRef.current = new Set();
-      const gen = ++generationRef.current;   // N10：本次请求代次
       await streamAndRefresh(turnId, gen, { rehydrateMessages: false });
     } finally {
       inFlightRef.current = false;      // 成功/失败/提前 return 一律释放
     }
-  }, [projectId, streamAndRefresh]);
+  }, [projectId, streamAndRefresh, identityGuard]);
 
   // 领养回合（首页两步创建→跳转接住，轮 4）：不 POST 创建，只订阅该回合事件流。
   // N10：与 send 共用 streamAndRefresh——终态同样回读项目快照（修复 adopt 漏刷致
@@ -208,15 +246,19 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     const target = turnId ?? lastTurnId;
     if (!target || inFlightRef.current) return;
     inFlightRef.current = true;
+    // R01：代次同样在 POST 之前捕获（retry POST 飞行中换号 → 新回合不订阅、不写 store）
+    const gen = ++generationRef.current;
     setKeyMissing(false);
     setRetryable(false);
     try {
       const created = await rest.retryTurn(projectId, target);
+      if (identityGuard(gen)) return;
       useConversationStore.getState().dropLastAssistant();
       useConversationStore.getState().beginTurn();
       setIncomplete(false);
       await adopt(created.turn_id);
     } catch (err) {
+      if (identityGuard(gen)) return;
       if (err instanceof ApiError && err.status === 403) setKeyMissing(true);
       else if (isAppTokenError(err)) {
         useUiStore.getState().applyEvent({
@@ -238,7 +280,7 @@ export function useTurn(projectId: string, opts?: { onAuthError?: () => void }) 
     } finally {
       inFlightRef.current = false;
     }
-  }, [projectId, lastTurnId, adopt]);
+  }, [projectId, lastTurnId, adopt, identityGuard]);
 
   return {
     send, adopt, cancel, retry, busy, conflict, keyMissing,
