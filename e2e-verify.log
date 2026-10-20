@@ -1,0 +1,13 @@
+
+> fieldwork-web@0.1.0 test:e2e
+> playwright test
+
+
+Running 4 tests using 1 worker
+
+  鉁? 1 [chromium] 鈥?tests\e2e\fieldwork.spec.ts:23:1 鈥?L4 瀹屾暣鍓ф湰锛氭柊寤洪」鐩啋宸ヤ綔鍙板洖鍚堚啋宸ュ叿鍗′环鏍尖啋闃舵鎺ㄨ繘鈫掓彁妗堝叓绔犫啋涓嬭浇 (13.7s)
+  鉁? 2 [chromium] 鈥?tests\e2e\keys.spec.ts:32:1 鈥?鏃?key锛氬彲娴忚涓嶅彲鍙戯紱棣栭〉淇濆瓨鍚庤В閿佸苟鎼哄甫閴存潈澶村彂閫?(9.3s)
+  鉁? 3 [chromium] 鈥?tests\e2e\ownership.spec.ts:15:1 鈥?璺ㄤ笂涓嬫枃闅旂锛氫粬浜?URL 404 闄嶇骇妯箙锛屽師 context 鐣呴€?(16.3s)
+  鉁? 4 [mobile] 鈥?tests\e2e\mobile.spec.ts:23:1 鈥?绉诲姩绔啋鐑燂細鍗曟爮鏃犳í婧?+ 姹夊牎鎶藉眽寮€鍏?+ 鍙虫爮鎶樺彔闈㈡澘 + 鎻愭椤靛崟鏍?(10.4s)
+
+  4 passed (54.9s)
