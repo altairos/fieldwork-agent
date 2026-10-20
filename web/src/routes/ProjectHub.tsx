@@ -16,8 +16,9 @@ import type { ProjectSummary } from "../types/models";
  *   密钥配置收进登录窗「高级 · API 密钥」折叠区，KeyDialog 退役；已登录
  *   邮箱 + 退出留在右上角，账号隔离一期 Ruling P-1/P-2；导出格式在提案页下载区，
  *   配色走对话页 Header，均不放首页）。
- * 已有项目收进输入区下方折叠入口「继续先前项目（N）」（朱砂描边按钮，较文本链更显眼）：默认收起、
- *   无项目不渲染；列表加载失败如实提示但绝不阻塞创建（输入区始终可用，不等列表）。
+ * 中央下方槽位复用：未登录=「登录」朱砂主钮；已登录且有项目=「继续先前项目」折叠入口
+ *   （朱砂描边按钮，不显数量）：默认收起、无项目不渲染；列表加载失败如实提示但绝不阻塞
+ *   创建（输入区始终可用，不等列表）。
  * 创建（轮 4 两步）：POST createProject({ purpose }) → POST createTurn(purpose 发为
  *   首轮消息) → navigate(/p/:id?turn=…)，对话页接住回合订阅回放（不再「尚无对话」）；
  *   建回合失败不阻塞进入，降级为无 query 跳转。跨项目 reset 由 Workspace 挂载
@@ -271,8 +272,9 @@ export function ProjectHub() {
           ))}
         </div>
 
-        {/* 未登录：登录主钮居中置于示例下方（AuthDialog 内含注册切换与密钥折叠区） */}
-        {!user && (
+        {/* 中央槽位（登录钮与继续入口共位）：未登录=登录主钮（AuthDialog 内含注册切换与
+            密钥折叠区）；已登录且有项目=「继续先前项目」折叠入口（不显数量） */}
+        {!user ? (
           <div className="flex justify-center mt-6">
             <button
               type="button"
@@ -282,26 +284,19 @@ export function ProjectHub() {
               登录
             </button>
           </div>
-        )}
-
-        {createError && (
-          <div className="hairline rounded-lg bg-cinnabarwash/50 text-cinnabar text-[12.5px] px-4 py-3 mt-4">
-            {createError}
-          </div>
-        )}
-
-        {/* 已有项目：低调折叠入口（默认收起；无项目不渲染；失败如实提示） */}
-        {projects !== null && projects.length > 0 ? (
-          <div className="mt-12">
-            <button
-              type="button"
-              aria-expanded={listOpen}
-              onClick={() => setListOpen((v) => !v)}
-              className="h-10 px-4 rounded-md border border-cinnabar/35 bg-cinnabarwash/60 text-cinnabar text-[13px] font-medium hover:bg-cinnabarwash hover:border-cinnabar/50 transition inline-flex items-center gap-2 cursor-pointer"
-            >
-              继续先前项目（{projects.length}）
-              <IconCaret className={`caret w-3.5 h-3.5 ${listOpen ? "rotate-90" : ""}`} />
-            </button>
+        ) : projects !== null && projects.length > 0 ? (
+          <div className="mt-6">
+            <div className="flex justify-center">
+              <button
+                type="button"
+                aria-expanded={listOpen}
+                onClick={() => setListOpen((v) => !v)}
+                className="h-10 px-4 rounded-md border border-cinnabar/35 bg-cinnabarwash/60 text-cinnabar text-[13px] font-medium hover:bg-cinnabarwash hover:border-cinnabar/50 transition inline-flex items-center gap-2 cursor-pointer"
+              >
+                继续先前项目
+                <IconCaret className={`caret w-3.5 h-3.5 ${listOpen ? "rotate-90" : ""}`} />
+              </button>
+            </div>
             {listOpen && (
               <div className="mt-3 space-y-2">
                 {projects.map((p) => (
@@ -316,9 +311,18 @@ export function ProjectHub() {
               </div>
             )}
           </div>
-        ) : listError ? (
-          <div className="mt-12 text-[12px] text-cinnabar leading-snug">{listError}</div>
         ) : null}
+
+        {createError && (
+          <div className="hairline rounded-lg bg-cinnabarwash/50 text-cinnabar text-[12.5px] px-4 py-3 mt-4">
+            {createError}
+          </div>
+        )}
+
+        {/* 列表加载失败：如实提示，不阻塞创建/登录 */}
+        {listError && (
+          <div className="mt-6 text-[12px] text-cinnabar leading-snug text-center">{listError}</div>
+        )}
       </div>
 
       <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
