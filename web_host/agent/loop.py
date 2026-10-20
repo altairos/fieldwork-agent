@@ -870,10 +870,10 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                                        "confirmed": False, "profile": data_dict})
         elif name == "compose_itinerary":
             dests = ",".join(data_dict.get("destinations", []) or [])
-            parent = next((cid for cid, n in call_name_map.items()
-                           if n == "compose_itinerary"), "")
+            # C03：同回合多次行程调用时，快照必须绑产生它的那次调用
+            # （原实现取 call_name_map 里第一个 compose_itinerary，全部错绑）
             repo.cache_search(pid, f"itinerary::{dests}", "compose_itinerary", data_dict,
-                              parent_call_id=parent, turn_id=turn_id,
+                              parent_call_id=call_id, turn_id=turn_id,
                               query_key=_query_key("itinerary", {"dests": dests}))
         elif name == "compose_proposal":
             markdown = data_dict.get("markdown", "")

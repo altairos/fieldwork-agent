@@ -2187,3 +2187,30 @@ def test_proposal_confirm_hash_follows_merged_ctx(env):
     repo.update_research_context("p1", {"budget": "3万"})
     repo.confirm_proposal("p1", docs[0]["id"])
     assert repo.is_proposal_confirmation_stale("p1") is False
+
+
+def test_same_turn_two_itineraries_bind_own_call_ids(env):
+    """C03：同回合两次 compose_itinerary 的快照各绑自己的 call_id。"""
+    repo, tm = env
+    itin_args = {"departure": "昆明", "destinations": ["大理"], "start_date": "2026-11-01",
+                 "duration_days": 3, "budget_total": 5000}
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_itinerary",
+                                          "arguments": itin_args}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "compose_itinerary",
+                                          "arguments": itin_args}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "做两个行程", tm, llm, FakeFlyAI()))
+    index = repo.list_cached_searches("p1")
+    itins = [c for c in index if c["tool"] == "compose_itinerary"]
+    assert len(itins) == 2
+    # 修复前两次都绑本回合第一个行程调用（{'c1'}）；修复后各绑自身
+    assert {c["parent_call_id"] for c in itins} == {"c1", "c2"}
