@@ -47,11 +47,14 @@ test("跨上下文隔离：他人 URL 404 降级横幅，原 context 畅通", as
   // ③ ctxA 不受影响：同 owner 畅通（续聊 → 两步式回合回放 → 住宿卡条目）
   await page.getByLabel("消息输入").fill("帮我搜一下大理的住宿");
   await page.getByLabel("消息输入").press("Enter");
-  // C4：collapsed 级搜索卡移入「检索结果」tab（EvidencePanel）——先切 tab，再展开
-  // 「酒店搜索」检索行，与 fieldwork.spec 同款；不删归属/价格断言，只调整展开路径。
+  // C07b：collapsed 级搜索卡移入「检索结果」tab（EvidencePanel）——先切 tab，再展开
+  // 「酒店搜索」检索行，与 fieldwork.spec 同款。② 段的归属断言不动；本条断言的是展开后
+  // 的卡片内容，故条目名与价格一并保留（价格不失真：mock 详情端点 result 与列表同一
+  // payload，cheapest/dearest=180，HotelCard 直接透传、不换算）。
   await page.getByRole("tab", { name: "检索结果" }).click();
   const hotelEvidence = page.getByRole("button", { name: /酒店搜索/ }).first();
   await expect(hotelEvidence).toBeVisible({ timeout: 15_000 });
   await hotelEvidence.click();
   await expect(page.getByText("大理古城客栈").first()).toBeVisible();
+  await expect(page.getByText("最低 ¥180 · 最高 ¥180")).toBeVisible();
 });

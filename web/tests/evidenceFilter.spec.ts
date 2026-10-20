@@ -176,3 +176,14 @@ describe("C05 文献空/失败行可达（补检入口不被过滤）", () => {
     expect(rows).toHaveLength(2);
   });
 });
+
+describe("实时行查询短语（liveQuery 回落链）", () => {
+  it("住宿搜索无 query 键时回落 dest_name（C07b：证据行标题不留空）", () => {
+    const rows = mergeEvidence(
+      [],
+      [live({ call_id: "cH", tool: "search_hotels", args: { dest_name: "大理" } })],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].query).toBe("大理");
+  });
+});
