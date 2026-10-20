@@ -4,6 +4,7 @@ import json
 import re
 import time
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -160,7 +161,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    amap_client: Any = None,
                    owner: str | None = None,
                    max_iters: int = 8, max_tool_calls: int = 20,
-                   max_wall_seconds: float = 60.0) -> None:
+                   # 60s 会在"多工具 + 长正文"的回合里把正文截断（实测：3 次检索调完，
+                   # 模型还没来得及说话就到点，用户只看到半句）。工具轮数仍是 20 的护栏，
+                   # 墙钟放宽到 180s；录制演示时尤其不能出现"说一半"。
+                   max_wall_seconds: float = 180.0) -> None:
     """回合执行入口：保证**任何**未捕获异常都收敛为终态（A01）。
 
     ``_run_turn_impl`` 只保护主循环与轮末持久化两段；「续流修复 / 安全终检 /
@@ -177,13 +181,569 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
         _finish_unexpected(tm, pid, turn_id, exc)
 
 
+@dataclass
+class _TurnContext:
+    """回合执行期的协作者与产物（Q01）。
+
+    拆成三段后仍要共享约二十个对象/容器：放进 ctx 而不是逐段传参，让
+    「谁产生、谁消费」在字段分组里可见。产物字段由主流式阶段填充、
+    终态收敛阶段消费。
+    """
+
+    repo: Any
+    pid: str
+    turn_id: str
+    tm: TurnManager
+    llm: Any
+    user_text: str
+    recorder: Any
+    amap_recorder: Any
+    dispatch: Any
+    tools: list
+    state_handlers: dict
+    buffer: Any
+    messages: list
+    max_tool_calls: int
+    # ---- 主流式阶段的产物（轮末消费）----
+    call_name_map: dict = field(default_factory=dict)
+    call_args_map: dict = field(default_factory=dict)
+    live_refs: dict = field(default_factory=dict)
+    live_refs_by_call: dict = field(default_factory=dict)
+    snapshot_ids: list = field(default_factory=list)
+    doc_inputs_provenance: dict = field(default_factory=dict)
+    doc_replaced: dict = field(default_factory=dict)
+    turn_itineraries_raw: list = field(default_factory=list)
+    doc_itinerary_from_turn: dict = field(default_factory=dict)
+    doc_generated_this_turn: bool = False
+
+
+@dataclass
+class _TurnState:
+    """回合进度：主流式 → 续流修复 → 终态收敛，单向流动。"""
+
+    iterations: int = 0
+    total_calls: int = 0
+    accumulated_reply: str = ""
+    stream_prefix: str = ""          # 前导语文本（已流出，重问后仍拼回持久化正文）
+    preamble_retried: bool = False    # 只重问一次，防无限循环
+    incomplete: bool = False          # 回合未收敛出正文 → turn_done.incomplete
+    has_final_answer: bool = False
+    recovery_failed: bool = False     # 最近一次续流失败（R18：成功清除，非粘滞标记）
+    continuations: int = 0            # 已用续流预算（R2：四类续流共用）
+    finish_reason: str = ""
+    usage_total: dict = field(default_factory=dict)
+
+
+async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
+                           phase: str, start: float,
+                           max_iters: int, max_wall_seconds: float) -> bool:
+    """主流式阶段：LLM 流式 + 并行工具，直到收敛/触顶/取消。
+
+    返回 False 表示回合已不可继续（项目被删，或写事件失败已置 failed），
+    调用方必须立即返回——与原实现里的 ``return`` 等价。
+    """
+    drained = 0
+    drained_amap = 0
+    try:
+        while True:
+            handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
+            # 项目删除竞态（审查 1.2）：purge 已连同订阅/磁盘/内存清除回合，
+            # 无处发事件也无处持久化，静默退出（finish 同样无处可写）
+            if handle is None:
+                return False
+            if handle.cancel_event.is_set():
+                break
+            if st.iterations >= max_iters or st.total_calls >= ctx.max_tool_calls:
+                break
+            if time.monotonic() - start > max_wall_seconds:
+                break
+
+            # 无 LLM（未配置 DashScope key）降级：规则文案回复后退出，走统一轮末
+            if ctx.llm is None:
+                reply = (rule_based_reply(phase, ctx.repo.get_research_context(ctx.pid))
+                         + _DEGRADED_NOTE)
+                ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta",
+                                    {"text": reply})
+                st.accumulated_reply = reply
+                st.has_final_answer = True  # R16：规则文案即降级路径的最终答案
+                break
+
+            # 流式 LLM
+            stream = ctx.llm.chat_stream(ctx.messages, tools=ctx.tools, slot="interview")
+            st.iterations += 1
+            final_resp = None
+            async for chunk in _async_iter(stream):
+                if ctx.tm.get_turn(ctx.pid, ctx.turn_id) is None:
+                    return False  # 项目删除竞态：停止消费已无消费者的流
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：消费中取消/超时 → 停止消费，不再处理后续帧（含终帧工具调用）
+                if "delta" in chunk and chunk["delta"]:
+                    ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta",
+                                        {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    final_resp = chunk
+
+            if final_resp is None:
+                break
+            # LLM 错误帧（key 无效/限流等，kernel.llm 契约：HTTP 非 200 返零值+error 键）：
+            # 如实发 error + failed 终态。回归：此前 content="" 被当正常终止帧，
+            # 错误静默吞掉、产出空 turn_done（配错 key 表现为「没反应」）。
+            llm_error = final_resp.get("error")
+            if llm_error:
+                # 平台内容审核拦截（data_inspection_failed 等）与 key/限流错误
+                # 分流：前者提示调整措辞，后者维持 Key 检查 hint（此前统一误报
+                # 为 Key 问题，审核触发时用户被误导去检查配置）。
+                moderated = is_content_moderation_error(llm_error)
+                ctx.tm.append_event(ctx.pid, ctx.turn_id, "error",
+                                    {"code": "content_moderation" if moderated else "llm_error",
+                                     "message": str(llm_error),
+                                     "hint": ("请求被平台内容安全策略拦截，"
+                                              "请调整提问措辞后重试" if moderated else
+                                              "请检查百炼 API Key 是否有效")})
+                ctx.tm.finish(ctx.pid, ctx.turn_id, "failed")
+                return False
+            raw = final_resp.get("content", "") or ""
+            if raw:
+                st.accumulated_reply = st.stream_prefix + raw
+            st.usage_total = final_resp.get("usage", {}) or st.usage_total
+            tool_calls = final_resp.get("tool_calls")
+            # C06：带工具帧的文字此前只写 accumulated_reply，下一帧被
+            # stream_prefix+raw 覆盖丢失；并入前缀，后续帧自然拼全
+            if raw and tool_calls:
+                st.stream_prefix += raw
+            if not tool_calls:
+                st.finish_reason = str(final_resp.get("finish_reason") or "")
+                answer = raw.strip()
+                if (answer and st.finish_reason != "length" and not st.preamble_retried
+                        and st.continuations < MAX_CONTINUATIONS
+                        and _looks_like_preamble(raw)):
+                    # 前导语（"我这就去查…"/"先问最实际的："）不是最终回答：文本
+                    # 已流出，记入前缀；带工具重问一次让它真正动手。length 不走此
+                    # 分支（截断续写仍然 tools=None，保持既有语义）。
+                    st.preamble_retried = True
+                    st.stream_prefix += raw
+                    st.continuations += 1  # R2：计入统一续流预算
+                    ctx.messages.append({"role": "assistant", "content": raw})
+                    ctx.messages.append({"role": "system", "content": _PREAMBLE_NUDGE})
+                    continue
+                if answer and (st.finish_reason == "length"
+                               or not _looks_like_preamble(raw)):
+                    st.has_final_answer = True
+                break
+
+            # N13：启动工具前检查取消与 deadline——即便终帧已带 tool_calls，此刻已
+            # 取消/超时也不再启动新工具（不发 tool_started、不产生副作用），转轮末终态
+            if _stop_requested(handle, start, max_wall_seconds):
+                break
+            # 并行工具执行（F07：批前截断——越过额度的调用不执行，直接回填
+            # budget_exceeded 的 role=tool 消息与事件，协议上每个 id 均有回填）
+            ctx.messages.append(_assistant_message(final_resp))
+            remaining = ctx.max_tool_calls - st.total_calls
+            executed, skipped = tool_calls[:remaining], tool_calls[remaining:]
+            for call in skipped:
+                call_id = call.get("id", "")
+                name = call.get("name", "")
+                err = {"code": "budget_exceeded",
+                       "message": "本回合工具调用额度已用尽，该调用未执行"}
+                ctx.messages.append({"role": "tool", "tool_call_id": call_id,
+                                     "content": _budget_skip_content()})
+                ctx.tm.append_event(ctx.pid, ctx.turn_id, "tool_completed",
+                                    {"call_id": call_id, "ok": False, "data": None,
+                                     "degraded": None, "error": err})
+            # N04：同批工具按依赖顺序执行——状态写工具（update_research_context
+            # 等，name 在 state_handlers）先执行并 stage 进 buffer；随后才组装
+            # 其余工具（含文档工具）的入参并并发执行，使 merge_doc_args 读到
+            # 已 stage 的新 ctx（修复同批写→文档时文档拿到旧值、正文与依赖
+            # 指纹错配）。独立只读搜索与文档工具在第二阶段仍并发。
+            def _prepare(call):
+                name = call.get("name", "")
+                call_id = call.get("id", "")
+                args = _coerce_args(call.get("arguments"))
+                # 终审 M1：文档工具入参合并读"仓储+暂存"合并视图——同轮先
+                # update_research_context 再调文档工具时立即看到新值（与
+                # get_project_brief 的 staged_view 语义一致）
+                ctx_view = ctx.buffer.staged_view()
+                # R02：方案四路事实渠道（田野点/报道人/知识库/行程）以项目已采纳状态
+                # 为准——模型自造的替代值不进入正文（否则正文用 B、项目仍为 A）。
+                # T01：本回合刚排出的行程尚未落盘，但同轮写方案必须在生成前就采用
+                # 它——否则正文用 B、轮末落盘 A，指纹与正文错配。
+                turn_itinerary = (ctx.turn_itineraries_raw[-1]
+                                  if ctx.turn_itineraries_raw else None)
+                accepted = (accepted_doc_inputs(ctx.repo, ctx.pid, ctx_view=ctx_view,
+                                                itinerary_override=turn_itinerary)
+                            if name == "compose_proposal" else None)
+                replaced: list[str] = []
+                args = merge_doc_args(ctx.repo, ctx.pid, name, args, ctx_view=ctx_view,
+                                      accepted=accepted, replaced=replaced)
+                ctx.call_name_map[call_id] = name
+                ctx.call_args_map[call_id] = args
+                # C01/R02：落盘指纹依据＝正文实际所本的五渠道输入（ctx 为
+                # merge_doc_args 合并后的生成 ctx；其余四路为正文实际采用的记录）；
+                # 模型覆盖/替代值未采纳时确认必须被拒
+                if name == "compose_proposal":
+                    provenance = doc_input_fingerprint(args)
+                    ctx.doc_inputs_provenance[call_id] = provenance
+                    ctx.doc_replaced[call_id] = replaced
+                    # T01：只有正文实际采用本回合行程（生成前已绑定），轮末才允许把
+                    # 临时数据换成已解析快照；内容不同（模型值/并发同批生成）保持
+                    # 原指纹，确认时按指纹不一致拒绝。
+                    ctx.doc_itinerary_from_turn[call_id] = bool(turn_itinerary) and (
+                        _canonical_json(provenance.get("itinerary"))
+                        == _canonical_json(turn_itinerary))
+                ctx.tm.append_event(ctx.pid, ctx.turn_id, "tool_started",
+                                    {"call_id": call_id, "tool": name,
+                                     "args": args, "purpose": ""})
+                return _exec_tool(ctx.dispatch, name, args, call_id, ctx.state_handlers)
+
+            write_calls = [c for c in executed if c.get("name", "") in ctx.state_handlers]
+            rest_calls = [c for c in executed if c.get("name", "") not in ctx.state_handlers]
+            results = []
+            if write_calls:
+                # 第一阶段：依赖写/读状态工具先落地（stage 进 buffer）
+                results.extend(await asyncio.gather(
+                    *(_prepare(c) for c in write_calls)))
+            if rest_calls:
+                # 第二阶段：文档工具此刻组装入参已能读到新 ctx；与只读搜索并发
+                results.extend(await asyncio.gather(
+                    *(_prepare(c) for c in rest_calls)))
+            st.total_calls += len(executed)
+
+            for call_id, name, env in results:
+                data = env.data
+                if hasattr(data, "model_dump"):
+                    data = data.model_dump(mode="json")
+                # T01：本轮行程在落盘前先进入"本轮已产生"视图，供后续轮次的
+                # compose_proposal 生成时采用（成功才收；多次调用取最后一次）
+                if name == "compose_itinerary" and env.ok and isinstance(data, dict):
+                    ctx.turn_itineraries_raw.append(data)
+                # T02：成功生成方案后，轮末不再用消息抽取回写 ctx——抽取已在
+                # 回合开始暂存并参与生成，轮末回写只会制造生成后的输入变更。
+                if (name == "compose_proposal" and env.ok
+                        and isinstance(data, dict) and data.get("markdown")):
+                    ctx.doc_generated_this_turn = True
+                ctx.tm.append_event(ctx.pid, ctx.turn_id, "tool_completed",
+                                    {"call_id": call_id, "ok": env.ok,
+                                     "data": data,
+                                     "degraded": _degraded_with_channel_note(
+                                         env, name, call_id, ctx.doc_replaced),
+                                     "source_usage": env.usage,
+                                     "error": _error_dict(env)})
+                ctx.messages.append({"role": "tool", "tool_call_id": call_id,
+                                     "content": _tool_content(name, env)})
+                if name == "analyze_fieldwork_window" and env.ok:
+                    dest = str(ctx.call_args_map.get(call_id, {}).get("destination", ""))
+                    cid = ctx.repo.cache_search(ctx.pid, f"time_window::{dest}",
+                                                "analyze_fieldwork_window", data,
+                                                parent_call_id=call_id,
+                                                turn_id=ctx.turn_id,
+                                                query_key=_query_key(
+                                                    "time_window", {"dest": dest}))
+                    ctx.snapshot_ids.append(cid)
+                    # F03：推荐时窗与用户约束分离——写 candidate_windows
+                    # （候选，未经用户确认），time_window 只留用户确认值
+                    wins = [w for w in (data.get("windows") or [])
+                            if w.get("start") and w.get("end")][:3]
+                    if wins:
+                        payload = [
+                            {"start": w["start"], "end": w["end"],
+                             "reason": (w.get("reasons") or [""])[0]}
+                            for w in wins
+                        ]
+                        # F05：经回合级暂存，取消回合不落残缺候选
+                        ctx.buffer.stage({"candidate_windows": payload})
+            # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
+            # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
+            drained = _drain_snapshots(ctx.repo, ctx.pid, ctx.recorder, ctx.snapshot_ids,
+                                       ctx.live_refs, drained, turn_id=ctx.turn_id,
+                                       live_refs_by_call=ctx.live_refs_by_call)
+            # 双 recorder 各自游标（合并视图会错位）；snapshot_ids/live_refs
+            # 共享：turn_done 汇总全部快照，轮末替换按键前缀天然不冲突
+            drained_amap = _drain_snapshots(ctx.repo, ctx.pid, ctx.amap_recorder,
+                                            ctx.snapshot_ids, ctx.live_refs,
+                                            drained_amap, turn_id=ctx.turn_id,
+                                            label="amap",
+                                            live_refs_by_call=ctx.live_refs_by_call)
+
+    except Exception as exc:
+        ctx.tm.append_event(ctx.pid, ctx.turn_id, "error",
+                            {"code": "internal_error", "message": str(exc), "hint": ""})
+        ctx.tm.finish(ctx.pid, ctx.turn_id, "failed")
+        return False
+    return True
+
+
+async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
+                             start: float, max_iters: int, max_tool_calls: int,
+                             max_wall_seconds: float) -> bool:
+    """续流修复：截断续写 → 最终回答收敛 → 悬挂补完。
+
+    三类续流共用 ``st.continuations`` 预算（R2），只负责把已流出的正文补成
+    可交付的答复，不再启动工具。返回 False 表示项目已被删除，调用方立即返回。
+    """
+    # 截断续写防御（生产实录 field_20261018_202833 回合4：回复停在
+    # 「先问最实际的：」而 turn 照常 completed）：无 tool_calls 终止且
+    # finish_reason=length，或非空正文以未完标点/开引号结尾（服务端异常终止）
+    # 时，追加 system 续写指令再流式一次拼接（不带工具，防续写轮两调工具）；
+    # 只续一次，续写失败或仍空则保留原文——已流出的内容绝不丢。
+    handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
+    if handle is None:
+        return False  # 项目删除竞态：续写与轮末的写入目标均已消失
+    if (ctx.llm is not None and st.accumulated_reply
+            and not _stop_requested(handle, start, max_wall_seconds)
+            and st.continuations < MAX_CONTINUATIONS
+            and _looks_truncated(st.accumulated_reply, st.finish_reason)):
+        st.continuations += 1  # R2：计入统一续流预算
+        ctx.messages.append({"role": "system", "content":
+                             "你的上一条回复在句中被截断了，已输出内容的末尾如下：\n"
+                             + st.accumulated_reply[-300:]
+                             + "\n请紧接着上述末尾继续写完剩余内容：直接续写正文，"
+                               "不要重复已写出的内容，不要重新开头，写完即止。"})
+        cont_deltas = ""  # 续写流已流出增量：终帧空/报错/流异常三路兜底（终审 B3）
+        try:
+            stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
+            st.iterations += 1
+            final_resp = None
+            async for chunk in _async_iter(stream):
+                if ctx.tm.get_turn(ctx.pid, ctx.turn_id) is None:
+                    return False  # 项目删除竞态：同主流，停止消费与发射
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：续写流消费中取消/超时 → 停止，已流出增量仍拼入
+                if "delta" in chunk and chunk["delta"]:
+                    cont_deltas += chunk["delta"]
+                    ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta",
+                                        {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    final_resp = chunk
+            if final_resp and not final_resp.get("error"):
+                cont = final_resp.get("content", "") or ""
+                # 终帧正文空（只发 delta 不发终帧正文的实现）同样以增量兜底
+                st.accumulated_reply += cont or cont_deltas
+                st.finish_reason = (str(final_resp.get("finish_reason") or "")
+                                    or st.finish_reason)
+                st.usage_total = final_resp.get("usage", {}) or st.usage_total
+                st.recovery_failed = False  # R18：恢复成功即清除
+            else:
+                # 无终帧/终帧报错：已流出的续写增量照样拼入，绝不丢
+                st.accumulated_reply += cont_deltas
+                st.recovery_failed = True  # R18：最近一次恢复失败
+        except Exception:
+            # 流中断：同上兜底（终审 B3），不丢已流出的内容
+            st.accumulated_reply += cont_deltas
+            st.recovery_failed = True  # R18
+
+    # 最终回答收敛（对齐 CLI runtime/loop.py 的触顶收敛；F06 收敛条件整体
+    # 替换为 not has_final_answer）：主循环退出但没拿到最终回答（预算触顶
+    # 裸退出、思考模型「只想不写」、或只输出了前导语就触顶）时不让回合静默
+    # 结束——追加 system 收敛指令再取一次最终回答（不带工具，防继续调用）；
+    # 仍空则按空/非空走三分支兜底。cancel 已取消的回合不做兜底（终态 cancelled）。
+    handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
+    if handle is None:
+        return False  # 项目删除竞态：收敛与轮末的写入目标均已消失
+    if (ctx.llm is not None and not st.has_final_answer
+            and not _stop_requested(handle, start, max_wall_seconds)
+            and st.continuations < MAX_CONTINUATIONS):
+        st.continuations += 1  # R2：计入统一续流预算
+        limit_hit = (st.iterations >= max_iters or st.total_calls >= max_tool_calls
+                     or time.monotonic() - start > max_wall_seconds)
+        reason = ("本回合已达到处理上限。" if limit_hit
+                  else "上一轮未生成文字回复。")
+        ctx.messages.append({"role": "system", "content":
+                             reason + "请基于以上对话与工具结果，用中文给出简明的"
+                                     "阶段性回答；不要再调用工具。"})
+        try:
+            stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
+            st.iterations += 1
+            final_resp = None
+            async for chunk in _async_iter(stream):
+                if ctx.tm.get_turn(ctx.pid, ctx.turn_id) is None:
+                    return False  # 项目删除竞态：同主流，停止消费与发射
+                if _stop_requested(handle, start, max_wall_seconds):
+                    break   # N13：收敛流消费中取消/超时 → 停止，走轮末终态
+                if "delta" in chunk and chunk["delta"]:
+                    ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta",
+                                        {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    final_resp = chunk
+            if final_resp and not final_resp.get("error"):
+                # R16：接管收敛帧自身的 finish_reason——收敛产出以 length/
+                # 未完标点收尾时，旧代码沿用主循环的 stop，终态伪装完整。
+                st.finish_reason = (str(final_resp.get("finish_reason") or "")
+                                    or st.finish_reason)
+                st.recovery_failed = False  # R18：恢复成功即清除
+                if (final_resp.get("content") or "").strip():
+                    st.accumulated_reply = st.stream_prefix + final_resp["content"]
+                    st.has_final_answer = True  # 收敛成功即最终回答，三分支不再追加提示
+                st.usage_total = final_resp.get("usage", {}) or st.usage_total
+            else:
+                st.recovery_failed = True  # R18：收敛帧缺失/报错（此前无此分支，静默）
+        except Exception:
+            st.accumulated_reply = ""  # 收敛重试失败不改变回合结果，走兑底文案
+            st.recovery_failed = True  # R18：收敛流中断
+        if not st.accumulated_reply:
+            st.incomplete = True
+            fallback = ("（已达本回合处理上限，未能基于现有信息生成完整回答；"
+                        "请继续提问以接着现有材料推进。）" if limit_hit else
+                        "（本次未生成文字回复；请继续提问或稍后重试。）")
+            ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta", {"text": fallback})
+            st.accumulated_reply = fallback
+        elif not st.has_final_answer:
+            st.incomplete = True
+            # 前导语 + 未获最终回答：保留过程说明，追加提示
+            note = ("\n\n（以上为过程说明；已达本回合处理上限，未能生成完整总结，"
+                    "请继续提问以接着现有材料推进。）" if limit_hit else
+                    "\n\n（以上为过程说明；本次未生成文字总结，请继续提问。）")
+            ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta", {"text": note})
+            st.accumulated_reply = st.accumulated_reply + note
+
+    # 悬挂补完（R6）：以冒号/空选项块收尾的半截话不是可交付答案——
+    # 生产实录回合「先问最实际的：」后无下文。追加一次无工具续流让模型
+    # 把话补完；预算/墙钟/取消三重闸门；失败保留原文（已流出内容绝不丢）。
+    handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
+    if handle is None:
+        return False  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
+    cancelled = handle.cancel_event.is_set()
+    if (not cancelled and ctx.llm is not None and st.accumulated_reply
+            and st.continuations < MAX_CONTINUATIONS
+            and not _stop_requested(handle, start, max_wall_seconds)
+            and _looks_dangling(st.accumulated_reply)):
+        st.continuations += 1
+        ctx.messages.append({"role": "system", "content":
+                             "你的上一条回复以冒号或空选项块收尾，话还没说完。"
+                             "已输出内容的末尾如下：\n" + st.accumulated_reply[-120:]
+                             + "\n请紧接着上述末尾把话说完：直接续写正文；若在等待"
+                               "对方选择，用 [[options:标签]]选项A|选项B[[/options]] "
+                               "格式给出选项；不要重复已写出的内容，写完即止。"})
+        comp_deltas = ""  # 补完流已流出增量：与截断续写同款三路兜底
+        try:
+            stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
+            st.iterations += 1
+            comp_resp = None
+            async for chunk in _async_iter(stream):
+                if ctx.tm.get_turn(ctx.pid, ctx.turn_id) is None:
+                    return False  # 项目删除竞态：同截断续写
+                if "delta" in chunk and chunk["delta"]:
+                    comp_deltas += chunk["delta"]
+                    ctx.tm.append_event(ctx.pid, ctx.turn_id, "message_delta",
+                                        {"text": chunk["delta"]})
+                elif "content" in chunk:
+                    comp_resp = chunk
+            if comp_resp and not comp_resp.get("error"):
+                st.accumulated_reply += ((comp_resp.get("content", "") or "")
+                                         or comp_deltas)
+                st.finish_reason = (str(comp_resp.get("finish_reason") or "")
+                                    or st.finish_reason)
+                st.usage_total = comp_resp.get("usage", {}) or st.usage_total
+                st.recovery_failed = False  # R18：补完成功即清除
+            else:
+                st.accumulated_reply += comp_deltas
+                st.recovery_failed = True  # R18：无终帧/终帧报错
+        except Exception:
+            st.accumulated_reply += comp_deltas  # 流中断：已流出内容绝不丢
+            st.recovery_failed = True  # R18
+    return True
+
+
+def _finalize_turn(ctx: _TurnContext, st: _TurnState) -> None:
+    """终态收敛：终检 → 选项/内容安全 → 持久化 → 终态事件。"""
+    # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 自动命名（任务1）+ 阶段推进
+    # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
+    # P1-4：取消即中止本轮全部状态变更——残缺回复/工具产物/抽取/阶段推进
+    # 均不落地，直接走 cancelled 终态（轮末块同步无 await，取消不会中途插入）
+    handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
+    if handle is None:
+        return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
+    cancelled = handle.cancel_event.is_set()
+    if not cancelled:
+        # 统一终检门（R8/R16/R18）：所有恢复路径走完后的最后一道防线——
+        # 无答案 / 最近一次恢复失败 / 仍截断 / 仍悬挂，任一命中即 incomplete。
+        # 检查的是提取 quick_replies 之前的原始 accumulated_reply（有效选项
+        # 块收尾不算悬挂，见 _looks_dangling）。
+        if ((not st.has_final_answer) or st.recovery_failed
+                or _looks_truncated(st.accumulated_reply, st.finish_reason)
+                or _looks_dangling(st.accumulated_reply)):
+            st.incomplete = True
+    quick_reply_groups: list[dict] = []
+    safety_blocked = False
+    reply = st.accumulated_reply
+    if not cancelled and reply:
+        reply, quick_reply_groups = _extract_quick_replies(reply)
+        reply = _normalize_cjk_quotes(reply)
+        # 输出终检（窄表）：命中 → 落库/turn_done 载体替换为固定文案；
+        # 已流出 delta 不撤回（流式诚实），拦截目标是持久层与后续上下文。
+        out_verdict = check_model_output(reply)
+        if out_verdict.blocked:
+            safety_blocked = True
+            quick_reply_groups = []  # 替换文案不含选项块
+            ctx.tm.append_event(ctx.pid, ctx.turn_id, "safety_blocked",
+                                {"side": "output", "category": out_verdict.category})
+            reply = SAFETY_BLOCK_NOTICE
+    # 旧扁平 quick_replies 仅单组时携带；多组时为空，避免只覆盖其中一个问题的误导性子集
+    quick_replies: list[str] = (quick_reply_groups[0]["options"]
+                                if len(quick_reply_groups) == 1 else [])
+    if not cancelled:
+        try:
+            if reply:
+                # N12：turn_id 入 meta（retry 校验尾部归属）；quick_reply_groups 为
+                # 分支特性，在下方条件区自动共存
+                meta = {"turn_id": ctx.turn_id,
+                        "tool_calls": st.total_calls,
+                        "finish_reason": st.finish_reason}
+                if quick_replies:
+                    meta["quick_replies"] = quick_replies
+                if quick_reply_groups:
+                    meta["quick_reply_groups"] = quick_reply_groups
+                if safety_blocked:
+                    meta["safety_blocked"] = True
+                ctx.repo.append_message(ctx.pid, "assistant", reply, meta)
+            if reply:
+                ctx.buffer.stage(turn_memory_patch(
+                    ctx.buffer.staged_view(), ctx.user_text, reply))
+            ctx.buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
+            _persist_tool_results(ctx.repo, ctx.pid, ctx.tm, ctx.turn_id,
+                                  ctx.call_name_map, ctx.live_refs,
+                                  ctx.doc_inputs_provenance, ctx.live_refs_by_call,
+                                  ctx.doc_itinerary_from_turn)
+            # T02：生成过方案的轮次，消息抽取已在回合开始暂存并随 buffer 提交；
+            # 轮末再写会在文档生成之后改 ctx（旧实现“生成即过期”的来源）。
+            if not ctx.doc_generated_this_turn:
+                _apply_extractions(ctx.repo, ctx.pid, ctx.user_text)
+            _schedule_autoname(ctx.repo, ctx.pid, ctx.llm)   # N09：后台任务卸载，不阻塞事件循环/主回合
+            transition = check_and_advance(ctx.repo, ctx.pid)
+            if transition:
+                ctx.tm.append_event(ctx.pid, ctx.turn_id, "phase_transition", transition)
+        except Exception as exc:
+            ctx.tm.append_event(ctx.pid, ctx.turn_id, "error",
+                                {"code": "internal_error",
+                                 "message": f"轮末持久化失败: {exc}", "hint": ""})
+            ctx.tm.finish(ctx.pid, ctx.turn_id, "failed")
+            return
+
+    # 终态
+    if cancelled:
+        ctx.buffer.discard()  # F05：取消丢弃本轮暂存
+        ctx.tm.finish(ctx.pid, ctx.turn_id, "cancelled")
+    else:
+        ctx.tm.append_event(ctx.pid, ctx.turn_id, "turn_done",
+                            {"reply_id": ctx.turn_id, "usage": st.usage_total,
+                             "snapshot_ids": ctx.snapshot_ids,
+                             "quick_replies": quick_replies,
+                             "quick_reply_groups": quick_reply_groups,
+                             "finish_reason": st.finish_reason,
+                             "incomplete": st.incomplete,
+                             "safety_blocked": safety_blocked})
+        ctx.tm.finish(ctx.pid, ctx.turn_id, "completed")
+
+
 async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
                          tm: TurnManager, llm: Any, flyai_client: Any, *,
                          amap_client: Any = None,
                          owner: str | None = None,
                          max_iters: int = 8, max_tool_calls: int = 20,
-                         max_wall_seconds: float = 60.0) -> None:
-    """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
+                         # 60s 会在"多工具 + 长正文"的回合里把正文截断（实测：3 次检索调完，
+                   # 模型还没来得及说话就到点，用户只看到半句）。工具轮数仍是 20 的护栏，
+                   # 墙钟放宽到 180s；录制演示时尤其不能出现"说一半"。
+                   max_wall_seconds: float = 180.0) -> None:
+    """执行完整回合：准备 → 主流式 → 续流修复 → 终态收敛（Q01 拆分）。"""
     # owner 供二期记忆读写；本期惰性
     recorder = (RecordingClient(flyai_client, tag_provider=_CURRENT_CALL_ID.get)
                 if flyai_client is not None else None)
@@ -196,8 +756,6 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
     # 一个可覆盖的规格→cid 字典（同规格多次调用时后者不覆盖前者的绑定）。
     live_refs_by_call: dict[str, dict[str, str]] = {}
     snapshot_ids: list[str] = []
-    drained = 0
-    drained_amap = 0
     call_args_map: dict[str, dict] = {}
     # N04/R02：文档工具生成时的五渠道输入（ctx/田野点/报道人/知识库/行程）——
     # 落盘指纹据此而非保存时推测；正常轮与保存时仓储一致，仅并发外部修改时有别。
@@ -210,9 +768,9 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
     # T01：正文行程确实取自本回合行程（生成前已绑定）——轮末只在这份临时数据
     # 与落盘快照同内容时才把引用换成已解析值，绝不把不同内容直接改绑。
     doc_itinerary_from_turn: dict[str, bool] = {}
-    # T02：本轮已生成方案——轮末确定性抽取不再写回（用户消息中的抽取已在
-    # 回合开始暂存并进入生成输入），防止生成后写 ctx 把方案变成“生成即过期”。
-    doc_generated_this_turn = False
+    # T02：本轮已生成方案（_TurnContext.doc_generated_this_turn）——轮末确定性
+    # 抽取不再写回：用户消息中的抽取已在回合开始暂存并进入生成输入，防止
+    # 生成后写 ctx 把方案变成“生成即过期”。
     dispatch = build_dispatch_fn(recorder if recorder is not None else flyai_client,
                                  llm,
                                  amap_recorder if amap_recorder is not None
@@ -264,485 +822,35 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
         return
 
 
-    iterations = 0
-    total_calls = 0
+    # T02：本轮已生成方案（_TurnContext.doc_generated_this_turn）——轮末确定性
+    # 抽取不再写回：用户消息中的抽取已在回合开始暂存并进入生成输入，防止
+    # 生成后写 ctx 把方案变成“生成即过期”。
+
+    ctx = _TurnContext(
+        repo=repo, pid=pid, turn_id=turn_id, tm=tm, llm=llm,
+        user_text=user_text, recorder=recorder, amap_recorder=amap_recorder,
+        dispatch=dispatch, tools=tools, state_handlers=state_handlers,
+        buffer=buffer, messages=messages, max_tool_calls=max_tool_calls,
+        call_args_map=call_args_map,
+        doc_inputs_provenance=doc_inputs_provenance,
+        doc_replaced=doc_replaced,
+        turn_itineraries_raw=turn_itineraries_raw,
+        doc_itinerary_from_turn=doc_itinerary_from_turn,
+        live_refs=live_refs, live_refs_by_call=live_refs_by_call,
+        snapshot_ids=snapshot_ids)
+    st = _TurnState()
     start = time.monotonic()
-    accumulated_reply = ""
-    stream_prefix = ""          # 前导语文本（已流出，重问后仍拼回持久化正文）
-    preamble_retried = False    # 只重问一次，防无限循环
-    incomplete = False          # 回合未收敛出正文 → turn_done.incomplete
-    has_final_answer = False
-    recovery_failed = False     # 最近一次续流失败（R18：成功清除，非粘滞标记）
-    continuations = 0           # 已用续流预算（R2：四类续流共用）
-    finish_reason = ""
-    usage_total: dict = {}
-    call_name_map: dict[str, str] = {}
-
-    try:
-        while True:
-            handle = tm.get_turn(pid, turn_id)
-            # 项目删除竞态（审查 1.2）：purge 已连同订阅/磁盘/内存清除回合，
-            # 无处发事件也无处持久化，静默退出（finish 同样无处可写）
-            if handle is None:
-                return
-            if handle.cancel_event.is_set():
-                break
-            if iterations >= max_iters or total_calls >= max_tool_calls:
-                break
-            if time.monotonic() - start > max_wall_seconds:
-                break
-
-            # 无 LLM（未配置 DashScope key）降级：规则文案回复后退出，走统一轮末
-            if llm is None:
-                reply = rule_based_reply(phase, repo.get_research_context(pid)) + _DEGRADED_NOTE
-                tm.append_event(pid, turn_id, "message_delta", {"text": reply})
-                accumulated_reply = reply
-                has_final_answer = True  # R16：规则文案即降级路径的最终答案
-                break
-
-            # 流式 LLM
-            stream = llm.chat_stream(messages, tools=tools, slot="interview")
-            iterations += 1
-            final_resp = None
-            async for chunk in _async_iter(stream):
-                if tm.get_turn(pid, turn_id) is None:
-                    return  # 项目删除竞态：停止消费已无消费者的流
-                if _stop_requested(handle, start, max_wall_seconds):
-                    break   # N13：消费中取消/超时 → 停止消费，不再处理后续帧（含终帧工具调用）
-                if "delta" in chunk and chunk["delta"]:
-                    tm.append_event(pid, turn_id, "message_delta",
-                                    {"text": chunk["delta"]})
-                elif "content" in chunk:
-                    final_resp = chunk
-
-            if final_resp is None:
-                break
-            # LLM 错误帧（key 无效/限流等，kernel.llm 契约：HTTP 非 200 返零值+error 键）：
-            # 如实发 error + failed 终态。回归：此前 content="" 被当正常终止帧，
-            # 错误静默吞掉、产出空 turn_done（配错 key 表现为「没反应」）。
-            llm_error = final_resp.get("error")
-            if llm_error:
-                # 平台内容审核拦截（data_inspection_failed 等）与 key/限流错误
-                # 分流：前者提示调整措辞，后者维持 Key 检查 hint（此前统一误报
-                # 为 Key 问题，审核触发时用户被误导去检查配置）。
-                moderated = is_content_moderation_error(llm_error)
-                tm.append_event(pid, turn_id, "error",
-                                {"code": "content_moderation" if moderated else "llm_error",
-                                 "message": str(llm_error),
-                                 "hint": ("请求被平台内容安全策略拦截，"
-                                          "请调整提问措辞后重试" if moderated else
-                                          "请检查百炼 API Key 是否有效")})
-                tm.finish(pid, turn_id, "failed")
-                return
-            raw = final_resp.get("content", "") or ""
-            if raw:
-                accumulated_reply = stream_prefix + raw
-            usage_total = final_resp.get("usage", {}) or usage_total
-            tool_calls = final_resp.get("tool_calls")
-            # C06：带工具帧的文字此前只写 accumulated_reply，下一帧被
-            # stream_prefix+raw 覆盖丢失；并入前缀，后续帧自然拼全
-            if raw and tool_calls:
-                stream_prefix += raw
-            if not tool_calls:
-                finish_reason = str(final_resp.get("finish_reason") or "")
-                answer = raw.strip()
-                if (answer and finish_reason != "length" and not preamble_retried
-                        and continuations < MAX_CONTINUATIONS
-                        and _looks_like_preamble(raw)):
-                    # 前导语（"我这就去查…"/"先问最实际的："）不是最终回答：文本
-                    # 已流出，记入前缀；带工具重问一次让它真正动手。length 不走此
-                    # 分支（截断续写仍然 tools=None，保持既有语义）。
-                    preamble_retried = True
-                    stream_prefix += raw
-                    continuations += 1  # R2：计入统一续流预算
-                    messages.append({"role": "assistant", "content": raw})
-                    messages.append({"role": "system", "content": _PREAMBLE_NUDGE})
-                    continue
-                if answer and (finish_reason == "length" or not _looks_like_preamble(raw)):
-                    has_final_answer = True
-                break
-
-            # N13：启动工具前检查取消与 deadline——即便终帧已带 tool_calls，此刻已
-            # 取消/超时也不再启动新工具（不发 tool_started、不产生副作用），转轮末终态
-            if _stop_requested(handle, start, max_wall_seconds):
-                break
-            # 并行工具执行（F07：批前截断——越过额度的调用不执行，直接回填
-            # budget_exceeded 的 role=tool 消息与事件，协议上每个 id 均有回填）
-            messages.append(_assistant_message(final_resp))
-            remaining = max_tool_calls - total_calls
-            executed, skipped = tool_calls[:remaining], tool_calls[remaining:]
-            for call in skipped:
-                call_id = call.get("id", "")
-                name = call.get("name", "")
-                err = {"code": "budget_exceeded",
-                       "message": "本回合工具调用额度已用尽，该调用未执行"}
-                messages.append({"role": "tool", "tool_call_id": call_id,
-                                 "content": _budget_skip_content()})
-                tm.append_event(pid, turn_id, "tool_completed",
-                                {"call_id": call_id, "ok": False, "data": None,
-                                 "degraded": None, "error": err})
-            # N04：同批工具按依赖顺序执行——状态写工具（update_research_context
-            # 等，name 在 state_handlers）先执行并 stage 进 buffer；随后才组装
-            # 其余工具（含文档工具）的入参并并发执行，使 merge_doc_args 读到
-            # 已 stage 的新 ctx（修复同批写→文档时文档拿到旧值、正文与依赖
-            # 指纹错配）。独立只读搜索与文档工具在第二阶段仍并发。
-            def _prepare(call):
-                name = call.get("name", "")
-                call_id = call.get("id", "")
-                args = _coerce_args(call.get("arguments"))
-                # 终审 M1：文档工具入参合并读"仓储+暂存"合并视图——同轮先
-                # update_research_context 再调文档工具时立即看到新值（与
-                # get_project_brief 的 staged_view 语义一致）
-                ctx_view = buffer.staged_view()
-                # R02：方案四路事实渠道（田野点/报道人/知识库/行程）以项目已采纳状态
-                # 为准——模型自造的替代值不进入正文（否则正文用 B、项目仍为 A）。
-                # T01：本回合刚排出的行程尚未落盘，但同轮写方案必须在生成前就采用
-                # 它——否则正文用 B、轮末落盘 A，指纹与正文错配。
-                turn_itinerary = (turn_itineraries_raw[-1]
-                                  if turn_itineraries_raw else None)
-                accepted = (accepted_doc_inputs(repo, pid, ctx_view=ctx_view,
-                                                itinerary_override=turn_itinerary)
-                            if name == "compose_proposal" else None)
-                replaced: list[str] = []
-                args = merge_doc_args(repo, pid, name, args, ctx_view=ctx_view,
-                                      accepted=accepted, replaced=replaced)
-                call_name_map[call_id] = name
-                call_args_map[call_id] = args
-                # C01/R02：落盘指纹依据＝正文实际所本的五渠道输入（ctx 为
-                # merge_doc_args 合并后的生成 ctx；其余四路为正文实际采用的记录）；
-                # 模型覆盖/替代值未采纳时确认必须被拒
-                if name == "compose_proposal":
-                    provenance = doc_input_fingerprint(args)
-                    doc_inputs_provenance[call_id] = provenance
-                    doc_replaced[call_id] = replaced
-                    # T01：只有正文实际采用本回合行程（生成前已绑定），轮末才允许把
-                    # 临时数据换成已解析快照；内容不同（模型值/并发同批生成）保持
-                    # 原指纹，确认时按指纹不一致拒绝。
-                    doc_itinerary_from_turn[call_id] = bool(turn_itinerary) and (
-                        _canonical_json(provenance.get("itinerary"))
-                        == _canonical_json(turn_itinerary))
-                tm.append_event(pid, turn_id, "tool_started",
-                                {"call_id": call_id, "tool": name,
-                                 "args": args, "purpose": ""})
-                return _exec_tool(dispatch, name, args, call_id, state_handlers)
-
-            write_calls = [c for c in executed if c.get("name", "") in state_handlers]
-            rest_calls = [c for c in executed if c.get("name", "") not in state_handlers]
-            results = []
-            if write_calls:
-                # 第一阶段：依赖写/读状态工具先落地（stage 进 buffer）
-                results.extend(await asyncio.gather(
-                    *(_prepare(c) for c in write_calls)))
-            if rest_calls:
-                # 第二阶段：文档工具此刻组装入参已能读到新 ctx；与只读搜索并发
-                results.extend(await asyncio.gather(
-                    *(_prepare(c) for c in rest_calls)))
-            total_calls += len(executed)
-
-            for call_id, name, env in results:
-                data = env.data
-                if hasattr(data, "model_dump"):
-                    data = data.model_dump(mode="json")
-                # T01：本轮行程在落盘前先进入“本轮已产生”视图，供后续轮次的
-                # compose_proposal 生成时采用（成功才收；多次调用取最后一次）
-                if name == "compose_itinerary" and env.ok and isinstance(data, dict):
-                    turn_itineraries_raw.append(data)
-                # T02：成功生成方案后，轮末不再用消息抽取回写 ctx——抽取已在
-                # 回合开始暂存并参与生成，轮末回写只会制造生成后的输入变更。
-                if (name == "compose_proposal" and env.ok
-                        and isinstance(data, dict) and data.get("markdown")):
-                    doc_generated_this_turn = True
-                tm.append_event(pid, turn_id, "tool_completed",
-                                {"call_id": call_id, "ok": env.ok,
-                                 "data": data,
-                                 "degraded": _degraded_with_channel_note(
-                                     env, name, call_id, doc_replaced),
-                                 "source_usage": env.usage,
-                                 "error": _error_dict(env)})
-                messages.append({"role": "tool", "tool_call_id": call_id,
-                                 "content": _tool_content(name, env)})
-                if name == "analyze_fieldwork_window" and env.ok:
-                    dest = str(call_args_map.get(call_id, {}).get("destination", ""))
-                    cid = repo.cache_search(pid, f"time_window::{dest}",
-                                            "analyze_fieldwork_window", data,
-                                            parent_call_id=call_id, turn_id=turn_id,
-                                            query_key=_query_key(
-                                                "time_window", {"dest": dest}))
-                    snapshot_ids.append(cid)
-                    # F03：推荐时窗与用户约束分离——写 candidate_windows
-                    # （候选，未经用户确认），time_window 只留用户确认值
-                    wins = [w for w in (data.get("windows") or [])
-                            if w.get("start") and w.get("end")][:3]
-                    if wins:
-                        payload = [
-                            {"start": w["start"], "end": w["end"],
-                             "reason": (w.get("reasons") or [""])[0]}
-                            for w in wins
-                        ]
-                        # F05：经回合级暂存，取消回合不落残缺候选
-                        buffer.stage({"candidate_windows": payload})
-            # 快照链（R08 §6）：搜索即时落盘，并按 _live_key 归并 规格键→快照引用，
-            # 轮末 _persist_tool_results 统一替换聚合产出中的规格键
-            drained = _drain_snapshots(repo, pid, recorder, snapshot_ids,
-                                       live_refs, drained, turn_id=turn_id,
-                                       live_refs_by_call=live_refs_by_call)
-            # 双 recorder 各自游标（合并视图会错位）；snapshot_ids/live_refs
-            # 共享：turn_done 汇总全部快照，轮末替换按键前缀天然不冲突
-            drained_amap = _drain_snapshots(repo, pid, amap_recorder,
-                                            snapshot_ids, live_refs,
-                                            drained_amap, turn_id=turn_id,
-                                            label="amap",
-                                            live_refs_by_call=live_refs_by_call)
-
-    except Exception as exc:
-        tm.append_event(pid, turn_id, "error",
-                        {"code": "internal_error", "message": str(exc), "hint": ""})
-        tm.finish(pid, turn_id, "failed")
+    if not await _run_stream_loop(ctx, st, phase=phase, start=start,
+                                  max_iters=max_iters,
+                                  max_wall_seconds=max_wall_seconds):
         return
 
-    # 截断续写防御（生产实录 field_20261018_202833 回合4：回复停在
-    # 「先问最实际的：」而 turn 照常 completed）：无 tool_calls 终止且
-    # finish_reason=length，或非空正文以未完标点/开引号结尾（服务端异常终止）
-    # 时，追加 system 续写指令再流式一次拼接（不带工具，防续写轮两调工具）；
-    # 只续一次，续写失败或仍空则保留原文——已流出的内容绝不丢。
-    handle = tm.get_turn(pid, turn_id)
-    if handle is None:
-        return  # 项目删除竞态：续写与轮末的写入目标均已消失
-    if (llm is not None and accumulated_reply
-            and not _stop_requested(handle, start, max_wall_seconds)
-            and continuations < MAX_CONTINUATIONS
-            and _looks_truncated(accumulated_reply, finish_reason)):
-        continuations += 1  # R2：计入统一续流预算
-        messages.append({"role": "system", "content":
-                         "你的上一条回复在句中被截断了，已输出内容的末尾如下：\n"
-                         + accumulated_reply[-300:]
-                         + "\n请紧接着上述末尾继续写完剩余内容：直接续写正文，"
-                           "不要重复已写出的内容，不要重新开头，写完即止。"})
-        cont_deltas = ""  # 续写流已流出增量：终帧空/报错/流异常三路兜底（终审 B3）
-        try:
-            stream = llm.chat_stream(messages, tools=None, slot="interview")
-            iterations += 1
-            final_resp = None
-            async for chunk in _async_iter(stream):
-                if tm.get_turn(pid, turn_id) is None:
-                    return  # 项目删除竞态：同主流，停止消费与发射
-                if _stop_requested(handle, start, max_wall_seconds):
-                    break   # N13：续写流消费中取消/超时 → 停止，已流出增量仍拼入
-                if "delta" in chunk and chunk["delta"]:
-                    cont_deltas += chunk["delta"]
-                    tm.append_event(pid, turn_id, "message_delta",
-                                    {"text": chunk["delta"]})
-                elif "content" in chunk:
-                    final_resp = chunk
-            if final_resp and not final_resp.get("error"):
-                cont = final_resp.get("content", "") or ""
-                # 终帧正文空（只发 delta 不发终帧正文的实现）同样以增量兜底
-                accumulated_reply += cont or cont_deltas
-                finish_reason = (str(final_resp.get("finish_reason") or "")
-                                 or finish_reason)
-                usage_total = final_resp.get("usage", {}) or usage_total
-                recovery_failed = False  # R18：恢复成功即清除
-            else:
-                # 无终帧/终帧报错：已流出的续写增量照样拼入，绝不丢
-                accumulated_reply += cont_deltas
-                recovery_failed = True  # R18：最近一次恢复失败
-        except Exception:
-            # 流中断：同上兜底（终审 B3），不丢已流出的内容
-            accumulated_reply += cont_deltas
-            recovery_failed = True  # R18
+    if not await _run_continuations(ctx, st, start=start, max_iters=max_iters,
+                                    max_tool_calls=max_tool_calls,
+                                    max_wall_seconds=max_wall_seconds):
+        return
 
-    # 最终回答收敛（对齐 CLI runtime/loop.py 的触顶收敛；F06 收敛条件整体
-    # 替换为 not has_final_answer）：主循环退出但没拿到最终回答（预算触顶
-    # 裸退出、思考模型「只想不写」、或只输出了前导语就触顶）时不让回合静默
-    # 结束——追加 system 收敛指令再取一次最终回答（不带工具，防继续调用）；
-    # 仍空则按空/非空走三分支兜底。cancel 已取消的回合不做兜底（终态 cancelled）。
-    handle = tm.get_turn(pid, turn_id)
-    if handle is None:
-        return  # 项目删除竞态：收敛与轮末的写入目标均已消失
-    if (llm is not None and not has_final_answer
-            and not _stop_requested(handle, start, max_wall_seconds)
-            and continuations < MAX_CONTINUATIONS):
-        continuations += 1  # R2：计入统一续流预算
-        limit_hit = (iterations >= max_iters or total_calls >= max_tool_calls
-                     or time.monotonic() - start > max_wall_seconds)
-        reason = ("本回合已达到处理上限。" if limit_hit
-                  else "上一轮未生成文字回复。")
-        messages.append({"role": "system", "content":
-                         reason + "请基于以上对话与工具结果，用中文给出简明的"
-                                 "阶段性回答；不要再调用工具。"})
-        try:
-            stream = llm.chat_stream(messages, tools=None, slot="interview")
-            iterations += 1
-            final_resp = None
-            async for chunk in _async_iter(stream):
-                if tm.get_turn(pid, turn_id) is None:
-                    return  # 项目删除竞态：同主流，停止消费与发射
-                if _stop_requested(handle, start, max_wall_seconds):
-                    break   # N13：收敛流消费中取消/超时 → 停止，走轮末终态
-                if "delta" in chunk and chunk["delta"]:
-                    tm.append_event(pid, turn_id, "message_delta",
-                                    {"text": chunk["delta"]})
-                elif "content" in chunk:
-                    final_resp = chunk
-            if final_resp and not final_resp.get("error"):
-                # R16：接管收敛帧自身的 finish_reason——收敛产出以 length/
-                # 未完标点收尾时，旧代码沿用主循环的 stop，终态伪装完整。
-                finish_reason = (str(final_resp.get("finish_reason") or "")
-                                 or finish_reason)
-                recovery_failed = False  # R18：恢复成功即清除
-                if (final_resp.get("content") or "").strip():
-                    accumulated_reply = stream_prefix + final_resp["content"]
-                    has_final_answer = True  # 收敛成功即最终回答，三分支不再追加提示
-                usage_total = final_resp.get("usage", {}) or usage_total
-            else:
-                recovery_failed = True  # R18：收敛帧缺失/报错（此前无此分支，静默）
-        except Exception:
-            accumulated_reply = ""  # 收敛重试失败不改变回合结果，走兑底文案
-            recovery_failed = True  # R18：收敛流中断
-        if not accumulated_reply:
-            incomplete = True
-            fallback = ("（已达本回合处理上限，未能基于现有信息生成完整回答；"
-                        "请继续提问以接着现有材料推进。）" if limit_hit else
-                        "（本次未生成文字回复；请继续提问或稍后重试。）")
-            tm.append_event(pid, turn_id, "message_delta", {"text": fallback})
-            accumulated_reply = fallback
-        elif not has_final_answer:
-            incomplete = True
-            # 前导语 + 未获最终回答：保留过程说明，追加提示
-            note = ("\n\n（以上为过程说明；已达本回合处理上限，未能生成完整总结，"
-                    "请继续提问以接着现有材料推进。）" if limit_hit else
-                    "\n\n（以上为过程说明；本次未生成文字总结，请继续提问。）")
-            tm.append_event(pid, turn_id, "message_delta", {"text": note})
-            accumulated_reply = accumulated_reply + note
-
-    # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 自动命名（任务1）+ 阶段推进
-    # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
-    # P1-4：取消即中止本轮全部状态变更——残缺回复/工具产物/抽取/阶段推进
-    # 均不落地，直接走 cancelled 终态（轮末块同步无 await，取消不会中途插入）
-    handle = tm.get_turn(pid, turn_id)
-    if handle is None:
-        return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
-    cancelled = handle.cancel_event.is_set()
-    # 悬挂补完（R6）：以冒号/空选项块收尾的半截话不是可交付答案——
-    # 生产实录回合「先问最实际的：」后无下文。追加一次无工具续流让模型
-    # 把话补完；预算/墙钟/取消三重闸门；失败保留原文（已流出内容绝不丢）。
-    if (not cancelled and llm is not None and accumulated_reply
-            and continuations < MAX_CONTINUATIONS
-            and not _stop_requested(handle, start, max_wall_seconds)
-            and _looks_dangling(accumulated_reply)):
-        continuations += 1
-        messages.append({"role": "system", "content":
-                         "你的上一条回复以冒号或空选项块收尾，话还没说完。"
-                         "已输出内容的末尾如下：\n" + accumulated_reply[-120:]
-                         + "\n请紧接着上述末尾把话说完：直接续写正文；若在等待"
-                           "对方选择，用 [[options:标签]]选项A|选项B[[/options]] "
-                           "格式给出选项；不要重复已写出的内容，写完即止。"})
-        comp_deltas = ""  # 补完流已流出增量：与截断续写同款三路兜底
-        try:
-            stream = llm.chat_stream(messages, tools=None, slot="interview")
-            iterations += 1
-            comp_resp = None
-            async for chunk in _async_iter(stream):
-                if tm.get_turn(pid, turn_id) is None:
-                    return  # 项目删除竞态：同截断续写
-                if "delta" in chunk and chunk["delta"]:
-                    comp_deltas += chunk["delta"]
-                    tm.append_event(pid, turn_id, "message_delta",
-                                    {"text": chunk["delta"]})
-                elif "content" in chunk:
-                    comp_resp = chunk
-            if comp_resp and not comp_resp.get("error"):
-                accumulated_reply += ((comp_resp.get("content", "") or "")
-                                      or comp_deltas)
-                finish_reason = (str(comp_resp.get("finish_reason") or "")
-                                 or finish_reason)
-                usage_total = comp_resp.get("usage", {}) or usage_total
-                recovery_failed = False  # R18：补完成功即清除
-            else:
-                accumulated_reply += comp_deltas
-                recovery_failed = True  # R18：无终帧/终帧报错
-        except Exception:
-            accumulated_reply += comp_deltas  # 流中断：已流出内容绝不丢
-            recovery_failed = True  # R18
-
-    # 悬挂补完块的 await 窗口内 cancel 可能已置位（TurnManager.cancel 会
-    # 立即 finish("cancelled")）——刷新快照，防已取消回合被改写 completed
-    cancelled = handle.cancel_event.is_set() or cancelled
-    if not cancelled:
-        # 统一终检门（R8/R16/R18）：所有恢复路径走完后的最后一道防线——
-        # 无答案 / 最近一次恢复失败 / 仍截断 / 仍悬挂，任一命中即 incomplete。
-        # 检查的是提取 quick_replies 之前的原始 accumulated_reply（有效选项
-        # 块收尾不算悬挂，见 _looks_dangling）。
-        if ((not has_final_answer) or recovery_failed
-                or _looks_truncated(accumulated_reply, finish_reason)
-                or _looks_dangling(accumulated_reply)):
-            incomplete = True
-    quick_reply_groups: list[dict] = []
-    safety_blocked = False
-    if not cancelled and accumulated_reply:
-        accumulated_reply, quick_reply_groups = _extract_quick_replies(accumulated_reply)
-        accumulated_reply = _normalize_cjk_quotes(accumulated_reply)
-        # 输出终检（窄表）：命中 → 落库/turn_done 载体替换为固定文案；
-        # 已流出 delta 不撤回（流式诚实），拦截目标是持久层与后续上下文。
-        out_verdict = check_model_output(accumulated_reply)
-        if out_verdict.blocked:
-            safety_blocked = True
-            quick_reply_groups = []  # 替换文案不含选项块
-            tm.append_event(pid, turn_id, "safety_blocked",
-                            {"side": "output", "category": out_verdict.category})
-            accumulated_reply = SAFETY_BLOCK_NOTICE
-    # 旧扁平 quick_replies 仅单组时携带；多组时为空，避免只覆盖其中一个问题的误导性子集
-    quick_replies: list[str] = (quick_reply_groups[0]["options"]
-                                if len(quick_reply_groups) == 1 else [])
-    if not cancelled:
-        try:
-            if accumulated_reply:
-                # N12：turn_id 入 meta（retry 校验尾部归属）；quick_reply_groups 为
-                # 分支特性，在下方条件区自动共存
-                meta = {"turn_id": turn_id,
-                        "tool_calls": total_calls, "finish_reason": finish_reason}
-                if quick_replies:
-                    meta["quick_replies"] = quick_replies
-                if quick_reply_groups:
-                    meta["quick_reply_groups"] = quick_reply_groups
-                if safety_blocked:
-                    meta["safety_blocked"] = True
-                repo.append_message(pid, "assistant", accumulated_reply, meta)
-            if accumulated_reply:
-                buffer.stage(turn_memory_patch(buffer.staged_view(), user_text, accumulated_reply))
-            buffer.commit()  # F05：正常轮末提交暂存 patch（取消/失败路径不落盘）
-            _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
-                                  doc_inputs_provenance, live_refs_by_call,
-                                  doc_itinerary_from_turn)
-            # T02：生成过方案的轮次，消息抽取已在回合开始暂存并随 buffer 提交；
-            # 轮末再写会在文档生成之后改 ctx（旧实现“生成即过期”的来源）。
-            if not doc_generated_this_turn:
-                _apply_extractions(repo, pid, user_text)
-            _schedule_autoname(repo, pid, llm)   # N09：后台任务卸载，不阻塞事件循环/主回合
-            transition = check_and_advance(repo, pid)
-            if transition:
-                tm.append_event(pid, turn_id, "phase_transition", transition)
-        except Exception as exc:
-            tm.append_event(pid, turn_id, "error",
-                            {"code": "internal_error",
-                             "message": f"轮末持久化失败: {exc}", "hint": ""})
-            tm.finish(pid, turn_id, "failed")
-            return
-
-    # 终态
-    if cancelled:
-        buffer.discard()  # F05：取消丢弃本轮暂存
-        tm.finish(pid, turn_id, "cancelled")
-    else:
-        tm.append_event(pid, turn_id, "turn_done",
-                        {"reply_id": turn_id, "usage": usage_total,
-                         "snapshot_ids": snapshot_ids,
-                         "quick_replies": quick_replies,
-                         "quick_reply_groups": quick_reply_groups,
-                         "finish_reason": finish_reason,
-                         "incomplete": incomplete,
-                         "safety_blocked": safety_blocked})
-        tm.finish(pid, turn_id, "completed")
+    _finalize_turn(ctx, st)
 
 
 # 未完标点/截断算式：非空正文以其结尾几乎必为句中截断（服务端异常终止），
