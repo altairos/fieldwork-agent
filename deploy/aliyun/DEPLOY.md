@@ -240,6 +240,14 @@ cd /opt/fieldwork-agent && .venv/bin/pip install -e . && systemctl restart field
 > ```
 > 前端有改动时，先在本地 `cd web && npm run build` 刷新 `web/dist` 再打包（dist 已随包上传，服务器不需 Node）。
 
+**限流与日配额（S02）**：应用层默认登录 10 次/分钟/IP、注册 20 次/小时/IP、
+回合 200 次/天/owner，超限返回 `429` 带 `Retry-After`；对应
+`FA_LOGIN_RATE_LIMIT` / `FA_REGISTER_RATE_LIMIT` / `FA_TURN_DAILY_QUOTA`。
+启用 nginx 后，`/auth/` 在边缘层另有 `10r/m` 限制。
+
+> 限流状态在**进程内**：当前单进程 uvicorn 成立。以后若改多 worker，
+> 各 worker 会各算一份配额，需改用共享后端（Redis 等）。
+
 ---
 
 ## 10. 排错

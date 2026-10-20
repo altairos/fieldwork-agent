@@ -21,7 +21,10 @@ def init_deps(app, *, config=None, repo=None) -> None:
     app.state.amap = AMapClient(getattr(cfg, "amap_api_key", ""))
     app.state.turn_manager = TurnManager(root=cfg.projects_dir)
     from fieldwork_agent.kernel.repository.user_store_factory import make_user_store
+    from fieldwork_agent.web_host.ratelimit import RateLimits
+
     app.state.user_store = make_user_store(cfg)
+    app.state.rate_limits = RateLimits(cfg)
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
         from fieldwork_agent.kernel.llm import LLMClient, plan_base_url
@@ -55,6 +58,17 @@ def get_llm(request: Request):
 
 def get_user_store(request: Request):
     return request.app.state.user_store
+
+
+def get_rate_limits(request: Request):
+    """限流器组；未经 init_deps 构造的 app 懒建一份（测试/嵌入式用法）。"""
+    limits = getattr(request.app.state, "rate_limits", None)
+    if limits is None:
+        from fieldwork_agent.web_host.ratelimit import RateLimits
+
+        limits = RateLimits(getattr(request.app.state, "config", None))
+        request.app.state.rate_limits = limits
+    return limits
 
 
 # BackgroundTasks 无 Request，从 app 直取

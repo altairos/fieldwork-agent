@@ -4,15 +4,18 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fieldwork_agent.kernel.repository.guard import OWNER_TOKEN_RE
+from fieldwork_agent.web_host.api.limits import enforce_window
 from fieldwork_agent.web_host.api.owner import owner_from_request
-from fieldwork_agent.web_host.deps import get_repo, get_user_store
-from pydantic import BaseModel
+from fieldwork_agent.web_host.deps import get_rate_limits, get_repo, get_user_store
+from fieldwork_agent.web_host.ratelimit import client_ip
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class Credentials(BaseModel):
-    email: str
+    # 邮箱会作为限流键与账号主键：不设上限可被超长串放大（S02）
+    email: str = Field(max_length=254)
     password: str
     anon_token: str | None = None
 
@@ -50,6 +53,9 @@ async def register(body: Credentials, request: Request):
     if not getattr(cfg, "registration_open", True):
         raise HTTPException(403, {"code": "registration_closed", "message": "注册未开放"})
     anon_token = _validated_anon_token(body.anon_token)
+    # S02：注册按 IP 限流（次/小时）——批量注册与邮箱枚举放大都从这一步进
+    enforce_window(get_rate_limits(request).register_by_ip, client_ip(request),
+                   code="rate_limited", message="注册请求过于频繁，请稍后再试")
     store = get_user_store(request)
     try:
         # A03：PBKDF2（600k 迭代）是同步 CPU 密集调用，直接在事件循环里跑会
@@ -71,6 +77,12 @@ def _invalid_credentials() -> HTTPException:
 @router.post("/login")
 async def login(body: Credentials, request: Request):
     anon_token = _validated_anon_token(body.anon_token)
+    # S02：登录双维度限流——IP 挡单点爆破，账号挡换 IP 的分布式爆破
+    limits = get_rate_limits(request)
+    enforce_window(limits.login_by_ip, client_ip(request),
+                   code="rate_limited", message="登录尝试过于频繁，请稍后再试")
+    enforce_window(limits.login_by_account, body.email.strip().lower(),
+                   code="rate_limited", message="该账号登录尝试过于频繁，请稍后再试")
     store = get_user_store(request)
     cfg = request.app.state.config
     user = await asyncio.to_thread(store.get_user_by_email, body.email)

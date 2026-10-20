@@ -167,12 +167,15 @@ def _isolated_host_env(tmp_path, monkeypatch):
     CONFIG_DIR/PROJECTS_DIR/Path.home 指向 tmp_path——真实 ~/.fieldwork_agent
     （含 amap_api_key）与 ~/.flyai 不再被测试读写。
     """
-    for var in ("FIELDWORK_APP_TOKEN", "DASHSCOPE_API_KEY",
+    for var in ("FIELDWORK_APP_TOKEN", "FIELDWORK_PUBLIC_BIND",
+                "DASHSCOPE_API_KEY",
                 "DASHSCOPE_HTTP_BASE_URL", "FLYAI_API_KEY", "AMAP_API_KEY",
                 "FA_DASHSCOPE_PLAN", "FA_INTERVIEW_MODEL",
                 "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL", "FA_STORAGE",
                 "FA_USER_STORE_DIR", "FA_SESSION_TTL_DAYS",
-                "FA_PBKDF2_ITERATIONS", "FA_REGISTRATION_OPEN"):
+                "FA_PBKDF2_ITERATIONS", "FA_REGISTRATION_OPEN",
+                "FA_LOGIN_RATE_LIMIT", "FA_LOGIN_ACCOUNT_RATE_LIMIT",
+                "FA_REGISTER_RATE_LIMIT", "FA_TURN_DAILY_QUOTA"):
         monkeypatch.delenv(var, raising=False)
     from fieldwork_agent.core import config as config_mod
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)

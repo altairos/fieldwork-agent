@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fieldwork_agent.kernel.sources.amap import AMapClient
 from fieldwork_agent.kernel.sources.flyai import FlyAIClient
 from fieldwork_agent.web_host.api.guard import checked_owned_project, checked_turn_id
+from fieldwork_agent.web_host.api.limits import consume_turn_quota, require_turn_quota
 from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import (
     get_amap_raw,
@@ -131,8 +132,11 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
     llm, flyai, amap = _resolve_clients(request)
+    # S02：日配额在模型调用前判定——幂等命中不扣（上面已提前返回）
+    quota_key = require_turn_quota(request, owner)
     turn, created = tm.try_create_turn(project_id, idempotency_key=body.idempotency_key)
     if created:   # N11：仅新建才排后台执行；幂等命中（created=False）只回已有回合
+        consume_turn_quota(request, quota_key)   # 仅成功创建才记账
         background.add_task(_execute_turn, request.app, project_id,
                             turn.turn_id, body.text, llm, flyai, amap, owner)
     return {"turn_id": turn.turn_id, "status": turn.status}
@@ -261,9 +265,12 @@ async def retry_turn(project_id: str, turn_id: str, request: Request,
             "message": "该回合不是对话最新一轮，无法重新生成（仅最新回合可重试）",
         })
     llm, flyai, amap = _resolve_clients(request)
+    # S02：配额拒绝先于弹消息——否则「扣了配额却没生成」还会丢历史
+    quota_key = require_turn_quota(request, owner)
     repo.pop_last_message(project_id, role="assistant")
     text = repo.pop_last_message(project_id, role="user")["content"]
     turn = tm.create_turn(project_id)
+    consume_turn_quota(request, quota_key)
     background.add_task(_execute_turn, request.app, project_id,
                         turn.turn_id, text, llm, flyai, amap, owner)
     return {"turn_id": turn.turn_id, "status": turn.status}

@@ -103,6 +103,12 @@ tests/
   启动期强制要求 `FIELDWORK_APP_TOKEN` 非空，否则 `create_app` 抛 `RuntimeError`
   拒绝启动（避免“令牌留空 = 全站开放”配上公网直连）；不设该变量时行为不变。
   部署物已在 `deploy/aliyun/fieldwork-web.service` 声明，本地开发无需关心。
+- **限流与日配额（S02）**：`web_host/ratelimit.py` 进程内滑动窗口/日配额，
+  `init_deps` 挂到 `app.state.rate_limits`。登录按 IP 与账号双维度（默认
+  10 次/分钟）、注册按 IP（默认 20 次/小时）、回合按 owner（默认 200 次/天，
+  服务器本地日期）；超限 429 带 `Retry-After`。对应 `FA_LOGIN_RATE_LIMIT` /
+  `FA_LOGIN_ACCOUNT_RATE_LIMIT` / `FA_REGISTER_RATE_LIMIT` / `FA_TURN_DAILY_QUOTA`。
+  状态在进程内：多 worker / 多实例部署需换共享后端。
 - **能力开关**：`dashscope_available` / `flyai_available` / `amap_available` / `dingtalk_available` 供上层降级判断。
 
 设置 flyai 正式 Key（CLI 无 `login` 命令，体验模式无需 Key）：

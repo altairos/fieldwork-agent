@@ -89,6 +89,14 @@ class Config:
         self.registration_open: bool = os.getenv(
             "FA_REGISTRATION_OPEN", "1").strip().lower() not in ("0", "false", "no", "off", "")
 
+        # 限流（S02）：进程内滑动窗口/日配额。单进程 uvicorn 成立，多 worker
+        # 部署需换共享后端（见 web_host/ratelimit.py）。登录按 IP 与账号双维度
+        # （次/分钟），注册按 IP（次/小时），回合按 owner（次/天，服务器本地日期）。
+        self.login_rate_limit: int = _env_int("FA_LOGIN_RATE_LIMIT", 10)
+        self.login_account_rate_limit: int = _env_int("FA_LOGIN_ACCOUNT_RATE_LIMIT", 10)
+        self.register_rate_limit: int = _env_int("FA_REGISTER_RATE_LIMIT", 20)
+        self.turn_daily_quota: int = _env_int("FA_TURN_DAILY_QUOTA", 200)
+
         # 云同步（钉钉）
         self.dingtalk_webhook: str = ""
         self.dingtalk_enabled: bool = False
