@@ -4,12 +4,15 @@
 本地优先存储，可选云同步
 """
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".fieldwork_agent"
 PROJECTS_DIR = CONFIG_DIR / "projects"
+
+_log = logging.getLogger(__name__)
 
 # 模型三槽默认值（server.py 请求级 LLMClient 重建在 cfg 缺席时也引用；单一来源）
 DEFAULT_LLM_MODELS: dict[str, str] = {
@@ -160,8 +163,10 @@ class Config:
                 self.interview_model = data.get("interview_model", self.interview_model)
                 self.proposal_model = data.get("proposal_model", self.proposal_model)
                 self.extract_model = data.get("extract_model", self.extract_model)
-            except (OSError, json.JSONDecodeError):
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                # Q03：坏/不可读配置不能静默——用户会以为保存的 key 生效了。
+                _log.warning("用户配置读取失败，已回落默认值: %s（%s）",
+                             self.config_file, exc)
 
         # 从 flyai CLI 配置文件读取 API Key
         flyai_config = Path.home() / ".flyai" / "config.json"
@@ -172,8 +177,9 @@ class Config:
                 stored_key = flyai_data.get("key", "")
                 if stored_key and not self.flyai_api_key:
                     self.flyai_api_key = stored_key
-            except (OSError, json.JSONDecodeError):
-                pass
+            except (OSError, json.JSONDecodeError) as exc:
+                _log.warning("flyai CLI 配置读取失败，已跳过: %s（%s）",
+                             flyai_config, exc)
 
     def save(self):
         self.config_dir.mkdir(parents=True, exist_ok=True)   # Q04：save 自己补建

@@ -34,6 +34,8 @@ def init_deps(app, *, config=None, repo=None) -> None:
                 cfg.dashscope_api_key, cfg.llm_models,
                 base_url=plan_base_url(getattr(cfg, "dashscope_plan", "")))
         except RuntimeError:
+            # Q03：缺 SDK / 构建失败 → llm 保持 None，宿主以 403 llm_key_required
+            # 或模板降级应对；启动不因此失败（本地无 key 也要能开页面）。
             pass
     # R4：进程重启后遗留 running → interrupted
     pids = [p["project_id"] for p in repo.list_projects()]

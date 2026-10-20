@@ -225,6 +225,7 @@ class JsonRepository:
             try:
                 tmp.unlink()
             except OSError:
+                # Q03：replace 已移走或清理失败都不影响结果（成败由 os.replace 决定）
                 pass
 
     def _read_chat_log(self, pid: str) -> list[dict]:

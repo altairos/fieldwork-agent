@@ -5,6 +5,7 @@
   * FlyAI：环境变量优先，缺失时回退 ~/.flyai/config.json
 """
 import json
+import logging
 import os
 import pathlib
 
@@ -159,9 +160,12 @@ def test_save_roundtrip(isolated_home):
     assert "chat_model" not in saved and "system_model" not in saved
 
 
-def test_corrupt_config_file_ignored(isolated_home):
+def test_corrupt_config_file_ignored(isolated_home, caplog):
     (isolated_home / "config.json").write_text("{ not json", encoding="utf-8")
-    cfg = Config()  # 不应抛异常，回落默认值
+    with caplog.at_level(logging.WARNING):
+        cfg = Config()  # 不应抛异常，回落默认值
     assert cfg.dashscope_api_key == ""
     assert cfg.llm_models == {"interview": "qwen3.8-flash", "proposal": "qwen-max",
                               "extract": "qwen3.8-flash"}
+    # Q03：坏配置不再静默——至少留下一条可定位的告警
+    assert "config.json" in caplog.text and "读取失败" in caplog.text

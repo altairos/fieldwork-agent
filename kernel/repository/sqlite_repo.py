@@ -291,6 +291,7 @@ class SqliteRepository:
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
+                # Q03：rollback 自身失败也要把原始异常抛出去（下面 raise）
                 pass
             raise
         finally:
@@ -325,6 +326,7 @@ class SqliteRepository:
                     try:
                         conn.execute("ROLLBACK")
                     except sqlite3.Error:
+                        # Q03：同上——保留原始迁移异常
                         pass
                     raise
             # 归属索引（spec 为 owner 过滤路径预留）：不能进 _SCHEMA——旧库重开时

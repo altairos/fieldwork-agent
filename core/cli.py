@@ -52,6 +52,7 @@ def _ensure_utf8_stdio():
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
+            # Q03：StringIO/管道等流不支持 reconfigure——保持原编码即可，不是错误
             pass
 
 
