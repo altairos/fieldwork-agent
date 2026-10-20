@@ -2069,3 +2069,48 @@ def test_run_turn_normal_text_unaffected(env):
     assert len(llm.calls) == 1
     events = tm.replay("p1", turn.turn_id, after_seq=0)
     assert "safety_blocked" not in [e.event for e in events]
+
+
+# ───────────────────── 内容安全：输出终检（哑词注入，不依赖真实词条） ────────
+
+def test_run_turn_output_blocked_replaces_persisted_reply(env, monkeypatch):
+    """模型回复命中输出窄表：落库/turn_done 载体替换为拦截文案，选项清空。"""
+    from fieldwork_agent.kernel.guidance import safety as safety_mod
+    from fieldwork_agent.kernel.guidance.safety import SAFETY_BLOCK_NOTICE
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    monkeypatch.setattr(safety_mod, "_OUTPUT_RE",
+                        safety_mod._combo_pattern(("教程",), ("哑物丙",)))
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"delta": "以下是"},
+                    {"content": "哑物丙教程的第一步是准备材料。",
+                     "tool_calls": None,
+                     "finish_reason": "stop", "usage": {}}]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "随便问我什么",
+                         tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    sb = [e for e in events if e.event == "safety_blocked"]
+    assert sb and sb[0].data["side"] == "output"
+    done = [e for e in events if e.event == "turn_done"][0]
+    assert done.data["safety_blocked"] is True
+    assert done.data["quick_reply_groups"] == []
+    msgs = repo.get_messages("p1")
+    assert msgs[-1]["content"] == SAFETY_BLOCK_NOTICE   # 原文不落库
+    assert msgs[-1]["metadata"].get("safety_blocked") is True
+
+
+def test_run_turn_clean_reply_unaffected(env):
+    """正常回复不经替换（回归锚）。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"content": "大理的田野行程建议：先抵昆明再转大理，"
+                                "田野点集中在古城周边。",
+                     "tool_calls": None, "finish_reason": "stop", "usage": {}}]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "规划大理行程",
+                         tm, llm, FakeFlyAI()))
+    msgs = repo.get_messages("p1")
+    assert msgs[-1]["content"].startswith("大理的田野行程")
+    assert "safety_blocked" not in msgs[-1]["metadata"]

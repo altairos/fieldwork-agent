@@ -7,7 +7,12 @@ from datetime import datetime
 from typing import Any
 
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
-from fieldwork_agent.kernel.guidance.safety import INPUT_REFUSAL, check_user_input
+from fieldwork_agent.kernel.guidance.safety import (
+    INPUT_REFUSAL,
+    SAFETY_BLOCK_NOTICE,
+    check_model_output,
+    check_user_input,
+)
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.research_state import turn_memory_patch
@@ -562,9 +567,19 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 or _looks_dangling(accumulated_reply)):
             incomplete = True
     quick_reply_groups: list[dict] = []
+    safety_blocked = False
     if not cancelled and accumulated_reply:
         accumulated_reply, quick_reply_groups = _extract_quick_replies(accumulated_reply)
         accumulated_reply = _normalize_cjk_quotes(accumulated_reply)
+        # 输出终检（窄表）：命中 → 落库/turn_done 载体替换为固定文案；
+        # 已流出 delta 不撤回（流式诚实），拦截目标是持久层与后续上下文。
+        out_verdict = check_model_output(accumulated_reply)
+        if out_verdict.blocked:
+            safety_blocked = True
+            quick_reply_groups = []  # 替换文案不含选项块
+            tm.append_event(pid, turn_id, "safety_blocked",
+                            {"side": "output", "category": out_verdict.category})
+            accumulated_reply = SAFETY_BLOCK_NOTICE
     # 旧扁平 quick_replies 仅单组时携带；多组时为空，避免只覆盖其中一个问题的误导性子集
     quick_replies: list[str] = (quick_reply_groups[0]["options"]
                                 if len(quick_reply_groups) == 1 else [])
@@ -579,6 +594,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                     meta["quick_replies"] = quick_replies
                 if quick_reply_groups:
                     meta["quick_reply_groups"] = quick_reply_groups
+                if safety_blocked:
+                    meta["safety_blocked"] = True
                 repo.append_message(pid, "assistant", accumulated_reply, meta)
             if accumulated_reply:
                 buffer.stage(turn_memory_patch(buffer.staged_view(), user_text, accumulated_reply))
@@ -608,7 +625,8 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                          "quick_replies": quick_replies,
                          "quick_reply_groups": quick_reply_groups,
                          "finish_reason": finish_reason,
-                         "incomplete": incomplete})
+                         "incomplete": incomplete,
+                         "safety_blocked": safety_blocked})
         tm.finish(pid, turn_id, "completed")
 
 

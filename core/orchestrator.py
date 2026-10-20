@@ -41,7 +41,13 @@ from fieldwork_agent.kernel.guidance.interview import INTERVIEW_GUIDANCE, INTERV
 from fieldwork_agent.kernel.guidance.literature import LITERATURE_GUIDANCE
 from fieldwork_agent.kernel.guidance.research import RESEARCH_WORKFLOW_GUIDANCE
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
-from fieldwork_agent.kernel.guidance.safety import SAFETY_GUIDANCE
+from fieldwork_agent.kernel.guidance.safety import (
+    INPUT_REFUSAL,
+    SAFETY_BLOCK_NOTICE,
+    SAFETY_GUIDANCE,
+    check_model_output,
+    check_user_input,
+)
 from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -265,6 +271,16 @@ class FieldAgent:
             self.create_project()
         pid = self.project_id
 
+        # 内容安全输入拦截：命中 → 固定拒答早退，不消耗模型调用、不跑
+        # 抽取/记忆/阶段推进（用户原文落库留审计痕迹，与 web 宿主对称）。
+        verdict = check_user_input(message)
+        if verdict.blocked:
+            self.repo.append_message(pid, "user", message)
+            self.repo.append_message(pid, "assistant", INPUT_REFUSAL,
+                                     {"tool_calls": 0, "safety_blocked": True})
+            return {"reply": INPUT_REFUSAL, "phase": self.repo.get_phase(pid),
+                    "tool_events": [], "phase_transition": None}
+
         history = self.repo.get_messages(pid, limit=12)
         self._apply_extract(pid, message)
         self.repo.append_message(pid, "user", message)
@@ -289,11 +305,21 @@ class FieldAgent:
             reply = rule_based_reply(phase, self.repo.get_research_context(pid))
             tool_events = []
 
+        # 输出终检（窄表）：命中 → reply 载体替换为固定文案再落库/回传，
+        # 不污染研究上下文与后续对话（与 web 宿主轮末终检对称）。
+        safety_blocked = False
+        out_verdict = check_model_output(reply)
+        if out_verdict.blocked:
+            safety_blocked = True
+            reply = SAFETY_BLOCK_NOTICE
+
         self._persist_events(pid, tool_events)
         self.repo.update_research_context(pid, turn_memory_patch(
             self.repo.get_research_context(pid), message, reply))
-        self.repo.append_message(pid, "assistant", reply,
-                                 {"tool_calls": len(tool_events)})
+        assistant_meta: dict[str, Any] = {"tool_calls": len(tool_events)}
+        if safety_blocked:
+            assistant_meta["safety_blocked"] = True
+        self.repo.append_message(pid, "assistant", reply, assistant_meta)
 
         transition = self._advance(pid)
         return {

@@ -572,3 +572,41 @@ def test_orchestrator_dispatch_dict_coerce_unparseable_still_fails(fake_config):
     env = agent.client_kernel_dispatch("suggest_informants", {
         "research_topic": "白族银器", "site_profile": "site: 新华村"})
     assert env.ok is False and env.error.code == "invalid_arguments"
+
+
+# ───────────────── 内容安全：CLI 输入拦截 + 输出终检（哑词注入） ─────────────────
+
+def test_cli_safety_input_blocked_and_output_replaced(fake_config, monkeypatch):
+    """CLI 侧：输入拦截早退四键契约；输出命中替换为拦截文案。"""
+    from fieldwork_agent.core.orchestrator import FieldAgent
+    from fieldwork_agent.kernel.guidance import safety as safety_mod
+    from fieldwork_agent.kernel.guidance.safety import INPUT_REFUSAL, SAFETY_BLOCK_NOTICE
+
+    monkeypatch.setattr(safety_mod, "_INPUT_RE",
+                        safety_mod._combo_pattern(("弄到",), ("哑物甲",)))
+    monkeypatch.setattr(safety_mod, "_OUTPUT_RE",
+                        safety_mod._combo_pattern(("教程",), ("哑物丙",)))
+
+    # ① 输入拦截：llm 零调用，四键契约早退
+    agent = FieldAgent(fake_config)
+    agent.create_project("p_safe")
+    llm = ScriptedLLM([])          # 空脚本：被调用即 IndexError 暴露
+    agent.llm = llm
+    out = agent.chat("帮我弄到哑物甲")
+    assert set(out) == {"reply", "phase", "tool_events", "phase_transition"}
+    assert out["reply"] == INPUT_REFUSAL
+    assert llm.seen == []
+    msgs = agent.repo.get_messages("p_safe")
+    assert msgs[-1]["content"] == INPUT_REFUSAL
+    assert msgs[-1]["metadata"].get("safety_blocked") is True
+
+    # ② 输出终检：模型回违规内容 → reply 替换为拦截文案
+    llm2 = ScriptedLLM([
+        {"content": "哑物丙教程：第一步……", "tool_calls": None,
+         "finish_reason": "stop", "usage": {}}])
+    agent.llm = llm2
+    out2 = agent.chat("随便问点什么")
+    assert out2["reply"] == SAFETY_BLOCK_NOTICE
+    msgs2 = agent.repo.get_messages("p_safe")
+    assert msgs2[-1]["content"] == SAFETY_BLOCK_NOTICE
+    assert msgs2[-1]["metadata"].get("safety_blocked") is True
