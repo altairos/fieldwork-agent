@@ -2114,3 +2114,37 @@ def test_run_turn_clean_reply_unaffected(env):
     msgs = repo.get_messages("p1")
     assert msgs[-1]["content"].startswith("大理的田野行程")
     assert "safety_blocked" not in msgs[-1]["metadata"]
+
+
+# ───────────────────── 内容安全：平台审核错误与 Key 错误分流 ─────────────────
+
+def test_run_turn_moderation_error_distinct_code(env):
+    """平台审核错误 → code=content_moderation，hint 不再误指 API Key。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"content": "", "tool_calls": None, "finish_reason": "",
+                     "usage": {},
+                     "error": "StatusCode: 400, Code: data_inspection_failed, "
+                              "Message: inappropriate content detected"}]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "触发审核的文本", tm, llm, None))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    err = [e for e in events if e.event == "error"][0]
+    assert err.data["code"] == "content_moderation"
+    assert "Key" not in err.data["hint"]
+
+
+def test_run_turn_key_error_keeps_old_hint(env):
+    """普通 key 错误维持既有 llm_error + Key hint（回归锚）。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"content": "", "tool_calls": None, "finish_reason": "",
+                     "usage": {}, "error": "Invalid API-key provided"}]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, None))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    err = [e for e in events if e.event == "error"][0]
+    assert err.data["code"] == "llm_error"
+    assert "Key" in err.data["hint"]

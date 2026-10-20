@@ -15,6 +15,8 @@
 
 架构分层：`core/`（宿主编排）→ `runtime/`（共用回合循环）→ `kernel/`（无状态能力内核，只依赖标准库 + pydantic，绝不反向 import 宿主层）。开发者细节见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
+**内容安全**：三层防护——system prompt 安全边界段（含研究议题豁免：边缘群体、宗教、越轨行为、物质使用等正当社科议题不受限）；输入侧组合匹配硬拦截（意图动词 × 危害对象同现才命中，命中返回固定拒答、不消耗模型调用）；输出侧落库前终检（窄词表防拒答自触发，拦截内容不污染对话历史）。平台审核错误（`data_inspection_failed`）与 Key 错误分流提示。判定内核见 `kernel/guidance/safety.py`。
+
 ## 安装步骤
 
 ### 后端（Python >= 3.10）

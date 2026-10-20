@@ -12,6 +12,7 @@ from fieldwork_agent.kernel.guidance.safety import (
     SAFETY_BLOCK_NOTICE,
     check_model_output,
     check_user_input,
+    is_content_moderation_error,
 )
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.registry import build_tool_schemas
@@ -254,9 +255,16 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
             # 错误静默吞掉、产出空 turn_done（配错 key 表现为「没反应」）。
             llm_error = final_resp.get("error")
             if llm_error:
+                # 平台内容审核拦截（data_inspection_failed 等）与 key/限流错误
+                # 分流：前者提示调整措辞，后者维持 Key 检查 hint（此前统一误报
+                # 为 Key 问题，审核触发时用户被误导去检查配置）。
+                moderated = is_content_moderation_error(llm_error)
                 tm.append_event(pid, turn_id, "error",
-                                {"code": "llm_error", "message": str(llm_error),
-                                 "hint": "请检查百炼 API Key 是否有效"})
+                                {"code": "content_moderation" if moderated else "llm_error",
+                                 "message": str(llm_error),
+                                 "hint": ("请求被平台内容安全策略拦截，"
+                                          "请调整提问措辞后重试" if moderated else
+                                          "请检查百炼 API Key 是否有效")})
                 tm.finish(pid, turn_id, "failed")
                 return
             raw = final_resp.get("content", "") or ""
