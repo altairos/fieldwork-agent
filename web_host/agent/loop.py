@@ -272,6 +272,10 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                 accumulated_reply = stream_prefix + raw
             usage_total = final_resp.get("usage", {}) or usage_total
             tool_calls = final_resp.get("tool_calls")
+            # C06：带工具帧的文字此前只写 accumulated_reply，下一帧被
+            # stream_prefix+raw 覆盖丢失；并入前缀，后续帧自然拼全
+            if raw and tool_calls:
+                stream_prefix += raw
             if not tool_calls:
                 finish_reason = str(final_resp.get("finish_reason") or "")
                 answer = raw.strip()

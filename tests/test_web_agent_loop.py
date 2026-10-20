@@ -1735,7 +1735,9 @@ def test_f05_normal_turn_commits_staged_patch(env):
 
 def test_f06_preamble_budget_hit_converges_to_final_answer(env):
     """F06：前导语（"我先查一下"）+ 工具轮触顶退出——旧条件 accumulated_reply
-    非空会短路收敛块；新条件 not has_final_answer 必须触发，收敛帧覆盖前导语。"""
+    非空会短路收敛块；新条件 not has_final_answer 必须触发，收敛帧产出最终回答。
+    C06 后该帧文字已并入 stream_prefix，落盘正文＝前导语+收敛正文（与首次流式
+    累计一致）；收敛未触发时正文只剩前导语本身，故本断言仍守住收敛条件。"""
     repo, tm = env
     llm = FakeLLM([
         [{"delta": "我先查一下"},
@@ -1751,7 +1753,9 @@ def test_f06_preamble_budget_hit_converges_to_final_answer(env):
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "大理有哪些宗祠", tm, llm,
                          FakeFlyAI(), max_tool_calls=1))
     assistant = [m for m in repo.get_messages("p1") if m["role"] == "assistant"]
-    assert assistant[-1]["content"] == "综合来看，大理有 3 处。"   # 覆盖前导语
+    # C06：带工具帧的文字并入前缀，收敛组装为「前缀+收敛正文」（此前前导语
+    # 被收敛帧覆盖丢失，与首次流式累计不一致）
+    assert assistant[-1]["content"] == "我先查一下综合来看，大理有 3 处。"
     assert tm.get_turn("p1", turn.turn_id).status == "completed"
 
 
@@ -2214,3 +2218,49 @@ def test_same_turn_two_itineraries_bind_own_call_ids(env):
     assert len(itins) == 2
     # 修复前两次都绑本回合第一个行程调用（{'c1'}）；修复后各绑自身
     assert {c["parent_call_id"] for c in itins} == {"c1", "c2"}
+
+
+def test_text_before_tool_calls_preserved_in_reply(env):
+    """C06：带 tool_calls 帧的流式文字与后续最终文字完整拼接落库。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "我先查酒店。"},
+         {"content": "我先查酒店。",
+          "tool_calls": [{"id": "c1", "name": "search_hotels",
+                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "查到一家。"},
+         {"content": "查到一家。", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI()))
+    msgs = repo.get_messages("p1")
+    assistant = [m for m in msgs if m["role"] == "assistant"]
+    assert assistant[-1]["content"] == "我先查酒店。查到一家。"
+
+
+def test_text_across_two_tool_rounds_preserved(env):
+    """C06：多轮工具（连续两帧均带文字+工具）也完整拼接。"""
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": "先查酒店。"},
+         {"content": "先查酒店。",
+          "tool_calls": [{"id": "c1", "name": "search_hotels",
+                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "再查民宿。"},
+         {"content": "再查民宿。",
+          "tool_calls": [{"id": "c2", "name": "search_hotels",
+                          "arguments": {"dest_name": "丽江"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "都查完了。"},
+         {"content": "都查完了。", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "查酒店和航班", tm, llm, FakeFlyAI()))
+    msgs = repo.get_messages("p1")
+    assistant = [m for m in msgs if m["role"] == "assistant"]
+    assert assistant[-1]["content"] == "先查酒店。再查民宿。都查完了。"
