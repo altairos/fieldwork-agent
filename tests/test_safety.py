@@ -91,3 +91,14 @@ def test_verdict_defaults():
     assert v.category == "harm_request"
     ov = check_model_output("哑物甲的制作流程如下", intents=("制作",), objects=("哑物甲",))
     assert ov.category == "harm_content"
+
+
+def test_system_prompts_include_safety_guidance_both_hosts():
+    """双宿主 system 装配均含安全段，且位置在 snapshot 之前。"""
+    from fieldwork_agent.core.orchestrator import _system_prompt
+    from fieldwork_agent.web_host.agent.context import build_system_prompt
+
+    for prompt in (_system_prompt("scoping", "SNAP"),
+                   build_system_prompt("scoping", "SNAP")):
+        assert SAFETY_GUIDANCE in prompt
+        assert prompt.index(SAFETY_GUIDANCE) < prompt.index("SNAP")

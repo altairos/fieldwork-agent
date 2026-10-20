@@ -5,6 +5,7 @@ from fieldwork_agent.kernel.guidance.costs import COST_GUIDANCE
 from fieldwork_agent.kernel.guidance.interview import INTERVIEW_GUIDANCE, INTERVIEW_TURN_REMINDER
 from fieldwork_agent.kernel.guidance.literature import LITERATURE_GUIDANCE
 from fieldwork_agent.kernel.guidance.research import RESEARCH_WORKFLOW_GUIDANCE
+from fieldwork_agent.kernel.guidance.safety import SAFETY_GUIDANCE
 from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 from fieldwork_agent.kernel.tool_usage import TOOL_USAGE_GUIDANCE
 
@@ -60,7 +61,8 @@ def build_snapshot(repo: ProjectRepository, pid: str) -> str:
 def build_system_prompt(phase: str, snapshot: str) -> str:
     return "\n\n".join([phases.time_anchor(), phases.phase_prompt(phase),
                         COST_GUIDANCE, _TOOL_GUIDANCE, LITERATURE_GUIDANCE,
-                        INTERVIEW_GUIDANCE, TOOL_USAGE_GUIDANCE, RESEARCH_WORKFLOW_GUIDANCE, snapshot])
+                        INTERVIEW_GUIDANCE, TOOL_USAGE_GUIDANCE, RESEARCH_WORKFLOW_GUIDANCE,
+                        SAFETY_GUIDANCE, snapshot])
 
 
 def build_messages(repo: ProjectRepository, pid: str, user_text: str,

@@ -41,6 +41,7 @@ from fieldwork_agent.kernel.guidance.interview import INTERVIEW_GUIDANCE, INTERV
 from fieldwork_agent.kernel.guidance.literature import LITERATURE_GUIDANCE
 from fieldwork_agent.kernel.guidance.research import RESEARCH_WORKFLOW_GUIDANCE
 from fieldwork_agent.kernel.guidance.rule_replies import rule_based_reply
+from fieldwork_agent.kernel.guidance.safety import SAFETY_GUIDANCE
 from fieldwork_agent.kernel.llm import LLMClient
 from fieldwork_agent.kernel.models import (
     Envelope,
@@ -154,7 +155,8 @@ def _system_prompt(phase: str, snapshot: str) -> str:
     """CLI 回合 system（与 web_host/agent/context.py 同序拼装）。"""
     return "\n\n".join([phases.time_anchor(), phases.phase_prompt(phase),
                         COST_GUIDANCE, _TOOL_GUIDANCE, LITERATURE_GUIDANCE,
-                        INTERVIEW_GUIDANCE, TOOL_USAGE_GUIDANCE, RESEARCH_WORKFLOW_GUIDANCE, snapshot])
+                        INTERVIEW_GUIDANCE, TOOL_USAGE_GUIDANCE, RESEARCH_WORKFLOW_GUIDANCE,
+                        SAFETY_GUIDANCE, snapshot])
 
 
 def _to_dict(data: Any) -> dict:
