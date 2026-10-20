@@ -39,6 +39,43 @@ jobs:
       - name: Secrets-leak guard
         run: python tools/check_secrets_leak.py
 
+  # A07：供应链门禁。单独 job（不进 4 格矩阵）——依赖面与 OS/Python 版本无关，
+  # 多跑三遍只会浪费 runner 时间。
+  audit:
+    name: dependency audit (pip-audit + npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable + dev + mcp)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,mcp]"
+          pip install pip-audit
+
+      # 已知漏洞即失败。--skip-editable：本仓库自身的 editable 安装不是 PyPI 依赖。
+      - name: Python deps (pip-audit)
+        run: pip-audit --skip-editable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install frontend deps
+        working-directory: web
+        run: npm ci
+
+      # 只审计随包发布的依赖（--omit=dev）：当前 high 均来自 tailwindcss 3 的
+      # 构建期传递依赖，修复需升 4（major），单独跟踪而不阻塞发布。
+      # 显式 --registry：本地/企业镜像常不实现 audit 端点（npmmirror 即如此）。
+      - name: Frontend deps (npm audit, prod only)
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
+
   # 前端独立 job（Task 9）：vitest 单测 + Playwright L4 端到端冒烟。
   # 不混入 Python 矩阵；e2e 跑在扩展后的 mock server（纯 Node、确定性），
   # 无需 Python 后端 / DASHSCOPE_API_KEY / flyai。L4 不允许静默 skip（spec §6.CI）。
