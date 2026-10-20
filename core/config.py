@@ -101,10 +101,14 @@ class Config:
         self.dingtalk_webhook: str = ""
         self.dingtalk_enabled: bool = False
 
-        self._ensure_dirs()
         self._load_config()
 
-    def _ensure_dirs(self):
+    def ensure_dirs(self) -> None:
+        """显式创建配置/项目根目录（Q04：构造期不再产生磁盘副作用）。
+
+        组合根（``create_app`` 自建仓储时、CLI/MCP 首次落盘前）负责调用；
+        幂等，重复调用无副作用。
+        """
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.projects_dir.mkdir(parents=True, exist_ok=True)
 
@@ -140,6 +144,7 @@ class Config:
                 pass
 
     def save(self):
+        self.config_dir.mkdir(parents=True, exist_ok=True)   # Q04：save 自己补建
         data = {
             "dashscope_api_key": self.dashscope_api_key,
             "flyai_api_key": self.flyai_api_key,
@@ -185,6 +190,5 @@ class Config:
         return bool(self.dingtalk_webhook) and self.dingtalk_enabled
 
     def get_project_dir(self, project_id: str) -> Path:
-        pdir = self.projects_dir / project_id
-        pdir.mkdir(parents=True, exist_ok=True)
-        return pdir
+        """项目目录路径（纯函数，不建目录；落盘由仓储存取层负责）。"""
+        return self.projects_dir / project_id

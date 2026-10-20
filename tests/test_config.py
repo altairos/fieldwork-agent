@@ -39,6 +39,9 @@ def test_defaults_isolated(isolated_home):
     assert cfg.flyai_available is False
     assert cfg.amap_available is False
     assert cfg.dingtalk_available is False
+    # Q04：构造期不再产生磁盘副作用；组合根显式 ensure_dirs() 才建目录
+    assert not cfg.projects_dir.exists()
+    cfg.ensure_dirs()
     assert cfg.projects_dir.exists()
 
 

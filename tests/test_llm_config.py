@@ -16,7 +16,7 @@ from fieldwork_agent.kernel.llm import LLMClient
 
 def _patch_dirs(monkeypatch, tmp_path):
     """R6：CONFIG_DIR / PROJECTS_DIR 同时指向 tmp_path 下不存在的路径，
-    避免 _ensure_dirs() 在盘根 mkdir，Windows/CI 双平台安全。"""
+    避免 save()/ensure_dirs() 在盘根 mkdir，Windows/CI 双平台安全。"""
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path / "cfg_dir")
     monkeypatch.setattr(config_mod, "PROJECTS_DIR", tmp_path / "cfg_dir" / "projects")
 

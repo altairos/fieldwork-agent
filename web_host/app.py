@@ -64,6 +64,11 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     _assert_public_access_is_guarded(cfg)
     shared_repo = repo
     if shared_repo is None:
+        # Q04：Config 构造期不再建目录；由自建仓储的组合根显式补上（/ready 探针
+        # 需要 projects_dir 已存在，SQLite 也已在自己的构造里建父目录）。
+        ensure_dirs = getattr(cfg, "ensure_dirs", None)
+        if callable(ensure_dirs):
+            ensure_dirs()
         from fieldwork_agent.kernel.repository.factory import make_repository
         shared_repo = make_repository(cfg)
 

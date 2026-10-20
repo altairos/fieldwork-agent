@@ -11,8 +11,9 @@ def app(tmp_path):
     from fieldwork_agent.kernel.repository.json_repo import JsonRepository
     from fieldwork_agent.web_host.deps import init_deps
 
-    # 生产路径中 Config._ensure_dirs() 会先建 projects 目录，自定义 repo 绕过了
-    # 该步（JsonRepository 构造不 mkdir），此处显式补齐以还原真实前提。
+    # 生产路径中 create_app 自建仓储时会调 Config.ensure_dirs() 先建 projects
+    # 目录，自定义 repo 绕过了该步（JsonRepository 构造不 mkdir），此处显式
+    # 补齐以还原真实前提。
     projects = tmp_path / "projects"
     projects.mkdir()
     repo = JsonRepository(projects_dir=projects)
