@@ -10,6 +10,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/projects": "http://localhost:8300",
+      "/auth": "http://localhost:8300", // 登录/注册四端点（账号隔离一期，dev/e2e 代理到 mock）
       "/health": "http://localhost:8300",
       "/settings": "http://localhost:8300", // key 配置状态（ApiKeyCard/Workspace 消费）
       "/__test": "http://localhost:8300", // e2e 专用翻转端点（mock server）

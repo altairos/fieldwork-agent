@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "../src/App";
 import { saveKeys } from "../src/lib/keys";
 import { useConversationStore } from "../src/stores/conversation";
 import { useProjectStore } from "../src/stores/project";
 import { useToolsStore } from "../src/stores/tools";
 import { useUiStore } from "../src/stores/ui";
+import { useAuthStore } from "../src/stores/auth";
 import type { ProjectSnapshot } from "../src/types/models";
 
 /**
@@ -163,9 +164,9 @@ describe("Workspace 无 key 拦截（可浏览不可发）", () => {
     render(<App />);
     expect(await screen.findByTestId("composer-lock-hint")).toHaveTextContent("未配置百炼 API Key");
 
-    // 提示内按钮就地弹层（免回首页）
-    fireEvent.click(screen.getByRole("button", { name: "填写百炼 API Key" }));
-    expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
+    // 提示内按钮就地弹登录窗并自动展开高级密钥区（免回首页）
+    fireEvent.click(screen.getByRole("button", { name: "在登录窗「高级 · API 密钥」中填写" }));
+    expect(await screen.findByRole("dialog", { name: "登录或注册" })).toBeInTheDocument();
 
     // 弹层里填 key 保存，关闭 → 解锁
     fireEvent.change(screen.getByLabelText(/百炼 API Key/), { target: { value: "sk-late" } });
@@ -258,12 +259,13 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
     return fn;
   }
 
-  test("快照/消息史 401：横幅给人话指引（不透传原始 JSON）并自动弹出密钥弹层", async () => {
+  test("快照/消息史 401：横幅给人话指引（不透传原始 JSON）并自动弹出登录窗（高级区展开）", async () => {
     stubAuthGuard({ rest: SNAP });
     render(<App />);
 
-    // 弹层自动打开——用户不必回首页找「密钥 / 登录」入口
-    expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
+    // 弹窗自动打开且高级密钥区已展开（initialKeysOpen=true）——用户不必回首页找「密钥」入口
+    const dialog = await screen.findByRole("dialog", { name: "登录或注册" });
+    expect(within(dialog).getByRole("button", { name: /高级 · API 密钥/ })).toHaveAttribute("aria-expanded", "true");
     // 横幅是人话指引；原始 JSON（app_token_required 等响应体文本）不上屏
     expect(await screen.findByText(/访问令牌缺失或已失效/)).toBeInTheDocument();
     expect(screen.queryByText(/app_token_required/)).not.toBeInTheDocument();
@@ -272,7 +274,10 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
   test("弹层中保存新令牌后关闭：就地重试恢复快照与消息史，横幅撤下", async () => {
     const fn = stubAuthGuard({ rest: SNAP, messages: [{ role: "user" as const, content: "帮我定位选题" }] });
     render(<App />);
-    const dialog = await screen.findByRole("dialog", { name: "密钥与登录" });
+    const dialog = await screen.findByRole("dialog", { name: "登录或注册" });
+    // 降级横幅落地 = 两路 401 catch 链（含 ApiKeySection 挂载回显）已稳定；
+    // 在挂载渲染尾巴里 fireEvent.change 会被受控回写吞掉（值恒空），先等稳定再操作
+    await screen.findByText(/访问令牌缺失或已失效/);
 
     fireEvent.change(within(dialog).getByLabelText(/访问令牌/), { target: { value: "tok-good" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
@@ -282,17 +287,17 @@ describe("Workspace 访问令牌 401（app_token_required）降级", () => {
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
     expect(await screen.findByText("帮我定位选题")).toBeInTheDocument();
     expect(screen.queryByText(/访问令牌缺失或已失效/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "密钥与登录" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "登录或注册" })).not.toBeInTheDocument();
     expect(fn.mock.calls.filter((c) => String(c[0]) === "/projects/p1").length).toBe(2);
   });
 
   test("未改令牌直接关闭弹层：不重试，横幅如实保留", async () => {
     const fn = stubAuthGuard({ rest: SNAP });
     render(<App />);
-    const dialog = await screen.findByRole("dialog", { name: "密钥与登录" });
+    const dialog = await screen.findByRole("dialog", { name: "登录或注册" });
 
     fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "密钥与登录" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "登录或注册" })).not.toBeInTheDocument());
     expect(screen.getByText(/访问令牌缺失或已失效/)).toBeInTheDocument();
     expect(fn.mock.calls.filter((c) => String(c[0]) === "/projects/p1").length).toBe(1);
   });
@@ -350,5 +355,55 @@ describe("Workspace 降级横幅撤除精确性（兄弟请求互不误撤）", 
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
 
     expect(screen.getByText(/对话历史加载失败/)).toBeInTheDocument();
+  });
+});
+
+describe("Workspace 身份切换（A02）", () => {
+  test("登录用户变化：先清空四 store 再按新身份重拉（reset 与重拉配套，缺一即空白）", async () => {
+    const fn = stubFetch({ rest: SNAP, messages: [{ role: "user", content: "上一身份的消息" }] });
+    render(<App />);
+    expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
+    expect(useProjectStore.getState().snapshot).not.toBeNull();
+
+    // 两路的调用次数以此为准：挂载时各 1 次
+    const calls = (url: string) => fn.mock.calls.filter((c) => String(c[0]) === url).length;
+    expect(calls("/projects/p1")).toBe(1);
+    expect(calls("/projects/p1/messages")).toBe(1);
+
+    // 造出上一身份遗留的工作区状态（四 store 各留痕）
+    act(() => {
+      useConversationStore.getState().hydrate([{ role: "user", content: "上一身份的对话" }]);
+      useToolsStore.getState().applyEvent({
+        event: "tool_started", call_id: "cA02", tool: "search_ai",
+        args: { query: "上一身份的检索" }, purpose: "",
+      } as never);
+      useUiStore.getState().setActiveTab("sites");
+    });
+    expect(useConversationStore.getState().messages).toHaveLength(1);
+    expect(useToolsStore.getState().order).toEqual(["cA02"]);
+    expect(useUiStore.getState().activeTab).toBe("sites");
+
+    // 身份切换（登录/登出/会话失效最终都落到 user 值变化）：上方 reset effect 清空四
+    // store，紧随的重拉 effect 按新身份重取快照与消息史。二者配套——缺 reset 会串台，
+    // 缺重拉则清空后无人回填（刷新后工作区空白，A02 连锁回归的根因）。
+    act(() => useAuthStore.setState({ user: { user_id: "u1", email: "a@b.c" } }));
+
+    // 重拉：两路各 +1（若 user 不进重拉依赖，这里会停在 1 次）
+    await waitFor(() => expect(calls("/projects/p1")).toBe(2));
+    expect(calls("/projects/p1/messages")).toBe(2);
+    await waitFor(() => expect(useProjectStore.getState().snapshot?.project_id).toBe("p1"));
+    // 回填的是重拉得到的消息史：上一身份自造的「上一身份的对话」不复活
+    await waitFor(() =>
+      expect(useConversationStore.getState().messages).toEqual([{ role: "user", content: "上一身份的消息" }]),
+    );
+
+    // 上一身份痕迹被清掉（重置生效；重拉只补快照/消息史，不补工具轨迹）
+    expect(useConversationStore.getState().streamBuffer).toBe("");
+    expect(useToolsStore.getState().order).toEqual([]);
+    expect(useToolsStore.getState().byCallId).toEqual({});
+    // reset 专属：重拉不碰 activeTab，basic-info 只可能来自那次清空
+    expect(useUiStore.getState().activeTab).toBe("basic-info");
+
+    act(() => useAuthStore.setState({ user: null }));  // 清场：不影响后续用例
   });
 });

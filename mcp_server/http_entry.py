@@ -6,10 +6,13 @@
 - 顶部直接 import SDK 的 streamable_http_manager —— SDK 缺失时本模块 import
   即失败，web_host._mount_mcp 捕获 ImportError 后优雅降级（不挂 /mcp）。
 """
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fieldwork_agent.kernel.repository.guard import normalize_owner_token
+from fieldwork_agent.kernel.identity.owner_resolve import SessionExpired, resolve_owner
+from fieldwork_agent.kernel.repository.guard import OWNER_TOKEN_RE
 from fieldwork_agent.mcp_server import request_ctx
 from fieldwork_agent.mcp_server.server import create_server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -21,9 +24,10 @@ class HeaderOverridesMiddleware:
     必须纯 ASGI、不能 BaseHTTPMiddleware：后者在独立任务里跑下游 app，
     set 的 contextvar 对工具调用链不可见；纯 ASGI 同任务直通。
 
-    N01：除供应商 Key 外，同时解析 X-Owner-Token → 归一化 ``anon:<raw>`` 写入
-    request_ctx，供状态工具/资源在共享 HTTP 模式下做项目归属隔离。非法
-    令牌按无令牌降级（None）——拒绝全部项目访问而不报错，不泄露存在性。
+    A01：归属解析与 REST（web_host.api.owner）共用 kernel.identity.owner_resolve——
+    ``sess_`` 令牌查会话得 ``user:<id>``；注销/过期在中间件层直接 401
+    （与 REST 同拒，不再折 ``anon:sess_*`` 绕过注销）。形状非法/空值 → 无令牌
+    降级（拒绝全部项目访问，不泄露存在性）。
     """
 
     # header 名（ASGI 恒小写）→ request_ctx 覆盖语义键
@@ -33,8 +37,21 @@ class HeaderOverridesMiddleware:
         request_ctx.AMAP_KEY_HEADER: "amap_api_key",
     }
 
-    def __init__(self, app: Any):
+    def __init__(self, app: Any, user_store=None):
         self.app = app
+        self.user_store = user_store
+
+    @staticmethod
+    async def _reject_401(send) -> None:
+        """与 REST owner_from_request 同形：401 + detail.code=session_expired。"""
+        body = json.dumps(
+            {"detail": {"code": "session_expired", "message": "会话已注销或过期"}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send({"type": "http.response.start", "status": 401,
+                    "headers": [(b"content-type", b"application/json; charset=utf-8"),
+                                (b"content-length", str(len(body)).encode("ascii"))]})
+        await send({"type": "http.response.body", "body": body})
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -50,12 +67,25 @@ class HeaderOverridesMiddleware:
                 if value:
                     found[semantic] = value
             elif key == request_ctx.OWNER_TOKEN_HEADER:
-                raw_owner = raw_value.decode("latin-1")
-        # N01：归属身份总是注入（即使无供应商 Key），以区分共享 HTTP 与 stdio 可信模式
-        try:
-            owner_value = normalize_owner_token(raw_owner)
-        except ValueError:
-            owner_value = None   # 非法令牌 → 无令牌降级（拒绝全部项目访问）
+                raw_owner = raw_value.decode("latin-1").strip()
+        owner_value: str | None = None
+        if raw_owner:
+            if not OWNER_TOKEN_RE.fullmatch(raw_owner):
+                owner_value = None          # 非法形状 → 无令牌降级
+            elif raw_owner.startswith("sess_"):
+                # A01：会话令牌与 REST 同解；注销/过期直接 401（fail-closed，
+                # 独立 run_http 无 user_store 时同样拒绝而非降级为匿名）
+                if self.user_store is None:
+                    await self._reject_401(send)
+                    return
+                try:
+                    owner_value = await asyncio.to_thread(
+                        resolve_owner, raw_owner, self.user_store)
+                except SessionExpired:
+                    await self._reject_401(send)
+                    return
+            else:
+                owner_value = f"anon:{raw_owner}"
         owner_token = request_ctx.set_owner(owner_value)
         ov_token = request_ctx.set_overrides(found) if found else None
         try:
@@ -73,13 +103,14 @@ class StreamableHttpService:
     全量管理模式明确分离；项目读写/资源均按请求级 X-Owner-Token 隔离。
     """
 
-    def __init__(self, config=None, repo=None):
+    def __init__(self, config=None, repo=None, user_store=None):
         server = create_server(config, repo, enforce_owner=True)
         self._manager = StreamableHTTPSessionManager(
             app=server, stateless=True, json_response=True
         )
         # 中间件包 handle_request：Header 覆盖在进 manager 前落 contextvar
-        self.asgi = HeaderOverridesMiddleware(self._manager.handle_request)
+        self.asgi = HeaderOverridesMiddleware(self._manager.handle_request,
+                                              user_store=user_store)
 
     @asynccontextmanager
     async def run(self):

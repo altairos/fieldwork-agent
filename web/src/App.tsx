@@ -1,5 +1,6 @@
 import { type CSSProperties, lazy, Suspense, useEffect } from "react";
-import { BrowserRouter, Link, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { AuthDialog } from "./components/auth/AuthDialog";
 import { Composer } from "./components/chat/Composer";
 import { EvidencePanel } from "./components/chat/EvidencePanel";
 import { PhaseBanner } from "./components/chat/PhaseBanner";
@@ -8,7 +9,6 @@ import { Header } from "./components/layout/Header";
 import { LeftRail } from "./components/layout/LeftRail";
 import { RightDock } from "./components/layout/RightDock";
 import { RightResizeHandle } from "./components/layout/RightResizeHandle";
-import { KeyDialog } from "./components/settings/KeyDialog";
 import { Tabs, tabIds } from "./components/ui/Tabs";
 import { IconCaret } from "./components/ui/icons";
 import { useAuthGate } from "./hooks/useAuthGate";
@@ -17,6 +17,7 @@ import { useProjectBootstrap } from "./hooks/useProjectBootstrap";
 import { useRenameProject } from "./hooks/useRenameProject";
 import { useRightWidth } from "./hooks/useRightWidth";
 import { useTurn } from "./hooks/useTurn";
+import { useAuthStore } from "./stores/auth";
 import { useProjectStore } from "./stores/project";
 import { useUiStore, PHASE_TAB, type MiddleTab } from "./stores/ui";
 
@@ -56,13 +57,18 @@ function RouteFallback() {
  *   （Composer 自身不再建第二个回合，避免并发 SSE 流）。
  *
  * **职责拆分（评审 R8）**：本组件只负责布局与接线，原先压在它身上的七件事已各自成 hook——
- *   跨项目 reset + 快照/历史回填 → `useProjectBootstrap`；
- *   无 key 拦截 + 401 弹层 + bfcache 复查 → `useAuthGate`；
+ *   跨项目/跨身份 reset + 快照/历史回填 → `useProjectBootstrap`（A02：登录用户也在 reset
+ *   维度内，先清空四 store 再按新身份重拉，避免上一身份的对话/工具卡/横幅串台）；
+ *   无 key 拦截 + 401 弹层 + bfcache 复查 + 会话失效弹窗 → `useAuthGate`；
  *   移动端抽屉/Escape → `useMobileDrawer`；
  *   右栏宽度持久化 → `useRightWidth`；
  *   Header 改名 → `useRenameProject`；
  *   回合生命周期 → `useTurn`（原有）；
  *   `?turn=` 领养首页创建的回合 → 本组件内 6 行（它同时要改 URL，与路由绑死）。
+ *
+ * 登录/注册弹窗（AuthDialog，账号一期）：Header「登录」钮 + 401 分流（App 令牌类自动
+ *   展开「高级 · API 密钥」折叠区；会话失效只重登不展开）共用；关闭时保存过新令牌
+ *   → 就地重拉快照与消息史（authRetry 重跑引导 effect），免整页刷新。KeyDialog 已退役。
  */
 const MIDDLE_IDS = tabIds("middle");
 
@@ -79,14 +85,19 @@ function Workspace() {
     (s) => s.snapshot?.research_context?.title || s.snapshot?.research_context?.topic || "",
   );
 
-  const { composerLocked, keyDialogOpen, openKeyDialog, closeKeyDialog, authRetry } = useAuthGate(projectId);
+  const {
+    composerLocked, authDialogOpen, authKeysOpen, openAuthDialog, closeAuthDialog, authRetry,
+  } = useAuthGate(projectId);
   const { leftCollapsed, rightCollapsed, toggleLeft, toggleRight } = useMobileDrawer();
   const { rightWidth, setRightWidth } = useRightWidth();
   const renameProject = useRenameProject(projectId);
-  useProjectBootstrap(projectId, { onAuthError: openKeyDialog, retryToken: authRetry });
+  // App 令牌 401：就地弹登录窗并自动展开「高级 · API 密钥」（箭头体在渲染时才求值，
+  // 不碰 openAuthDialog 的声明顺序）
+  const openAuthDialogWithKeys = () => openAuthDialog(true);
+  useProjectBootstrap(projectId, { onAuthError: openAuthDialogWithKeys, retryToken: authRetry });
 
-  // 回合句柄（单一所有权）：发送链路守卫 401 时就地弹密钥层（免回首页）
-  const turn = useTurn(projectId, { onAuthError: openKeyDialog });
+  // 回合句柄（单一所有权）：发送链路守卫 401 时就地弹登录窗（免回首页）
+  const turn = useTurn(projectId, { onAuthError: openAuthDialogWithKeys });
   const turnAdopt = turn.adopt;   // 解构出稳定引用再进 effect 依赖（turn 对象每渲染新引用）
 
   const middleTab = useUiStore((s) => s.middleTab);
@@ -110,6 +121,7 @@ function Workspace() {
         phase={phase}
         view="workspace"
         onMenu={toggleLeft}
+        onOpenAuth={() => openAuthDialog(false)}
         onRename={(name) => { void renameProject(name); }}
         onNavigate={(v) => {
           if (v === "proposal") navigate(`/p/${id}/proposal`);
@@ -184,16 +196,12 @@ function Workspace() {
                 未配置百炼 API Key：
                 <button
                   type="button"
-                  onClick={openKeyDialog}
+                  onClick={() => openAuthDialog(true)}
                   className="text-indigo underline underline-offset-2 mx-0.5"
                 >
-                  填写百炼 API Key
+                  在登录窗「高级 · API 密钥」中填写
                 </button>
-                ，或回
-                <Link to="/" className="text-indigo underline underline-offset-2 mx-0.5">
-                  首页「密钥 / 登录」
-                </Link>
-                填写并保存后返回本页。
+                ，保存后返回本页即可解锁。
               </span>
             }
           />
@@ -225,13 +233,18 @@ function Workspace() {
           </div>
         </div>
       </div>
-      {/* 401 就地弹密钥层：保存新令牌后关闭即带新令牌重拉（免整页刷新） */}
-      <KeyDialog open={keyDialogOpen} onClose={closeKeyDialog} />
+      {/* 登录/注册弹窗：Header「登录」钮 + 401 分流（会话失效/App 令牌类）共用；
+          关闭时保存过新令牌 → 就地重拉快照与消息史（免整页刷新） */}
+      <AuthDialog open={authDialogOpen} onClose={closeAuthDialog} initialKeysOpen={authKeysOpen} />
     </div>
   );
 }
 
 export default function App() {
+  // 挂载即核对会话（T14 checkSession 的首个产品调用点）：带 sess_ 刷新后恢复登录态
+  // 显示；失效就地清令牌（不弹窗打断）；瞬时失败仅置 user:null、令牌保留
+  useEffect(() => { void useAuthStore.getState().checkSession(); }, []);
+
   return (
     <BrowserRouter>
       <Suspense fallback={<RouteFallback />}>

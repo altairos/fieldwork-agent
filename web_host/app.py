@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 APP_TOKEN_HEADER = "X-App-Token"
 # 受保护前缀（审计 F02 + MCP 改造2）：/projects、/settings、/mcp 全族；
 # /health、/ready 与静态前端豁免——页面要先能打开、健康探针不该被令牌拦住。
-_PROTECTED_PREFIXES = ("/projects", "/settings", "/mcp")
+_PROTECTED_PREFIXES = ("/projects", "/settings", "/mcp", "/auth")
 
 
 def _is_protected(path: str) -> bool:
@@ -122,8 +122,9 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
             status_code=200 if ok else 503,
         )
 
-    from fieldwork_agent.web_host.api import exports, projects, settings, state, turns
+    from fieldwork_agent.web_host.api import auth, exports, projects, settings, state, turns
 
+    app.include_router(auth.router)
     app.include_router(projects.router)
     app.include_router(turns.router)
     app.include_router(exports.router)
@@ -152,7 +153,14 @@ def _mount_mcp(app: FastAPI, config=None, repo=None) -> None:
         from fieldwork_agent.mcp_server.http_entry import StreamableHttpService
     except ImportError:
         return
-    service = StreamableHttpService(config=config, repo=repo)
+    # A01：init_deps（含 make_user_store）在 lifespan 内执行，本函数在 create_app
+    # 主体阶段调用时 app.state.user_store 尚未就绪 → 按同一工厂/同一配置独立构建
+    # 一份（JsonUserStore 走 FileLock、Sqlite 每方法新连接，跨实例安全）；仅用于
+    # sess_ 令牌解析，MCP 工具的项目读写仍走 repo。
+    from fieldwork_agent.kernel.repository.user_store_factory import make_user_store
+
+    user_store = make_user_store(config) if config is not None else None
+    service = StreamableHttpService(config=config, repo=repo, user_store=user_store)
     # 不能用 app.mount：新版 Starlette 的 Mount 按 path+"/{path:path}" 编译，
     # Mount("/mcp") 只匹配 "/mcp/<sub>" 而不匹配精确 "/mcp"（MCP 客户端
     # POST 的就是端点本身，会漏到 SPA catch-all 变 405）。Route 精确挂载

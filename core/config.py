@@ -18,6 +18,16 @@ DEFAULT_LLM_MODELS: dict[str, str] = {
 }
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"环境变量 {name}={raw!r} 不是合法整数") from None
+
+
 class Config:
     """全局配置"""
 
@@ -59,6 +69,17 @@ class Config:
         # 存储后端（spec §5.1 里程碑2：FA_STORAGE=sqlite 切换，默认 json）
         self.storage_backend: str = os.getenv("FA_STORAGE", "json").lower()
         self.sqlite_path: Path = CONFIG_DIR / "fieldwork.db"
+
+        # 账号体系（第一期）：账号存储目录 + 会话/口令策略 + 注册开关
+        # R1：默认取 projects_dir 的兄弟目录，绝不在 projects_dir 子树内
+        self.user_store_dir: Path = Path(
+            os.getenv("FA_USER_STORE_DIR", str(CONFIG_DIR / "accounts")))
+        self.session_ttl_days: int = _env_int("FA_SESSION_TTL_DAYS", 30)
+        self.pbkdf2_iterations: int = _env_int("FA_PBKDF2_ITERATIONS", 600000)
+        # 注册开关是安全边界：归一化（strip+lower，同 FA_STORAGE 风格）后按常见
+        # 假值集合判定，避免 FA_REGISTRATION_OPEN=false/no/off 被静默当成"开"。
+        self.registration_open: bool = os.getenv(
+            "FA_REGISTRATION_OPEN", "1").strip().lower() not in ("0", "false", "no", "off", "")
 
         # 云同步（钉钉）
         self.dingtalk_webhook: str = ""

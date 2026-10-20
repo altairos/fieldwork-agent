@@ -24,6 +24,10 @@ class FakeConfig:
         self.app_token = ""   # 审计 F02：App Token 守卫读取（空 = 不启用）
         self.dingtalk_webhook = ""
         self.dingtalk_enabled = False
+        self.user_store_dir = self.root / "accounts"   # R1：projects_dir 的兄弟目录
+        self.session_ttl_days = 30
+        self.pbkdf2_iterations = 600_000
+        self.registration_open = True
 
     def get_project_dir(self, project_id: str) -> Path:
         pdir = self.projects_dir / project_id
@@ -166,7 +170,9 @@ def _isolated_host_env(tmp_path, monkeypatch):
     for var in ("FIELDWORK_APP_TOKEN", "DASHSCOPE_API_KEY",
                 "DASHSCOPE_HTTP_BASE_URL", "FLYAI_API_KEY", "AMAP_API_KEY",
                 "FA_DASHSCOPE_PLAN", "FA_INTERVIEW_MODEL",
-                "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL", "FA_STORAGE"):
+                "FA_PROPOSAL_MODEL", "FA_EXTRACT_MODEL", "FA_STORAGE",
+                "FA_USER_STORE_DIR", "FA_SESSION_TTL_DAYS",
+                "FA_PBKDF2_ITERATIONS", "FA_REGISTRATION_OPEN"):
         monkeypatch.delenv(var, raising=False)
     from fieldwork_agent.core import config as config_mod
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)

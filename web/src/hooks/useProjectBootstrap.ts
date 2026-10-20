@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { isAppTokenError, rest } from "../api/rest";
+import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversation";
 import { useProjectStore } from "../stores/project";
 import { useToolsStore } from "../stores/tools";
@@ -7,10 +8,11 @@ import { useUiStore } from "../stores/ui";
 
 /**
  * 工作台引导（评审 R8 拆分自 App.tsx 的 Workspace）：
- *   ① 跨项目 reset（conversation/tools/ui/project 四 store）；
+ *   ① 跨项目/跨身份 reset（conversation/tools/ui/project 四 store）——登录用户变化
+ *      也属切换（A02）：先清空上一身份的对话/工具/横幅，再按新身份重拉；
  *   ② GET /projects/{id} → project.loadSnapshot（右栏五面板的 REST 侧唯一数据源）；
  *   ③ GET /messages → conversation.hydrate（刷新恢复对话史，含首页首问）；
- *   ④ App Token 401 → 人话横幅 + 就地弹密钥层（由调用方注入 onAuthError）。
+ *   ④ App Token 401 → 人话横幅 + 就地弹登录窗「高级 · API 密钥」（由调用方注入 onAuthError）。
  *
  * **两条硬约束写在代码里，不靠记忆**：
  * - reset effect 必须声明在拉取 effect **之前**（React 按声明顺序执行 effect），
@@ -18,7 +20,7 @@ import { useUiStore } from "../stores/ui";
  * - 成功回调只撤**同 code** 的降级横幅（见 dismissBannerIf）——兄弟请求失败侧的
  *   横幅不得被成功侧误撤，错误指示丢失比横幅多留更糟。
  *
- * @param retryToken 令牌变更计数：密钥层保存了新 App Token 时 +1，重跑本引导
+ * @param retryToken 令牌变更计数：登录窗保存了新 App Token 时 +1，重跑本引导
  *                   （免整页刷新）。由 useAuthGate 提供。
  */
 export function useProjectBootstrap(
@@ -27,19 +29,22 @@ export function useProjectBootstrap(
 ) {
   const { onAuthError, retryToken = 0 } = opts;
   const loadSnapshot = useProjectStore((s) => s.loadSnapshot);
+  // A02：登录用户与 projectId 同为 reset/重拉维度——身份切换必须「先清后载」，
+  // 只清不载会让工作区空白，只载不清会串台。
+  const user = useAuthStore((s) => s.user);
 
   // 经 ref 中转：onAuthError 常是内联箭头（每渲染新引用），进依赖会让引导 effect
   // 每次渲染都重跑一遍拉取。
   const onAuthErrorRef = useRef(onAuthError);
   useEffect(() => { onAuthErrorRef.current = onAuthError; });
 
-  // ① 跨项目 reset：按 projectId 变化清空四 store（幂等，StrictMode 双执行安全）
+  // ① 跨项目/跨身份 reset：projectId 或登录用户变化即清空四 store（幂等，StrictMode 双执行安全）
   useEffect(() => {
     useConversationStore.getState().reset();
     useToolsStore.getState().reset();
     useUiStore.getState().reset();
     useProjectStore.getState().reset();
-  }, [projectId]);
+  }, [projectId, user]);
 
   // ②③ 快照 + 对话史并列拉取（互不阻塞）；失败如实上屏，不静默吞错、不伪造空快照
   useEffect(() => {
@@ -92,7 +97,9 @@ export function useProjectBootstrap(
     return () => {
       alive = false;
     };
-  }, [projectId, loadSnapshot, retryToken]);
+    // 身份切换（user 变化）同样走「先 reset（上方 effect）再按新身份重拉」：本 effect
+    // 依赖含 user 才配得上那次 reset，缺之则清空后无人回填 → 工作区空白。
+  }, [projectId, loadSnapshot, retryToken, user]);
 }
 
 /** App Token 守卫 401（web_host/app.py 审计 F02）的共用降级：人话横幅如实保留来源
@@ -102,7 +109,7 @@ export function reportAuthError(code: "snapshot_failed" | "history_failed") {
     event: "error",
     code,
     message: "访问令牌缺失或已失效，无法加载项目数据",
-    hint: "请在「密钥与登录」弹层填写访问令牌并保存",
+    hint: "请在登录窗「高级 · API 密钥」中填写访问令牌并保存",
   });
 }
 

@@ -18,6 +18,10 @@
  *   默认 configured:true 建模阿里云部署形态）；POST /__test/settings 供 e2e 翻转
  * - POST /projects/:id/messages 带 403 门（服务端未配且无 X-DashScope-Key 头 → llm_key_required，
  *   web_host/api/turns.py::_resolve_clients 同构）
+ * - POST /auth/register|login → {session_token,user,claim}（账号隔离一期：建账号/发会话 +
+ *   认领匿名项目 owner 切 user:<id>）；POST /auth/logout → 204；GET /auth/me → 会话/匿名身份。
+ *   错误体统一 FastAPI detail 形状 {detail:{code,message}}：已存邮箱 400 email_taken、
+ *   凭据不符 401 invalid_credentials、失效会话 401 session_expired（顶部会话守卫统一拦截）。
  *
  * 运行：npm run mock（tsx mock/sseServer.ts），端口取 env MOCK_PORT，默认 8301；
  * e2e 用 MOCK_PORT=8300 匹配 vite proxy（playwright.config.ts webServer）。
@@ -225,6 +229,15 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/** POST body 解析：非 JSON/空体 → {}（联调容错，坏 body 不崩路由）。 */
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  try {
+    return JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
 function newTurnId(): string {
   return `turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -243,13 +256,49 @@ const FAKE_CONTEXT = {
 
 interface StoredProject { id: string; owner: string; }
 
-/** 内存项目登记：id → 归属（anon:<token>）。mock 轻量——只记归属，内容恒返回假数据。 */
+/** 内存项目登记：id → 归属（anon:<token> 或登录认领后 user:<id>）。mock 轻量——只记归属，内容恒返回假数据。 */
 const projects = new Map<string, StoredProject>();
 
-/** 与后端 owner_from_request 同构：裸 token 归一化 anon:<token>；缺失/空 → null。 */
+// ---------------------------------------------------------------- 账号与会话（账号隔离一期 /auth 四端点）
+
+interface StoredUser { userId: string; email: string; password: string; createdAt: string; }
+
+/** 内存用户表：email → 用户（进程重启即失；mock 不做密码哈希，仅联调用）。 */
+const users = new Map<string, StoredUser>();
+
+/** 内存会话表：sess_ 令牌 → userId（登录态归属解析 + GET /auth/me 消费）。 */
+const sessions = new Map<string, string>();
+
+function newSessionToken(): string {
+  return `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 认领（spec「匿名项目划归用户」）：owner === anon:<anon_token> 的项目 owner 改 user:<userId>。 */
+function claimAnonProjects(anonToken: string | undefined, userId: string): { claimed: number; skipped: number } {
+  let claimed = 0;
+  if (anonToken) {
+    const anonOwner = `anon:${anonToken}`;
+    for (const rec of projects.values()) {
+      if (rec.owner === anonOwner) {
+        rec.owner = `user:${userId}`;
+        claimed += 1;
+      }
+    }
+  }
+  return { claimed, skipped: 0 };
+}
+
+/** 与后端 owner_from_request 同构：裸 token 归一化 anon:<token>；登录态 sess_ 令牌经
+ *  会话表解析为 user:<userId>（失效会话由 handleRequest 顶部守卫拦 401，走不到这里）；
+ *  缺失/空 → null。 */
 function ownerFromHeaders(req: IncomingMessage): string | null {
   const raw = String(req.headers["x-owner-token"] ?? "").trim();
-  return raw === "" ? null : `anon:${raw}`;
+  if (raw === "") return null;
+  if (raw.startsWith("sess_")) {
+    const userId = sessions.get(raw);
+    return userId ? `user:${userId}` : null;
+  }
+  return `anon:${raw}`;
 }
 
 /** 项目归属守卫：不存在/归属不符/无令牌 → 404（不泄露存在性，与后端 checked_owned_project 同形）。 */
@@ -385,7 +434,91 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, frameDel
     return;
   }
 
+  // 登录会话守卫：X-Owner-Token 携带失效的 sess_ → 401 session_expired（FastAPI detail
+  // 形状，前端 isSessionExpiredError 解析 detail.code——R15 失效恢复链路的数据源）。
+  // 登录/注册/登出豁免：登录正是换发新会话的通道，不能被旧会话失效拦在门外。
+  const rawOwnerToken = String(req.headers["x-owner-token"] ?? "").trim();
+  const isAuthWritePath = path === "/auth/register" || path === "/auth/login" || path === "/auth/logout";
+  if (rawOwnerToken.startsWith("sess_") && !sessions.has(rawOwnerToken) && !isAuthWritePath) {
+    sendJson(res, 401, { detail: { code: "session_expired", message: "登录会话已失效，请重新登录" } });
+    return;
+  }
+
   let m: RegExpMatchArray | null;
+
+  // ---- /auth（账号隔离一期，语义对齐生产 web_host/api/owner.py）----
+
+  // POST /auth/register → 建用户 + 发会话 + 认领匿名项目（owner 切 user:<id>）
+  if (method === "POST" && path === "/auth/register") {
+    const body = await readJsonBody(req);   // {email, password, anon_token?}
+    const email = String(body.email ?? "").trim();
+    const password = String(body.password ?? "");
+    if (email === "" || password.trim() === "") {
+      sendJson(res, 400, { detail: { code: "invalid_request", message: "邮箱与密码不能为空" } });
+      return;
+    }
+    if (users.has(email)) {
+      sendJson(res, 400, { detail: { code: "email_taken", message: "该邮箱已注册，请直接登录" } });
+      return;
+    }
+    const user: StoredUser = {
+      userId: `user_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      email,
+      password,
+      createdAt: new Date().toISOString(),
+    };
+    users.set(email, user);
+    const sessionToken = newSessionToken();
+    sessions.set(sessionToken, user.userId);
+    sendJson(res, 200, {
+      session_token: sessionToken,
+      user: { user_id: user.userId, email: user.email, created_at: user.createdAt },
+      claim: claimAnonProjects(typeof body.anon_token === "string" ? body.anon_token : undefined, user.userId),
+    });
+    return;
+  }
+
+  // POST /auth/login → 校验凭据 + 发会话 + 认领；不符 401 invalid_credentials
+  // （邮箱不存在与密码错误同一句话，不泄露注册面）
+  if (method === "POST" && path === "/auth/login") {
+    const body = await readJsonBody(req);
+    const user = users.get(String(body.email ?? "").trim());
+    if (!user || user.password !== String(body.password ?? "")) {
+      sendJson(res, 401, { detail: { code: "invalid_credentials", message: "邮箱或密码不正确" } });
+      return;
+    }
+    const sessionToken = newSessionToken();
+    sessions.set(sessionToken, user.userId);
+    sendJson(res, 200, {
+      session_token: sessionToken,
+      user: { user_id: user.userId, email: user.email, created_at: user.createdAt },
+      claim: claimAnonProjects(typeof body.anon_token === "string" ? body.anon_token : undefined, user.userId),
+    });
+    return;
+  }
+
+  // POST /auth/logout → 删会话 → 204（幂等：令牌未命中也 204，前端 finally 清本地）
+  if (method === "POST" && path === "/auth/logout") {
+    const raw = String(req.headers["x-owner-token"] ?? "").trim();
+    if (raw.startsWith("sess_")) sessions.delete(raw);
+    res.writeHead(204, CORS_HEADERS);
+    res.end();
+    return;
+  }
+
+  // GET /auth/me → 会话身份：sess_ 命中 → {anonymous:false,user}；其余（匿名/无令牌）→
+  // {anonymous:true}。sess_ 失效分支由顶部会话守卫统一 401 session_expired。
+  if (method === "GET" && path === "/auth/me") {
+    const raw = String(req.headers["x-owner-token"] ?? "").trim();
+    const userId = raw.startsWith("sess_") ? sessions.get(raw) : undefined;
+    const user = userId ? [...users.values()].find((u) => u.userId === userId) : undefined;
+    if (user) {
+      sendJson(res, 200, { anonymous: false, user: { user_id: user.userId, email: user.email, created_at: user.createdAt } });
+    } else {
+      sendJson(res, 200, { anonymous: true });
+    }
+    return;
+  }
 
   // GET /settings/status → key 配置状态（只回布尔不回明文）
   if (method === "GET" && path === "/settings/status") {

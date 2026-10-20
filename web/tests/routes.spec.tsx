@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ProjectHub } from "../src/routes/ProjectHub";
 import { ProposalView } from "../src/routes/ProposalView";
@@ -8,6 +8,7 @@ import { ChapterNav } from "../src/components/proposal/ChapterNav";
 import { saveKeys } from "../src/lib/keys";
 import * as rest from "../src/api/rest";
 import { useExportFormatStore } from "../src/stores/exportFormat";
+import { useAuthStore } from "../src/stores/auth";
 
 vi.mock("../src/api/rest");
 
@@ -16,11 +17,12 @@ beforeEach(() => {
   // ApiKeyCard 挂载即查 key 状态与健康探询：模块 mock 默认返 undefined 会崩 .then，补默认值
   vi.mocked(rest.rest.settingsStatus).mockResolvedValue({ dashscope_configured: true, flyai_configured: true, amap_configured: true, amap_js_configured: true, amap_js_key: "stub-js-key", amap_js_security: "stub-js-security" });
   vi.mocked(rest.rest.health).mockResolvedValue({ status: "ok", auth_required: false });
+  useAuthStore.setState({ user: null });
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// 首页极简重设计：视觉中央一个输入框 + 示例 chips + 密钥弹层入口；
-// 项目列表收进「继续上次」折叠入口；学科/模板/侧栏说明等冗余区块移除。
+// 首页极简重设计：视觉中央一个输入框 + 示例 chips + 登录弹层入口；
+// 项目列表收进「继续先前项目」折叠入口；学科/模板/侧栏说明等冗余区块移除。
 // ──────────────────────────────────────────────────────────────────────────
 describe("ProjectHub（极简首页）", () => {
   /** 位置探针：显示 pathname+search，供断言跳转是否携带 ?turn=（轮 4 首问） */
@@ -50,8 +52,8 @@ describe("ProjectHub（极简首页）", () => {
     expect(screen.getByRole("button", { name: "村落宗族组织研究" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "非遗传承调查" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "乡村教育民族志" })).toBeInTheDocument();
-    // 密钥入口与发送按钮
-    expect(screen.getByRole("button", { name: "密钥 / 登录" })).toBeInTheDocument();
+    // 登录主钮（未登录）与发送按钮
+    expect(screen.getByRole("button", { name: "登录" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建项目" })).toBeInTheDocument();
     // 旧版冗余信息不再出现：学科 chips / 导出格式 / 新建卡四阶段说明 / 侧栏学术纵深
     expect(screen.queryByText("社会学")).toBeNull();
@@ -99,20 +101,23 @@ describe("ProjectHub（极简首页）", () => {
     await waitFor(() => expect(vi.mocked(rest.rest.createProject)).toHaveBeenCalled());
   });
 
-  test("密钥弹层：默认隐藏，点「密钥 / 登录」打开，关闭钮与 Escape 收起", async () => {
+  test("登录弹层：默认隐藏，点「登录」打开，高级密钥区展开与 Escape 收起", async () => {
     vi.mocked(rest.rest.listProjects).mockResolvedValue([] as any);
     renderHome();
     await screen.findByRole("heading", { name: "田野罗盘" });
-    // 默认未挂载：密钥表单不在文档中
-    expect(screen.queryByText(/API 密钥/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "密钥 / 登录" }));
-    expect(await screen.findByRole("dialog", { name: "密钥与登录" })).toBeInTheDocument();
+    // 默认未挂载：密钥表单不在文档中（高级折叠区收起时不挂载 ApiKeySection）
+    expect(screen.queryByPlaceholderText("sk-…")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    expect(await screen.findByRole("dialog", { name: "登录或注册" })).toBeInTheDocument();
+    // 高级密钥区默认收起，点折叠条展开后 ApiKeySection 挂载
+    expect(screen.queryByPlaceholderText("sk-…")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /高级 · API 密钥/ }));
     expect(screen.getByPlaceholderText("sk-…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     // 再次打开后 Escape 收起
-    fireEvent.click(screen.getByRole("button", { name: "密钥 / 登录" }));
-    fireEvent.keyDown(await screen.findByRole("dialog", { name: "密钥与登录" }), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    fireEvent.keyDown(await screen.findByRole("dialog", { name: "登录或注册" }), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -151,6 +156,60 @@ describe("ProjectHub（极简首页）", () => {
     renderHome();
     expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/想研究什么/)).toBeEnabled();
+  });
+
+  // 终审修项：列表 effect 依赖 [user]——登录/登出/会话失效后身份变化，
+  // 按新 ownerHeaders（匿名令牌 ↔ 会话令牌）重拉，不再停留在旧身份的列表
+  test("身份切换（user 变化）后重拉项目列表", async () => {
+    vi.mocked(rest.rest.listProjects)
+      .mockResolvedValueOnce([] as any)
+      .mockResolvedValueOnce([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any);
+    renderHome();
+    await screen.findByRole("heading", { name: "田野罗盘" });
+    expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(1);
+    // 模拟登录成功：auth store 的 user 从 null → 对象
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    await waitFor(() => expect(vi.mocked(rest.rest.listProjects)).toHaveBeenCalledTimes(2));
+    // 新身份的列表上屏：折叠入口出现
+    expect(await screen.findByRole("button", { name: /继续先前项目（1）/ })).toBeInTheDocument();
+  });
+
+  // A02：切换瞬间清空旧身份数据（修复前旧列表在请求返回前仍可见）
+  test("身份切换瞬间清空旧项目列表，等待新身份数据", async () => {
+    vi.mocked(rest.rest.listProjects)
+      .mockResolvedValueOnce([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any)
+      .mockReturnValueOnce(new Promise(() => {}) as any);   // 新身份请求悬置
+    renderHome();
+    expect(await screen.findByRole("button", { name: /继续先前项目（1）/ })).toBeInTheDocument();
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u1", email: "a@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    // 切换瞬间旧列表入口消失（修复前仍显示「继续先前项目（1）」直到第二次返回）
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull());
+  });
+
+  // A02：退出且网络失败 → 不残留旧数据，如实提示
+  test("退出后列表重拉失败：旧列表清空且提示错误", async () => {
+    act(() => {
+      useAuthStore.setState({ user: { user_id: "u0", email: "old@b.com", created_at: "2026-10-20T00:00:00" } });
+    });
+    vi.mocked(rest.rest.listProjects)
+      .mockResolvedValueOnce([
+        { project_id: "p1", phase: "research_positioning", research_context: { topic: "宗族变迁" }, counts: { sites: 0, informants: 0, proposals: 0 } },
+      ] as any)
+      .mockRejectedValueOnce(new Error("network down"));
+    renderHome();
+    expect(await screen.findByRole("button", { name: /继续先前项目（1）/ })).toBeInTheDocument();
+    act(() => { useAuthStore.setState({ user: null }); });   // 退出
+    expect(await screen.findByText(/项目列表加载失败/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /继续先前项目/ })).toBeNull();
   });
 
   // ── 轮 4：首页一句话即对话起点 ──

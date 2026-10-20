@@ -108,6 +108,7 @@
       <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="workspace">② 工作台 Workspace</button>
       <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="proposal">③ 提案 ProposalView</button>
       <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="mobile">④ 移动端方案</button>
+      <button class="tabbtn px-3 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition" role="tab" aria-selected="false" data-view="auth">⑤ 登录弹层 AuthDialog</button>
     </nav>
     <div class="ml-auto text-[11px] text-inkfaint hidden lg:block">高保真设计板 · 学术档案/纸感温润 · 非最终实装代码</div>
   </div>
@@ -136,6 +137,9 @@
   <symbol id="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 20 5l-7 15-2-6z"/></symbol>
   <symbol id="ic-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="ic-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="ic-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="ic-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m4 4 16 16"/><path d="M10.6 5.7c.5-.1.9-.2 1.4-.2 6 0 9.5 6.5 9.5 6.5a17.8 17.8 0 0 1-2.7 3.5M6.7 6.7C4 8.5 2.5 12 2.5 12S6 18.5 12 18.5c1.5 0 2.9-.4 4.1-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+  <symbol id="ic-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
   <!-- 品牌主标 · 概念 B（田·罗盘）full 态 -->
   <symbol id="lg-b" viewBox="0 0 64 64">
     <circle cx="32" cy="32" r="26" fill="none" stroke="#2A2724" stroke-width="3"/>
@@ -1028,6 +1032,285 @@
     <div class="text-[12px] text-inksoft leading-relaxed">
       <b class="text-ink">断点策略：</b>Tailwind <code class="num text-indigo">sm 640 / md 768 / lg 1024</code>。<code class="num text-indigo">&lt;lg</code> 时 Workspace 三栏折叠为「单列时间线 + 抽屉」；<code class="num text-indigo">≥lg</code> 恢复三栏。组件复用同一批卡片渲染器（<code class="num">toolCards.ts</code>），仅容器布局随断点切换，<b>不重写业务组件</b>——移动端与桌面端同源同数据，只是投影容器不同。
     </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════ 视图 5：登录弹层 AuthDialog ══════════════════════════════════ -->
+<section class="view" id="view-auth">
+  <div class="max-w-3xl mb-6">
+    <div class="text-[11px] tracking-[.22em] text-cinnabar mb-2">AUTH DIALOG · 登录弹层</div>
+    <h1 class="font-serif text-[26px] font-600 leading-snug">登录 / 注册弹层改版</h1>
+    <p class="text-inksoft text-[13.5px] mt-2.5 leading-relaxed">
+      第一期功能最小实现升级为完整弹层：g1 档磨砂玻璃面板居中于墨色遮罩之上，面板头承品牌印记与宋体标题；配密码显隐、记住邮箱、Enter 提交三项实用增强；首页顶栏「密钥/登录」组合由登录窗替代，密钥配置收进面板底部「高级 · API 密钥」折叠区（KeyDialog 退役）。功能语义（mode 切换、错误话术、busy 守卫、Esc 关闭）零回退。本页为视觉稿，非最终实装代码。
+    </p>
+  </div>
+
+  <div class="grid lg:grid-cols-[1fr_340px] gap-6 mb-8">
+    <!-- 主视觉稿 -->
+    <div>
+      <div class="text-[11px] text-inkfaint mb-3">登录态 · 主视觉稿（背景铺 ProjectHub 暗示内容以呈现玻璃质感）</div>
+      <div class="relative rounded-xl hairline overflow-hidden bg-paper" style="min-height:620px">
+        <!-- 背景暗示：项目集 -->
+        <div class="absolute inset-0 px-8 pt-7">
+          <div class="text-[11px] tracking-[.2em] text-cinnabar mb-1.5">PROJECT HUB · 项目集</div>
+          <div class="font-serif text-[24px] font-600">你的田野调研项目</div>
+          <div class="grid grid-cols-3 gap-4 mt-6">
+            <div class="hairline rounded-lg bg-card shadow-card p-4">
+              <div class="flex items-center gap-2 mb-2.5"><span class="dot bg-cinnabar"></span><div class="text-[12px] font-medium truncate">白族村落宗族组织变迁</div></div>
+              <div class="h-1.5 rounded bg-hairsoft w-11/12 mb-1.5"></div>
+              <div class="h-1.5 rounded bg-hairsoft w-3/5 mb-3"></div>
+              <span class="chip bg-cinnabarwash text-cinnabar border-cinnabar/25">C 行程规划 · 进行中</span>
+            </div>
+            <div class="hairline rounded-lg bg-card shadow-card p-4">
+              <div class="flex items-center gap-2 mb-2.5"><span class="dot bg-bamboo"></span><div class="text-[12px] font-medium truncate">大理喜洲文化资源地图</div></div>
+              <div class="h-1.5 rounded bg-hairsoft w-4/5 mb-1.5"></div>
+              <div class="h-1.5 rounded bg-hairsoft w-1/2 mb-3"></div>
+              <span class="chip bg-bamboowash text-bamboo border-bamboo/25">A 研究定位 · 已完成</span>
+            </div>
+            <div class="hairline rounded-lg bg-card shadow-card p-4">
+              <div class="flex items-center gap-2 mb-2.5"><span class="dot bg-inkfaint"></span><div class="text-[12px] font-medium truncate">农户生计转型调查</div></div>
+              <div class="h-1.5 rounded bg-hairsoft w-2/3 mb-1.5"></div>
+              <div class="h-1.5 rounded bg-hairsoft w-2/5 mb-3"></div>
+              <span class="chip bg-cardsunk text-inkfaint border-hairline">D 方案生成 · 未解锁</span>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-4 mt-4">
+            <div class="hairline rounded-lg bg-card shadow-card p-4">
+              <div class="flex items-center gap-2 mb-2.5"><span class="dot bg-indigo"></span><div class="text-[12px] font-medium truncate">茶马古道市镇空间</div></div>
+              <div class="h-1.5 rounded bg-hairsoft w-3/4 mb-1.5"></div>
+              <div class="h-1.5 rounded bg-hairsoft w-1/2"></div>
+            </div>
+            <div class="hairline rounded-lg bg-card shadow-card p-4">
+              <div class="flex items-center gap-2 mb-2.5"><span class="dot bg-bamboo"></span><div class="text-[12px] font-medium truncate">乡村公共卫生服务</div></div>
+              <div class="h-1.5 rounded bg-hairsoft w-4/5 mb-1.5"></div>
+              <div class="h-1.5 rounded bg-hairsoft w-3/5"></div>
+            </div>
+            <div class="hairline rounded-lg bg-card shadow-card p-4">
+              <div class="flex items-center gap-2 mb-2.5"><span class="dot bg-cinnabar"></span><div class="text-[12px] font-medium truncate">传统民居营造技艺</div></div>
+              <div class="h-1.5 rounded bg-hairsoft w-11/12 mb-1.5"></div>
+              <div class="h-1.5 rounded bg-hairsoft w-1/2"></div>
+            </div>
+          </div>
+        </div>
+        <!-- 遮罩 -->
+        <div class="absolute inset-0" style="background:rgba(42,39,36,.4)"></div>
+        <!-- 标注 -->
+        <div class="absolute right-3 top-3 z-30 chip bg-card/90 text-inkfaint border-hairline num">g1 · card/80 · blur(8px)</div>
+        <div class="absolute left-3 bottom-3 z-30 chip bg-card/90 text-inkfaint border-hairline">遮罩 ink/40 · 点击遮罩关闭</div>
+        <!-- 玻璃面板（登录态） -->
+        <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] rounded-xl shadow-pop hairline" style="background:rgba(253,252,249,.8);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)">
+          <div class="flex items-center gap-2.5 px-5 pt-5 pb-4">
+            <svg class="w-7 h-7 shrink-0"><use href="#lg-b"/></svg>
+            <div class="flex-1 leading-tight">
+              <div class="font-serif text-[16.5px] font-600">欢迎回来</div>
+              <div class="text-[11px] text-inkfaint mt-0.5">登录以继续你的田野项目</div>
+            </div>
+            <button class="w-7 h-7 grid place-items-center rounded-md text-inkfaint hover:text-ink hover:bg-cardsunk transition" aria-label="关闭"><svg class="w-4 h-4"><use href="#ic-x"/></svg></button>
+          </div>
+          <div class="rule mx-5"></div>
+          <div class="px-5 py-4">
+            <label class="block mb-3.5">
+              <span class="block text-[12px] text-inksoft mb-1.5">邮箱</span>
+              <span class="flex items-center hairline rounded-md bg-paper/60 h-10 transition focus-within:border-cinnabar/50">
+                <input class="flex-1 min-w-0 h-full bg-transparent px-3 text-[13px] text-ink outline-none" value="zhang.san@lnnu.edu.cn" />
+              </span>
+            </label>
+            <label class="block mb-3.5">
+              <span class="block text-[12px] text-inksoft mb-1.5">密码</span>
+              <span class="flex items-center hairline rounded-md bg-paper/60 h-10 transition focus-within:border-cinnabar/50">
+                <input class="flex-1 min-w-0 h-full bg-transparent px-3 text-[13px] text-ink outline-none" type="password" value="fieldwork2026" />
+                <button class="w-9 h-full grid place-items-center text-inkfaint hover:text-inksoft transition" aria-label="显示密码"><svg class="w-[18px] h-[18px]"><use href="#ic-eye"/></svg></button>
+              </span>
+            </label>
+            <label class="flex items-center gap-2 mb-4 cursor-pointer select-none">
+              <input type="checkbox" checked style="accent-color:#A8412E" class="w-3.5 h-3.5" />
+              <span class="text-[12px] text-inksoft">记住邮箱</span>
+            </label>
+            <button class="w-full h-10 rounded-md bg-cinnabar text-[#F7EFE6] text-[13.5px] font-medium hover:bg-[#96382a] transition">登录</button>
+            <div class="text-center mt-3.5">
+              <button class="text-[12.5px] text-indigo hover:underline">没有账号？注册</button>
+            </div>
+          </div>
+          <div class="rule mx-5"></div>
+          <div class="px-5 py-3 flex items-center justify-between">
+            <button class="text-[12px] text-inksoft hover:text-ink transition flex items-center gap-1.5"><svg class="w-3.5 h-3.5"><use href="#ic-caret"/></svg>高级 · API 密钥</button>
+            <span class="text-[11px] text-bamboo">浏览器已存</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 规格卡 -->
+    <div class="space-y-4">
+      <div class="hairline rounded-lg bg-card p-4">
+        <div class="text-[11px] text-inkfaint mb-2.5">层级与动效</div>
+        <div class="space-y-1.5 text-[12px] text-inksoft leading-relaxed">
+          <div>遮罩 <code class="num text-indigo">z-50 · ink/40</code> · 淡入 .18s</div>
+          <div>面板 <code class="num text-indigo">max-w-[400px]</code> · r-lg 14px · <code class="num text-indigo">shadow-pop</code> · 升入 .22s</div>
+          <div>三通道关闭：关闭钮 / Esc / 点遮罩</div>
+          <div><code class="num text-indigo">prefers-reduced-motion</code> 下动效全关</div>
+        </div>
+      </div>
+      <div class="hairline rounded-lg bg-card p-4">
+        <div class="text-[11px] text-inkfaint mb-2.5">g1 磨砂玻璃 · 自包含等价写法</div>
+        <div class="space-y-1.5 text-[12px] text-inksoft leading-relaxed">
+          <div><code class="num text-indigo">bg-card/80 + backdrop-blur(8px)</code>（alpha .80 / blur 8px）</div>
+          <div>本分支尚无 <code class="num text-indigo">.fw-glass</code>（毛玻璃二期在 main）；合流后一行替换 <code class="num text-indigo">.fw-glass.g1</code></div>
+          <div>玻璃仅用于悬浮/覆盖层——输入壳等实底部件<b class="text-ink">不套玻璃</b></div>
+        </div>
+      </div>
+      <div class="hairline rounded-lg bg-card p-4">
+        <div class="text-[11px] text-inkfaint mb-2.5">输入壳 · 按钮 · 错误行</div>
+        <div class="space-y-1.5 text-[12px] text-inksoft leading-relaxed">
+          <div>输入壳 <code class="num text-indigo">h-10 · rounded-md · paper/60</code> · focus-within 朱砂描边</div>
+          <div>主按钮 <code class="num text-indigo">w-full · cinnabar 实底</code> · hover tintpress · disabled opacity-50</div>
+          <div>错误行 <code class="num text-indigo">text-danger</code> · role="alert" 保留</div>
+        </div>
+      </div>
+      <div class="hairline rounded-lg bg-card p-4">
+        <div class="text-[11px] text-inkfaint mb-2.5">交互与无障碍</div>
+        <div class="space-y-1.5 text-[12px] text-inksoft leading-relaxed">
+          <div>Enter 提交：form 包裹 · 切换钮 <code class="num text-indigo">type="button"</code></div>
+          <div>打开聚焦邮箱 · busy「登录中… / 注册中…」</div>
+          <div>显隐钮 aria-label + <code class="num text-indigo">aria-pressed</code>；折叠条 <code class="num text-indigo">aria-expanded</code>；面板 aria-modal；Esc 关闭</div>
+        </div>
+      </div>
+      <div class="hairline rounded-lg bg-card p-4">
+        <div class="text-[11px] text-inkfaint mb-2.5">记住邮箱</div>
+        <div class="space-y-1.5 text-[12px] text-inksoft leading-relaxed">
+          <div>key <code class="num text-indigo">fieldwork.remembered_email</code> · session.ts 三函数</div>
+          <div>复用 readKey/writeKey · 隐私模式降级内存兑底</div>
+          <div>仅登录模式：成功勾选写入 / 不勾清除 / 重开预填</div>
+          <div>只存邮箱，<b class="text-ink">永不存密码</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="font-serif text-[18px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>状态变体</h2>
+  <div class="grid md:grid-cols-3 gap-4 mb-8">
+    <!-- 注册态 -->
+    <div class="hairline rounded-lg bg-card p-4">
+      <div class="text-[11px] text-inkfaint mb-3">注册态 · 创建账号</div>
+      <div class="rounded-xl hairline shadow-pop p-4 bg-[#FDFCF9]">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="w-5 h-5 shrink-0"><use href="#lg-b"/></svg>
+          <div class="font-serif text-[14px] font-600">创建账号</div>
+          <svg class="w-3.5 h-3.5 ml-auto text-inkfaint"><use href="#ic-x"/></svg>
+        </div>
+        <label class="block mb-3">
+          <span class="block text-[11.5px] text-inksoft mb-1">邮箱</span>
+          <span class="flex items-center hairline rounded-md bg-paper/60 h-9 px-3 text-[12px] text-inkfaint">name@example.edu.cn</span>
+        </label>
+        <label class="block mb-3.5">
+          <span class="block text-[11.5px] text-inksoft mb-1">密码</span>
+          <span class="flex items-center hairline rounded-md bg-paper/60 h-9">
+            <span class="flex-1"></span>
+            <svg class="w-4 h-4 mr-2 text-inkfaint"><use href="#ic-eye"/></svg>
+          </span>
+        </label>
+        <div class="h-9 rounded-md bg-cinnabar text-[#F7EFE6] text-[12.5px] font-medium grid place-items-center">创建账号</div>
+        <div class="text-center mt-3"><span class="text-[12px] text-indigo">已有账号？登录</span></div>
+        <div class="mt-3"><span class="chip bg-cardsunk text-inkfaint border-hairline">无「记住邮箱」· 仅登录模式</span></div>
+      </div>
+    </div>
+    <!-- 错误态 -->
+    <div class="hairline rounded-lg bg-card p-4">
+      <div class="text-[11px] text-inkfaint mb-3">错误态 · role="alert"</div>
+      <div class="rounded-xl hairline shadow-pop p-4 bg-[#FDFCF9]">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="w-5 h-5 shrink-0"><use href="#lg-b"/></svg>
+          <div class="font-serif text-[14px] font-600">欢迎回来</div>
+          <svg class="w-3.5 h-3.5 ml-auto text-inkfaint"><use href="#ic-x"/></svg>
+        </div>
+        <label class="block mb-3">
+          <span class="block text-[11.5px] text-inksoft mb-1">邮箱</span>
+          <span class="flex items-center hairline rounded-md bg-paper/60 h-9 px-3 text-[12px] text-ink">zhang.san@lnnu.edu.cn</span>
+        </label>
+        <label class="block mb-2">
+          <span class="block text-[11.5px] text-inksoft mb-1">密码</span>
+          <span class="flex items-center hairline rounded-md bg-paper/60 h-9 px-3 text-[12px] text-inkfaint">••••••••</span>
+        </label>
+        <div class="text-danger text-[12px] leading-relaxed mb-3">邮箱或密码不正确</div>
+        <div class="h-9 rounded-md bg-cinnabar text-[#F7EFE6] text-[12.5px] font-medium grid place-items-center">登录</div>
+        <div class="text-center mt-3"><span class="text-[12px] text-indigo">没有账号？注册</span></div>
+      </div>
+    </div>
+    <!-- 密码显隐 + busy -->
+    <div class="hairline rounded-lg bg-card p-4">
+      <div class="text-[11px] text-inkfaint mb-3">密码显隐 + busy</div>
+      <div class="rounded-xl hairline shadow-pop p-4 bg-[#FDFCF9]">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="w-5 h-5 shrink-0"><use href="#lg-b"/></svg>
+          <div class="font-serif text-[14px] font-600">欢迎回来</div>
+          <svg class="w-3.5 h-3.5 ml-auto text-inkfaint"><use href="#ic-x"/></svg>
+        </div>
+        <label class="block mb-3">
+          <span class="block text-[11.5px] text-inksoft mb-1">邮箱</span>
+          <span class="flex items-center hairline rounded-md bg-paper/60 h-9 px-3 text-[12px] text-ink">zhang.san@lnnu.edu.cn</span>
+        </label>
+        <label class="block mb-1.5">
+          <span class="block text-[11.5px] text-inksoft mb-1">密码</span>
+          <span class="flex items-center hairline rounded-md bg-paper/60 h-9">
+            <span class="flex-1 px-3 text-[12px] text-ink">fieldwork2026</span>
+            <svg class="w-4 h-4 mr-2 text-inksoft"><use href="#ic-eye-off"/></svg>
+          </span>
+        </label>
+        <div class="text-[10.5px] text-inkfaint mb-3 num">ic-eye-off · aria-pressed="true" · type="text"</div>
+        <div class="h-9 rounded-md bg-cinnabar text-[#F7EFE6] text-[12.5px] font-medium grid place-items-center opacity-50 cursor-not-allowed">登录中…</div>
+        <div class="text-center mt-3"><span class="text-[12px] text-inkfaint">提交中按钮禁用 · 防重复提交</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="font-serif text-[18px] font-600 mb-3 flex items-center gap-2"><span class="w-1.5 h-4 bg-cinnabar rounded-sm"></span>首页入口与密钥折叠区</h2>
+  <div class="grid md:grid-cols-2 gap-4 mb-8">
+    <!-- 顶栏两态 -->
+    <div class="hairline rounded-lg bg-card p-4">
+      <div class="text-[11px] text-inkfaint mb-3">首页顶栏 · 入口两态（「密钥/登录」组合 → 登录窗单入口）</div>
+      <div class="hairline rounded-md bg-paper px-3.5 h-12 flex items-center justify-end gap-2 mb-1">
+        <button class="h-8 px-4 rounded-md bg-cinnabar text-[#F7EFE6] text-[12.5px] font-medium hover:bg-[#96382a] transition">登录</button>
+      </div>
+      <div class="text-[10.5px] text-inkfaint mb-3.5 num">未登录 · 朱砂主钮 → AuthDialog</div>
+      <div class="hairline rounded-md bg-paper px-3.5 h-12 flex items-center justify-end gap-2">
+        <span class="max-w-[14ch] truncate text-[12px] text-inksoft">zhang.san@lnnu.edu.cn</span>
+        <button class="h-8 px-3.5 rounded-md hairline bg-card text-[12px] text-inksoft hover:bg-cardsunk transition">退出</button>
+      </div>
+      <div class="text-[10.5px] text-inkfaint mt-2 num">已登录 · 邮箱 + 退出（样式不变）</div>
+    </div>
+    <!-- 高级折叠展开态 -->
+    <div class="hairline rounded-lg bg-card p-4">
+      <div class="text-[11px] text-inkfaint mb-3">高级 · API 密钥 · 展开态（ApiKeySection 原样迁入，不重绘）</div>
+      <div class="rounded-xl hairline shadow-pop p-4 bg-[#FDFCF9]">
+        <div class="flex items-center gap-2 mb-3">
+          <svg class="w-5 h-5 shrink-0"><use href="#lg-b"/></svg>
+          <div class="font-serif text-[14px] font-600">欢迎回来</div>
+          <svg class="w-3.5 h-3.5 ml-auto text-inkfaint"><use href="#ic-x"/></svg>
+        </div>
+        <div class="space-y-1 mb-2">
+          <div class="hairline rounded-md bg-paper/60 h-9 px-3 flex items-center justify-between text-[12px]">
+            <span class="text-inkfaint">sk-…</span><span class="text-bamboo text-[11px]">浏览器已存</span>
+          </div>
+          <div class="text-[10.5px] text-inkfaint num">百炼 API Key（必填）</div>
+        </div>
+        <div class="space-y-1 mb-3">
+          <div class="hairline rounded-md bg-paper/60 h-9 px-3 flex items-center justify-between text-[12px]">
+            <span class="text-inkfaint">••••••••</span><span class="text-ochre text-[11px]">未配置</span>
+          </div>
+          <div class="text-[10.5px] text-inkfaint num">访问令牌（App Token）</div>
+        </div>
+        <div class="text-[12px] text-inksoft mb-3 num">▸ 高级选项 <span class="text-inkfaint">套餐端点 / 飞猪 Key / 高德 Key</span></div>
+        <div class="flex items-center gap-2">
+          <span class="h-8 px-3.5 rounded-md bg-cinnabar text-[#F7EFE6] text-[12px] font-medium grid place-items-center">保存</span>
+          <span class="h-8 px-3.5 rounded-md hairline bg-card text-[12px] text-inksoft grid place-items-center">清除</span>
+        </div>
+      </div>
+      <div class="text-[10.5px] text-inkfaint mt-2 num">默认收起 · 收起时不挂载（测试隔离）· Key 类 401 弹出时自动展开</div>
+    </div>
+  </div>
+
+  <div class="hairline rounded-lg bg-cinnabarwash/50 p-4 text-[12.5px] text-inksoft leading-relaxed">
+    <b class="text-cinnabar">设计红线：</b>① 切换链文案原样保留（「没有账号？注册」/「已有账号？登录」，单测与 e2e 断言依赖）；② 显隐钮引入标签子串歧义——vitest 改精确匹配 <code class="num text-indigo">"密码"</code>、e2e 加 <code class="num text-indigo">{ exact: true }</code>；③ 记住邮箱只存邮箱、永不存密码，走 <code class="num text-indigo">fieldwork.*</code> key 惯例与隐私降级；④ <b class="text-cinnabar">KeyDialog 退役</b>——ApiKeySection 迁入登录窗折叠区，401 按错误类型分流（会话失效→登录窗 / Key 问题→弹窗并自动展开密钥区），「密钥与登录」「首页『密钥』」文案同步；⑤ 范围：表现层 + <code class="num">session.ts</code> + ProjectHub 顶栏 + App 分流文案，不动 stores / api / mock / 后端；⑥ TDD 先红后绿，vitest + playwright + tsc 三件套全绿收口。设计详见 <code class="num text-indigo">docs/superpowers/specs/2026-10-20-auth-dialog-revamp-design.md</code>。
   </div>
 </section>
 

@@ -131,9 +131,11 @@ def _stop_requested(handle, start: float, max_wall_seconds: float) -> bool:
 async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    tm: TurnManager, llm: Any, flyai_client: Any, *,
                    amap_client: Any = None,
+                   owner: str | None = None,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    max_wall_seconds: float = 60.0) -> None:
     """执行完整回合：流式 LLM + 并行工具 + 事件发射 + 阶段推进 + 持久化。"""
+    # owner 供二期记忆读写；本期惰性
     recorder = (RecordingClient(flyai_client, tag_provider=_CURRENT_CALL_ID.get)
                 if flyai_client is not None else None)
     # N5：amap 同款双包装（spec §5.1 快照链对高德原语同样成立）——聚合层

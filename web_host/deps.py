@@ -20,6 +20,8 @@ def init_deps(app, *, config=None, repo=None) -> None:
     # 与 MCP 组装期同款惯例）；N0 起 agent loop 经此通道注入 amap 原语
     app.state.amap = AMapClient(getattr(cfg, "amap_api_key", ""))
     app.state.turn_manager = TurnManager(root=cfg.projects_dir)
+    from fieldwork_agent.kernel.repository.user_store_factory import make_user_store
+    app.state.user_store = make_user_store(cfg)
     app.state.llm = None
     if getattr(cfg, "dashscope_available", False):
         from fieldwork_agent.kernel.llm import LLMClient, plan_base_url
@@ -49,6 +51,10 @@ def get_turn_manager(request: Request):
 
 def get_llm(request: Request):
     return request.app.state.llm
+
+
+def get_user_store(request: Request):
+    return request.app.state.user_store
 
 
 # BackgroundTasks 无 Request，从 app 直取

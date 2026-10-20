@@ -23,19 +23,40 @@ export function apiDetail(err: ApiError): string | null {
 
 /** App Token 守卫 401（web_host/app.py 审计 F02）：页面级 REST 的 401 唯一来源。
  *  响应体是 `{"code","message"}` 形状（非 detail）：状态码之外复核 code，
- *  区分守卫 401 与其他来源的 401；非 JSON 或无 code 键的未知形状保守放行
+ *  区分守卫 401 与其他来源的 401；FastAPI detail 形状（如 session_expired）
+ *  明确排除，不引导填令牌；非 JSON 体等未知形状保守放行
  *  （仍引导用户填令牌，不因形状未知而漏拦）。 */
 export function isAppTokenError(err: unknown): err is ApiError {
   if (!(err instanceof ApiError) || err.status !== 401) return false;
   try {
     const parsed = JSON.parse(err.message) as { code?: unknown } | null;
-    if (parsed && typeof parsed === "object" && "code" in parsed) {
-      return parsed.code === "app_token_required";
+    if (parsed && typeof parsed === "object") {
+      if ("code" in parsed) return parsed.code === "app_token_required";
+      if ("detail" in parsed) return false;   // FastAPI detail 形状（如 session_expired）：非守卫体，不引导填令牌
     }
   } catch {
     // 非 JSON 体（网关纯文本 401）：无法复核，保守按令牌问题处理
   }
   return true;
+}
+
+/** 登录会话失效 401（web_host/api/owner.py session_expired）：与 isAppTokenError
+ *  正交——该 401 体是 FastAPI HTTPException(detail={...}) 包装的
+ *  `{"detail": {"code": "session_expired", …}}`，code 在 detail 内层。 */
+export function isSessionExpiredError(err: unknown): err is ApiError {
+  if (!(err instanceof ApiError) || err.status !== 401) return false;
+  try {
+    const parsed = JSON.parse(err.message) as { detail?: { code?: string } } | null;
+    return parsed?.detail?.code === "session_expired";
+  } catch { return false; }
+}
+
+let _onSessionExpired: (() => void) | null = null;
+export function setOnSessionExpired(fn: () => void): void { _onSessionExpired = fn; }
+
+/** 非 req 通道（如 SSE）收到 401 时复用：命中 session_expired 体则触发全局 R15 钩子。 */
+export function notifySessionExpiredIfAny(err: unknown): void {
+  if (isSessionExpiredError(err) && _onSessionExpired) _onSessionExpired();
 }
 
 /** GET /settings/status 的返回（web_host/api/settings.py）。
@@ -61,7 +82,11 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...ownerHeaders(), ...init?.headers },
   });
-  if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
+  if (!resp.ok) {
+    const err = new ApiError(resp.status, await resp.text().catch(() => resp.statusText));
+    notifySessionExpiredIfAny(err);
+    throw err;
+  }
   return resp.status === 204 ? (undefined as T) : (await resp.json() as T);
 }
 

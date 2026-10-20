@@ -5,6 +5,8 @@ owner_from_request 五分支：头缺失 / 空白串 / 合法形状 / 非法形�
 checked_owned_project 六分支：归属相符 / 不符 / 项目无主 / 无令牌 /
 项目不存在 / 非法 project_id（400 先于归属判定）。
 """
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 from fieldwork_agent.web_host.api.guard import checked_owned_project
@@ -13,11 +15,13 @@ from starlette.requests import Request
 
 
 def make_request(headers: dict[str, str]) -> Request:
-    """最小 Request（解析器只读 request.headers，无需完整 ASGI scope）。"""
+    """最小 Request：解析器除 request.headers 外还急切访问
+    request.app.state.user_store（会话 resolver），scope 需携带最小 app 替身。"""
     # ASGI 规范：header 名由服务器小写下发，构造时对齐真实流量
     # （starlette Headers.get 以小写键查找，scope 混排大小写将查不到）。
     raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
-    return Request(scope={"type": "http", "headers": raw})
+    return Request(scope={"type": "http", "headers": raw,
+                          "app": SimpleNamespace(state=SimpleNamespace(user_store=None))})
 
 
 class FakeRepo:

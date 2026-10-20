@@ -24,7 +24,7 @@ _UNSET = object()
 
 @runtime_checkable
 class ProjectRepository(Protocol):
-    """项目状态与产物读写协议（29 个方法，全部以 dict 进出）。"""
+    """项目状态与产物读写协议（30 个方法，全部以 dict 进出）。"""
 
     # ---------------------------------------------------------------- 项目与阶段
 
@@ -220,4 +220,12 @@ class ProjectRepository(Protocol):
 
     def set_owner(self, pid: str, owner: str | None) -> None:
         """改写项目归属（账号认领迁移预留）；幂等；未知 pid KeyError；非法 owner ValueError。"""
+        ...
+
+    def set_owner_if(self, pid: str, expected: str | None, new: str | None) -> bool:
+        """CAS 改归属：仅当当前 owner == expected 时改为 new（True）；否则不改（False）。
+
+        登录认领迁移用（R2）：防两次并发认领取同一匿名列表后互相覆盖。
+        未知 pid → KeyError；非法 new/expected → ValueError。
+        """
         ...

@@ -3,6 +3,7 @@ import { Chip } from "../ui/Chip";
 import { ThemeSwitcher } from "../ui/ThemeSwitcher";
 import { IconMenu } from "../ui/icons";
 import { DEFAULT_PHASES } from "./LeftRail";
+import { useAuthStore } from "../../stores/auth";
 
 /**
  * Header — 工作台顶栏。
@@ -18,6 +19,8 @@ import { DEFAULT_PHASES } from "./LeftRail";
  * 移动端（<lg，批次 A）：左侧汉堡钮（onMenu 触发 Workspace 左栏抽屉，仅传 prop 时渲染），
  *   品牌双行文字/分隔线 md+ 展开，配色按钮文字 sm+ 展开（图标常驻），
  *   边距与间距收窄——避免单行顶栏在小屏溢出。
+ * 账户区（账号隔离一期）：未登录「登录」钮（onOpenAuth 打开 AuthDialog，仅传 prop 时渲染，
+ *   同 onMenu 惯例）；已登录显示邮箱 + 「退出」（useAuthStore.logout，点即登出回落匿名）。
  */
 export type WorkspaceView = "workspace" | "proposal";
 
@@ -28,6 +31,7 @@ export function Header({
   onNavigate,
   onMenu,
   onRename,
+  onOpenAuth,
 }: {
   projectName?: string;
   /** 当前阶段 id（research_positioning 等，对齐 DEFAULT_PHASES） */
@@ -38,10 +42,14 @@ export function Header({
   onMenu?: () => void;
   /** 项目名就地改名提交（任务1：trim 非空且变化才上行）；不传则项目名纯展示 */
   onRename?: (name: string) => void;
+  /** 打开登录/注册弹窗（账号隔离一期）；不传则不渲染账户区 */
+  onOpenAuth?: () => void;
 }) {
   const meta = DEFAULT_PHASES.find((p) => p.id === phase);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
   // 提交口径：trim 非空且与当前名不同才上行；Esc 取消；blur 与 Enter 同一道提交
   const commitRename = () => {
     const name = draft.trim();
@@ -113,7 +121,7 @@ export function Header({
             </Chip>
           )}
         </div>
-        {/* 右：视图切换 + 配色 + 导出（tablist 只包视图 tab，menu/普通按钮不入 tablist） */}
+        {/* 右：视图切换 + 配色 + 账户（tablist 只包视图 tab，menu/普通按钮不入 tablist） */}
         <div className="ml-auto flex items-center gap-1 text-[13px]">
           <div className="flex items-center gap-1" role="tablist">
             {views.map((v) => (
@@ -134,6 +142,34 @@ export function Header({
             ))}
           </div>
           <ThemeSwitcher />
+          {onOpenAuth && (
+            user ? (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span
+                  title={user.email}
+                  className="hidden sm:inline max-w-[14ch] truncate text-[12.5px] text-inksoft"
+                >
+                  {user.email}
+                </span>
+                {/* 网络失败不打扰：本地清理已在 store 的 finally 完成 */}
+                <button
+                  type="button"
+                  onClick={() => void logout().catch(() => {})}
+                  className="px-2.5 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition cursor-pointer"
+                >
+                  退出
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onOpenAuth}
+                className="px-2.5 h-8 rounded-md border border-transparent text-inksoft hover:text-ink hover:bg-cardsunk transition cursor-pointer shrink-0"
+              >
+                登录
+              </button>
+            )
+          )}
         </div>
       </div>
     </header>

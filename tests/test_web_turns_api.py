@@ -452,10 +452,13 @@ def test_init_deps_singleton_uses_config_plan(tmp_path, monkeypatch):
         created.update(api_key=api_key, models=models, base_url=base_url)
 
     monkeypatch.setattr(llm_mod, "LLMClient", fake_client)
+    # projects_dir=tmp_path（根本身）→ user_store_dir 须取外部兄弟目录（R1：
+    # 不得在 projects_dir 子树内），带测试名唯一化防同 session 串扰。
     cfg = SimpleNamespace(
         dashscope_available=True, dashscope_api_key="sk-sp-x",
         llm_models={"interview": "q"}, projects_dir=tmp_path,
         flyai_api_key="", dashscope_plan="token",
+        user_store_dir=tmp_path.parent / (tmp_path.name + "-accounts"),
     )
     repo = JsonRepository(projects_dir=tmp_path / "projects")
     app = create_app(config=None, repo=repo)
@@ -504,8 +507,11 @@ def test_init_deps_builds_amap_singleton(tmp_path, monkeypatch):
             created.append(api_key)
 
     monkeypatch.setattr(amap_mod, "AMapClient", FakeAMapClient)
+    # projects_dir=tmp_path（根本身）→ user_store_dir 须取外部兄弟目录（R1：
+    # 不得在 projects_dir 子树内），带测试名唯一化防同 session 串扰。
     cfg = SimpleNamespace(projects_dir=tmp_path, flyai_api_key="",
-                          dashscope_available=False, amap_api_key="ak-n0")
+                          dashscope_available=False, amap_api_key="ak-n0",
+                          user_store_dir=tmp_path.parent / (tmp_path.name + "-accounts"))
     app = SimpleNamespace(state=SimpleNamespace())
     repo = JsonRepository(projects_dir=tmp_path / "projects")
     init_deps(app, config=cfg, repo=repo)

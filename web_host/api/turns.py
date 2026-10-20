@@ -132,11 +132,11 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
     turn, created = tm.try_create_turn(project_id, idempotency_key=body.idempotency_key)
     if created:   # N11：仅新建才排后台执行；幂等命中（created=False）只回已有回合
         background.add_task(_execute_turn, request.app, project_id,
-                            turn.turn_id, body.text, llm, flyai, amap)
+                            turn.turn_id, body.text, llm, flyai, amap, owner)
     return {"turn_id": turn.turn_id, "status": turn.status}
 
 
-async def _execute_turn(app, pid, tid, text, llm, flyai, amap):
+async def _execute_turn(app, pid, tid, text, llm, flyai, amap, owner=None):
     """后台任务：获取写锁 → 执行 agent loop → 释放（amap 为回合级实例，N4）。"""
     from fieldwork_agent.web_host.agent.loop import run_turn
     from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
@@ -148,7 +148,7 @@ async def _execute_turn(app, pid, tid, text, llm, flyai, amap):
     if handle is None or handle.status in TERMINAL_STATUSES:
         return
     async with tm.acquire_write_lock(pid):
-        await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap)
+        await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap, owner=owner)
 
 
 async def _event_stream(tm, project_id: str, turn_id: str, last_id: int, handle):
@@ -263,5 +263,5 @@ async def retry_turn(project_id: str, turn_id: str, request: Request,
     text = repo.pop_last_message(project_id, role="user")["content"]
     turn = tm.create_turn(project_id)
     background.add_task(_execute_turn, request.app, project_id,
-                        turn.turn_id, text, llm, flyai, amap)
+                        turn.turn_id, text, llm, flyai, amap, owner)
     return {"turn_id": turn.turn_id, "status": turn.status}
