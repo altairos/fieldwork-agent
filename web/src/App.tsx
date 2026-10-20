@@ -208,7 +208,9 @@ function Workspace() {
     return () => {
       alive = false;
     };
-  }, [projectId, loadSnapshot, authRetry]);
+    // 身份切换（user 变化）也走「先 reset（上方 effect）再按新身份重拉」这条线：
+    // 本 effect 依赖含 user 才配得上那次 reset，缺之则 reset 后无人回填 → 工作区空白。
+  }, [projectId, loadSnapshot, authRetry, user]);
 
   // 首页两步创建携带的首轮回合（?turn=，轮 4）：接住后立即 replace 清 query
   // （防刷新重放/分享链接重触发），再订阅该回合的 SSE 回放——首页输入由此成为

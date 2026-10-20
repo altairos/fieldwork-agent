@@ -356,11 +356,16 @@ describe("Workspace 降级横幅撤除精确性（兄弟请求互不误撤）", 
 });
 
 describe("Workspace 身份切换（A02）", () => {
-  test("登录用户变化：清空 conversation/tools/ui/project 四 store（上一身份不串台）", async () => {
-    stubFetch({ rest: SNAP, messages: [{ role: "user", content: "上一身份的消息" }] });
+  test("登录用户变化：先清空四 store 再按新身份重拉（reset 与重拉配套，缺一即空白）", async () => {
+    const fn = stubFetch({ rest: SNAP, messages: [{ role: "user", content: "上一身份的消息" }] });
     render(<App />);
     expect(await screen.findByText("白族村落宗族组织变迁")).toBeInTheDocument();
     expect(useProjectStore.getState().snapshot).not.toBeNull();
+
+    // 两路的调用次数以此为准：挂载时各 1 次
+    const calls = (url: string) => fn.mock.calls.filter((c) => String(c[0]) === url).length;
+    expect(calls("/projects/p1")).toBe(1);
+    expect(calls("/projects/p1/messages")).toBe(1);
 
     // 造出上一身份遗留的工作区状态（四 store 各留痕）
     act(() => {
@@ -375,14 +380,25 @@ describe("Workspace 身份切换（A02）", () => {
     expect(useToolsStore.getState().order).toEqual(["cA02"]);
     expect(useUiStore.getState().activeTab).toBe("sites");
 
-    // 身份切换（登录/登出/会话失效最终都落到 user 值变化）
+    // 身份切换（登录/登出/会话失效最终都落到 user 值变化）：上方 reset effect 清空四
+    // store，紧随的重拉 effect 按新身份重取快照与消息史。二者配套——缺 reset 会串台，
+    // 缺重拉则清空后无人回填（刷新后工作区空白，A02 连锁回归的根因）。
     act(() => useAuthStore.setState({ user: { user_id: "u1", email: "a@b.c" } }));
 
-    await waitFor(() => expect(useProjectStore.getState().snapshot).toBeNull());
-    expect(useConversationStore.getState().messages).toEqual([]);
+    // 重拉：两路各 +1（若 user 不进重拉依赖，这里会停在 1 次）
+    await waitFor(() => expect(calls("/projects/p1")).toBe(2));
+    expect(calls("/projects/p1/messages")).toBe(2);
+    await waitFor(() => expect(useProjectStore.getState().snapshot?.project_id).toBe("p1"));
+    // 回填的是重拉得到的消息史：上一身份自造的「上一身份的对话」不复活
+    await waitFor(() =>
+      expect(useConversationStore.getState().messages).toEqual([{ role: "user", content: "上一身份的消息" }]),
+    );
+
+    // 上一身份痕迹被清掉（重置生效；重拉只补快照/消息史，不补工具轨迹）
     expect(useConversationStore.getState().streamBuffer).toBe("");
     expect(useToolsStore.getState().order).toEqual([]);
     expect(useToolsStore.getState().byCallId).toEqual({});
+    // reset 专属：重拉不碰 activeTab，basic-info 只可能来自那次清空
     expect(useUiStore.getState().activeTab).toBe("basic-info");
 
     act(() => useAuthStore.setState({ user: null }));  // 清场：不影响后续用例
