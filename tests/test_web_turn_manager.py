@@ -195,3 +195,63 @@ def test_unsubscribe_drops_empty_subscriber_entry(tm):
     q = tm.subscribe("p1", t.turn_id)
     tm.unsubscribe("p1", t.turn_id, q)
     assert tm._subscribers.get(f"p1:{t.turn_id}") is None
+
+
+# ---------------------------------------------------------------- A10b 路径兜底
+
+UNSAFE_PIDS = ["../escape", "a/b", "a\\b", "..", ".", "C:evil", "x" * 65]
+
+
+@pytest.mark.parametrize("bad_pid", UNSAFE_PIDS)
+def test_create_turn_rejects_unsafe_pid(tm, tmp_path, bad_pid):
+    """A10b：pid 直接拼 turns 目录，非法形状必须在 mkdir 之前 ValueError。"""
+    with pytest.raises(ValueError):
+        tm.create_turn(bad_pid)
+    assert not (tmp_path / "escape").exists()
+
+
+def test_purge_project_rejects_traversal_before_rmtree(tm, tmp_path):
+    """A10b：purge_project 是 rmtree(root/pid)，非法 pid 绝不能删到根外。"""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    marker = victim / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    with pytest.raises(ValueError):
+        tm.purge_project("../victim")
+    assert marker.exists()
+
+
+def test_replay_rejects_traversal_pid(tm, tmp_path):
+    """A10b：replay 直接读 root/pid/turns/tid/events.jsonl；非法 pid 不得读到根外。"""
+    outside = tmp_path / "escape" / "turns" / ("0" * 16)
+    outside.mkdir(parents=True)
+    (outside / "events.jsonl").write_text(
+        '{"turn_id":"%s","seq":1,"event":"x","data":{}}\n' % ("0" * 16),
+        encoding="utf-8")
+    with pytest.raises(ValueError):
+        tm.replay("../escape", "0" * 16, after_seq=0)
+
+
+def test_replay_rejects_unsafe_tid(tm):
+    """A10b：tid 同为路径段；非服务端 16 位小写 hex 形状直接 ValueError。"""
+    tm.create_turn("p1")
+    with pytest.raises(ValueError):
+        tm.replay("p1", "../escape", after_seq=0)
+
+
+def test_append_event_rejects_unsafe_tid(tm):
+    """A10b：追事件先验 tid 形状，不得先以 KeyError 暴露注册表行为。"""
+    tm.create_turn("p1")
+    with pytest.raises(ValueError):
+        tm.append_event("p1", "../escape", "x", {})
+
+
+def test_recover_interrupted_skips_traversal_pid(tm, tmp_path):
+    """A10b：恢复扫描遇到根外 pid 跳过，不得改写根外 meta。"""
+    outside = tmp_path / "escape" / "turns" / ("1" * 16)
+    outside.mkdir(parents=True)
+    meta = outside / "meta.json"
+    meta.write_text('{"status": "running"}', encoding="utf-8")
+    tm.recover_interrupted(["../escape"])
+    assert json.loads(meta.read_text(encoding="utf-8"))["status"] == "running"
+

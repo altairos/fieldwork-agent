@@ -10,6 +10,10 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from fieldwork_agent.kernel.repository.guard import (
+    path_id_violation,
+    turn_id_violation,
+)
 from fieldwork_agent.web_host.events import EventEnvelope
 from pydantic import ValidationError
 
@@ -87,6 +91,7 @@ class TurnManager:
         N11：``created=False`` 表示幂等命中已有回合——调用方据此只回已有
         turn_id/status、绝不再排 run_turn（消除同键重复执行模型与重复落用户消息）。
         """
+        self._check_pid(pid)   # A10b：先于任何注册表/目录变更
         existing = self.lookup_idempotent(pid, idempotency_key)
         if existing is not None:
             return existing, False
@@ -103,7 +108,7 @@ class TurnManager:
             self._idempotency[f"{pid}:{idempotency_key}"] = tid
 
         # 持久化 meta.json
-        turn_dir = self._root / pid / "turns" / tid
+        turn_dir = self._turn_dir(pid, tid)
         turn_dir.mkdir(parents=True, exist_ok=True)
         self._write_meta(handle)
         return handle, True
@@ -120,14 +125,17 @@ class TurnManager:
         self, pid: str, tid: str, event: str, data: dict
     ) -> EventEnvelope:
         """追加事件：seq 递增 → 持久化 → 广播订阅者。"""
+        # A10b：只验形状（纯字符串，~µs）——handle 存在即证明该 pid 已在
+        # try_create_turn 过了带 containment 的完整校验；本项目resolve 一次
+        # 在本机约 1ms，而本方法随流式输出每 chunk 调一次且是同步阻塞的。
+        turn_dir = self._turn_dir(pid, tid, containment=False)
         handle = self._turns[f"{pid}:{tid}"]
         handle.seq_counter += 1
         envelope = EventEnvelope(
             turn_id=tid, seq=handle.seq_counter, event=event, data=data
         )
         # 追加到 events.jsonl
-        events_path = self._root / pid / "turns" / tid / "events.jsonl"
-        with events_path.open("a", encoding="utf-8") as f:
+        with (turn_dir / "events.jsonl").open("a", encoding="utf-8") as f:
             f.write(envelope.model_dump_json() + "\n")
         # 广播
         self._broadcast(pid, tid, envelope)
@@ -135,7 +143,7 @@ class TurnManager:
 
     def replay(self, pid: str, tid: str, after_seq: int) -> list[EventEnvelope]:
         """从磁盘读取 events.jsonl 并返回 seq > after_seq 的事件列表。"""
-        events_path = self._root / pid / "turns" / tid / "events.jsonl"
+        events_path = self._turn_dir(pid, tid) / "events.jsonl"
         if not events_path.exists():
             return []
         results: list[EventEnvelope] = []
@@ -212,6 +220,7 @@ class TurnManager:
         ``rmtree(ignore_errors=True)``：json 后端下 tm 与 repo 同根，目录可能已被
         ``repo.delete_project`` 先行移除，幂等即可。
         """
+        self._check_pid(pid)   # A10b：rmtree 目标是 root/pid，非法 pid 绝不执行
         prefix = f"{pid}:"
         self._turns = {k: v for k, v in self._turns.items() if not k.startswith(prefix)}
         self._idempotency = {
@@ -269,6 +278,10 @@ class TurnManager:
     def recover_interrupted(self, pid_list: list[str]) -> None:
         """扫描各项目 turns 目录，将 running 状态的回合标记为 interrupted。"""
         for pid in pid_list:
+            # A10b：pids 来自磁盘扫描/库内存量，非法形状或指向根外（预置符号链接）
+            # 一律跳过——恢复是自愈路径，不能因单个怪目录拒绝启动。
+            if path_id_violation(pid, field="project_id", root=self._root):
+                continue
             turns_dir = self._root / pid / "turns"
             if not turns_dir.exists():
                 continue
@@ -299,9 +312,33 @@ class TurnManager:
     # 内部工具
     # ------------------------------------------------------------------
 
+    def _check_pid(self, pid: str, *, containment: bool = True) -> None:
+        """A10b：pid 会拼成 turns 目录与 ``rmtree`` 目标，任何入口先验形状 + containment。
+
+        ``containment=False`` 只做字符串形状检查（拒绝分隔符/``..``/盘符等，
+        词法上已不可能逃逸），供逐 chunk 的热路径使用；是否需做根目录 containment
+        由调用方按“该 pid 是否已过创建时的完整校验”决定。
+        """
+        reason = path_id_violation(
+            pid, field="project_id", root=self._root if containment else None)
+        if reason:
+            raise ValueError(f"非法 project_id（{reason}）: {pid!r}")
+
+    @staticmethod
+    def _check_tid(tid: str) -> None:
+        """A10b：tid 同为路径段；服务端固定 16 位小写 hex（``uuid4().hex[:16]``）。"""
+        reason = turn_id_violation(tid)
+        if reason:
+            raise ValueError(f"非法 turn_id（{reason}）: {tid!r}")
+
+    def _turn_dir(self, pid: str, tid: str, *, containment: bool = True) -> Path:
+        self._check_pid(pid, containment=containment)
+        self._check_tid(tid)
+        return self._root / pid / "turns" / tid
+
     def _write_meta(self, handle: TurnHandle) -> None:
         """将 handle 元信息写入 meta.json。"""
-        turn_dir = self._root / handle.pid / "turns" / handle.turn_id
+        turn_dir = self._turn_dir(handle.pid, handle.turn_id)
         turn_dir.mkdir(parents=True, exist_ok=True)
         meta = {
             "turn_id": handle.turn_id,
