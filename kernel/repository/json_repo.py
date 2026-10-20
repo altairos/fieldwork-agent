@@ -297,23 +297,32 @@ class JsonRepository:
         """幂等建项目：已存在则原样保留存量（顺带补齐消息史），不覆盖、不报错。
 
         owner 只在新项目时写入；对已存在项目（含无主存量）不覆盖——认领走 set_owner。
+        A08：存量回填是「读 chat_log → 补写」的读改写，必须与其它实例互斥，
+        否则两个进程同时打开旧项目会把同一批窗口消息各写一遍。
         """
         reason = owner_violation(owner)
         if reason:
             raise ValueError(f"非法 owner（{reason}）: {owner}")
-        for sub in ("knowledge", "search_cache", "output"):
-            self._project_dir(project_id).joinpath(sub).mkdir(parents=True, exist_ok=True)
-        if self._state_file(project_id).exists():
-            self._backfill_chat_log(project_id, self._load(project_id))
-            return
-        state = _default_state(project_id)
-        state["owner"] = owner
-        self._save(project_id, state)
+        with self._lock_for(project_id):
+            for sub in ("knowledge", "search_cache", "output"):
+                self._project_dir(project_id).joinpath(sub).mkdir(parents=True, exist_ok=True)
+            if self._state_file(project_id).exists():
+                self._backfill_chat_log(project_id, self._load(project_id))
+                return
+            state = _default_state(project_id)
+            state["owner"] = owner
+            self._save(project_id, state)
 
     def delete_project(self, pid: str) -> None:
-        """删除即整域清除：整个项目目录（state/消息史/知识/缓存/文档）一并移除。"""
-        self._require(pid)
-        shutil.rmtree(self._project_dir(pid))
+        """删除即整域清除：整个项目目录（state/消息史/知识/缓存/文档）一并移除。
+
+        A08：必须与同项目的写入互斥——否则另一个实例的 append_message 可能在
+        rmtree 之后重建 chat_history.jsonl，留下一份无 state.json 的残留目录。
+        锁文件在 ``{root}/.locks/``，不随项目目录删除。
+        """
+        with self._lock_for(pid):
+            self._require(pid)
+            shutil.rmtree(self._project_dir(pid))
 
     def list_projects(self, owner=_UNSET) -> list[dict]:
         """项目摘要列表：owner 三态（缺省全量 / None 仅无主 / str 仅该归属）。"""

@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -602,3 +603,61 @@ def test_unsafe_project_id_writes_nothing_outside_root(tmp_path):
     assert not (tmp_path / "state.json").exists()
     assert not (tmp_path / "escape.lock").exists()
     assert not (tmp_path / "projects").exists()
+
+
+# ---------------------------------------------------------------- A08 存量回填 / 删除的锁边界
+
+
+def test_create_holds_cross_instance_lock(tmp_path, monkeypatch):
+    """A08：create 的存量回填在跨实例文件锁内；第二个实例必须等它完成。"""
+    projects = tmp_path / "projects"
+    a = JsonRepository(projects_dir=projects)
+    a.create("p1")
+    b = JsonRepository(projects_dir=projects)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_backfill(pid, state):
+        entered.set()
+        release.wait(5)
+
+    monkeypatch.setattr(a, "_backfill_chat_log", slow_backfill)
+    ta = threading.Thread(target=a.create, args=("p1",))
+    ta.start()
+    assert entered.wait(5), "A 未进入回填"
+    done = threading.Event()
+    tb = threading.Thread(target=lambda: (b.create("p1"), done.set()))
+    tb.start()
+    assert not done.wait(0.3), "B 未被 A 的跨实例文件锁挡住"
+    release.set()
+    ta.join(5)
+    tb.join(5)
+    assert done.is_set()
+
+
+def test_delete_holds_cross_instance_lock(tmp_path, monkeypatch):
+    """A08：delete_project 在锁内 rmtree；第二个实例的 create 不得插进删除窗口。"""
+    projects = tmp_path / "projects"
+    a = JsonRepository(projects_dir=projects)
+    a.create("p1")
+    b = JsonRepository(projects_dir=projects)
+    entered, release = threading.Event(), threading.Event()
+    orig_require = a._require
+
+    def slow_require(pid):
+        entered.set()
+        release.wait(5)
+        orig_require(pid)
+
+    monkeypatch.setattr(a, "_require", slow_require)
+    ta = threading.Thread(target=a.delete_project, args=("p1",))
+    ta.start()
+    assert entered.wait(5), "A 未进入删除"
+    done = threading.Event()
+    tb = threading.Thread(target=lambda: (b.create("p1"), done.set()))
+    tb.start()
+    assert not done.wait(0.3), "B 未被删除锁挡住（会在 rmtree 后被清掉）"
+    release.set()
+    ta.join(5)
+    tb.join(5)
+    assert done.is_set()
+    assert [p["project_id"] for p in b.list_projects()] == ["p1"]
