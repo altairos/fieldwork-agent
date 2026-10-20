@@ -24,6 +24,11 @@ TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"
 # 事件本体在 events.jsonl 里不删，历史回看走 /messages 而非这个表。
 TERMINAL_RETENTION = 30 * 60.0
 
+# A03：单个 SSE 订阅者的最大积压。超限时清队并送 None 结束该流——前端
+# 按 Last-Event-ID 重连后从 events.jsonl 回放，不丢事件；无界队列则会被
+# 慢客户端拖成内存泄漏。
+SUBSCRIBER_QUEUE_MAX = 256
+
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
     """同目录临时文件写入后 os.replace 原子替换，避免崩溃留下半写 JSON。
@@ -71,6 +76,8 @@ class TurnManager:
         self._locks: dict[str, asyncio.Lock] = {}
         # 订阅，键 "{pid}:{tid}" → list[Queue]
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        # A03：积压超限主动断开的累计次数（诊断用）
+        self._overflow_counts: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # 回合生命周期
@@ -190,6 +197,7 @@ class TurnManager:
         for pid, tid in dead:
             self._turns.pop(f"{pid}:{tid}", None)
             self._subscribers.pop(f"{pid}:{tid}", None)
+            self._overflow_counts.pop(f"{pid}:{tid}", None)
         self._idempotency = {
             key: tid for key, tid in self._idempotency.items()
             if (key.split(":", 1)[0], tid) not in stale}
@@ -228,6 +236,8 @@ class TurnManager:
         self._locks.pop(pid, None)
         self._subscribers = {
             k: v for k, v in self._subscribers.items() if not k.startswith(prefix)}
+        self._overflow_counts = {
+            k: v for k, v in self._overflow_counts.items() if not k.startswith(prefix)}
         shutil.rmtree(self._root / pid, ignore_errors=True)
 
     # ------------------------------------------------------------------
@@ -250,11 +260,15 @@ class TurnManager:
     # ------------------------------------------------------------------
 
     def subscribe(self, pid: str, tid: str) -> asyncio.Queue:
-        """订阅某回合的实时事件流，返回 Queue。"""
+        """订阅某回合的实时事件流，返回有界 Queue（A03：容量 SUBSCRIBER_QUEUE_MAX）。"""
         key = f"{pid}:{tid}"
-        q: asyncio.Queue = asyncio.Queue()
+        q: asyncio.Queue = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE_MAX)
         self._subscribers.setdefault(key, []).append(q)
         return q
+
+    def overflow_count(self, pid: str, tid: str) -> int:
+        """该回合因订阅积压被主动断开的累计次数（A03 可观测性）。"""
+        return self._overflow_counts.get(f"{pid}:{tid}", 0)
 
     def unsubscribe(self, pid: str, tid: str, queue: asyncio.Queue) -> None:
         """取消订阅。空壳 key 一并移除——否则每回合泄一个空列表。"""
@@ -266,10 +280,23 @@ class TurnManager:
             self._subscribers.pop(key, None)
 
     def _broadcast(self, pid: str, tid: str, item) -> None:
-        """向所有订阅者广播事件或 None 哨兵。"""
+        """向所有订阅者广播事件或 None 哨兵；慢订阅者积压超限则断开。"""
         key = f"{pid}:{tid}"
-        for q in self._subscribers.get(key, []):
-            q.put_nowait(item)
+        for q in list(self._subscribers.get(key, [])):
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                # A03：清空积压（>=上限）后送 None 结束本流，并把该订阅者移出
+                # 名单（不再接收后续事件，内存严格有界）。SSE 客户端重连时带
+                # Last-Event-ID，服务端 replay 会从 events.jsonl 补齐，所以
+                # “断开”比“静默丢弃中间事件”安全；其他订阅者不受影响。
+                subs = self._subscribers.get(key)
+                if subs is not None and q in subs:
+                    subs.remove(q)
+                while not q.empty():
+                    q.get_nowait()
+                q.put_nowait(None)
+                self._overflow_counts[key] = self._overflow_counts.get(key, 0) + 1
 
     # ------------------------------------------------------------------
     # 恢复

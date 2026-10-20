@@ -255,3 +255,31 @@ def test_recover_interrupted_skips_traversal_pid(tm, tmp_path):
     tm.recover_interrupted(["../escape"])
     assert json.loads(meta.read_text(encoding="utf-8"))["status"] == "running"
 
+
+# ---------------------------------------------------------------- A03 订阅背压
+
+
+def test_subscriber_queue_is_bounded(tm):
+    """A03：订阅队列必须有界，慢客户端不得让内存无限增长。"""
+    t = tm.create_turn("p1")
+    q = tm.subscribe("p1", t.turn_id)
+    assert q.maxsize == 256
+
+
+def test_slow_subscriber_closed_and_replayable(tm):
+    """A03：积压超限 → 清队并送 None 结束该流；事件仍可从磁盘回放（不丢）。"""
+    t = tm.create_turn("p1")
+    slow = tm.subscribe("p1", t.turn_id)
+    fast = tm.subscribe("p1", t.turn_id)
+    for i in range(300):
+        tm.append_event("p1", t.turn_id, "message_delta", {"text": str(i)})
+        if not fast.empty():
+            fast.get_nowait()
+    # 慢订阅者：队列被清空后只剩 None 哨兵（结束本流，前端按 Last-Event-ID 重连）
+    assert slow.qsize() == 1 and slow.get_nowait() is None
+    # 快订阅者不受影响
+    assert fast.empty()
+    # 300 条事件全在磁盘，重连回放不丢
+    assert len(tm.replay("p1", t.turn_id, after_seq=0)) == 300
+    assert tm.overflow_count("p1", t.turn_id) == 1
+
