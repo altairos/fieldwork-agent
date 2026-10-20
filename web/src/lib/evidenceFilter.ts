@@ -89,14 +89,16 @@ export function mergeEvidence(
       && getToolCard(c.tool) !== ToolCardFallback,
   );
 
-  // 同题折叠：query_key 非空的只留第一条（索引序=时间序）；空 key 旧数据全保留
-  const seenQueryKey = new Set<string>();
+  // 同题折叠（C02）：query_key 非空的只留最新一条（索引序=时间序，后到者胜——
+  // 旧实现留首条，新结果刷新后仍被折叠消失）；空 key 旧数据全保留。
+  // 两遍法：先记每个 key 的最后一条 id，再过滤。
+  const latestByKey = new Map<string, string>();
+  for (const c of cacheAdmitted) {
+    if (c.query_key) latestByKey.set(c.query_key, c.id);
+  }
   const cacheRows: EvidenceRow[] = [];
   for (const c of cacheAdmitted) {
-    if (c.query_key) {
-      if (seenQueryKey.has(c.query_key)) continue;
-      seenQueryKey.add(c.query_key);
-    }
+    if (c.query_key && latestByKey.get(c.query_key) !== c.id) continue;
     cacheRows.push({
       key: c.id, tool: c.tool, query: c.query, cachedAt: c.cached_at,
       origin: "cache", callId: c.parent_call_id || undefined,

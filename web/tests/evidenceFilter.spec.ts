@@ -62,7 +62,7 @@ describe("mergeEvidence 跨层配对（R13）", () => {
 });
 
 describe("mergeEvidence 去重与时序（R11/R15）", () => {
-  it("query_key 相同的两条缓存行只留第一条（索引序=时间序）", () => {
+  it("query_key 相同的两条缓存行只留最新一条（索引序=时间序，C02）", () => {
     const k = "search_ai|{\"query\":\"大理\"}";
     const rows = mergeEvidence(
       [cache({ id: "cs1", query: "大理", query_key: k, cached_at: "2026-10-19T01:00:00.000001" }),
@@ -70,7 +70,7 @@ describe("mergeEvidence 去重与时序（R11/R15）", () => {
       [],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].key).toBe("cs1");
+    expect(rows[0].key).toBe("cs2");   // 刷新后新结果可见（旧实现留 cs1，新结果被折叠消失）
   });
   it("缓存行保持传入索引序（时间序由后端 ORDER BY 保证，R11）", () => {
     const rows = mergeEvidence(
