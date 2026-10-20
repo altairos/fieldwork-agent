@@ -30,6 +30,15 @@ async def test_register_login_me_logout(app):
         assert me2.status_code == 401 and me2.json()["detail"]["code"] == "session_expired"
 
 
+async def test_register_rejects_short_anon_token(app):
+    """S04：anon_token 是批量认领他人项目的凭据，短令牌（可穷举）一律 400。"""
+    async with make_client(app, owner_token=None) as c:
+        r = await c.post("/auth/register", json={
+            "email": "s4@b.com", "password": "s3cret-pass", "anon_token": "short"})
+        assert r.status_code == 400
+        assert r.json()["detail"]["code"] == "invalid_anon_token"
+
+
 async def test_login_invalid_credentials_same_shape(app):
     async with make_client(app, owner_token=None) as c:
         await c.post("/auth/register", json={"email": "a@b.com", "password": "s3cret-pass"})
@@ -37,6 +46,29 @@ async def test_login_invalid_credentials_same_shape(app):
         r2 = await c.post("/auth/login", json={"email": "nobody@b.com", "password": "whatever1"})
         for r in (r1, r2):
             assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_credentials"
+
+
+async def test_login_burns_hash_when_account_missing(app):
+    """S03：账号不存在也要跑同强度哈希，响应时间不能泄露账号是否存在。"""
+    calls: list[str] = []
+    app.state.user_store.burn_password_check = calls.append
+    async with make_client(app, owner_token=None) as c:
+        r = await c.post("/auth/login", json={"email": "nobody@b.com",
+                                              "password": "whatever-pass"})
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_credentials"
+    assert calls == ["whatever-pass"]
+
+
+async def test_login_does_not_burn_when_account_exists(app):
+    """存在账号只走一次真实校验；多烧一次哈希会白白双倍耗时。"""
+    calls: list[str] = []
+    app.state.user_store.burn_password_check = calls.append
+    async with make_client(app, owner_token=None) as c:
+        await c.post("/auth/register",
+                     json={"email": "a@b.com", "password": "s3cret-pass"})
+        r = await c.post("/auth/login", json={"email": "a@b.com", "password": "wrong-pass"})
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_credentials"
+    assert calls == []
 
 
 async def test_login_claims_anon_projects(app):
@@ -131,11 +163,11 @@ async def test_rest_and_mcp_share_session_owner_and_logout(app):
 
 async def test_register_claims_legacy_anon_sess_projects(app):
     """A01：旧版 MCP 曾把 sess_ 令牌归一为 anon:sess_*；注册携原始令牌可 CAS 认领。"""
-    app.state.repo.create("p_legacy", owner="anon:sess_legacy0001")
+    app.state.repo.create("p_legacy", owner="anon:sess_legacy_account_0001")
     async with make_client(app, owner_token=None) as c:
         r = await c.post("/auth/register", json={
             "email": "legacy@b.com", "password": "s3cret-pass",
-            "anon_token": "sess_legacy0001"})
+            "anon_token": "sess_legacy_account_0001"})
         assert r.status_code == 201
         assert r.json()["claim"]["claimed"] == 1
 

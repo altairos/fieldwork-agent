@@ -35,6 +35,27 @@ def test_short_password(store):
         store.create_user("a@b.com", "short")
 
 
+def test_burn_password_check_uses_configured_iterations(store, monkeypatch):
+    """S03：为不存在的账号跑一次同强度哈希，强度必须与真实校验一致。
+
+    否则登录响应时间就是枚举器——存在跑 60 万次 PBKDF2，不存在立即返回。
+    """
+    from fieldwork_agent.kernel.repository import json_user_store as json_mod
+    from fieldwork_agent.kernel.repository import sqlite_user_store as sqlite_mod
+
+    seen = {}
+
+    def fake(pw, *, iterations, salt=None):
+        seen.update(pw=pw, iterations=iterations)
+        return ("h", "s", iterations)
+
+    # 两个实现各自 `from ... import hash_password`，故两处都要替身
+    monkeypatch.setattr(json_mod, "hash_password", fake)
+    monkeypatch.setattr(sqlite_mod, "hash_password", fake)
+    store.burn_password_check("pw-123456")
+    assert seen == {"pw": "pw-123456", "iterations": 1000}   # 夹具建库用 1000
+
+
 def test_session_lifecycle(store):
     u = store.create_user("a@b.com", "s3cret-pass")
     tok = store.create_session(u["user_id"], 30)

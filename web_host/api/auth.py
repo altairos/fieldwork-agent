@@ -63,15 +63,25 @@ async def register(body: Credentials, request: Request):
     return {"session_token": token, "user": user, "claim": claim}
 
 
+def _invalid_credentials() -> HTTPException:
+    return HTTPException(401, {"code": "invalid_credentials",
+                              "message": "邮箱或密码不正确"})
+
+
 @router.post("/login")
 async def login(body: Credentials, request: Request):
     anon_token = _validated_anon_token(body.anon_token)
     store = get_user_store(request)
     cfg = request.app.state.config
     user = await asyncio.to_thread(store.get_user_by_email, body.email)
-    if user is None or not await asyncio.to_thread(
+    if user is None:
+        # S03：不存在的账号也要跑一次同强度 PBKDF2——否则“立刻返回”与
+        # “跑 60 万次迭代”相差数百毫秒，登录耗时本身就是邮箱枚举器
+        await asyncio.to_thread(store.burn_password_check, body.password)
+        raise _invalid_credentials()
+    if not await asyncio.to_thread(
             store.verify_password, user["user_id"], body.password):
-        raise HTTPException(401, {"code": "invalid_credentials", "message": "邮箱或密码不正确"})
+        raise _invalid_credentials()
     token = store.create_session(user["user_id"], cfg.session_ttl_days)
     claim = await asyncio.to_thread(
         _claim, get_repo(request), f"user:{user['user_id']}", anon_token)

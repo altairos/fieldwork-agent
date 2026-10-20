@@ -25,16 +25,17 @@ def test_missing_token_none():
 
 
 def test_anon_token():
-    assert owner_from_request(_req("abc123", None)) == "anon:abc123"
+    assert owner_from_request(_req("abc123-anon-token", None)) == "anon:abc123-anon-token"
 
 
 def test_valid_session():
-    assert owner_from_request(_req("sess_x", FakeUserStore({"sess_x": "u_1"}))) == "user:u_1"
+    tok = "sess_test_session_0001"
+    assert owner_from_request(_req(tok, FakeUserStore({tok: "u_1"}))) == "user:u_1"
 
 
 def test_expired_session_401():
     with pytest.raises(HTTPException) as ei:
-        owner_from_request(_req("sess_gone", FakeUserStore({})))
+        owner_from_request(_req("sess_gone_session_0001", FakeUserStore({})))
     assert ei.value.status_code == 401 and ei.value.detail["code"] == "session_expired"
 
 

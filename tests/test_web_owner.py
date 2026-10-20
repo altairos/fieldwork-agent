@@ -52,8 +52,23 @@ def test_owner_token_blank_returns_none():
 
 
 def test_owner_token_valid_normalizes_to_anon():
-    req = make_request({"X-Owner-Token": "abc-XYZ_123"})
-    assert owner_from_request(req) == "anon:abc-XYZ_123"
+    token = "abc-XYZ_123456789"          # 17 位，过 S04 最小熵下限
+    req = make_request({"X-Owner-Token": token})
+    assert owner_from_request(req) == f"anon:{token}"
+
+
+@pytest.mark.parametrize("raw", ["a", "a" * 15])
+def test_owner_token_under_min_length_raises_400(raw):
+    """S04：1 字符就能当归属凭据 → 项目可被穷举；服务端设 16 位下限。"""
+    with pytest.raises(HTTPException) as ei:
+        owner_from_request(make_request({"X-Owner-Token": raw}))
+    assert ei.value.status_code == 400
+    assert ei.value.detail["code"] == "invalid_owner_token"
+
+
+def test_owner_token_at_min_length_accepted():
+    token = "a" * 16
+    assert owner_from_request(make_request({"X-Owner-Token": token})) == f"anon:{token}"
 
 
 @pytest.mark.parametrize("raw", ["非法字符", "a:b", "a b", "a/b"])

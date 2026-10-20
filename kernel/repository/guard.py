@@ -77,7 +77,12 @@ def cache_id_violation(cache_id: Any) -> str:
 OWNER_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}:[^\s:]{1,127}$")
 # X-Owner-Token 裸值形状（客户端令牌）：归一化前的准入校验，与 OWNER_RE
 # （归一化后的存储值形状）分工——前者管客户端输入，后者管落库值。
-OWNER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# S04 下限 16：裸令牌就是项目归属的全部凭据（anon:<token>），原下限 1 意味着
+# 1 个字符就能当身份——被穷举后可直接读走他人项目，也能经 /auth 的 anon_token
+# 认领接口整批迁走。官方前端用 crypto.randomUUID 去连字符（32 位），但服务端
+# 没有签发环节，只能在准入口设熵下限兜住非官方客户端。上限保持 128。
+OWNER_TOKEN_MIN_LEN = 16
+OWNER_TOKEN_RE = re.compile(rf"^[A-Za-z0-9_-]{{{OWNER_TOKEN_MIN_LEN},128}}$")
 
 
 def owner_violation(owner: str | None) -> str:

@@ -100,6 +100,14 @@ class SqliteUserStore:
                           (user_id,)).fetchone()
         return bool(r) and verify_password(password, r["password_hash"], r["salt"], r["iterations"])
 
+    def burn_password_check(self, password: str) -> None:
+        """S03：为不存在的账号跑一次同强度哈希，结果丢弃。
+
+        不这么做的话，“账号不存在”会在 PBKDF2 之前就返回，登录耗时直接成为
+        邮箱枚举器（存在 ~几百毫秒、不存在 ~毫秒）。
+        """
+        hash_password(password or "", iterations=self._iterations)
+
     def create_session(self, user_id: str, ttl_days: int) -> str:
         raw = new_session_token()
         now = datetime.now()

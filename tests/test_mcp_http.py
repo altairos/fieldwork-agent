@@ -31,6 +31,10 @@ HEADERS = {
     "Accept": "application/json, text/event-stream",
 }
 
+# 归属令牌：OWNER_TOKEN_RE 有 16 位最小熵下限（S04），短名会被当非法头拒绝
+ALICE = "alice-owner-token-0001"
+BOB = "bob-owner-token-00000002"
+
 
 def _rpc(method: str, params: dict | None = None, id: int = 1) -> dict:
     body = {"jsonrpc": "2.0", "id": id, "method": method}
@@ -104,7 +108,7 @@ async def test_stateless_http_roundtrip(service):
 
         called = _envelope(await client.post("/", json=_rpc("tools/call", {
             "name": "create_project", "arguments": {"project_id": "p1"},
-        }), headers={**HEADERS, "X-Owner-Token": "alice"}))
+        }), headers={**HEADERS, "X-Owner-Token": ALICE}))
         assert called["ok"], called.get("error")
         assert called["data"]["project_id"] == "p1"
 
@@ -295,10 +299,10 @@ async def test_mcp_http_owner_isolation(service):
     """N01 核心：alice 建项目后，无令牌/bob 令牌均看不到、改不动；owner 裸值不泄露。"""
     async with _client(service) as client:
         assert (await _call_tool(client, "create_project",
-                                 {"project_id": "pa"}, owner="alice"))["ok"]
+                                 {"project_id": "pa"}, owner=ALICE))["ok"]
         assert (await _call_tool(client, "update_research_context",
                                  {"project_id": "pa", "patch": {"topic": "alice_secret"}},
-                                 owner="alice"))["ok"]
+                                 owner=ALICE))["ok"]
 
         # 无 Owner Token → list 空、get/update 一律 project_not_found（不泄露存在性）
         no_tok_list = await _call_tool(client, "list_projects", {})
@@ -312,15 +316,15 @@ async def test_mcp_http_owner_isolation(service):
         assert no_tok_upd["error"]["code"] == "project_not_found"
 
         # bob 令牌 → 跨用户隔离，同样看不到 alice 的项目
-        bob_list = await _call_tool(client, "list_projects", {}, owner="bob")
+        bob_list = await _call_tool(client, "list_projects", {}, owner=BOB)
         assert bob_list["ok"] and bob_list["data"] == []
-        bob_get = await _call_tool(client, "get_project", {"project_id": "pa"}, owner="bob")
+        bob_get = await _call_tool(client, "get_project", {"project_id": "pa"}, owner=BOB)
         assert bob_get["ok"] is False and bob_get["error"]["code"] == "project_not_found"
 
         # alice 自己 → 看得到、改得动；owner 裸值不在响应里
-        alice_list = await _call_tool(client, "list_projects", {}, owner="alice")
+        alice_list = await _call_tool(client, "list_projects", {}, owner=ALICE)
         assert [p["project_id"] for p in alice_list["data"]] == ["pa"]
-        alice_get = await _call_tool(client, "get_project", {"project_id": "pa"}, owner="alice")
+        alice_get = await _call_tool(client, "get_project", {"project_id": "pa"}, owner=ALICE)
         assert alice_get["ok"]
         assert alice_get["data"]["research_context"]["topic"] == "alice_secret"
         assert "owner" not in alice_get["data"]
@@ -332,16 +336,16 @@ async def test_mcp_http_create_does_not_overwrite_other_owner(service):
     """N01/N02：bob 用 alice 的 pid create_project 不得覆盖归属（与不存在同形）。"""
     async with _client(service) as client:
         assert (await _call_tool(client, "create_project",
-                                 {"project_id": "shared"}, owner="alice"))["ok"]
+                                 {"project_id": "shared"}, owner=ALICE))["ok"]
         bob_create = await _call_tool(client, "create_project",
-                                      {"project_id": "shared"}, owner="bob")
+                                      {"project_id": "shared"}, owner=BOB)
         assert bob_create["ok"] is False
         assert bob_create["error"]["code"] == "project_not_found"
         # 归属仍是 alice：bob 改不动主题，alice 读回仍是自己的值
         assert (await _call_tool(client, "update_research_context",
                                  {"project_id": "shared", "patch": {"topic": "BOB"}},
-                                 owner="bob"))["ok"] is False
-        alice_get = await _call_tool(client, "get_project", {"project_id": "shared"}, owner="alice")
+                                 owner=BOB))["ok"] is False
+        alice_get = await _call_tool(client, "get_project", {"project_id": "shared"}, owner=ALICE)
         assert alice_get["ok"] and alice_get["data"]["research_context"].get("topic") != "BOB"
 
 
@@ -356,9 +360,9 @@ async def test_mcp_http_resources_filtered_by_owner(service):
     """N01：resources/list 按归属展开；read 项目资源过归属门；静态资源不受限。"""
     async with _client(service) as client:
         assert (await _call_tool(client, "create_project",
-                                 {"project_id": "ra"}, owner="alice"))["ok"]
+                                 {"project_id": "ra"}, owner=ALICE))["ok"]
         alice_res = _result(await client.post("/", json=_rpc("resources/list"),
-                                              headers={**HEADERS, "X-Owner-Token": "alice"}))
+                                              headers={**HEADERS, "X-Owner-Token": ALICE}))
         alice_uris = {r["uri"] for r in alice_res["resources"]}
         assert "fieldwork://project/ra/summary" in alice_uris
 
@@ -370,7 +374,7 @@ async def test_mcp_http_resources_filtered_by_owner(service):
         # bob 直接 read alice 项目资源 → 错误（MCPError INVALID_PARAMS，不泄露内容）
         bob_read = await client.post(
             "/", json=_rpc("resources/read", {"uri": "fieldwork://project/ra/summary"}),
-            headers={**HEADERS, "X-Owner-Token": "bob"})
+            headers={**HEADERS, "X-Owner-Token": BOB})
         assert bob_read.json().get("error") is not None
 
 
@@ -385,16 +389,16 @@ def test_cross_entry_rest_and_mcp_owner_isolation(tmp_path, fake_config):
     with TestClient(app) as tc:
         # REST 入口：alice 建项目（带主题）
         r = tc.post("/projects", json={"project_id": "cross1", "topic": "alice_only"},
-                    headers={"X-Owner-Token": "alice"})
+                    headers={"X-Owner-Token": ALICE})
         assert r.status_code == 201, r.text
         # REST 入口：bob 看不到（404）
         assert tc.get("/projects/cross1",
-                      headers={"X-Owner-Token": "bob"}).status_code == 404
+                      headers={"X-Owner-Token": BOB}).status_code == 404
 
         # MCP 入口（同 app /mcp，enforce_owner=True）：alice 读得到
         alice = tc.post("/mcp", json=_rpc("tools/call", {
             "name": "get_project", "arguments": {"project_id": "cross1"}}),
-            headers={**HEADERS, "X-Owner-Token": "alice"})
+            headers={**HEADERS, "X-Owner-Token": ALICE})
         env = json.loads(alice.json()["result"]["content"][0]["text"])
         assert env["ok"] and env["data"]["research_context"]["topic"] == "alice_only"
         assert "owner" not in env["data"]   # N01：owner 裸值不泄露
@@ -402,7 +406,7 @@ def test_cross_entry_rest_and_mcp_owner_isolation(tmp_path, fake_config):
         # MCP 入口：bob 被拒
         bob = tc.post("/mcp", json=_rpc("tools/call", {
             "name": "get_project", "arguments": {"project_id": "cross1"}}),
-            headers={**HEADERS, "X-Owner-Token": "bob"})
+            headers={**HEADERS, "X-Owner-Token": BOB})
         benv = json.loads(bob.json()["result"]["content"][0]["text"])
         assert benv["ok"] is False and benv["error"]["code"] == "project_not_found"
 
