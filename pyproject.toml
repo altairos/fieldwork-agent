@@ -25,6 +25,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
     "ruff>=0.6",
+    # A07：tests/test_dependency_manifest.py 解析依赖声明（不依赖 pytest 的传递依赖）
+    "packaging>=23.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 mcp = [
     # Task 5 实测：接线用低层 Server.add_request_handler + Server.run 形状，为 2.x API
