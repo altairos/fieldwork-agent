@@ -81,7 +81,7 @@ tests/
 
 ## 3. 密钥与配置
 
-`Config`（[`core/config.py`](core/config.py)）的加载优先级：
+`Config`（[`kernel/config.py`](kernel/config.py)，A09 自 core 下沉）的加载优先级：
 
 - **DashScope / 模型**：环境变量初始化 → 若存在 `~/.fieldwork_agent/config.json` 则**覆盖** env。
   密钥键：`DASHSCOPE_API_KEY`。模型三槽（对话推进 / 长文方案 / 结构化抽取）：
@@ -141,7 +141,8 @@ CLI (core/cli.py)
        ├─ kernel/repository/                ProjectRepository 协议 + JsonRepository 持久化
        ├─ kernel/models.py                  共享 pydantic 契约：Envelope/ToolError/SearchItem/
        │                                    ResearchContext/ProposalDoc/BudgetBreakdown…（全内核复用）
-       └─ kernel/llm.py                     LLMClient（DashScope OpenAI 兼容端点，function calling）
+       ├─ kernel/llm.py                     LLMClient（DashScope OpenAI 兼容端点，function calling）
+       └─ kernel/config.py                  Config（env/config.json 优先级、目录布局、单进程断言）
 ```
 
 测试夹具（fixtures）：全部集中在 `tests/conftest.py` —— `FakeConfig`（tmp 目录底座）、
@@ -152,7 +153,9 @@ CLI (core/cli.py)
 **`kernel` 绝不反向 import `core/`、`runtime` 或任何宿主**（只依赖标准库 + pydantic，无状态、
 不编排 LLM）。工具决策由宿主 LLM function calling 完成——宿主把 registry 生成的 schema 交给
 模型，将其 `tool_calls` 经 `client_kernel_dispatch` 分派回内核能力。
-`Config` 为无状态底座，被 `core` 层读取。
+`Config` 为无状态底座（`kernel/config.py`，A09 自 core 下沉），由 `core`、`web_host`、
+`mcp_server` 共同读取；`core/config.py` 只是旧 import 路径的 re-export 兼容层（不转发
+monkeypatch，测试请 patch `kernel.config`）。
 
 **部署硬约束：单进程（A04）**。`web_host` 的 `TurnManager` 把回合状态、SSE 订阅队列
 与写锁都放在进程内存，`events.jsonl` 也是无跨进程锁的追加写——多 worker/多副本会

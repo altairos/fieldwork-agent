@@ -177,7 +177,7 @@ def _isolated_host_env(tmp_path, monkeypatch):
                 "FA_LOGIN_RATE_LIMIT", "FA_LOGIN_ACCOUNT_RATE_LIMIT",
                 "FA_REGISTER_RATE_LIMIT", "FA_TURN_DAILY_QUOTA"):
         monkeypatch.delenv(var, raising=False)
-    from fieldwork_agent.core import config as config_mod
+    from fieldwork_agent.kernel import config as config_mod
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(config_mod, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))

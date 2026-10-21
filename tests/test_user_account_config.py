@@ -1,8 +1,8 @@
 # tests/test_user_account_config.py
 from pathlib import Path
 
-import fieldwork_agent.core.config as cfgmod
-from fieldwork_agent.core.config import Config
+import fieldwork_agent.kernel.config as cfgmod
+from fieldwork_agent.kernel.config import Config
 
 _FA_ACCOUNT_VARS = (
     "FA_USER_STORE_DIR",

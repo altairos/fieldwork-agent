@@ -10,7 +10,7 @@
 import pathlib
 
 import pytest
-from fieldwork_agent.core import config as config_mod
+from fieldwork_agent.kernel import config as config_mod
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.web_host.app import create_app
 

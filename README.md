@@ -217,7 +217,7 @@ curl http://127.0.0.1:8300/projects/<id>/turns/<turn_id>/events
 | `FIELDWORK_ASSETS_DIR` | 否 | Tier S 私有资产目录（见下） |
 | `FA_STORAGE` | 否 | 存储后端：`json`（默认）/ `sqlite`，未知值安全回落 json（当前仅 Web 宿主与 MCP Server 生效，CLI 待接入） |
 
-### 配置优先级（`core/config.py`）
+### 配置优先级（`kernel/config.py`）
 
 1. 环境变量初始化；
 2. 若存在 `~/.fieldwork_agent/config.json`（Windows：`C:\Users\<用户名>\.fieldwork_agent\config.json`，注意不在项目目录内）则**覆盖**环境变量（DashScope/FlyAI/高德密钥、三槽模型、钉钉配置；高德键为 `amap_api_key`，Web 面板键为 `amap_js_key`/`amap_js_security`）；

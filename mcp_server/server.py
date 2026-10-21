@@ -43,7 +43,7 @@ from mcp.types import (
 )
 
 if TYPE_CHECKING:
-    from fieldwork_agent.core.config import Config
+    from fieldwork_agent.kernel.config import Config
     from fieldwork_agent.kernel.repository.protocol import ProjectRepository
 
 SERVER_NAME = "fieldwork-agent"
@@ -83,7 +83,7 @@ def create_server(config: "Config | None" = None,
     """
     cfg: Any = config
     if repo is None:
-        from fieldwork_agent.core.config import Config
+        from fieldwork_agent.kernel.config import Config
         from fieldwork_agent.kernel.repository.factory import make_repository
         cfg = config or Config()
         repo = make_repository(cfg)
@@ -108,7 +108,7 @@ def create_server(config: "Config | None" = None,
     if cfg is not None:
         models_map = cfg.llm_models
     else:
-        from fieldwork_agent.core.config import DEFAULT_LLM_MODELS
+        from fieldwork_agent.kernel.config import DEFAULT_LLM_MODELS
         models_map = dict(DEFAULT_LLM_MODELS)
 
     def _effective_host_ctx() -> dict:

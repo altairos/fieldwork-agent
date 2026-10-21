@@ -102,7 +102,7 @@ def create_app(config=None, repo=None, web_dist=None) -> FastAPI:
     # （JsonRepository 进程内缓存 / Sqlite 连接），lifespan 里不再各建一份
     cfg = config
     if cfg is None:
-        from fieldwork_agent.core.config import Config
+        from fieldwork_agent.kernel.config import Config
         cfg = Config()
     # S01：先于任何副作用（建目录/连库）判定——公网裸绑定宁可不启动
     _assert_public_access_is_guarded(cfg)

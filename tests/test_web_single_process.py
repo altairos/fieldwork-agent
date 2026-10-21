@@ -1,8 +1,8 @@
 """A04：单进程硬约束——TurnManager 状态在进程内存，多 worker 必然分裂。"""
 
 import pytest
-from fieldwork_agent.core import config as config_mod
-from fieldwork_agent.core.config import Config
+from fieldwork_agent.kernel import config as config_mod
+from fieldwork_agent.kernel.config import Config
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.web_host.app import create_app
 

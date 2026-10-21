@@ -4,7 +4,7 @@ from fastapi import Request
 
 
 def init_deps(app, *, config=None, repo=None) -> None:
-    from fieldwork_agent.core.config import Config
+    from fieldwork_agent.kernel.config import Config
     from fieldwork_agent.kernel.repository.factory import make_repository
     from fieldwork_agent.kernel.sources.amap import AMapClient
     from fieldwork_agent.kernel.sources.flyai import FlyAIClient

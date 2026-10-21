@@ -25,9 +25,9 @@ import sys
 import time
 from pathlib import Path
 
-from fieldwork_agent.core.config import Config
 from fieldwork_agent.kernel.aggregation.last_mile import plan_last_mile
 from fieldwork_agent.kernel.aggregation.site_profile import profile_field_site
+from fieldwork_agent.kernel.config import Config
 from fieldwork_agent.kernel.models import GeoLocation, ItemPage
 from fieldwork_agent.kernel.sources.amap import AMapClient
 

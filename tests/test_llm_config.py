@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
-from fieldwork_agent.core import config as config_mod
-from fieldwork_agent.core.config import Config
+from fieldwork_agent.kernel import config as config_mod
 from fieldwork_agent.kernel import llm as llm_mod
+from fieldwork_agent.kernel.config import Config
 from fieldwork_agent.kernel.llm import LLMClient
 
 # ---------------------------------------------------------------- Config 三槽
