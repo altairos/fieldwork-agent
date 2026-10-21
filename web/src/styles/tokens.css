@@ -1,3 +1,16 @@
+/* Fraunces：tokens 与 tailwind 的 num 栈一直写着它，但项目从未加载过这个字体，
+   于是所有英文标题与数字都静默降级成 Noto Serif SC 的拉丁字形（细、直、没有
+   复古衬线的味道），且控制台不报错。2026-10-21 补本地可变字体，不再依赖外网；
+   字体许可（SIL OFL 1.1）与版权声明见 ../assets/fonts/OFL.txt。 */
+@font-face {
+  font-family: "Fraunces";
+  src: url("../assets/fonts/fraunces.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+2000-206F, U+2122, U+2191, U+2193;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

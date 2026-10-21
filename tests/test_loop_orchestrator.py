@@ -55,10 +55,12 @@ def test_two_tool_rounds_then_answer():
 
 
 def test_iteration_cap():
-    tc = {"content": "", "tool_calls": [
-        {"id": "x", "name": "search_ai", "arguments": {"query": "q"}}],
-        "finish_reason": "tool_calls"}
-    llm = ScriptedLLM([tc] * 12)
+    # 每轮 query 不同：避免命中重复查询守卫（去重是另一条行为，与迭代上限无关）
+    llm = ScriptedLLM([
+        {"content": "", "tool_calls": [
+            {"id": f"x{i}", "name": "search_ai", "arguments": {"query": f"q{i}"}}],
+            "finish_reason": "tool_calls"} for i in range(12)
+    ])
     dispatch_calls = []
 
     def dispatch(name, args):
@@ -173,7 +175,8 @@ def test_tool_budget_truncates_batch_midway():
     """F07：一批 4 调用只剩 2 额度 → 只执行前 2，后 2 回填 budget_exceeded。"""
     llm = ScriptedLLM([
         {"content": "", "tool_calls": [
-            {"id": f"c{i}", "name": "search_pois", "arguments": {"query": f"q{i}"}}
+            {"id": f"c{i}", "name": "search_pois",
+             "arguments": {"city_name": "大理", "keyword": f"k{i}"}}
             for i in range(4)]},
         {"content": "预算内结论", "tool_calls": None},
     ])

@@ -19,7 +19,7 @@ TOOL_USAGE_GUIDANCE = """工具分工与证据边界（优先于阶段资产中�
   能力，仍受源覆盖限制；田野点画像里的“既有研究”应另用search_literature，不用旅行关键词补位。
 - estimate_living_cost：带假设与区间的费用估算；compose_proposal/compose_interview_guide/
   suggest_informants：基于现有研究信息生成草稿或候选，不是新的事实来源。
-- update_research_context/get_project_brief：保存与读取本项目研究状态，不检索外部资料。
+- update_research_context/get_project_brief/save_informants：保存与读取本项目研究状态（含访谈对象登记），不检索外部资料。
 需要本工具集没有覆盖的材料时，如实说明并请用户提供来源或使用返回的平台入口，不泛用旅行搜索。
 当前没有政府原始资料或通用网页搜索工具；若请求人口统计原表、政策原文或地方志全文，先说明
 该来源缺口。仅因出现地名就调用amap_geocode并不能取得这些资料，也不能说定位后就能找到原文；

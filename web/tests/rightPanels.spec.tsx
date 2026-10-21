@@ -137,6 +137,23 @@ describe("InformantsPanel 采纳登记", () => {
     expect(screen.queryByText(/未取得访谈对象候选/)).not.toBeInTheDocument();
     expect(screen.getByText(/尚无访谈对象/)).toBeInTheDocument();
   });
+
+  test("P2-1：已登记的 type 置灰为「已登记」，不再可点", () => {
+    useProjectStore.getState().loadSnapshot({
+      ...SNAP,
+      informants: [{ id: "inf_1", code: "INF-01", type: "宗族长老",
+                     relation: "", contact: "", notes: "" }],
+    });
+    useToolsStore.setState({
+      byCallId: { c1: { call_id: "c1", tool: "suggest_informants", purpose: "", status: "done", args: {},
+                        data: [{ type: "宗族长老" }], degraded: null } },
+      order: ["c1"],
+    });
+    render(<InformantsPanel />);
+    const btn = screen.getByText("已登记");
+    expect(btn).toBeDisabled();
+    expect(screen.getByText(/候选 · 已登记/)).toBeInTheDocument();
+  });
 });
 
 describe("FieldSitesPanel 确认", () => {

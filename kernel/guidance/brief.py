@@ -51,8 +51,14 @@ def build_project_brief(state: dict, *,
         lines.append("候选田野点：（无）")
     infs = state.get("informants") or []
     if infs:
-        codes = "、".join(str(i.get("code") or i.get("type", "?")) for i in infs[-3:])
-        lines.append(f"访谈对象 {len(infs)} 位：{codes}")
+        # P2-1：编号 + 类型一起给（只报 INF-xx 时模型不知道已登记的是谁，
+        # 容易把同类型另一位当成重复而不再登记）。
+        entries = "、".join(
+            " ".join(part for part in (str(i.get("code") or "").strip(),
+                                        str(i.get("type") or "").strip())
+                     if part) or "?"
+            for i in infs[-3:])
+        lines.append(f"访谈对象 {len(infs)} 位：{entries}")
     else:
         lines.append("访谈对象：（无）")
     props = state.get("proposals") or []

@@ -7,14 +7,13 @@ from fieldwork_agent.kernel.context_patch import (
     ALLOWED_CONTEXT_FIELDS,
     sanitize_context_patch,
 )
-from fieldwork_agent.kernel.documents.informants import candidate_to_record
-from fieldwork_agent.kernel.models import InformantCandidate
 from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+from fieldwork_agent.runtime.informants import register_informants
 from fieldwork_agent.web_host.agent.loop import check_and_advance
 from fieldwork_agent.web_host.api.guard import checked_owned_project
 from fieldwork_agent.web_host.api.owner import owner_from_request
 from fieldwork_agent.web_host.deps import get_repo
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, create_model
 
 router = APIRouter(tags=["state"])
 
@@ -106,14 +105,15 @@ async def adopt_informant(project_id: str, body: AdoptInformantRequest,
                           repo=Depends(get_repo),
                           owner: str | None = Depends(owner_from_request)):
     _guarded_state(repo, project_id, owner)
-    try:
-        candidate = InformantCandidate.model_validate(body.candidate)
-    except ValidationError as exc:
-        raise HTTPException(400, f"候选档案不合法: {exc.errors()[0]['msg']}") from None
-    seq = len(repo.list_informants(project_id)) + 1
-    record = candidate_to_record(candidate, seq)
-    rid = repo.save_informant(project_id, record)
-    return {"informant": {**record, "id": rid},
+    # P2-1：与 save_informants 工具共用同一登记服务——编号按既有最大序号、
+    # 进程内串行，不再用 len(list)+1 和工具侧竞推同一个 INF-xx。
+    # dedupe=False：右栏「采纳登记」是用户逐条手动动作，允许同类型多条
+    # （“两位村干部”），是否重复由用户决定。
+    result = register_informants(repo, project_id, [body.candidate], dedupe=False)
+    if not result["saved"]:
+        raise HTTPException(400, "候选档案不合法：type 必填且字段形状需符合 InformantCandidate")
+    record = {**result["records"][0], "id": result["saved"][0].get("id", "")}
+    return {"informant": record,
             "phase_transition": _transition(repo, project_id)}
 
 

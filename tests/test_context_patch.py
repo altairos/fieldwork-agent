@@ -41,6 +41,20 @@ def test_r05_unknown_fields_listed_in_message():
     assert "未知字段：nope" in str(exc.value)
 
 
+def test_unknown_field_error_points_to_correct_landing():
+    """P2-b：未知字段错误给出可操作落点（生产会话曾因不懂落点连续重试 5 次）。"""
+    with pytest.raises(ValueError) as exc:
+        sanitize_context_patch({"informant_types": ["村干部"],
+                                "entry_strategy": "月租谈房"})
+    msg = str(exc.value)
+    assert "未知字段：informant_types" in msg
+    # P2-3：不写死宿主工具名——Web 是 save_informants、MCP 是 save_informant，
+    # 提示只指向“保存访谈对象”的语义，两个宿主都不会被引到不存在的工具上。
+    assert "保存访谈对象" in msg
+    assert "save_informants" not in msg
+    assert "research_notes" in msg
+
+
 def test_r05_non_string_value_rejected():
     with pytest.raises(ValueError, match="budget 须为字符串"):
         sanitize_context_patch({"budget": 5})

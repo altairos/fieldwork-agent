@@ -1,4 +1,4 @@
-"""文献检索回合预算：每个回合单独创建，线程安全，Web并发工具与CLI共用。"""
+"""文献检索回合预算与重复查询守卫：每回合单独创建，线程安全，Web 并发工具与 CLI 共用。"""
 from __future__ import annotations
 
 import json
@@ -8,6 +8,58 @@ from threading import Lock
 from fieldwork_agent.kernel.models import Envelope, ToolError
 from fieldwork_agent.kernel.sources.openalex import SearchLiteratureArgs
 from pydantic import ValidationError
+
+
+class DuplicateQueryGuard:
+    """同回合完全重复的搜索请求直接拒绝（P2-c）。
+
+    只挡“问法完全一样”的重复调用（空白归一、大小写不敏感），不设次数上限——
+    次数仍由 ``SourceBudget`` / ``max_tool_calls`` 管。覆盖旅行关键词、AI 搜索、
+    高德文本搜索与 POI 搜索；未覆盖的工具原样放行。
+
+    P2-4：签名只在**成功返回后**记账（失败回滚）——网络/上游瞬时失败后同一
+    查询必须可重试；否则提示「请使用已有结果」时手里根本没有结果。
+    """
+
+    _QUERY_FIELDS = {
+        "search_keyword": ("query",),
+        "search_ai": ("query",),
+        "amap_text_search": ("keywords", "city"),
+        "search_pois": ("city_name", "keyword"),
+    }
+
+    def __init__(self):
+        self.seen: set[str] = set()
+        self.lock = Lock()
+
+    @staticmethod
+    def _norm(value) -> str:
+        return " ".join(str(value or "").split()).lower()
+
+    def wrap(self, dispatch: Callable[[str, dict], Envelope]) -> Callable[[str, dict], Envelope]:
+        def guarded(name: str, args: dict) -> Envelope:
+            fields = self._QUERY_FIELDS.get(name)
+            if not fields:
+                return dispatch(name, args)
+            parts = tuple(self._norm((args or {}).get(field)) for field in fields)
+            if not any(parts):
+                # 关键字段全空：交给参数校验去拒，去重在这里只会误拦。
+                return dispatch(name, args)
+            signature = name + "::" + "|".join(parts)
+            with self.lock:
+                if signature in self.seen:
+                    return Envelope(ok=False, error=ToolError(
+                        code="duplicate_query",
+                        message="本回合已执行相同查询，该调用未执行",
+                        hint="请使用已有结果，或改写查询条件（地点/类型/关键词）后再试。"))
+                self.seen.add(signature)
+            env = dispatch(name, args)
+            if not env.ok:
+                # P2-4：失败回滚签名——瞬时故障后同一查询仍可重试。
+                with self.lock:
+                    self.seen.discard(signature)
+            return env
+        return guarded
 
 
 class LiteratureSearchBudget:

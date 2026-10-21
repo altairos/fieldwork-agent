@@ -186,14 +186,20 @@ _INPUT_TOO_LONG_MARKERS = (
 
 
 def classify_llm_error(error: object) -> str:
-    """LLM 错误串 → ``quota|base_url|auth|network|unknown``（None/空串安全）。
+    """LLM 错误串 → ``quota|base_url|auth|network|input_too_long|unknown``
+    （None/空串安全）。
 
-    只做**传输/账户层**分类；内容审核走 ``is_content_moderation_error``（宿主先判它）。
-    未命中的错误回落 ``unknown``——宁可提示含糊，也不臆造原因。
+    只做**传输/账户层**分类，外加一个高优先级特例：``input_too_long``
+    （输入超出模型长度，属请求负载层，重试/充值都无用）。
+    内容审核走 ``is_content_moderation_error``（宿主先判它）。
+    输入超长优先级最高：超长报错可能同时带 quota 字样，但重试/充值都无用，
+    必须单独上报（P2-a）。未命中的错误回落 ``unknown``——宁可提示含糊，也不臆造原因。
     """
     text = str(error or "").lower()
     if not text:
         return "unknown"
+    if is_input_too_long(text):
+        return "input_too_long"
     for kind, markers in (("quota", _QUOTA_MARKERS), ("base_url", _URL_MARKERS),
                           ("auth", _AUTH_MARKERS), ("network", _NETWORK_MARKERS)):
         if any(m in text for m in markers):

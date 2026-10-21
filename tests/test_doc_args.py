@@ -36,6 +36,25 @@ def test_proposal_ctx_repo_fills_empty_slots(repo):
     assert merged["section"] == "methodology"  # 非合并键原样保留
 
 
+def test_proposal_ctx_absent_entirely_is_filled_from_repo(repo):
+    """P0：web schema 已隐藏五渠道——模型完全不传 ctx/sites 时仍由仓储补齐。
+
+    这是参数瘦身后的主路径：模型只给 section/mode，宿主负责事实来源。
+    """
+    repo.create("p")
+    pid = "p"
+    ctx = repo.get_research_context(pid)
+    ctx.update({"topic": "宗族与乡村治理", "discipline": "社会学"})
+    repo.update_research_context(pid, ctx)
+
+    merged = merge_doc_args(repo, pid, "compose_proposal",
+                            {"section": "methodology", "mode": "global"})
+
+    assert merged["ctx"]["topic"] == "宗族与乡村治理"
+    assert merged["ctx"]["discipline"] == "社会学"
+    assert merged["section"] == "methodology"
+
+
 def test_proposal_extras_key_level_merge(repo):
     """proposal extras：仓储与模型 extras 键级合并（模型键覆盖同名）。"""
     repo.create("p")

@@ -25,9 +25,11 @@ MAX_CANDIDATES = 6
 
 # P0-2：suggest_informants 只返回候选、不落库。把“下一步必须保存”写进包络，
 # 与工具描述/系统引导三重保险，避免模型把“拿到候选”当成“已经存进项目”。
+# P2-3：不写死工具名——Web/CLI 叫 save_informants、MCP 叫 save_informant，
+# 包络原样回给各宿主，命名具体工具会把 MCP 模型引到不存在的工具上。
 SAVE_NEXT_ACTION = (
-    "候选未落库：只有用户已采纳的类型才调用 save_informants 写入项目；"
-    "未调用前不要对用户说「已存进项目/已落到项目里」。")
+    "候选未落库：只有用户已采纳的类型才调用当前环境提供的「保存访谈对象」工具"
+    "写入项目；未调用前不要对用户说「已存进项目/已落到项目里」。")
 
 
 class SuggestInformantsArgs(BaseModel):
@@ -116,7 +118,8 @@ register(CapabilityMeta(
                 "（INFORMANT_EXAMPLES，含提问示例 examples）JSON 体做 few-shot 质量锚并要求输出 JSON "
                 "数组，逐条 schema 校验、非法条目丢弃、全非法报 generation_invalid；无 llm 时按关键词"
                 "匹配示范库降级，degraded 标注“参考起点，非完整覆盖”。示范库不是枚举白名单。"
-                "只返回候选、不落库；用户采纳后必须逐条调用 save_informants 写入，否则项目里没有访谈对象。",
+                "只返回候选、不落库；用户采纳后必须逐条调用当前环境提供的「保存访谈对象」工具写入，"
+                "否则项目里没有访谈对象。",
     fn=suggest_informants,
     args_model=SuggestInformantsArgs,
 ))

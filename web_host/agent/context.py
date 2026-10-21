@@ -71,15 +71,38 @@ def build_system_prompt(phase: str, snapshot: str) -> str:
                         SAFETY_GUIDANCE, snapshot])
 
 
+# P1-a：历史消息字符预算（中文按字符近似 token，保守估计）。长会话 30 条
+# 长回复可达 3–6 万字符；无预算时 prompt 随会话线性增长。
+HISTORY_CHAR_BUDGET = 30000
+# 预算极小时仍保留的最近消息数：上下文不能被裁空
+HISTORY_MIN_MESSAGES = 4
+
+
+def _trim_history(history: list[dict]) -> list[dict]:
+    """按字符预算从最新向旧保留；返回时间正序子集（至少 MIN 条）。"""
+    kept: list[dict] = []
+    total = 0
+    for message in reversed(history):
+        size = len(str(message.get("content") or ""))
+        if (kept and total + size > HISTORY_CHAR_BUDGET
+                and len(kept) >= HISTORY_MIN_MESSAGES):
+            break
+        kept.append(message)
+        total += size
+    kept.reverse()
+    return kept
+
+
 def build_messages(repo: ProjectRepository, pid: str, user_text: str,
                    phase: str, history_limit: int = 30, *,
                    ctx_view: dict | None = None) -> list[dict]:
     snapshot = build_snapshot(repo, pid, ctx_view=ctx_view)
     system = build_system_prompt(phase, snapshot)
-    history = repo.get_messages(pid, limit=history_limit)
+    history = [m for m in repo.get_messages(pid, limit=history_limit)
+               if m.get("role") in ("user", "assistant")]
+    history = _trim_history(history)
     msgs = [{"role": "system", "content": system}]
-    msgs += [{"role": m["role"], "content": m["content"]}
-             for m in history if m.get("role") in ("user", "assistant")]
+    msgs += [{"role": m["role"], "content": m["content"]} for m in history]
     msgs.append({"role": "user", "content": user_text})
     msgs.append({"role": "system", "content": _OPTIONS_REMINDER})
     return msgs

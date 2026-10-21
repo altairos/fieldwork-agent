@@ -457,6 +457,19 @@ def test_classify_llm_error_kinds():
     assert classify_llm_error(None) == "unknown"
 
 
+def test_classify_llm_error_input_too_long():
+    """P2-a：输入超长单独成档（优先级最高）——提示不得再指向 Key/额度。"""
+    assert classify_llm_error(
+        "Range of input length should be [1, 6000]") == "input_too_long"
+    assert classify_llm_error(
+        "This model's maximum context length is 8192 tokens") == "input_too_long"
+    # 混排：超长报错里带 quota 字样仍归超长（否则用户被引向充值）
+    assert classify_llm_error(
+        "quota exceeded: maximum context length exceeded") == "input_too_long"
+    # 原有分类不受影响
+    assert classify_llm_error("Free quota exhausted") == "quota"
+
+
 def test_compat_chat_retries_transport_error(monkeypatch):
     """连接级抖动：首次抛 httpx.TransportError，第二次成功 → 重试救回。"""
     monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)

@@ -3,10 +3,10 @@ import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from fieldwork_agent.kernel.models import Envelope, LiteratureItem, LiteraturePage
+from fieldwork_agent.kernel.models import Envelope, LiteratureItem, LiteraturePage, ToolError
 from fieldwork_agent.kernel.repository.json_repo import JsonRepository
 from fieldwork_agent.kernel.sources.openalex import OpenAlexClient
-from fieldwork_agent.runtime.literature import LiteratureSearchBudget
+from fieldwork_agent.runtime.literature import DuplicateQueryGuard, LiteratureSearchBudget
 from fieldwork_agent.runtime.loop import _tool_content, run_tool_loop
 from fieldwork_agent.web_host.turn_manager import TurnManager
 
@@ -43,6 +43,67 @@ def test_no_result_keeps_feedback_in_llm_message(monkeypatch):
     summary = json.loads(_tool_content("search_literature", env))
     assert not summary["ok"] and summary["chinese_sources"]
     assert summary["query_reports"][0]["assessment"] == "empty"
+
+
+def test_literature_content_limit_caps_at_6000():
+    """P2-c：文献单条结果上限 6000 字符，且仍是完整 JSON（不切半截）。"""
+    items = [LiteratureItem(
+        title="Kinship and change " * 20, authors=["Researcher"], year=2024,
+        doi=f"10.1234/kinship{i}", abstract="Study of kinship. " * 300,
+        matched_queries=["核心"]) for i in range(10)]
+    page = LiteraturePage(items=items, total=10000)
+    content = _tool_content("search_literature", Envelope(ok=True, data=page))
+
+    assert len(content) <= 6000
+    summary = json.loads(content)  # 完整 JSON
+    assert summary["tool"] == "search_literature"
+    assert summary["items"]
+
+
+def test_duplicate_query_guard_blocks_repeat_query():
+    """P2-c：同回合完全重复的搜索请求直接拒绝，不消耗工具额度。"""
+    calls = []
+    guarded = DuplicateQueryGuard().wrap(
+        lambda n, a: (calls.append((n, a)), Envelope(ok=True))[1])
+
+    assert guarded("search_keyword", {"query": "大理 民宿"}).ok
+    env = guarded("search_keyword", {"query": "  大理   民宿 "})  # 空白归一后同查询
+    assert env.error is not None and env.error.code == "duplicate_query"
+    assert len(calls) == 1
+
+
+def test_duplicate_query_guard_retries_after_failure():
+    """P2-4：失败不记账——瞬时故障后同一查询必须可重试（旧实现已 add 拿不回来）。"""
+    responses = iter([
+        Envelope(ok=False, error=ToolError(code="network", message="reset")),
+        Envelope(ok=True),
+    ])
+    calls = []
+
+    def dispatch(name, args):
+        calls.append(name)
+        return next(responses)
+
+    guarded = DuplicateQueryGuard().wrap(dispatch)
+    first = guarded("search_keyword", {"query": "大理 民宿"})
+    assert not first.ok
+    assert guarded("search_keyword", {"query": "大理 民宿"}).ok
+    assert len(calls) == 2
+    # 成功之后同查询仍被挡
+    assert guarded("search_keyword", {"query": "大理 民宿"}).error.code == "duplicate_query"
+
+
+def test_duplicate_query_guard_allows_distinct_and_uncovered():
+    """不同查询/不同工具/未覆盖工具不受影响。"""
+    guarded = DuplicateQueryGuard().wrap(lambda n, a: Envelope(ok=True))
+
+    assert guarded("search_keyword", {"query": "大理 民宿"}).ok
+    assert guarded("search_keyword", {"query": "丽江 民宿"}).ok
+    assert guarded("search_ai", {"query": "大理 民宿"}).ok       # 工具不同
+    assert guarded("amap_text_search", {"keywords": "卫生院", "city": "大理"}).ok
+    assert guarded("amap_text_search", {"keywords": "卫生院", "city": "丽江"}).ok
+    assert guarded("search_hotels", {"dest_name": "大理"}).ok
+    assert guarded("search_hotels", {"dest_name": "大理"}).ok     # 未覆盖，不拦
 
 
 def test_budget_blocks_repeats_and_reserves_return_slots():

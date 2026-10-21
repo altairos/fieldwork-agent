@@ -189,6 +189,123 @@ def test_tool_timeout_marks_error_and_turn_completes(env, monkeypatch):
     assert tm.get_turn("p1", turn.turn_id).status == "completed"
 
 
+def test_doc_tool_timeout_is_tiered_above_search_timeout(env, monkeypatch):
+    """P1-1：文档类工具单独分档——慢于检索档的 compose_proposal 仍返回降级稿，
+    而不是被折成 tool_timeout（P0-1 的降级通道必须走得通）。"""
+    import time as _time
+
+    from fieldwork_agent.web_host.agent import loop
+
+    monkeypatch.setattr(loop, "TOOL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(loop, "DOC_TOOL_TIMEOUT_SECONDS", 2.0)
+
+    class SlowChatLLM(ChatFakeLLM):
+        def chat(self, messages, **kw):
+            _time.sleep(0.3)        # 慢于检索档，快于文档档
+            return {"content": ""}   # 空响应 → 模板降级（degraded 可见）
+
+    repo, tm = env
+    llm = SlowChatLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _PROPOSAL_ARGS}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "已生成"},
+         {"content": "已生成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+
+    completed = next(e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                     if e.event == "tool_completed")
+    assert completed.data["ok"] is True
+    assert "模板降级版" in (completed.data.get("degraded") or "")
+    # P3-2：降级原因随文档落盘（工具卡消失后方案页仍可提示）
+    assert "模板降级版" in (repo.list_proposals("p1")[0].get("degraded") or "")
+
+
+def test_tool_timeout_never_exceeds_remaining_wall_budget():
+    """P3-4：超时裁到回合剩余墙钟——「134s 启动 + 120s 超时」会越过 180s 承诺。"""
+    from fieldwork_agent.web_host.agent.loop import _tool_timeout_limit
+
+    assert _tool_timeout_limit("compose_proposal") == 240.0
+    assert _tool_timeout_limit("search_hotels") == 120.0
+    assert _tool_timeout_limit("compose_proposal", 30.0) == 30.0
+    assert _tool_timeout_limit("search_hotels", 0.2) == 0.2
+
+
+def test_tool_pool_saturates_with_tool_busy(monkeypatch):
+    """P2-2：本回合工具池饱和时直接返回 tool_busy（不排队），不阻塞事件循环。"""
+    import threading
+
+    from fieldwork_agent.web_host.agent import loop
+
+    monkeypatch.setattr(loop, "TOOL_SLOT_WAIT_SECONDS", 0.05)
+    release = threading.Event()
+
+    async def scenario():
+        pool = loop._ToolPool(workers=1)
+        try:
+            def slow(name, args):
+                release.wait(2.0)
+                return Envelope(ok=True)
+
+            first = asyncio.ensure_future(loop._await_dispatch(
+                slow, "search_hotels", {}, 5.0, None, pool))
+            await asyncio.sleep(0.05)
+            second = await loop._await_dispatch(
+                lambda n, a: Envelope(ok=True), "search_hotels", {}, 5.0, None, pool)
+            assert second.error is not None and second.error.code == "tool_busy"
+            release.set()
+            assert (await first).ok is True
+        finally:
+            release.set()
+            pool.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_query_does_not_consume_tool_quota(env):
+    """P2-4：被重复查询守卫拒的调用没有执行，不占 max_tool_calls 额度。
+
+    额度 2：第一轮执行 A（已用 1）；第二轮重复 A 被拒（不应再扣）；
+    第三轮仍能以最后一个额度执行 B。旧实现会在这里变成 budget_exceeded。
+    """
+    repo, tm = env
+    dup = {"city_name": "大理", "keyword": "祠堂"}
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c1", "name": "search_pois", "arguments": dict(dup)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c2", "name": "search_pois", "arguments": dict(dup)}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [
+             {"id": "c3", "name": "search_pois",
+              "arguments": {"city_name": "大理", "keyword": "戏台"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "完成"},
+         {"content": "完成", "tool_calls": None, "finish_reason": "stop",
+          "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "看看祠堂和戏台", tm, llm,
+                         FakeFlyAI(), max_tool_calls=2))
+
+    completed = [e for e in tm.replay("p1", turn.turn_id, after_seq=0)
+                 if e.event == "tool_completed"]
+    failed = [c.data["error"]["code"] for c in completed if not c.data["ok"]]
+    assert failed == ["duplicate_query"]
+    # A 与 B 都真正执行了（若重复计入额度，B 会变成 budget_exceeded）
+    assert sum(1 for c in completed if c.data["ok"]) == 2
+
+
 def test_cancel_unblocks_hanging_tool_and_releases_lock(env):
     """P0-3：取消后不再等卡在工具里的协程 → run_turn 返回、写锁释放（可发下一条）。"""
     import time as _time
@@ -2905,6 +3022,15 @@ def test_text_across_two_tool_rounds_preserved(env):
 
 
 # ------------------------------- P0：上下文撑爆治理
+def test_llm_error_hint_for_input_too_long_is_actionable():
+    """P2-a：超长错误的宿主提示必须指向“缩短输入/新会话”，不得指向 Key。"""
+    from fieldwork_agent.web_host.agent.loop import _LLM_ERROR_HINTS
+    hint = _LLM_ERROR_HINTS.get("input_too_long", "")
+    assert hint
+    assert "Key" not in hint and "额度" not in hint
+    assert "会话" in hint or "缩短" in hint
+
+
 def test_turn_sends_compacted_doc_schema(env):
     """P0：web 宿主下发的 compose_proposal schema 不再包含宿主自动填充的五渠道。
 
@@ -2912,6 +3038,7 @@ def test_turn_sends_compacted_doc_schema(env):
     形状不符触发 invalid_arguments 重试（生产会话连续 2-3 次失败）。
     """
     repo, tm = env
+    repo.set_phase("p1", "proposal_generation")  # 方案阶段才下发 compose_proposal
     llm = FakeLLM([[{"delta": "好"},
                     {"content": "好", "tool_calls": None, "finish_reason": "stop",
                      "usage": {}}]])
@@ -2928,8 +3055,19 @@ def test_turn_compacts_early_tool_results_before_next_llm_call(env, monkeypatch)
     """P0：回合内工具结果累计超预算时，下一次 LLM 调用前压缩最早的一条。
 
     keep_recent=2：最近两条完整保留，最早的压缩为占位（tool_call_id 不动）。
+    工具结果必须够长：P2-5 规定占位比原文长时跳过，短结果不参与压缩。
     """
     repo, tm = env
+
+    class LongFlyAI:
+        def __getattr__(self, name):
+            def _stub(**kw):
+                return Envelope(ok=True, data=ItemPage(
+                    items=[SearchItem(name=f"{name}-结果-" + "长" * 120, price=100.0)
+                           for _ in range(3)],
+                    total=3, cheapest=100.0, dearest=100.0))
+            return _stub
+
     llm = FakeLLM([
         [{"delta": ""},
          {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
@@ -2950,9 +3088,71 @@ def test_turn_compacts_early_tool_results_before_next_llm_call(env, monkeypatch)
     monkeypatch.setattr(loop_mod, "TURN_TOOL_CONTENT_BUDGET", 1)
     turn = tm.create_turn("p1")
     asyncio.run(loop_mod.run_turn(repo, "p1", turn.turn_id, "查住宿",
-                                  tm, llm, FakeFlyAI()))
+                                  tm, llm, LongFlyAI()))
     last_messages = llm.calls[-1][0]
     tool_msgs = [m for m in last_messages if m["role"] == "tool"]
     assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
     assert "已压缩" in tool_msgs[0]["content"]
     assert "已压缩" not in tool_msgs[-1]["content"]
+
+
+def test_phase_scoped_tools_sent_to_llm(env):
+    """P1-b：研究定位阶段不下发交通工具；state tools / 通用搜索 / 方案工具常驻。
+
+    P2-8：compose_proposal 常驻——用户可在任何阶段明确要求“直接生成方案”。
+    """
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好"},
+                    {"content": "好", "tool_calls": None, "finish_reason": "stop",
+                     "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    names = {s["function"]["name"] for s in llm.calls[0][1]["tools"]}
+    assert {"get_project_brief", "update_research_context", "search_literature"} <= names
+    assert "search_trains" not in names
+    assert "compose_proposal" in names
+
+
+def test_itinerary_phase_sends_travel_tools(env):
+    """P1-b：行程阶段下发交通/行程工具（方案工具常驻，见 P2-8）。"""
+    repo, tm = env
+    repo.set_phase("p1", "itinerary_planning")
+    llm = FakeLLM([[{"delta": "好"},
+                    {"content": "好", "tool_calls": None, "finish_reason": "stop",
+                     "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    names = {s["function"]["name"] for s in llm.calls[0][1]["tools"]}
+    assert "search_trains" in names and "compose_itinerary" in names
+    assert "search_literature" in names          # 常驻
+    assert "compose_proposal" in names           # P2-8：常驻
+
+
+def test_proposal_without_channels_still_composes(env):
+    """P0 端到端：模型按瘦身 schema 只传 section/mode——宿主补五渠道后仍出方案。"""
+    repo, tm = env
+    repo.update_research_context("p1", {
+        "title": "已命名", "discipline": "社会学", "topic": "宗族变迁",
+        "scale": "单人调研", "budget": "2万", "time_window": "7月",
+        "departure_city": "上海", "target_location": "大理",
+        "research_questions": "RQ1 宗族结构"})
+    repo.save_field_site("p1", {"name": "大理", "confirmed": True,
+                                "profile": {"location": "大理"}})
+    repo.save_informant("p1", {"code": "INF-01", "type": "宗族长老"})
+    repo.cache_search("p1", "大理行程", "compose_itinerary", {"legs": []})
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": {"section": "", "mode": "global"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+    proposals = repo.list_proposals("p1")
+    assert len(proposals) == 1
+    assert proposals[0]["content"].strip()

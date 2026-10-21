@@ -21,7 +21,10 @@ def _proposal_payload(doc: dict) -> dict:
                 if ln.startswith("## ")]
     return {"id": doc.get("id"), "markdown": content,
             "kind": doc.get("kind", "proposal"),
-            "version": doc.get("version", "draft"), "sections": sections}
+            "version": doc.get("version", "draft"), "sections": sections,
+            # P3-2：降级原因随文档落盘——工具卡消失后，方案页仍能显式提示
+            # “本文是模板降级版”（此前只剩正文尾注）。
+            "degraded": doc.get("degraded") or ""}
 
 
 def _format_proposal_response(content: str, format: str, filename: str) -> Response:

@@ -284,6 +284,15 @@ class TestContract:
         assert repo.get_latest_proposal("p1") is None
         assert repo.list_proposals("p1") == []
 
+    def test_proposal_degraded_roundtrips(self, repo):
+        """P3-2：降级原因随文档落盘（json/sqlite 一致；未降级为空串）。"""
+        repo.save_proposal("p1", "# 降级方案",
+                           degraded="模板降级版（未接入 LLM）")
+        assert repo.get_latest_proposal("p1")["degraded"] == "模板降级版（未接入 LLM）"
+        repo.save_proposal("p1", "# 正常方案")
+        assert repo.list_proposals("p1")[-1]["degraded"] == ""
+
+
     # ---------------------------------------------------------------- 确认与失效（第二批 F04）
 
     def test_confirm_and_stale_contract(self, repo):

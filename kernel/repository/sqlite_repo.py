@@ -31,7 +31,7 @@ from fieldwork_agent.kernel.repository.guard import (
 )
 from fieldwork_agent.kernel.repository.protocol import _UNSET
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MESSAGE_WINDOW = 50
 CACHE_LIMIT_BYTES = 64 * 1024
 
@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     content    TEXT NOT NULL,                   -- 事实源（spec §5.3）
     saved_at   TEXT NOT NULL,
     dep_hash   TEXT NOT NULL DEFAULT '',        -- 五路依赖指纹；空串 = legacy 无指纹
+    degraded   TEXT NOT NULL DEFAULT '',        -- P3-2 降级原因；空串 = 正常生成
     seq        INTEGER NOT NULL,
     PRIMARY KEY (project_id, id),
     FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -168,6 +169,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 # - v3→v4（spec C5 证据索引）：search_cache 六列（可空，NULL=unknown，R12）
 # - v4→v5（合并）：N07 复合主键与 C5 六列在两条分支上各自为 v4、互缺对方
 #   改动；合并版升 v5，任一形状的 v4 库重开都走补列+重建（均幂等）补齐。
+# - v5→v6（P3-2）：proposals.degraded（模板降级原因随文档落盘）
 # confirmations 表与索引已含于 _SCHEMA（IF NOT EXISTS，_ensure_schema 对旧库
 # 在版本分支之前即已建好）；执行见 _ensure_schema 的显式事务
 # （补列与 user_version 同生共死，防「列已加、版本未进」的半迁移库重开锁死）。
@@ -176,6 +178,8 @@ _MIGRATE_COLUMNS = (
      "ALTER TABLE projects ADD COLUMN proposal_confirmed INTEGER NOT NULL DEFAULT 0"),
     ("proposals", "dep_hash",
      "ALTER TABLE proposals ADD COLUMN dep_hash TEXT NOT NULL DEFAULT ''"),
+    ("proposals", "degraded",
+     "ALTER TABLE proposals ADD COLUMN degraded TEXT NOT NULL DEFAULT ''"),
     ("projects", "owner",
      "ALTER TABLE projects ADD COLUMN owner TEXT"),
     ("search_cache", "parent_call_id", "ALTER TABLE search_cache ADD COLUMN parent_call_id TEXT"),
@@ -865,6 +869,7 @@ class SqliteRepository:
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
         *, provenance_ctx: dict | None = None,
         provenance: dict | None = None,
+        degraded: str = "",
     ) -> str:
         """版本累积：每次 INSERT 新记录，绝不覆盖既有（契约要求）。
 
@@ -872,6 +877,7 @@ class SqliteRepository:
         projects.updated_at；content 事实源存 DB（裁决4），不再落 .md 文件。
         ``provenance``（评审 R02）：正文五渠道生成输入，落盘指纹按它算；
         ``provenance_ctx`` 为旧调用面的 ctx 单路别名。
+        ``degraded``（P3-2）：模板/体例降级原因，工具卡消失后方案页仍可显式提示。
         """
         self._require(pid)
         record_id = _new_id("prop")
@@ -888,9 +894,9 @@ class SqliteRepository:
                 filename = filename[:-3] + f"_{uid}.md"
             conn.execute(
                 "INSERT INTO proposals(id, project_id, kind, version, filename,"
-                " content, saved_at, dep_hash, seq) VALUES(?,?,?,?,?,?,?,?,?)",
+                " content, saved_at, dep_hash, degraded, seq) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (record_id, pid, kind, version, filename, markdown, saved_at,
-                 dep_hash, self._next_seq(conn, "proposals", pid)))
+                 dep_hash, degraded or "", self._next_seq(conn, "proposals", pid)))
             conn.execute(
                 "UPDATE projects SET updated_at=? WHERE project_id=?", (saved_at, pid))
         return record_id
@@ -908,17 +914,18 @@ class SqliteRepository:
             return cur.rowcount > 0
 
     def list_proposals(self, pid: str) -> list[dict]:
-        """七键全量（含 content）；ORDER BY seq 平价 json 的保存序。"""
+        """八键全量（含 content）；ORDER BY seq 平价 json 的保存序。"""
         self._require(pid)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, kind, version, filename, saved_at, content, dep_hash"
+                "SELECT id, kind, version, filename, saved_at, content, dep_hash, degraded"
                 " FROM proposals WHERE project_id=? ORDER BY seq",
                 (pid,)).fetchall()
         return [
             {"id": r["id"], "kind": r["kind"], "version": r["version"],
              "filename": r["filename"], "saved_at": r["saved_at"],
-             "content": r["content"], "dep_hash": r["dep_hash"]}
+             "content": r["content"], "dep_hash": r["dep_hash"],
+             "degraded": r["degraded"] or ""}
             for r in rows
         ]
 
@@ -1247,11 +1254,13 @@ class SqliteRepository:
         with self._connect(immediate=True) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO proposals(id, project_id, kind, version,"
-                " filename, content, saved_at, dep_hash, seq) VALUES(?,?,?,?,?,?,?,?,?)",
+                " filename, content, saved_at, dep_hash, degraded, seq)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (entry.get("id") or _legacy_id(entry), pid,
                  entry.get("kind", "proposal"), entry.get("version", "draft"),
                  entry.get("filename", ""), entry.get("content") or "",
                  entry.get("saved_at") or "", entry.get("dep_hash", ""),
+                 entry.get("degraded") or "",
                  self._next_seq(conn, "proposals", pid)))
 
     def _import_cache(self, pid: str, entry: dict) -> None:

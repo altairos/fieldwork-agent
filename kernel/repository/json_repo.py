@@ -645,6 +645,7 @@ class JsonRepository:
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
         *, provenance_ctx: dict | None = None,
         provenance: dict | None = None,
+        degraded: str = "",
     ) -> str:
         """落盘一份提案文档（版本累积，绝不覆盖）。
 
@@ -652,6 +653,7 @@ class JsonRepository:
         （ctx/sites/informants/knowledge/itinerary），落盘指纹按它算——
         即“正文到底用了什么”，而不是保存时现读的仓储推测值。
         ``provenance_ctx`` 为旧调用面的 ctx 单路别名。
+        ``degraded``（P3-2）：模板/体例降级原因，工具卡消失后方案页仍可显式提示。
         """
         with self._lock_for(pid):
             state = self._load(pid)
@@ -666,6 +668,7 @@ class JsonRepository:
                 # N04：provenance 非 None 时用正文实际生成输入算指纹（而非保存时
                 # 按当前仓储推测），防止正文旧、指纹新的错配；R02：扩到五渠道。
                 "dep_hash": self._doc_inputs_hash(pid, state, provenance, provenance_ctx),
+                "degraded": degraded or "",
             }
             path = self._output_dir(pid) / record["filename"]
             if path.exists():
@@ -698,6 +701,9 @@ class JsonRepository:
         # confirm/stale 的 falsy 判定同义），保 sqlite 侧 list_proposals
         # 七键形态平价——迁移全等校验（core/migrate._verify）依赖此形状。
         doc.setdefault("dep_hash", "")
+        # P3-2：降级原因（模板/体例）随记录读出一律补空串，保证与 sqlite 侧
+        # 八键平价（迁移全等校验依赖此形状）。
+        doc.setdefault("degraded", "")
         path = self._output_dir(pid) / record.get("filename", "")
         doc["content"] = path.read_text(encoding="utf-8") if path.exists() else ""
         return doc

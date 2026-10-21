@@ -249,6 +249,8 @@ export interface ProposalDoc {
   requested_mode: string;
   mode: string;
   inputs_hash: string;
+  /** P3-2：落盘时的降级原因（模板降级/体例降级）；正常生成为空串 */
+  degraded?: string;
 }
 
 /** 访谈对象候选档案（六字段，suggest_informants 产物的目标结构）。 */

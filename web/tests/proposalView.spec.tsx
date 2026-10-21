@@ -403,3 +403,25 @@ describe("ProposalView 下载入口认证处理（T02/T03）", () => {
     expect(screen.queryByText(/登录已失效/)).toBeNull();
   });
 });
+
+describe("ProposalView 降级稿提示（P3-2）", () => {
+  it("文档带 degraded 时在正文顶部显示降级原因", async () => {
+    const degraded = { ...LATEST, degraded: "模板降级版（未接入 LLM）" };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/projects/p1") return json(SNAP);
+      if (url === "/projects/p1/proposals") return json([degraded]);
+      if (url === "/projects/p1/proposal") return json(degraded);
+      return json({});
+    }));
+    mount();
+    const banner = await screen.findByTestId("proposal-degraded");
+    expect(banner.textContent).toContain("模板降级版（未接入 LLM）");
+  });
+
+  it("无 degraded 时不渲染提示条", async () => {
+    stubFetch();
+    mount();
+    expect(await screen.findByText("最新版正文")).toBeTruthy();
+    expect(screen.queryByTestId("proposal-degraded")).toBeNull();
+  });
+});

@@ -178,6 +178,7 @@ class ProjectRepository(Protocol):
     def save_proposal(
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
         *, provenance_ctx: dict | None = None, provenance: dict | None = None,
+        degraded: str = "",
     ) -> str:
         """落一份文档并登记，返回记录 id；重复保存不覆盖既有文件（版本累积）。
 

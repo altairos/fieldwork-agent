@@ -1,9 +1,15 @@
 """async 工具回合循环（spec §3.3）：流式 LLM + 并行工具 + 事件发射。"""
+# `_ToolPool` 定义在本文件后段、却先在 `_run_turn_impl` 的签名注解里出现；
+# 没有这行，模块导入时就会 NameError（服务起不来）。
+from __future__ import annotations
+
 import asyncio
+import contextvars
 import json
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,12 +29,17 @@ from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.kernel.research_state import turn_memory_patch
 from fieldwork_agent.kernel.source_requests import SourceBudget
 from fieldwork_agent.kernel.sources.flyai import RecordingClient, current_call_id
+from fieldwork_agent.runtime.context_budget import (
+    TURN_TOOL_CONTENT_BUDGET,
+    trim_turn_messages,
+)
 from fieldwork_agent.runtime.doc_args import (
     accepted_doc_inputs,
+    compact_doc_tool_schemas,
     doc_input_fingerprint,
     merge_doc_args,
 )
-from fieldwork_agent.runtime.literature import LiteratureSearchBudget
+from fieldwork_agent.runtime.literature import DuplicateQueryGuard, LiteratureSearchBudget
 from fieldwork_agent.runtime.loop import (
     _assistant_message,
     _budget_skip_content,
@@ -37,6 +48,7 @@ from fieldwork_agent.runtime.loop import (
     _tool_content,
 )
 from fieldwork_agent.runtime.research_workflow import bind_research_searches
+from fieldwork_agent.runtime.tool_scopes import filter_tool_schemas
 from fieldwork_agent.runtime.turn_buffer import TurnPatchBuffer
 from fieldwork_agent.web_host.agent.context import build_messages
 from fieldwork_agent.web_host.agent.dispatch import build_dispatch_fn
@@ -45,15 +57,26 @@ from fieldwork_agent.web_host.turn_manager import TERMINAL_STATUSES, TurnManager
 
 _log = logging.getLogger(__name__)
 
-# P0-3：单个工具调用的硬超时（秒）。工具在独立线程里跑，卡死时回合不能
-# 被它永久拖住（实测 compose_interview_guide 挂起 4 分钟、取消后锁不释放）。
-# 120s 覆盖检索类工具（20-40s）与 LLM 文档生成（~60-90s）的正常上限。
-# P1-4：正文生成预留窗口（秒）。墙钟总预算 180s 里，前
+# P1-4：正文生成预留窗口（秒）。墙钟总预算 240s 里，前
 # ``max_wall_seconds - GENERATION_RESERVE_SECONDS`` 用于“继续发起工具/新一轮
 # 调用”，最后 45s 留给已经开始的正文与轮末收敛——避免检索工具把预算吃光后
 # 用户只看到半句话。预算特别小（测试/子集调用）时不启用预留，保持原语义。
 GENERATION_RESERVE_SECONDS = 45.0
+# P0-3：单个工具调用的默认硬超时（秒）。工具在独立线程里跑，卡死时回合不能
+# 被它永久拖住（实测 compose_interview_guide 挂起 4 分钟、取消后锁不释放）。
+# 120s 覆盖检索类工具（20-40s）的正常上限。
 TOOL_TIMEOUT_SECONDS = 120.0
+# P1-1：文档类工具（LLM 长文生成）单独分档。compose_proposal 实测 208.9s 才
+# 返回；统一 120s 会把「模板降级版 + 原因」截成「工具超时、没有方案」，P0-1
+# 的降级通道根本走不到。240s 同时大于 kernel/llm.py 兼容端点读超时 180s——
+# 先让客户端读超时触发内核降级，再由本上限兜底。
+DOC_TOOL_TIMEOUT_SECONDS = 240.0
+DOC_TIMEOUT_TOOLS = frozenset({"compose_proposal", "compose_interview_guide"})
+# P2-2：单回合工具线程池容量。超时/取消后被放弃的工具线程仍占一个 worker；
+# 与流式读取的默认执行器隔离后，工具再卡也不会让 ``_async_iter`` 的 next()
+# 排不到线程、把回合拖死。饱和时直接返回 tool_busy，不排队。
+TOOL_POOL_WORKERS = 4
+TOOL_SLOT_WAIT_SECONDS = 5.0
 
 # LLM 错误分流文案（按 ``classify_llm_error`` 结果取）：此前所有非审核错误
 # 统一提示「检查 API Key」，额度耗尽/网络中断/端点配错时均把用户引向错误方向。
@@ -62,6 +85,9 @@ _LLM_ERROR_HINTS = {
     "base_url": "百炼端点配置有误：请检查套餐/页面 Key 与兼容端点的匹配关系后重试",
     "auth": "请检查百炼 API Key 是否有效",
     "network": "生成途中网络连接中断（代理或网络抖动）：请稍后重试；反复出现请检查代理与 NO_PROXY 设置",
+    # P2-a：超长与传输/账户层无关——重试与充值都无用，必须指向缩短输入。
+    "input_too_long": "本轮输入超出模型上下文长度：请缩短问题或减少一次性检索范围；"
+                      "长会话可新建项目后继续，避免历史记录堆满上下文",
     "unknown": "请检查百炼 API Key 与网络连接后重试",
 }
 _MODERATION_HINT = "请求被平台内容安全策略拦截，请调整提问措辞后重试"
@@ -205,8 +231,9 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
                    max_iters: int = 8, max_tool_calls: int = 20,
                    # 60s 会在"多工具 + 长正文"的回合里把正文截断（实测：3 次检索调完，
                    # 模型还没来得及说话就到点，用户只看到半句）。工具轮数仍是 20 的护栏，
-                   # 墙钟放宽到 180s；录制演示时尤其不能出现"说一半"。
-                   max_wall_seconds: float = 180.0) -> None:
+                   # 墙钟放宽到 240s：文档类工具单档上限 240s（P1-1），且必须留出正文
+                   # 时间；录制演示时尤其不能出现"说一半"。
+                   max_wall_seconds: float = 240.0) -> None:
     """回合执行入口：保证**任何**未捕获异常都收敛为终态（A01）。
 
     ``_run_turn_impl`` 只保护主循环与轮末持久化两段；「续流修复 / 安全终检 /
@@ -217,15 +244,19 @@ async def run_turn(repo, pid: str, turn_id: str, user_text: str,
     started = time.monotonic()
     _log.info("turn_start pid=%s turn=%s owner=%s",
               pid, turn_id, _owner_label(owner))
+    # P2-2：工具线程池按回合创建/关闭——挂起的线程不会跨回合累积。
+    tool_pool = _ToolPool()
     try:
         await _run_turn_impl(
             repo, pid, turn_id, user_text, tm, llm, flyai_client,
             amap_client=amap_client, owner=owner, max_iters=max_iters,
-            max_tool_calls=max_tool_calls, max_wall_seconds=max_wall_seconds)
+            max_tool_calls=max_tool_calls, max_wall_seconds=max_wall_seconds,
+            tool_pool=tool_pool)
     except Exception as exc:      # noqa: BLE001 —— 兜底即本层职责；CancelledError 不在此列
         _finish_unexpected(tm, pid, turn_id, exc)
         _log.error("turn_crashed pid=%s turn=%s exc=%r", pid, turn_id, exc)
     finally:
+        tool_pool.shutdown()
         # A06：失败回合也能按 turn_id 串起 start → 工具/LLM 埋点 → end/status
         handle = tm.get_turn(pid, turn_id)
         status = handle.status if handle is not None else "gone"
@@ -269,6 +300,8 @@ class _TurnContext:
     doc_generated_this_turn: bool = False
     # P2-8：本轮已即时落盘的文档（call_id → doc_id）；轮末只校正指纹，不重复插入
     persisted_docs: dict = field(default_factory=dict)
+    # P2-2：本回合的工具线程池（与流式读取的默认执行器隔离）
+    tool_pool: Any = None
 
 
 @dataclass
@@ -319,13 +352,14 @@ def _emit_notice(ctx: _TurnContext, st: _TurnState, code: str) -> None:
 
 
 def _persist_document_now(ctx: _TurnContext, name: str, call_id: str,
-                          data: dict) -> None:
+                          data: dict, degraded: str = "") -> None:
     """P2-8：文档工具成功即落盘（call_id → doc_id 记入 ctx.persisted_docs）。
 
     此前文档只在轮末 `_persist_tool_results` 落盘：compose_proposal 200s 后
     才生成正文，方案页在此期间一直显示“尚未生成”。现在工具一返回就可读。
     行程快照尚未解析，指纹可能是临时值——轮末会用最终 provenance 校正
     （``update_proposal_dep_hash``），不新增版本。
+    P3-2：``degraded`` 随文档落盘——工具卡消失后，方案页仍能显式提示降级。
 
     落盘失败不打断回合：不记 persisted_docs，轮末会按旧路径重试。
     已完成文档在取消回合中保留（完整性优先；未提交的状态 patch 仍随 buffer 丢弃）。
@@ -340,7 +374,8 @@ def _persist_document_now(ctx: _TurnContext, name: str, call_id: str,
                 ctx.pid, markdown,
                 kind=data.get("kind") or "proposal",
                 version=data.get("version") or "draft",
-                provenance=provenance or None)
+                provenance=provenance or None,
+                degraded=degraded or str(data.get("degraded") or ""))
         elif name == "compose_interview_guide":
             parts = ["# 访谈提纲", ""]
             for itype, body in (data or {}).items():
@@ -350,7 +385,8 @@ def _persist_document_now(ctx: _TurnContext, name: str, call_id: str,
             if len(parts) <= 2:
                 return
             doc_id = ctx.repo.save_proposal(ctx.pid, "\n".join(parts),
-                                            kind="interview_guide", version="draft")
+                                            kind="interview_guide", version="draft",
+                                            degraded=degraded or "")
         else:
             return
         ctx.persisted_docs[call_id] = doc_id
@@ -400,7 +436,8 @@ async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
                 st.has_final_answer = True  # R16：规则文案即降级路径的最终答案
                 break
 
-            # 流式 LLM
+            # 流式 LLM（P0：发起前先按回合内预算压缩早期工具结果）
+            trim_turn_messages(ctx.messages, budget_chars=TURN_TOOL_CONTENT_BUDGET)
             _log_llm_request(ctx, tools=len(ctx.tools))
             stream = ctx.llm.chat_stream(ctx.messages, tools=ctx.tools, slot="interview")
             st.iterations += 1
@@ -532,10 +569,14 @@ async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
                                     {"call_id": call_id, "tool": name,
                                      "args": args, "purpose": ""})
                 # P0-3：取消时不再等卡死的工具；超时由 _exec_tool 内部兜底
+                # P1-1：文档类工具单独分档；P3-4：超时同时裁到回合剩余墙钟。
                 turn_handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
+                remaining_wall = max_wall_seconds - (time.monotonic() - start)
                 return _exec_tool(ctx.dispatch, name, args, call_id, ctx.state_handlers,
                                   cancel_event=(turn_handle.cancel_event
-                                                if turn_handle is not None else None))
+                                                if turn_handle is not None else None),
+                                  timeout=_tool_timeout_limit(name, remaining_wall),
+                                  pool=ctx.tool_pool)
 
             write_calls = [c for c in executed if c.get("name", "") in ctx.state_handlers]
             rest_calls = [c for c in executed if c.get("name", "") not in ctx.state_handlers]
@@ -548,7 +589,9 @@ async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
                 # 第二阶段：文档工具此刻组装入参已能读到新 ctx；与只读搜索并发
                 results.extend(await asyncio.gather(
                     *(_prepare(c) for c in rest_calls)))
-            st.total_calls += len(executed)
+            # P2-4：被重复查询守卫挡下的调用没有真正执行，不计入工具额度。
+            st.total_calls += sum(
+                1 for _cid, _name, env in results if not _is_duplicate(env))
 
             for call_id, name, env in results:
                 data = env.data
@@ -566,7 +609,8 @@ async def _run_stream_loop(ctx: _TurnContext, st: _TurnState, *,
                 # P2-8：文档完成即落盘（不等轮末）——长轮次中方案页不再短暂空态。
                 # 失败不打断回合：不记 persisted_docs，轮末 _persist_tool_results 会重试。
                 if env.ok and name in ("compose_proposal", "compose_interview_guide"):
-                    _persist_document_now(ctx, name, call_id, data)
+                    _persist_document_now(ctx, name, call_id, data,
+                                          degraded=env.degraded or "")
                 ctx.tm.append_event(ctx.pid, ctx.turn_id, "tool_completed",
                                     {"call_id": call_id, "ok": env.ok,
                                      "data": data,
@@ -646,6 +690,7 @@ async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
                                "不要重复已写出的内容，不要重新开头，写完即止。"})
         cont_deltas = ""  # 续写流已流出增量：终帧空/报错/流异常三路兜底（终审 B3）
         try:
+            trim_turn_messages(ctx.messages, budget_chars=TURN_TOOL_CONTENT_BUDGET)
             _log_llm_request(ctx, tools=0)
             stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
             st.iterations += 1
@@ -699,6 +744,7 @@ async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
                              reason + "请基于以上对话与工具结果，用中文给出简明的"
                                      "阶段性回答；不要再调用工具。"})
         try:
+            trim_turn_messages(ctx.messages, budget_chars=TURN_TOOL_CONTENT_BUDGET)
             _log_llm_request(ctx, tools=0)
             stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
             st.iterations += 1
@@ -769,6 +815,7 @@ async def _run_continuations(ctx: _TurnContext, st: _TurnState, *,
                                "格式给出选项；不要重复已写出的内容，写完即止。"})
         comp_deltas = ""  # 补完流已流出增量：与截断续写同款三路兜底
         try:
+            trim_turn_messages(ctx.messages, budget_chars=TURN_TOOL_CONTENT_BUDGET)
             _log_llm_request(ctx, tools=0)
             stream = ctx.llm.chat_stream(ctx.messages, tools=None, slot="interview")
             st.iterations += 1
@@ -803,8 +850,11 @@ def _finalize_turn(ctx: _TurnContext, st: _TurnState) -> None:
     """终态收敛：终检 → 选项/内容安全 → 持久化 → 终态事件。"""
     # 轮末：助手消息持久化 + 工具结果落盘 + 抽取写回 + 自动命名（任务1）+ 阶段推进
     # 审计二 R05：任一步异常 → error 事件 + failed 终态，绝不悬挂在 running
-    # P1-4：取消即中止本轮全部状态变更——残缺回复/工具产物/抽取/阶段推进
-    # 均不落地，直接走 cancelled 终态（轮末块同步无 await，取消不会中途插入）
+    # P1-4：取消即中止本轮全部状态变更——残缺回复/状态 patch/工具抽取产物/
+    # 阶段推进均不落地，直接走 cancelled 终态（轮末块同步无 await，取消不会中途插入）。
+    # P3-1 例外：**已完成**的文档在工具返回时已即时落盘（_persist_document_now），
+    # 取消不撤回——完整成稿比“取消即全丢”更有价值；未提交的 patch 与抽取仍随
+    # buffer 丢弃，轮末也不再重跑已落盘文档。
     handle = ctx.tm.get_turn(ctx.pid, ctx.turn_id)
     if handle is None:
         return  # 项目删除竞态：防收敛块之后、轮末之前的残余窗口
@@ -896,9 +946,11 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
                          owner: str | None = None,
                          max_iters: int = 8, max_tool_calls: int = 20,
                          # 60s 会在"多工具 + 长正文"的回合里把正文截断（实测：3 次检索调完，
-                   # 模型还没来得及说话就到点，用户只看到半句）。工具轮数仍是 20 的护栏，
-                   # 墙钟放宽到 180s；录制演示时尤其不能出现"说一半"。
-                   max_wall_seconds: float = 180.0) -> None:
+                         # 模型还没来得及说话就到点，用户只看到半句）。工具轮数仍是 20 的护栏，
+                         # 墙钟放宽到 240s：文档类工具单档上限 240s（P1-1），且必须留出正文
+                         # 时间；录制演示时尤其不能出现"说一半"。
+                         max_wall_seconds: float = 240.0,
+                         tool_pool: _ToolPool | None = None) -> None:
     """执行完整回合：准备 → 主流式 → 续流修复 → 终态收敛（Q01 拆分）。"""
     # owner 供二期记忆读写；本期惰性
     recorder = (RecordingClient(flyai_client, tag_provider=_CURRENT_CALL_ID.get)
@@ -937,7 +989,12 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
         return handle is None or handle.cancel_event.is_set() or time.monotonic() >= deadline
     dispatch = SourceBudget(namespace=pid, cancelled=sources_stopped, deadline=deadline).wrap(dispatch)
     dispatch = LiteratureSearchBudget().wrap(dispatch)
-    tools = build_tool_schemas()
+    dispatch = DuplicateQueryGuard().wrap(dispatch)
+    phase = repo.get_phase(pid)
+    # P0/P1-b：文档工具的五渠道大对象由宿主从项目状态填充，schema 不再暴露；
+    # 再按当前阶段裁剪工具集（定位阶段 9 个，行程阶段 21 个，未知阶段回落全量）。
+    tools = filter_tool_schemas(
+        compact_doc_tool_schemas(build_tool_schemas()), phase)
     # F05：回合级 patch 暂存——状态工具与时窗回写先进 buffer，轮末正常结束
     # commit 落盘、取消 discard，项目状态不受残缺回合影响
     buffer = TurnPatchBuffer(repo, pid)
@@ -950,7 +1007,6 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
         on_snapshot=snapshot_ids.append, turn_id=turn_id)
     state_schemas, state_handlers = build_state_tools(repo, pid, buffer=buffer)
     tools = tools + state_schemas
-    phase = repo.get_phase(pid)
 
     # R4：用户消息即时持久化（F09 修正：先 build 后 append——
     # build_messages 读 history 后自行 append 当前消息，顺序颠倒会双发）
@@ -994,7 +1050,8 @@ async def _run_turn_impl(repo, pid: str, turn_id: str, user_text: str,
         turn_itineraries_raw=turn_itineraries_raw,
         doc_itinerary_from_turn=doc_itinerary_from_turn,
         live_refs=live_refs, live_refs_by_call=live_refs_by_call,
-        snapshot_ids=snapshot_ids)
+        snapshot_ids=snapshot_ids,
+        tool_pool=tool_pool or _ToolPool())
     st = _TurnState()
     start = time.monotonic()
     if not await _run_stream_loop(ctx, st, phase=phase, start=start,
@@ -1127,9 +1184,89 @@ async def _async_iter(sync_gen):
         yield val
 
 
+class _ToolPool:
+    """单回合有界工具线程池（P2-2）：与流式读取的默认执行器隔离。
+
+    ``dispatch`` 是同步阻塞调用；超时/取消后协程不再等它，但线程会继续跑到
+    自然结束并一直占着 worker。若这类线程与 ``asyncio.to_thread``（流式读取、
+    自动命名）共用默认池，几次挂起就能把默认池占满，``next()`` 排在队列里，
+    回合又变成“取消不了”。独立池 + 容量信号量把影响限制在本回合：槽位耗尽
+    时新工具直接得到 ``tool_busy``，流式读取走默认池不受影响。
+    """
+
+    def __init__(self, workers: int = TOOL_POOL_WORKERS) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._executor = ThreadPoolExecutor(max_workers=workers,
+                                            thread_name_prefix="fa-tool")
+        self._slots = asyncio.Semaphore(workers)
+        self._closed = False
+
+    async def acquire(self) -> bool:
+        """占一个 worker 槽；饱和时最多等 ``TOOL_SLOT_WAIT_SECONDS``。"""
+        try:
+            await asyncio.wait_for(self._slots.acquire(), TOOL_SLOT_WAIT_SECONDS)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    def submit(self, fn, *args):
+        """提交到独立线程池；槽位由 worker 在结束时归还。
+
+        `run_in_executor` 不像 `asyncio.to_thread` 那样自动拷贝 contextvars——
+        必须显式 copy 并在副本里 run，否则 ``current_call_id`` 在工具线程里读不到，
+        RecordingClient 的 tag 全空、快照全绑到最后一次调用上（N05 回归）。
+        """
+        context = contextvars.copy_context()
+        return self._loop.run_in_executor(self._executor, self._run_and_release,
+                                          context, fn, args)
+
+    def _run_and_release(self, context, fn, args):
+        try:
+            return context.run(fn, *args)
+        finally:
+            # 槽位在**线程真正结束**时归还（而不是协程被取消/超时时）：被放弃的
+            # 工具仍占着 worker，提前归还会让池子超订。
+            try:
+                self._loop.call_soon_threadsafe(self._slots.release)
+            except RuntimeError:  # 事件循环已关闭（进程退出/测试结束）
+                pass
+
+    def release(self) -> None:
+        """提交失败时归还已占用槽位。"""
+        self._slots.release()
+
+    def shutdown(self) -> None:
+        """回合结束释放 idle worker；挂起线程不可硬杀，由其自行结束。"""
+        if self._closed:
+            return
+        self._closed = True
+        self._executor.shutdown(wait=False, cancel_futures=False)
+
+
+def _tool_timeout_limit(name: str, remaining: float | None = None) -> float:
+    """工具超时上限：文档类单独分档，且绝不越过回合剩余墙钟（P3-4）。
+
+    工具一旦启动就会跑满自己的超时；不裁剪的话「134s 启动 + 120s 超时」会把
+    回合拖到 254s，墙钟承诺（``max_wall_seconds``）形同虚设。
+    """
+    base = (DOC_TOOL_TIMEOUT_SECONDS if name in DOC_TIMEOUT_TOOLS
+            else TOOL_TIMEOUT_SECONDS)
+    if remaining is None:
+        return base
+    # 下限只防 0/负数（wait_for(0) 会立即超时）；不把“剩余已尽”放大成整档超时。
+    return max(0.05, min(base, remaining))
+
+
+def _is_duplicate(env: Envelope) -> bool:
+    """是否被重复查询守卫拒绝（P2-4：未执行，不计入工具额度）。"""
+    return (not env.ok) and env.error is not None \
+        and env.error.code == "duplicate_query"
+
+
 async def _exec_tool(dispatch, name, args, call_id, local_handlers, *,
                      cancel_event: asyncio.Event | None = None,
-                     timeout: float | None = None):
+                     timeout: float | None = None,
+                     pool: _ToolPool | None = None):
     # R13/N05：整段置位 call_id 上下文（唯一 contextvar，见模块头注释）——
     # asyncio.to_thread 传播 contextvars（聚合内部线程池经 copy_context().run
     # 继续），RecordingClient 记录时取值：sig["call_id"] 供快照 parent_call_id
@@ -1158,7 +1295,9 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers, *,
         else:
             # P0-3：dispatch 在独立线程里跑（LLM/网络调用可能永久阻塞）——
             # 加超时与取消旁路，保证回合锁不会被一个卡死的工具永久占住。
-            env = await _await_dispatch(dispatch, name, args, limit, cancel_event)
+            # P2-2：限定在本回合的有界线程池里，不和流式读取抢默认池。
+            env = await _await_dispatch(dispatch, name, args, limit, cancel_event,
+                                        pool)
         ok = bool(env.ok)
         return (call_id, name, env)
     finally:
@@ -1169,14 +1308,25 @@ async def _exec_tool(dispatch, name, args, call_id, local_handlers, *,
 
 
 async def _await_dispatch(dispatch, name, args, timeout: float,
-                          cancel_event: asyncio.Event | None) -> Envelope:
+                          cancel_event: asyncio.Event | None,
+                          pool: _ToolPool | None = None) -> Envelope:
     """在线程版 dispatch 外维一层超时/取消：谁先到谁结束，线程本身不可硬杀。
 
     ``asyncio.to_thread`` 无法中断已进入的底层调用；这里保证的是**回合不再
     等待它**（事件循环与写锁得以释放），底层线程在后台自行结束。超时与
     取消都折成 ok=False 包络回给模型，让回合继续收尾而不是裸抛。
+    传入 ``pool`` 时改用本回合的有界池；饱和直接返回 tool_busy（P2-2）。
     """
-    tool_task = asyncio.ensure_future(asyncio.to_thread(dispatch, name, args))
+    if pool is not None:
+        if not await pool.acquire():
+            return _tool_busy_env(name)
+        try:
+            tool_task = asyncio.ensure_future(pool.submit(dispatch, name, args))
+        except Exception:  # noqa: BLE001 —— 提交失败（池已关闭）：立即归还槽位
+            pool.release()
+            raise
+    else:
+        tool_task = asyncio.ensure_future(asyncio.to_thread(dispatch, name, args))
     # 被放弃的线程任务可能稍后抛异常；消费掉避免 "exception was never retrieved"
     tool_task.add_done_callback(lambda t: t.cancelled() or t.exception())
     cancel_task: asyncio.Future | None = None
@@ -1208,6 +1358,14 @@ def _tool_timeout_env(name: str, timeout: float) -> Envelope:
         code="tool_timeout",
         message=f"工具 {name} 超过 {int(timeout)} 秒未返回，已停止等待",
         hint="该工具暂时不可用：请如实说明缺口并基于已有信息继续；稍后可重试"))
+
+
+def _tool_busy_env(name: str) -> Envelope:
+    """工具线程池饱和包络（P2-2）：不排队、不拖垮回合。"""
+    return Envelope(ok=False, error=ToolError(
+        code="tool_busy",
+        message=f"工具 {name} 未执行：本回合已有 {TOOL_POOL_WORKERS} 个工具挂起未返回",
+        hint="先基于已有结果回答；确实需要该工具时等挂起的调用结束再试，不要重复发起"))
 
 
 
@@ -1358,7 +1516,9 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                         pid, markdown,
                         kind=data_dict.get("kind") or "proposal",
                         version=data_dict.get("version") or "draft",
-                        provenance=provenance or None)
+                        provenance=provenance or None,
+                        degraded=str(data_dict.get("degraded")
+                                     or ev.data.get("degraded") or ""))
         elif name == "compose_interview_guide":
             if call_id in persisted_docs:
                 continue  # P2-8：已即时落盘，不重复插入
@@ -1370,7 +1530,8 @@ def _persist_tool_results(repo, pid, tm, turn_id, call_name_map, live_refs,
                 parts += [f"## {itype}", "", str(body), ""]
             if len(parts) > 2:
                 repo.save_proposal(pid, "\n".join(parts),
-                                   kind="interview_guide", version="draft")
+                                   kind="interview_guide", version="draft",
+                                   degraded=str(ev.data.get("degraded") or ""))
 
 
 def check_and_advance(repo, pid) -> dict | None:

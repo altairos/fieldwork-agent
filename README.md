@@ -7,7 +7,7 @@
 
 **田野罗盘**帮田野调查者完成从"想去哪里"到"怎么抵达、住在哪里、调研什么"的全流程筹备：
 
-- **引导式访谈**：五阶段推进（研究定位 → 田野点画像 → 行程规划 → 方案生成 → 已完成），推进判定为确定性纯函数，不由 LLM 宣布。
+- **引导式访谈**：四阶段推进（研究定位 → 田野点画像 → 行程规划 → 方案生成 → 已完成），推进判定为确定性纯函数，不由 LLM 宣布。
 - **真实数据检索**：深度集成飞猪 FlyAI 全部 8 个搜索工具（航班/火车/酒店/POI/关键词/AI 语义/万豪酒店/万豪套餐），行程、预算、文化场所均基于实时搜索数据并标注来源。
 - **地理空间底座**：接入高德开放平台 Web 服务 API（地理编码/逆编码/周边检索/关键词搜索/跨城公交/天气共 6 个原语）——田野点画像的地理定位与周边设施段、"枢纽 → 田野点"末端接驳规划（`plan_last_mile`）基于真实地理数据，覆盖境内。
 - **学术文献检索**：内置 `search_literature`（OpenAlex 主源 + ncpssd/PubScholar 中文深链）——将研究问题拆为对象、现象、情境、理论/方法四类要素，生成 2–4 路检索矩阵（同义词 OR、概念组 AND），先 probe 后按偏差收窄或放宽；结果绑定当前研究范围，候选文献不自动采纳为事实。
@@ -232,6 +232,7 @@ flyai config set key <YOUR_API_KEY>     # 写入 ~/.flyai/config.json
 ### 数据与资产目录
 
 - **项目数据**：`~/.fieldwork_agent/projects/<id>/`（state.json、chat_history.jsonl、knowledge/、search_cache/、output/proposal_*.md）。
+- **前端字体**：`web/src/assets/fonts/fraunces.woff2`（Fraunces 可变字体，SIL OFL 1.1；版权与许可文本见同目录 `OFL.txt`），`tokens.css` 以 `@font-face` 本地加载，不依赖外网 CDN。
 - **提示词资产三级体系**（`kernel/assets.py` 探测链，先命中先用）：
   1. 环境变量 `FIELDWORK_ASSETS_DIR` 指向目录；
   2. `<repo>/secrets/`（Tier S 私有完整版，独立私有仓库，被主仓 `.gitignore` 忽略）；
@@ -261,6 +262,6 @@ flyai config set key <YOUR_API_KEY>     # 写入 ~/.flyai/config.json
 2. **FlyAI 体验模式**：无正式 Key 时可正常搜索但价格脱敏（如 ¥5x）、结果受限。
 3. **方案体例**：当前输出为英美式八章体例；高校开题、国家社科活页体例尚未支持（规划中）。方案为草稿，投稿/开题前须人工核校——缺数据处如实标记"待核验"，不虚构参考文献。
 4. **Tier S 资产默认不在部署包内**：线上默认使用内置 Tier P 公开简版提示词/访谈库，功能完整但提示词为简版。
-5. **测试盲区（Roadmap 未完成项）**：钉钉同步（`sync dingtalk`）的测试覆盖尚未建立；流式输出和五阶段主流程已有 mock 测试覆盖。
+5. **测试盲区（Roadmap 未完成项）**：钉钉同步（`sync dingtalk`）的测试覆盖尚未建立；流式输出和四阶段主流程已有 mock 测试覆盖。
 6. **单人 LLM 决策**：工具决策依赖宿主 LLM function calling（无关键词路由兜底），模型不可用时工具调用链路整体降级。
 7. **数据本地化**：项目数据仅存本地 `~/.fieldwork_agent/`；当前无登录/账号体系（账号与身份一期在规划中，项目级 `owner` 归属已在运行时透传），公网部署须自行配合 `FIELDWORK_APP_TOKEN` 与防火墙策略。

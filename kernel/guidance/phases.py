@@ -1,7 +1,8 @@
 """阶段流转与引导策略 — 从 ``core/dialogue_engine.py`` 原文迁移的纯数据。
 
 约定：
-- ``PHASES`` 五阶段顺序即推进顺序，值与旧 ``ProjectState.PHASE_*`` 常量完全一致；
+- ``PHASES`` 为四个工作面（A–D）加 ``finished`` 终态，顺序即推进顺序，值与旧
+  ``ProjectState.PHASE_*`` 常量完全一致（UI 左栏只展示 A–D，完成后进入终态）；
 - ``GUIDING_QUESTIONS`` 迁移自引擎原文；``SYSTEM_PROMPTS`` 已改为经 ``kernel/assets`` 分级加载的动态属性（Tier P 公开版内置，secrets/ 运行时覆盖）；
   旧引擎只为前三个阶段写了引导问题，此处为 D/完成两阶段补齐，使
   ``GUIDING_QUESTIONS`` 的键覆盖 ``PHASES``（避免宿主拿到空列表时无话可问）；

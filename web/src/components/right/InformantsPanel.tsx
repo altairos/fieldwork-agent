@@ -46,6 +46,16 @@ export function InformantsPanel() {
 
   const [adopting, setAdopting] = useState<number | null>(null);
   const [adoptError, setAdoptError] = useState<string | null>(null);
+  // P2-1：候选卡的按钮不再永远可点——已登记的 type 置灰为「已登记」，
+  // 否则用户会看到「候选 · 未登记」并反复点出同类型记录。
+  const registeredTypes = new Set(
+    records.map((r) => strOf(r.type)).filter((t) => t !== ""),
+  );
+  const candidateTypes = (candidateCall === null ? [] : toCandidates(candidateCall.data === undefined ? null : candidateCall.data))
+    .map((c) => strOf(c.type))
+    .filter((t) => t !== "");
+  const allCandidatesRegistered =
+    candidateTypes.length > 0 && candidateTypes.every((t) => registeredTypes.has(t));
 
   // 采纳登记：POST /informants（候选原样上行）→ 刷新快照（右栏为快照投影，不局部改）
   const adopt = async (candidate: Record<string, unknown>, i: number) => {
@@ -122,23 +132,26 @@ export function InformantsPanel() {
       {candidateCall !== null && (
         <div>
           <div className="text-[10.5px] tracking-[.16em] text-inkfaint mb-2">
-            候选 · 未登记
+            {allCandidatesRegistered ? "候选 · 已登记" : "候选 · 未登记"}
             {adoptError && <span className="text-ochre ml-2 normal-case">{adoptError}</span>}
           </div>
           {/* 同源复用：与中栏时间线同一组件 + 同一 tool_completed.data；cardActions 注入采纳 */}
           <InformantCard
             data={candidateCall.data === undefined ? null : candidateCall.data}
             degraded={candidateCall.degraded ?? null}
-            cardActions={(candidate, i) => (
-              <button
-                type="button"
-                disabled={adopting !== null}
-                onClick={() => adopt(candidate, i)}
-                className="text-[11.5px] text-cinnabar hairline rounded-md px-2.5 py-1 hover:bg-cardsunk disabled:opacity-50"
-              >
-                {adopting === i ? "登记中…" : "采纳登记"}
-              </button>
-            )}
+            cardActions={(candidate, i) => {
+              const registered = registeredTypes.has(strOf(candidate.type));
+              return (
+                <button
+                  type="button"
+                  disabled={registered || adopting !== null}
+                  onClick={() => adopt(candidate, i)}
+                  className="text-[11.5px] text-cinnabar hairline rounded-md px-2.5 py-1 hover:bg-cardsunk disabled:opacity-50"
+                >
+                  {registered ? "已登记" : adopting === i ? "登记中…" : "采纳登记"}
+                </button>
+              );
+            }}
           />
         </div>
       )}

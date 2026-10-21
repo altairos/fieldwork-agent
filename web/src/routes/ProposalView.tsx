@@ -11,7 +11,7 @@ import { ProposalViewer } from "../components/proposal/ProposalViewer";
 import { VersionSwitch } from "../components/proposal/VersionSwitch";
 import { Header } from "../components/layout/Header";
 import { Button } from "../components/ui/Button";
-import { IconBook, IconDownload } from "../components/ui/icons";
+import { IconAlert, IconBook, IconDownload } from "../components/ui/icons";
 import { authHeaders } from "../lib/keys";
 import { getAuthEpoch, getSessionToken, isStaleSession, ownerHeaders } from "../lib/session";
 import { useDisposeGuestProject } from "../hooks/useDisposeGuestProject";
@@ -453,7 +453,22 @@ export function ProposalView() {
             私有正文，也不能被随后的 404 文案掩盖）→ 加载错误 → 加载中 */}
         <div ref={bodyRef} className="overflow-y-auto scroll bg-paper/40 min-h-0">
           {doc ? (
-            <ProposalViewer markdown={doc.markdown} kind={doc.kind} version={doc.version} />
+            <>
+              {/* P3-2：降级原因随文档落盘——工具卡消失后（重开页面/切版本），
+                  模板降级与体例降级仍要在正文顶部显式可见。 */}
+              {doc.degraded && (
+                <div
+                  data-testid="proposal-degraded"
+                  className="mx-5 lg:mx-10 mt-4 hairline rounded-lg bg-ochrewash p-3 text-[12px] text-inksoft flex items-start gap-2"
+                >
+                  <IconAlert className="w-4 h-4 text-ochre shrink-0 mt-0.5" />
+                  <span className="flex-1 min-w-0 leading-snug">
+                    本方案为降级稿：{doc.degraded}。确认前请人工核校，或补充材料后重新生成。
+                  </span>
+                </div>
+              )}
+              <ProposalViewer markdown={doc.markdown} kind={doc.kind} version={doc.version} />
+            </>
           ) : authNotice ? (
             <div className="max-w-[720px] mx-auto px-5 lg:px-10 py-10">
               <div className="hairline rounded-lg bg-paperdeep p-5 text-[13px] text-inksoft leading-relaxed">

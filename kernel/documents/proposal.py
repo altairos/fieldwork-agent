@@ -420,8 +420,8 @@ def _llm_rewrite_section(context_block: str, section: str, prior_markdown: str,
                          llm: Any) -> tuple[str, str | None]:
     """单章重写：LLM 只输出目标 ``## <section>`` 一节，再 splice 回 prior_markdown。
 
-    返回 ``(markdown, error_reason)``（P0-1）：失败时 markdown 为空，调用方回落
-    模板并标记 degraded（而不是把整篇模板当成“重写结果”静默返回）。
+    返回 ``(markdown, error_reason)``（P0-1）：失败时 markdown 为空，调用方保留
+    原方案并标记 degraded（而不是把整篇模板当成“重写结果”静默返回）。
     """
     user_prompt = (
         f"{context_block}\n\n"
@@ -466,8 +466,11 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
     if section and llm is not None and prior_markdown:
         markdown, reason = _llm_rewrite_section(context_block, section, prior_markdown, llm)
         if not markdown:
-            degraded = f"模板降级版（LLM 调用失败：{reason}）"
-            markdown = _degrade_markdown(ctx, sites, itinerary, informants, knowledge)
+            # P3-3：单章重写失败不再整篇回落模板——保留 prior_markdown，
+            # 只标记目标章节未更新，避免“改一章、丢全文”。
+            degraded = (f"单章未更新（LLM 调用失败：{reason}）："
+                        f"已保留原方案，仅「{section}」未重写")
+            markdown = prior_markdown
     elif llm is None:
         degraded = "模板降级版（未接入 LLM）"
         markdown = _degrade_markdown(ctx, sites, itinerary, informants, knowledge)

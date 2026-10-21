@@ -55,9 +55,9 @@ tests/
 ├── test_config.py            # 三级加载优先级：env → config.json → ~/.flyai
 ├── test_json_repo.py         # JsonRepository：契约实现 + 落盘布局 + 存量兼容 + 原子写
 ├── test_migrate.py           # JSON→SQLite 存量搬迁：7 类全等 + 幂等 + schema_meta 标记
-├── test_guidance.py          # 五阶段常量/提示词、check_advance 推进判定、extract 纯函数
+├── test_guidance.py          # 四阶段常量/提示词、check_advance 推进判定、extract 纯函数
 ├── test_models_registry.py   # 包络/模型与 registry 能力元数据契约
-├── test_registry_surface.py  # 生产态能力面：裸导入即注册 21 项 + registry handler 统一包络
+├── test_registry_surface.py  # 生产态能力面：裸导入即注册 23 项 + registry handler 统一包络
 ├── test_sources_flyai.py     # 8 搜索原语 argv 拼装 + 异常折进包络
 ├── test_sources_amap.py      # AMapClient 6 原语参数拼装 + 包络折错 + 无 Key 短路不出网
 ├── test_itinerary.py         # compose_itinerary 聚合（legs/stays/budget coverage）
@@ -163,8 +163,9 @@ monkeypatch，测试请 patch `kernel.config`）。
 `FA_WEB_WORKERS` / `UVICORN_WORKERS` / `WEB_CONCURRENCY`，大于 1 直接拒绝启动；
 部署命令禁止加 `--workers`。扩容需先把这些状态迁到共享后端（Redis/DB）再另行设计。
 
-**五阶段流程**（`kernel/guidance/phases.PHASES`）：
+**四个工作面 + finished 终态**（`kernel/guidance/phases.PHASES`）：
 `research_positioning → field_site_profiles → itinerary_planning → proposal_generation → finished`
+（A–D 是左栏展示的四个工作面；`finished` 是方案确认后的终态，不是第五个工作面）
 推进判定是**纯函数 `check_advance`**，由宿主在每轮末尾确定性执行（绝不由 LLM 宣布）：
 A→B 看必填定位字段；B→C 需 confirmed 田野点 + ≥1 访谈对象（非访谈型可 `interviews_not_applicable`
 显式跳过）；C→D 需行程；D→finished 需草稿存在**且**用户确认 `proposal_confirmed`。
@@ -279,7 +280,7 @@ Windows job 专门回归 emoji/UTF-8 输出路径（见第 7 节）。
 - [x] 高德地理底座 PoC：`kernel/sources/amap.py` 六原语 + 画像 geo/facilities 段 + `plan_last_mile` 末端接驳聚合（设计见 `docs/plans/2026-10-18-amap-poc-design.md`，真 Key 冒烟 7/7 通过，存档 `tools/spike_amap.py`）
 - [x] 高德 PoC2：`plan_last_mile` 班次日期透传（`date_hint` 已实现并有测试；其他扩展另行规划）
 - [x] 流式输出测试：`kernel/llm` 接口与 Web Agent loop 已有 mock 测试覆盖
-- [x] 集成测试：以 fake FlyAI stub 跑通五阶段主流程（`tests/test_web_mainline_e2e.py`）
+- [x] 集成测试：以 fake FlyAI stub 跑通四阶段主流程（`tests/test_web_mainline_e2e.py`）
 - [ ] 钉钉同步（`sync dingtalk`）的测试覆盖
 
 ### 9.1 当前产品与工程待办
@@ -309,8 +310,8 @@ Windows job 专门回归 emoji/UTF-8 输出路径（见第 7 节）。
 
 | 级别 | 内容 | 存放位置 | 加载方式 |
 |---|---|---|---|
-| **Tier S（私有）** | 完整版示范库（11 类词条）、完整访谈方法论、五阶段完整 system prompt、生成类完整提示词 | `secrets/`（独立私有 git 仓库，被主仓 `.gitignore` 忽略） | 运行时覆盖 Tier P |
-| **Tier P（公开）** | 精简版：3 词条示范库、简版方法论、五阶段简版 prompt、简版 generation 措辞 | `kernel/assets.py` 内置常量 | 默认 |
+| **Tier S（私有）** | 完整版示范库（11 类词条）、完整访谈方法论、四阶段完整 system prompt、生成类完整提示词 | `secrets/`（独立私有 git 仓库，被主仓 `.gitignore` 忽略） | 运行时覆盖 Tier P |
+| **Tier P（公开）** | 精简版：3 词条示范库、简版方法论、四阶段简版 prompt、简版 generation 措辞 | `kernel/assets.py` 内置常量 | 默认 |
 | **Tier O（常开）** | 算法与契约常量（`GUIDING_QUESTIONS`、`REQUIRED_FIELDS`、`check_advance`、`match_examples`、`PROPOSAL_SECTIONS`、各 user prompt 的输出契约段） | 各模块代码内 | 直接 import，不经 assets |
 
 **探测链**（`kernel/assets.py`，先命中先用）：

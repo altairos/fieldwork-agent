@@ -17,12 +17,44 @@ ResearchContext 补齐；模型本轮聚焦的非空值保留。runtime 依赖 k
 """
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
 _DOC_TOOLS = ("compose_proposal", "compose_interview_guide")
 # ctx 之外的事实渠道：正文只能引用项目已采纳的记录
 _FACT_CHANNELS = ("sites", "informants", "knowledge", "itinerary")
+# web 宿主下发给模型的 schema 里不暴露的字段：全部由 merge_doc_args 从项目
+# 状态填充，模型回传只会制造巨型参数与 invalid_arguments 重试（生产实录）。
+_DOC_HOST_FILLED_FIELDS = {
+    "compose_proposal": ("ctx", "sites", "itinerary", "informants", "knowledge"),
+}
+
+
+def compact_doc_tool_schemas(schemas: list[dict]) -> list[dict]:
+    """返回副本：隐藏文档工具的宿主填充字段，并在描述里声明免传。
+
+    仅 web 宿主使用（其 ``_prepare`` 必调 ``merge_doc_args``）；MCP 外部客户端
+    无此合并路径，继续使用 registry 原始 schema，故不得就地修改入参。
+    """
+    out: list[dict] = []
+    for schema in schemas:
+        fn = schema.get("function") or {}
+        hidden = _DOC_HOST_FILLED_FIELDS.get(fn.get("name", ""))
+        if not hidden:
+            out.append(schema)
+            continue
+        clone = copy.deepcopy(schema)
+        params = clone["function"].setdefault("parameters", {})
+        props = params.get("properties") or {}
+        for field in hidden:
+            props.pop(field, None)
+        clone["function"]["description"] = (
+            clone["function"].get("description", "")
+            + "；上下文渠道（研究定位/田野点/行程/报道人/知识库）由宿主从项目"
+              "状态自动填充，不要传入。")
+        out.append(clone)
+    return out
 
 
 def _nonempty(v: Any) -> bool:

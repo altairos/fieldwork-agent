@@ -286,6 +286,26 @@ def test_section_rewrite_replaces_only_target_block():
     assert llm.kwargs["temperature"] == 0.5
 
 
+def test_section_rewrite_failure_keeps_prior_markdown():
+    """P3-3：单章重写失败不再整篇回落模板——保留 prior 正文，只标记该章未更新。"""
+
+    class FailingLLM:
+        def chat(self, messages, **kw):
+            return {"content": "", "error": "upstream 500"}
+
+    prior = ("# 研究方案\n\n"
+             "## 一、研究背景与问题提出\n旧内容 A\n\n"
+             "## 八、参考文献\n旧文献\n")
+    doc = compose_proposal(
+        CTX, SITES, {"legs": []}, [{"code": "P1"}], [],
+        llm=FailingLLM(), section="一、研究背景与问题提出", prior_markdown=prior,
+    )
+    # 旧正文全保留（旧实现会把整篇替换成模板，等于“改一章、丢全文”）
+    assert "旧内容 A" in doc.markdown and "旧文献" in doc.markdown
+    assert doc.degraded and "单章未更新" in doc.degraded
+    assert "一、研究背景与问题提出" in doc.degraded
+
+
 def test_compose_proposal_registered():
     tool = [t for t in build_tool_schemas() if t["function"]["name"] == "compose_proposal"]
     assert tool, "compose_proposal 应已注册"
@@ -333,8 +353,10 @@ def test_suggest_informants_no_key_degraded():
     env = suggest_informants("宗族变迁")
     assert env.ok and env.degraded and "参考起点" in env.degraded
     assert 0 < len(env.data) <= 6 and all(isinstance(c, InformantCandidate) for c in env.data)
-    # P0-2：候选未落库，下一步必须 save_informants——机器可读提示随包络返回
-    assert env.next_action and "save_informants" in env.next_action
+    # P0-2：候选未落库，下一步必须保存——机器可读提示随包络返回。
+    # P2-3：提示必须宿主中立（Web 用 save_informants、MCP 用 save_informant）。
+    assert env.next_action and "保存访谈对象" in env.next_action
+    assert "save_informants" not in env.next_action
 
 
 # ---- suggest_informants 补充覆盖（注册面 / 槽位 / 条目级容错 / 上限）----

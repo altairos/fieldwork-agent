@@ -26,7 +26,7 @@ from typing import Any
 
 from fieldwork_agent.kernel.guidance.interview import INTERVIEW_DEGRADED_GUIDANCE
 from fieldwork_agent.kernel.models import Envelope, ToolError
-from fieldwork_agent.runtime.literature import LiteratureSearchBudget
+from fieldwork_agent.runtime.literature import DuplicateQueryGuard, LiteratureSearchBudget
 
 # 摘要序列化后进消息的字符安全上限（R5：结构化摘要仍须有界）
 TOOL_CONTENT_LIMIT = 2000
@@ -34,7 +34,7 @@ TOOL_CONTENT_LIMIT = 2000
 _TOP_ITEMS = 5
 # 长字符串在摘要中的预览阈值
 _PREVIEW = 160
-_LITERATURE_CONTENT_LIMIT = 12000
+_LITERATURE_CONTENT_LIMIT = 6000
 
 
 def _literature_summary(env: Envelope) -> dict:
@@ -256,6 +256,7 @@ def run_tool_loop(llm: Any, messages: list[dict],
     else:
         budget.deadline = min(budget.deadline, time.monotonic() + max_wall_seconds)
     dispatch = LiteratureSearchBudget().wrap(dispatch)
+    dispatch = DuplicateQueryGuard().wrap(dispatch)
     tool_events: list[dict] = []
     iterations = 0
     total_calls = 0
@@ -298,7 +299,10 @@ def run_tool_loop(llm: Any, messages: list[dict],
                 on_event("tool_started", {"call_id": call_id, "name": name,
                                           "arguments": args})
             env = dispatch(name, args)
-            total_calls += 1
+            # P2-4：重复查询被拒的调用没有真正执行，不占工具额度。
+            if not (not env.ok and env.error is not None
+                    and env.error.code == "duplicate_query"):
+                total_calls += 1
             msgs.append({"role": "tool", "tool_call_id": call_id,
                          "content": _tool_content(name, env)})
             tool_events.append({"tool": name, "call_id": call_id, "ok": env.ok,

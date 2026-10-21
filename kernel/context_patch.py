@@ -73,7 +73,14 @@ def sanitize_context_patch(patch: dict, current: dict | None = None) -> dict:
     withdrawing_question = False
     for key, value in patch.items():
         if key not in ALLOWED_CONTEXT_FIELDS:
-            errors.append(f"未知字段：{key}")
+            # P2-b：不只报“未知字段”——给出正确落点，避免模型反复重试
+            # （生产会话曾 5 次尝试写 informant_types/entry_strategy 后放弃）。
+            # P2-3：不写死宿主工具名（Web 是 save_informants、MCP 是
+            # save_informant）——MCP 模型会照着提示调用一个不存在的工具。
+            errors.append(
+                f"未知字段：{key}；访谈对象候选不进 patch：请调用当前环境提供的"
+                "「保存访谈对象」工具，"
+                "策略/判断类内容请写入 research_notes（kind=decision|observation）")
             continue
         if key == "clear_fields":
             if (not isinstance(value, list) or not value

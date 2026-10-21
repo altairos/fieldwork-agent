@@ -18,10 +18,12 @@ from fieldwork_agent.kernel.context_patch import (
     context_patch_schema,
     sanitize_context_patch,
 )
-from fieldwork_agent.kernel.documents.informants import candidate_to_record
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
-from fieldwork_agent.kernel.models import Envelope, InformantCandidate, ToolError
-from pydantic import ValidationError
+from fieldwork_agent.kernel.models import Envelope, ToolError
+from fieldwork_agent.runtime.informants import (
+    MAX_INFORMANTS_PER_CALL,
+    register_informants,
+)
 
 _UPDATE_SCHEMA = {
     "type": "function",
@@ -67,14 +69,19 @@ _BRIEF_SCHEMA = {
 
 # P0-2：候选只由 suggest_informants 返回、不落库；用户采纳后必须经此工具写入，
 # 否则右栏「访谈对象」恒为空、B→C 阶段（confirmed_site + informant）永远停住。
+# P2-1：条数与字段长度都有上限（与 runtime.informants 同一口径）——此前没有
+# maxItems，探针一次写入 30 条也能成功。
 _INFORMANT_FIELDS = {
-    "type": {"type": "string", "description": "访谈对象类型（必填，如「村干部」）"},
-    "approach": {"type": "string", "description": "接近策略"},
-    "access_channel": {"type": "string", "description": "进入田野途径"},
-    "preparation": {"type": "string", "description": "访前准备"},
-    "cautions": {"type": "string", "description": "注意事项"},
-    "ethics": {"type": "string", "description": "伦理提示"},
-    "question_domains": {"type": "array", "items": {"type": "string"},
+    "type": {"type": "string", "maxLength": 40,
+             "description": "访谈对象类型（必填，如「村干部」）"},
+    "approach": {"type": "string", "maxLength": 400, "description": "接近策略"},
+    "access_channel": {"type": "string", "maxLength": 400,
+                       "description": "进入田野途径"},
+    "preparation": {"type": "string", "maxLength": 400, "description": "访前准备"},
+    "cautions": {"type": "string", "maxLength": 400, "description": "注意事项"},
+    "ethics": {"type": "string", "maxLength": 400, "description": "伦理提示"},
+    "question_domains": {"type": "array", "maxItems": 8,
+                          "items": {"type": "string", "maxLength": 60},
                           "description": "建议提问域"},
 }
 
@@ -83,19 +90,23 @@ _SAVE_INFORMANTS_SCHEMA = {
     "function": {
         "name": "save_informants",
         "description": (
-            "把用户已经采纳的访谈对象候选登记进项目（逐条落库，按 type 去重）。"
+            "把用户已经采纳的访谈对象候选登记进项目（逐条落库；完全相同的档案会跳过，"
+            "同类型不同接近策略照常登记）。"
             "suggest_informants 只返回候选、不会保存；用户确认候选后必须调用本工具，"
-            "否则右栏「访谈对象」仍为空，阶段不会推进。可直接回传 suggest_informants 的条目。"),
+            "否则右栏「访谈对象」仍为空，阶段不会推进。可直接回传 suggest_informants 的条目。"
+            f"单次最多 {MAX_INFORMANTS_PER_CALL} 条。"),
         "parameters": {
             "type": "object",
             "properties": {
                 "candidates": {
                     "type": "array",
-                    "description": "要登记的候选（InformantCandidate 字段）；至少 1 条",
+                    "minItems": 1,
+                    "maxItems": MAX_INFORMANTS_PER_CALL,
+                    "description": f"要登记的候选（InformantCandidate 字段）；1-{MAX_INFORMANTS_PER_CALL} 条",
                     "items": {"type": "object", "properties": _INFORMANT_FIELDS,
                               "required": ["type"]},
                 },
-                "basis": {"type": "string",
+                "basis": {"type": "string", "maxLength": 200,
                            "description": "用户采纳依据（如「用户说按这三类来」）"},
             },
             "required": ["candidates"],
@@ -132,8 +143,12 @@ def build_project_state_tools(repo, pid: str, *,
     def get_project_brief(**_: Any) -> Envelope:
         state = repo.get_state(pid)
         if buffer is not None:
+            # P2-1：访谈对象暂存同样进 brief——此前只合并 research_context，
+            # 本轮 save_informants 之后 brief 仍显示「访谈对象：（无）」。
             state = {**state,
-                     "research_context": buffer.staged_view()}
+                     "research_context": buffer.staged_view(),
+                     "informants": [*state.get("informants", []),
+                                    *buffer.staged_informants()]}
         return Envelope(ok=True,
                         data={"brief": build_project_brief(
                             state, cached_searches=repo.list_cached_searches(pid))})
@@ -141,51 +156,26 @@ def build_project_state_tools(repo, pid: str, *,
     def save_informants(candidates: list, basis: str = "") -> Envelope:
         """登记用户已采纳的访谈对象候选（P0-2：候选不落库，必须显式写入）。
 
-        逐条校验、按 type 去重（仓储 + 本轮暂存）；注入 buffer 时暂存到轮末
-        commit（取消/失败随 buffer 丢弃），否则直接落盘。全部无效/重复时
-        返回 ok=False，让模型知道本次没有任何写入。
+        P2-1：编号/去重/上限统一由 ``runtime.informants.register_informants``
+        负责（与 REST 采纳同一套规则）；注入 buffer 时暂存到轮末 commit
+        （取消/失败随 buffer 丢弃），否则直接落盘。全部无效/重复时返回
+        ok=False，让模型知道本次没有任何写入。
         """
         if not isinstance(candidates, list) or not candidates:
             return Envelope(ok=False, error=ToolError(
                 code="invalid_arguments", message="candidates 必须是非空数组",
                 hint="传入至少一条 InformantCandidate（type 必填）"))
-        records_now = repo.list_informants(pid)
-        staged = buffer.staged_informants() if buffer is not None else []
-        seen = {str(r.get("type") or "").strip() for r in [*records_now, *staged]}
-        seq = len(records_now) + len(staged) + 1
-        saved: list[dict] = []
-        skipped: list[dict] = []
-        for raw in candidates:
-            try:
-                candidate = InformantCandidate.model_validate(raw)
-            except ValidationError as exc:
-                skipped.append({"type": "", "reason": "invalid",
-                                "message": exc.errors()[0].get("msg", "")})
-                continue
-            candidate.type = candidate.type.strip()
-            if not candidate.type:
-                skipped.append({"type": "", "reason": "missing_type"})
-                continue
-            if candidate.type in seen:
-                skipped.append({"type": candidate.type, "reason": "duplicate"})
-                continue
-            record = candidate_to_record(candidate, seq)
-            seq += 1
-            if buffer is not None:
-                buffer.stage_informant(record)
-            else:
-                repo.save_informant(pid, record)
-            seen.add(candidate.type)
-            saved.append({"code": record["code"], "type": record["type"]})
-        if not saved:
+        result = register_informants(repo, pid, candidates, buffer=buffer)
+        if not result["saved"]:
             return Envelope(ok=False, error=ToolError(
                 code="nothing_saved",
                 message="没有任何候选被登记（全部无效或已存在）",
-                hint="检查 candidates 形状；已登记的 type 不会重复写入"))
-        data: dict[str, Any] = {"saved": saved, "skipped": skipped,
-                                "total": len(records_now) + len(staged) + len(saved)}
+                hint="检查 candidates 形状；完全相同的档案不会重复写入"))
+        data: dict[str, Any] = {"saved": result["saved"],
+                                "skipped": result["skipped"],
+                                "total": result["total"]}
         if basis:
-            data["basis"] = basis
+            data["basis"] = basis[:200]
         return Envelope(ok=True, data=data)
 
     return ([_UPDATE_SCHEMA, _BRIEF_SCHEMA, _SAVE_INFORMANTS_SCHEMA],
