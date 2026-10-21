@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "田野罗盘 — 面向人类学/社会学田野调查者的 AI 旅行规划 Agent（基于飞猪 FlyAI）"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+# 许可边界：open-source-final 及之前为 MIT，之后为专有。详见仓库根 LICENSE-MIT 与 NOTICE
+license = { text = "Proprietary" }
+classifiers = [
+    "License :: Other/Proprietary License",
+]
 dependencies = [
     "dashscope>=1.20.0",
     # 百炼套餐 Key（sk-sp-）专属 OpenAI 兼容端点用 httpx 直调（kernel/llm.py）

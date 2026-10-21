@@ -1,21 +1,13 @@
-MIT License
-
 Copyright (c) 2026 田野罗盘 (Fieldwork Agent) contributors
+All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+本仓库自标签 open-source-final 之后的版本为专有软件（Proprietary Software）。
+未经著作权人事先书面许可，任何单位或个人不得复制、修改、合并、发布、
+分发、再许可、销售本软件的副本或其衍生作品。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+关于此前版本的授权：
+标签 open-source-final（含）之前的所有提交，依据 MIT 协议发布。该 MIT
+许可的全文见本目录下 LICENSE-MIT 文件，其授权永久有效、不可撤销，不因
+本仓库此后的许可变更、归档或转为私有而失效。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+完整版本边界说明见 NOTICE。

@@ -1,5 +1,7 @@
 # 田野罗盘 (Fieldwork Agent)
 
+> **许可范围**：`open-source-final` 及之前版本为 MIT（全文见 [LICENSE-MIT](LICENSE-MIT)）；之后版本为专有许可。边界与例外详见 [NOTICE](NOTICE)。
+
 > 面向人类学/社会学田野调查者的 AI 旅行规划助手
 > 基于飞猪 FlyAI 全品类旅行搜索、高德地理底座与 OpenAlex 学术文献检索，引导式访谈 → 辅助生成研究方案（Research Proposal）草稿
 
