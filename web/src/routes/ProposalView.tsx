@@ -78,6 +78,8 @@ export function ProposalView() {
   // 导出格式偏好（「我的」卡设置）：只读订阅，影响下载 URL 与按钮文案
   const format = useExportFormatStore((s) => s.format);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // P1-5：默认文档自动纠正只做一次——用户主动切到访谈提纲后不得被再切回方案
+  const autoProposalFixed = useRef(false);
   // 身份作用域代次（R03）：身份/项目变化即自增，旧作用域的异步结果一律弃置。
   const scopeRef = useRef(0);
   // 正文请求代次（R04）：每次选择/初载自增，只有最新代次的响应可以落地。
@@ -145,6 +147,7 @@ export function ProposalView() {
   useEffect(() => {
     scopeRef.current += 1;
     requestRef.current += 1;
+    autoProposalFixed.current = false;   // 新作用域重新执行一次默认文档纠正
     setDoc(null);
     setVersions([]);
     setSelectedId(null);
@@ -189,6 +192,22 @@ export function ProposalView() {
     // loadDoc / noteAuthFailure 只读 props 与 setter，随作用域快照使用即可。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, user, reloadToken]);
+
+  // P1-5：默认文档不能停在“最后写入的一份”——访谈提纲通常晚于研究方案落盘，
+  // 旧实现进页签先看到提纲。初载拿到 latest 后，若它不是 proposal，就从版本
+  // 列表切到最新一份 proposal（列表已并行拉取，通常在同一帧内完成）。
+  // 只自动纠正一次：用户主动点「查看访谈提纲」后不再切回。
+  useEffect(() => {
+    if (autoProposalFixed.current || !doc || versions.length === 0) return;
+    // 首个可判定的文档 + 版本列表：无论是否命中都视为“已自动纠正过”，
+    // 此后用户主动切换 kind 不再被改回。
+    autoProposalFixed.current = true;
+    if (doc.kind === "proposal") return;
+    const newestProposal = [...versions].reverse().find((v) => v.kind === "proposal");
+    if (newestProposal && newestProposal.id !== doc.id) void loadDoc(newestProposal.id);
+    // loadDoc 只读 props 与 setter；依赖保持最小以避免重复切换
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, versions]);
 
   // 八章滚动高亮：观察正文内 h2（与后端 sections 的 `## ` 行同序），取最靠上的可见章节
   useEffect(() => {
@@ -397,9 +416,10 @@ export function ProposalView() {
             {dlError && <div className="text-[11px] text-cinnabar leading-snug">{dlError}</div>}
             <button
               type="button"
+              data-testid="kind-switch"
               disabled={!doc}
               onClick={toggleKind}
-              className="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center justify-center gap-1.5 hover:bg-cardsunk transition disabled:opacity-50 disabled:pointer-events-none"
+              className="w-full h-9 rounded-md hairline bg-card text-[12.5px] text-inksoft flex items-center justify-center gap-1.5 hover:bg-cardsunk transition disabled:opacity-50 disabled:pointer-events-none cursor-pointer"
             >
               <IconBook className="w-4 h-4" />
               查看{kindLabel(otherKind)}

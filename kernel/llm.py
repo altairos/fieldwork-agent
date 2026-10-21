@@ -14,6 +14,7 @@
 """
 import json
 import os
+import time
 from typing import Any
 
 try:
@@ -143,6 +144,79 @@ def _empty_result(error: str) -> dict[str, Any]:
     return {"content": "", "tool_calls": None, "finish_reason": "", "usage": {}, "error": error}
 
 
+# ---------------------------------------------------------------- 瞬时故障与分类
+
+# 百炼链路的「连接被对端掐断 / 502-504」多为网关抖动，一次短退避重试即可救回；
+# 流式仅在**尚未吐出任何正文增量**时重试（已吐字再重试会重复文本）。
+_LLM_MAX_ATTEMPTS = 2
+_LLM_RETRY_DELAY_S = 0.6
+_RETRYABLE_STATUS = frozenset({502, 503, 504})
+
+try:  # dashscope SDK 底层用 requests；连接级异常可与 httpx 一并视为瞬时故障
+    from requests.exceptions import RequestException as _RequestsRequestError
+except ImportError:  # pragma: no cover —— dashscope 依赖 requests，正常环境不会缺
+    _RequestsRequestError = None
+
+_TRANSPORT_ERRORS = tuple(
+    t for t in (_RequestsRequestError, httpx.HTTPError if _HTTPX_AVAILABLE else None)
+    if t is not None)
+
+# 错误分类特征串（小写匹配，顺序即优先级：额度 → 端点 → 凭证 → 网络）。
+# 分类结果供宿主生成**对症**的 hint；此前所有非审核错误统一提示「检查 API Key」，
+# 额度耗尽/网络中断/端点配错时会把用户引到错误方向。
+_QUOTA_MARKERS = ("free quota exhausted", "quota exceeded", "insufficient quota",
+                  "insufficient_quota", "arrearage", "额度", "欠费")
+_URL_MARKERS = ("url error", "invalid url", "unsupported url")
+_AUTH_MARKERS = ("invalid api-key", "invalid api key", "invalid access token",
+                 "token expired", "incorrect api key", "invalidaccesskeyid",
+                 "unauthorized")
+_NETWORK_MARKERS = ("网络错误", "peer closed", "connection reset", "connection aborted",
+                    "connection refused", "remote end closed", "incomplete chunked read",
+                    "timed out", "timeout", "name resolution", "name or service not known",
+                    "ssl", "proxy")
+
+# 输入超长（P1-11）：百炼/兼容端点与 OpenAI 的报错口径不一，统一在这里认。
+# 命中即说明"重试也没用"——只能缩提示或换长上下文模型，必须单独上报原因。
+_INPUT_TOO_LONG_MARKERS = (
+    "range of input length", "input length", "input is too long",
+    "maximum context length", "context length exceeded", "context_length_exceeded",
+    "too many tokens", "prompt is too long", "string_above_max_length",
+    "input too long", "输入过长", "超出模型长度限制", "内容过长",
+)
+
+
+def classify_llm_error(error: object) -> str:
+    """LLM 错误串 → ``quota|base_url|auth|network|unknown``（None/空串安全）。
+
+    只做**传输/账户层**分类；内容审核走 ``is_content_moderation_error``（宿主先判它）。
+    未命中的错误回落 ``unknown``——宁可提示含糊，也不臆造原因。
+    """
+    text = str(error or "").lower()
+    if not text:
+        return "unknown"
+    for kind, markers in (("quota", _QUOTA_MARKERS), ("base_url", _URL_MARKERS),
+                          ("auth", _AUTH_MARKERS), ("network", _NETWORK_MARKERS)):
+        if any(m in text for m in markers):
+            return kind
+    return "unknown"
+
+
+def is_input_too_long(error: object) -> bool:
+    """错误串是否为「输入超出模型长度限制」（P1-11）。
+
+    这类失败与网络/额度不同：重试无用、降级也不是"模型暂时不可用"，
+    调用方应把原因如实标成 ``input_too_long``（而不是模糊的"调用失败"）。
+    """
+    text = str(error or "").lower()
+    return bool(text) and any(m in text for m in _INPUT_TOO_LONG_MARKERS)
+
+
+def _sleep_before_retry() -> None:
+    """重试前短退避（测试可把 ``_LLM_RETRY_DELAY_S`` 置 0 免等）。"""
+    if _LLM_RETRY_DELAY_S > 0:
+        time.sleep(_LLM_RETRY_DELAY_S)
+
+
 def _compat_error_message(resp: Any) -> str:
     """OpenAI 兼容端点错误响应 → 可读 message（error.message 优先，text 片段兕底）。"""
     try:
@@ -201,23 +275,32 @@ class LLMClient:
             call_kwargs["tools"] = tools
         if _wants_thinking_off(self.models[slot]):
             call_kwargs["enable_thinking"] = False
-        response = Generation.call(**call_kwargs)
-        if response.status_code != 200:
-            # 契约四键恒在：消费方（宿主/loop）可无条件读 usage 等键，error 为附加错误通道。
-            if _is_gateway_url_error(response) and _HTTPX_AVAILABLE:
-                return self._compat_chat(messages, slot=slot, tools=tools,
-                                         temperature=temperature, max_tokens=max_tokens,
-                                         base_url=_DEFAULT_COMPAT_BASE)
-            return {"content": "", "tool_calls": None, "finish_reason": "",
-                    "usage": {}, "error": str(response.message)}
-        choice = response.output.choices[0]
-        message = choice.message
-        return {
-            "content": _field(message, "content") or "",
-            "tool_calls": _parse_tool_calls(_field(message, "tool_calls")),
-            "finish_reason": _field(choice, "finish_reason") or "",
-            "usage": response.usage,
-        }
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            last = attempt == _LLM_MAX_ATTEMPTS - 1
+            try:
+                response = Generation.call(**call_kwargs)
+            except _TRANSPORT_ERRORS as exc:   # SDK 路径的连接级抖动：一次退避重试
+                if not last:
+                    _sleep_before_retry()
+                    continue
+                return _empty_result(f"网络错误：{exc}")
+            if response.status_code != 200:
+                # 契约四键恒在：消费方（宿主/loop）可无条件读 usage 等键；error 为附加错误通道。
+                if _is_gateway_url_error(response) and _HTTPX_AVAILABLE:
+                    return self._compat_chat(messages, slot=slot, tools=tools,
+                                             temperature=temperature, max_tokens=max_tokens,
+                                             base_url=_DEFAULT_COMPAT_BASE)
+                return {"content": "", "tool_calls": None, "finish_reason": "",
+                        "usage": {}, "error": str(response.message)}
+            choice = response.output.choices[0]
+            message = choice.message
+            return {
+                "content": _field(message, "content") or "",
+                "tool_calls": _parse_tool_calls(_field(message, "tool_calls")),
+                "finish_reason": _field(choice, "finish_reason") or "",
+                "usage": response.usage,
+            }
+        return _empty_result("网络错误：重试耗尽")      # 防御性返回，正常路径不可达
 
     def chat_stream(self, messages: list[dict], *, slot: str = "interview",
                     tools: list[dict] | None = None, temperature: float = 0.7,
@@ -241,40 +324,51 @@ class LLMClient:
             call_kwargs["tools"] = tools
         if _wants_thinking_off(self.models[slot]):
             call_kwargs["enable_thinking"] = False
-        accumulated = ""
-        final_tool_calls = None
-        finish_reason = ""
-        usage: dict = {}
-        for response in Generation.call(**call_kwargs):
-            if response.status_code != 200:
-                if (_is_gateway_url_error(response) and _HTTPX_AVAILABLE
-                        and not accumulated):
-                    # url error 必发于首 chunk（网关路由拒绝）；已输出过内容则不重试，
-                    # 避免兼容端点重复吐同样的增量。
-                    yield from self._compat_chat_stream(
-                        messages, slot=slot, tools=tools,
-                        temperature=temperature, max_tokens=max_tokens,
-                        base_url=_DEFAULT_COMPAT_BASE)
-                    return
-                yield {"content": "", "tool_calls": None, "finish_reason": "",
-                       "usage": {}, "error": str(response.message)}
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            last = attempt == _LLM_MAX_ATTEMPTS - 1
+            accumulated = ""
+            final_tool_calls = None
+            finish_reason = ""
+            usage: dict = {}
+            try:
+                for response in Generation.call(**call_kwargs):
+                    if response.status_code != 200:
+                        if (_is_gateway_url_error(response) and _HTTPX_AVAILABLE
+                                and not accumulated):
+                            # url error 必发于首 chunk（网关路由拒绝）；已输出过内容则不重试，
+                            # 避免兼容端点重复吐同样的增量。
+                            yield from self._compat_chat_stream(
+                                messages, slot=slot, tools=tools,
+                                temperature=temperature, max_tokens=max_tokens,
+                                base_url=_DEFAULT_COMPAT_BASE)
+                            return
+                        yield {"content": "", "tool_calls": None, "finish_reason": "",
+                               "usage": {}, "error": str(response.message)}
+                        return
+                    choice = response.output.choices[0]
+                    message = choice.message
+                    delta = _field(message, "content") or ""
+                    if delta:
+                        accumulated += delta
+                        yield {"delta": delta}
+                    tc = _parse_tool_calls(_field(message, "tool_calls"))
+                    if tc:
+                        final_tool_calls = tc
+                    fr = _field(choice, "finish_reason") or ""
+                    if fr and fr != "null":
+                        finish_reason = fr
+                    if response.usage:
+                        usage = response.usage
+                yield {"content": accumulated, "tool_calls": final_tool_calls,
+                       "finish_reason": finish_reason, "usage": usage}
                 return
-            choice = response.output.choices[0]
-            message = choice.message
-            delta = _field(message, "content") or ""
-            if delta:
-                accumulated += delta
-                yield {"delta": delta}
-            tc = _parse_tool_calls(_field(message, "tool_calls"))
-            if tc:
-                final_tool_calls = tc
-            fr = _field(choice, "finish_reason") or ""
-            if fr and fr != "null":
-                finish_reason = fr
-            if response.usage:
-                usage = response.usage
-        yield {"content": accumulated, "tool_calls": final_tool_calls,
-               "finish_reason": finish_reason, "usage": usage}
+            except _TRANSPORT_ERRORS as exc:
+                # 已吐字绝不重试（会重复正文）；未吐字时允许一次短退避重试
+                if not last and not accumulated:
+                    _sleep_before_retry()
+                    continue
+                yield _empty_result(f"网络错误：{exc}")
+                return
 
     # ---------------------------------------------------- OpenAI 兼容（套餐端点）
 
@@ -298,98 +392,121 @@ class LLMClient:
                      tools: list[dict] | None, temperature: float,
                      max_tokens: int, base_url: str | None = None) -> dict[str, Any]:
         url_base = base_url or self.base_url
-        try:
-            resp = httpx.post(
-                f"{url_base}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=self._compat_request(messages, slot=slot, tools=tools,
-                                          temperature=temperature, max_tokens=max_tokens,
-                                          stream=False),
-                timeout=_compat_timeout())
-        except httpx.HTTPError as exc:
-            return _empty_result(f"网络错误：{exc}")
-        if resp.status_code != 200:
-            return _empty_result(_compat_error_message(resp))
-        data = resp.json()
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        return {
-            "content": message.get("content") or "",
-            "tool_calls": _parse_tool_calls(message.get("tool_calls")),
-            "finish_reason": choice.get("finish_reason") or "",
-            "usage": data.get("usage") or {},
-        }
+        payload = self._compat_request(messages, slot=slot, tools=tools,
+                                       temperature=temperature, max_tokens=max_tokens,
+                                       stream=False)
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            last = attempt == _LLM_MAX_ATTEMPTS - 1
+            try:
+                resp = httpx.post(
+                    f"{url_base}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload, timeout=_compat_timeout())
+            except httpx.HTTPError as exc:
+                if not last:                      # 连接级抖动：一次短退避重试
+                    _sleep_before_retry()
+                    continue
+                return _empty_result(f"网络错误：{exc}")
+            if resp.status_code in _RETRYABLE_STATUS and not last:
+                _sleep_before_retry()             # 网关 502/503/504：同属瞬时故障
+                continue
+            if resp.status_code != 200:
+                return _empty_result(_compat_error_message(resp))
+            data = resp.json()
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            return {
+                "content": message.get("content") or "",
+                "tool_calls": _parse_tool_calls(message.get("tool_calls")),
+                "finish_reason": choice.get("finish_reason") or "",
+                "usage": data.get("usage") or {},
+            }
+        return _empty_result("网络错误：重试耗尽")      # 防御性返回，正常路径不可达
 
     def _compat_chat_stream(self, messages: list[dict], *, slot: str,
                             tools: list[dict] | None, temperature: float, max_tokens: int,
                             base_url: str | None = None):
         url_base = base_url or self.base_url
-        try:
-            with httpx.stream(
-                "POST", f"{url_base}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=self._compat_request(messages, slot=slot, tools=tools,
-                                          temperature=temperature, max_tokens=max_tokens,
-                                          stream=True),
-                timeout=_compat_timeout()) as resp:
-                if resp.status_code != 200:
-                    # 流式响应须先读全 body 再取 .json()/.text，否则抛
-                    # ResponseNotRead（RuntimeError 子类）掩盖真实 API 错误消息
-                    resp.read()
-                    yield _empty_result(_compat_error_message(resp))
-                    return
-                accumulated = ""
-                tool_parts: dict[int, dict[str, str]] = {}
-                finish_reason = ""
-                usage: dict = {}
-                for line in resp.iter_lines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue  # 空行/心跳注释行
-                    data_str = line[len("data:"):].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                    except (json.JSONDecodeError, ValueError):
-                        continue  # 坏行容错
-                    if isinstance(chunk.get("usage"), dict) and chunk["usage"]:
-                        usage = chunk["usage"]
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    choice = choices[0]
-                    delta = choice.get("delta") or {}
-                    text = delta.get("content")
-                    if text:
-                        accumulated += text
-                        yield {"delta": text}
-                    # tool_calls 跨 chunk 增量：按 index 合并 id/name 与 arguments 片段
-                    for piece in delta.get("tool_calls") or []:
-                        idx = piece.get("index", 0)
-                        part = tool_parts.setdefault(
-                            idx, {"id": "", "name": "", "arguments": ""})
-                        if piece.get("id"):
-                            part["id"] = piece["id"]
-                        fn = piece.get("function") or {}
-                        if fn.get("name"):
-                            part["name"] = fn["name"]
-                        if fn.get("arguments"):
-                            part["arguments"] += fn["arguments"]
-                    if choice.get("finish_reason"):
-                        finish_reason = choice["finish_reason"]
-                final_calls = None
-                if tool_parts:
-                    final_calls = []
-                    for idx in sorted(tool_parts):
-                        part = tool_parts[idx]
+        payload = self._compat_request(messages, slot=slot, tools=tools,
+                                       temperature=temperature, max_tokens=max_tokens,
+                                       stream=True)
+        for attempt in range(_LLM_MAX_ATTEMPTS):
+            last = attempt == _LLM_MAX_ATTEMPTS - 1
+            emitted = False          # 本次尝试是否已向调用方吐出正文增量
+            try:
+                with httpx.stream(
+                    "POST", f"{url_base}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                    timeout=_compat_timeout()) as resp:
+                    if resp.status_code != 200:
+                        # 流式响应须先读全 body 再取 .json()/.text，否则抛
+                        # ResponseNotRead（RuntimeError 子类）掩盖真实 API 错误消息
+                        resp.read()
+                        if resp.status_code in _RETRYABLE_STATUS and not last:
+                            _sleep_before_retry()
+                            continue
+                        yield _empty_result(_compat_error_message(resp))
+                        return
+                    accumulated = ""
+                    tool_parts: dict[int, dict[str, str]] = {}
+                    finish_reason = ""
+                    usage: dict = {}
+                    for line in resp.iter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue  # 空行/心跳注释行
+                        data_str = line[len("data:"):].strip()
+                        if data_str == "[DONE]":
+                            break
                         try:
-                            args = json.loads(part["arguments"] or "{}")
+                            chunk = json.loads(data_str)
                         except (json.JSONDecodeError, ValueError):
-                            args = {}
-                        final_calls.append({"id": part["id"], "name": part["name"],
-                                            "arguments": args})
-                yield {"content": accumulated, "tool_calls": final_calls,
-                       "finish_reason": finish_reason, "usage": usage}
-        except httpx.HTTPError as exc:
-            yield _empty_result(f"网络错误：{exc}")
+                            continue  # 坏行容错
+                        if isinstance(chunk.get("usage"), dict) and chunk["usage"]:
+                            usage = chunk["usage"]
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        delta = choice.get("delta") or {}
+                        text = delta.get("content")
+                        if text:
+                            accumulated += text
+                            emitted = True
+                            yield {"delta": text}
+                        # tool_calls 跨 chunk 增量：按 index 合并 id/name 与 arguments 片段
+                        for piece in delta.get("tool_calls") or []:
+                            idx = piece.get("index", 0)
+                            part = tool_parts.setdefault(
+                                idx, {"id": "", "name": "", "arguments": ""})
+                            if piece.get("id"):
+                                part["id"] = piece["id"]
+                            fn = piece.get("function") or {}
+                            if fn.get("name"):
+                                part["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                part["arguments"] += fn["arguments"]
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
+                    final_calls = None
+                    if tool_parts:
+                        final_calls = []
+                        for idx in sorted(tool_parts):
+                            part = tool_parts[idx]
+                            try:
+                                args = json.loads(part["arguments"] or "{}")
+                            except (json.JSONDecodeError, ValueError):
+                                args = {}
+                            final_calls.append({"id": part["id"], "name": part["name"],
+                                                "arguments": args})
+                    yield {"content": accumulated, "tool_calls": final_calls,
+                           "finish_reason": finish_reason, "usage": usage}
+                    return
+            except httpx.HTTPError as exc:
+                # 已吐字绝不重试（会重复正文）；未吐字时允许一次短退避重试
+                if not last and not emitted:
+                    _sleep_before_retry()
+                    continue
+                yield _empty_result(f"网络错误：{exc}")
+                return

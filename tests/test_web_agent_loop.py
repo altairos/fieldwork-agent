@@ -84,6 +84,49 @@ def test_simple_reply_emits_delta_and_turn_done(env):
     assert "".join(deltas) == "你好世界"
 
 
+def test_proposal_persisted_before_turn_end_and_not_duplicated(env):
+    """P2-8：compose_proposal 完成即落盘——下一段正文开始时方案已可读；
+    轮末只校正指纹，不会把同一文档再插一份。"""
+    repo, tm = env
+    seen_counts: list[int] = []
+
+    def final_stream():
+        # 工具完成后的下一段流：此刻文档应已可读（旧实现要等轮末）
+        seen_counts.append(len(repo.list_proposals("p1")))
+        yield {"delta": "方案已生成"}
+        yield {"content": "方案已生成", "tool_calls": None,
+               "finish_reason": "stop", "usage": {}}
+
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _PROPOSAL_ARGS}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        final_stream(),
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成方案", tm, llm, FakeFlyAI()))
+
+    assert seen_counts == [1]              # 轮次未结束时就有一份文档
+    assert len(repo.list_proposals("p1")) == 1   # 轮末不重复插入
+
+
+def test_assistant_message_started_precedes_first_delta(env):
+    """P2-7：SSE 先发 assistant_message_started，再发首个 message_delta（每回合一次）。"""
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "你好"}, {"delta": "世界"},
+                    {"content": "你好世界", "tool_calls": None,
+                     "finish_reason": "stop", "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    types = [e.event for e in events]
+    assert types.count("assistant_message_started") == 1
+    assert types.index("assistant_message_started") < types.index("message_delta")
+
+
 def test_tool_call_emits_started_completed(env):
     repo, tm = env
     llm = FakeLLM([
@@ -105,6 +148,124 @@ def test_tool_call_emits_started_completed(env):
     assert started.data["call_id"] == "c1" and started.data["tool"] == "search_hotels"
     completed = next(e for e in events if e.event == "tool_completed")
     assert completed.data["ok"] is True
+
+
+def test_tool_timeout_marks_error_and_turn_completes(env, monkeypatch):
+    """P0-3：工具挂起 → 超时折成 tool_timeout 包络，回合仍能收尾（不再永久 running）。"""
+    import time as _time
+
+    from fieldwork_agent.web_host.agent import loop
+
+    monkeypatch.setattr(loop, "TOOL_TIMEOUT_SECONDS", 0.05)
+
+    class SlowFlyAI:
+        def __getattr__(self, name):
+            def _stub(**kw):
+                _time.sleep(0.4)
+                return Envelope(ok=True, data=ItemPage(
+                    items=[SearchItem(name=f"{name}-结果", price=100.0)],
+                    total=1, cheapest=100.0, dearest=100.0))
+            return _stub
+
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "工具超时，先按已有信息继续"},
+         {"content": "工具超时，先按已有信息继续", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, SlowFlyAI()))
+
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    completed = next(e for e in events if e.event == "tool_completed")
+    assert completed.data["ok"] is False
+    assert completed.data["error"]["code"] == "tool_timeout"
+    assert events[-1].event == "turn_done"
+    assert tm.get_turn("p1", turn.turn_id).status == "completed"
+
+
+def test_cancel_unblocks_hanging_tool_and_releases_lock(env):
+    """P0-3：取消后不再等卡在工具里的协程 → run_turn 返回、写锁释放（可发下一条）。"""
+    import time as _time
+
+    class SlowFlyAI:
+        def __getattr__(self, name):
+            def _stub(**kw):
+                _time.sleep(0.5)
+                return Envelope(ok=True, data=ItemPage(
+                    items=[SearchItem(name="慢结果", price=100.0)],
+                    total=1, cheapest=100.0, dearest=100.0))
+            return _stub
+
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "不会走到这里"},
+         {"content": "不会走到这里", "tool_calls": None,
+          "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    async def scenario():
+        async with tm.acquire_write_lock("p1"):
+            task = asyncio.create_task(run_turn(
+                repo, "p1", turn.turn_id, "搜酒店", tm, llm, SlowFlyAI()))
+            for _ in range(200):
+                if any(e.event == "tool_started"
+                       for e in tm.replay("p1", turn.turn_id, after_seq=0)):
+                    break
+                await asyncio.sleep(0.005)
+            tm.cancel("p1", turn.turn_id)
+            await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(scenario())
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    assert tm.is_writing("p1") is False
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    completed = next(e for e in events if e.event == "tool_completed")
+    assert completed.data["ok"] is False
+    assert completed.data["error"]["code"] == "cancelled"
+
+
+def test_max_rounds_notice_is_not_assistant_body(env):
+    """P0-10：触顶提示不得以助手正文形态落库——改走 system_notice + finish_reason。"""
+    repo, tm = env
+    llm = FakeLLM([
+        # 第一次：只调工具、不输出正文
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        # 触顶后的收敛流：仍然什么都不说
+        [{"delta": ""},
+         {"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "搜酒店", tm, llm, FakeFlyAI(),
+                         max_iters=1))
+
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    notices = [e for e in events if e.event == "system_notice"]
+    assert notices and notices[0].data["code"] == "max_rounds"
+    # 不再把限制提示当正文流出
+    assert not [e for e in events if e.event == "message_delta"]
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["finish_reason"] == "max_rounds"
+    assert done.data["incomplete"] is True
+    # 对话史里不得出现「已达本回合处理上限」的助手气泡
+    chat = repo.get_messages("p1", limit=0)
+    assert [m["role"] for m in chat] == ["user"]
+    assert all("已达本回合处理上限" not in m["content"] for m in chat)
 
 
 def test_user_message_persisted_immediately(env):
@@ -194,8 +355,11 @@ def test_empty_final_reply_converges_with_retry(env):
                for m in msgs)
 
 
-def test_empty_reply_exhausted_emits_fallback(env):
-    """收敛重试仍空（两轮都只想不写）：发兜底文案 + 正常完成，绝不静默空回合。"""
+def test_empty_reply_exhausted_emits_notice(env):
+    """收敛重试仍空（两轮都只想不写）：发系统提示事件 + 正常完成，绝不静默空回合。
+
+    P0-10：提示不再是「像模型说的话」——不进 message_delta、不进 chat_history。
+    """
     repo, tm = env
     llm = FakeLLM([
         [{"content": "", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
@@ -208,11 +372,12 @@ def test_empty_reply_exhausted_emits_fallback(env):
     types = [e.event for e in events]
     assert "error" not in types
     assert types[-1] == "turn_done"
-    deltas = [e.data["text"] for e in events if e.event == "message_delta"]
-    assert deltas and "未生成文字回复" in deltas[-1]
+    assert not [e for e in events if e.event == "message_delta"]
+    notices = [e for e in events if e.event == "system_notice"]
+    assert notices and notices[-1].data["code"] == "no_reply"
+    assert "未生成文字回复" in notices[-1].data["message"]
     msgs = repo.get_messages("p1")
-    assert any(m["role"] == "assistant" and "未生成文字回复" in m["content"]
-               for m in msgs)
+    assert all(m["role"] != "assistant" for m in msgs)
 
 
 def test_budget_hit_converges_gracefully(env):
@@ -1809,7 +1974,8 @@ def test_r02_same_turn_itinerary_binds_into_proposal_hash(env):
     # T01 验收：正文采用本轮实际行程，不采用模型给的替代值 B
     assert "BODY_UNADOPTED_ITINERARY" not in docs[0]["content"]
     assert "- **departure**：上海" in docs[0]["content"]
-    assert "- **destinations**：['大理']" in docs[0]["content"]
+    # P1-11：列表值不再以 Python repr 直嵌（['大理']），而是可读的单行
+    assert "- **destinations**：大理" in docs[0]["content"]
     # 指纹与正文实际输入（含落盘行程内容）一致，而不是只“能确认”
     stored = next(repo.get_cached_search("p1", c["id"])["result"]
                   for c in repo.list_cached_searches("p1")
@@ -1921,7 +2087,7 @@ def test_t01_latest_turn_itinerary_wins_across_multiple_calls(env):
     assert ei.value.code == "dep_hash_mismatch"
     # 新方案：正文采用最新行程 A2（丽江），可确认
     assert "BODY_UNADOPTED_ITINERARY" not in docs[1]["content"]
-    assert "- **destinations**：['丽江']" in docs[1]["content"]
+    assert "- **destinations**：丽江" in docs[1]["content"]
     assert repo.confirm_proposal("p1", docs[1]["id"])
     assert repo.is_proposal_confirmation_stale("p1") is False
 
@@ -2165,8 +2331,8 @@ def test_f06_preamble_budget_hit_converges_to_final_answer(env):
     assert tm.get_turn("p1", turn.turn_id).status == "completed"
 
 
-def test_f06_convergence_empty_keeps_preamble_with_note(env):
-    """F06：收敛帧仍空 → 不清前导语，走三分支的"过程说明+上限提示"分支。"""
+def test_f06_convergence_empty_keeps_preamble_with_notice(env):
+    """F06：收敛帧仍空 → 不清前导语；上限提示走 system_notice（P0-10）而不拼进正文。"""
     repo, tm = env
     llm = FakeLLM([
         [{"delta": "我先查一下"},
@@ -2180,8 +2346,13 @@ def test_f06_convergence_empty_keeps_preamble_with_note(env):
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "大理有哪些宗祠", tm, llm,
                          FakeFlyAI(), max_tool_calls=1))
     assistant = [m for m in repo.get_messages("p1") if m["role"] == "assistant"]
-    assert assistant[-1]["content"].startswith("我先查一下")   # 空正文不清前导语
-    assert "已达本回合处理上限" in assistant[-1]["content"]
+    assert assistant[-1]["content"] == "我先查一下"       # 空正文不清前导语
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    notice = next(e for e in events if e.event == "system_notice")
+    assert notice.data["code"] == "max_rounds"
+    done = next(e for e in events if e.event == "turn_done")
+    assert done.data["incomplete"] is True
+    assert done.data["finish_reason"] == "max_rounds"
     assert tm.get_turn("p1", turn.turn_id).status == "completed"
 
 
@@ -2560,6 +2731,60 @@ def test_run_turn_key_error_keeps_old_hint(env):
     assert "Key" in err.data["hint"]
 
 
+def test_run_turn_quota_error_hint_points_to_quota(env):
+    """额度耗尽 → hint 指向充值/换 Key，而非误报「检查 Key 是否有效」。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"content": "", "tool_calls": None, "finish_reason": "",
+                     "usage": {},
+                     "error": "Free quota exhausted. To continue accessing the model "
+                              "on a paid basis, please add funds or disable the "
+                              "\"use free tier only\" mode." }]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, None))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    err = [e for e in events if e.event == "error"][0]
+    assert err.data["code"] == "llm_error"
+    assert "额度" in err.data["hint"]
+    assert "检查百炼 API Key 是否有效" not in err.data["hint"]
+
+
+def test_run_turn_network_error_hint_mentions_network(env):
+    """生成途中断流（观察到的 peer closed）→ hint 指向网络/代理，不指向 Key。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"content": "", "tool_calls": None, "finish_reason": "",
+                     "usage": {},
+                     "error": "网络错误：peer closed connection without sending "
+                              "complete message body (incomplete chunked read)"}]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, None))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    err = [e for e in events if e.event == "error"][0]
+    assert err.data["code"] == "llm_error"
+    assert "网络" in err.data["hint"]
+    assert "检查百炼 API Key 是否有效" not in err.data["hint"]
+
+
+def test_run_turn_base_url_error_hint_points_to_endpoint(env):
+    """url error（端点/套餐不匹配）→ hint 指向端点配置。"""
+    from fieldwork_agent.web_host.agent.loop import run_turn
+
+    repo, tm = env
+    turn = tm.create_turn("p1")
+    llm = FakeLLM([[{"content": "", "tool_calls": None, "finish_reason": "",
+                     "usage": {},
+                     "error": "url error, please check url！ For details, see: "
+                              "https://help.aliyun.com/zh/model-studio/error-code" }]])
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, None))
+    events = tm.replay("p1", turn.turn_id, after_seq=0)
+    err = [e for e in events if e.event == "error"][0]
+    assert err.data["code"] == "llm_error"
+    assert "端点" in err.data["hint"]
+
+
 def test_proposal_confirm_hash_follows_merged_ctx(env):
     """C01：方案指纹忠于正文实际所本（合并后 ctx），而非仓储旧值。
 
@@ -2677,3 +2902,57 @@ def test_text_across_two_tool_rounds_preserved(env):
     msgs = repo.get_messages("p1")
     assistant = [m for m in msgs if m["role"] == "assistant"]
     assert assistant[-1]["content"] == "先查酒店。再查民宿。都查完了。"
+
+
+# ------------------------------- P0：上下文撑爆治理
+def test_turn_sends_compacted_doc_schema(env):
+    """P0：web 宿主下发的 compose_proposal schema 不再包含宿主自动填充的五渠道。
+
+    模型因此不会回传巨型 ctx/sites/informants JSON，也不会因五渠道字段
+    形状不符触发 invalid_arguments 重试（生产会话连续 2-3 次失败）。
+    """
+    repo, tm = env
+    llm = FakeLLM([[{"delta": "好"},
+                    {"content": "好", "tool_calls": None, "finish_reason": "stop",
+                     "usage": {}}]])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
+    tools = llm.calls[0][1]["tools"]
+    proposal = next(s for s in tools if s["function"]["name"] == "compose_proposal")
+    props = proposal["function"]["parameters"]["properties"]
+    assert "ctx" not in props and "sites" not in props and "informants" not in props
+
+
+def test_turn_compacts_early_tool_results_before_next_llm_call(env, monkeypatch):
+    """P0：回合内工具结果累计超预算时，下一次 LLM 调用前压缩最早的一条。
+
+    keep_recent=2：最近两条完整保留，最早的压缩为占位（tool_call_id 不动）。
+    """
+    repo, tm = env
+    llm = FakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "search_hotels",
+                                          "arguments": {"dest_name": "大理"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c2", "name": "search_hotels",
+                                          "arguments": {"dest_name": "丽江"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c3", "name": "search_hotels",
+                                          "arguments": {"dest_name": "腾冲"}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        [{"delta": "好"},
+         {"content": "好", "tool_calls": None, "finish_reason": "stop", "usage": {}}],
+    ])
+    from fieldwork_agent.web_host.agent import loop as loop_mod
+    monkeypatch.setattr(loop_mod, "TURN_TOOL_CONTENT_BUDGET", 1)
+    turn = tm.create_turn("p1")
+    asyncio.run(loop_mod.run_turn(repo, "p1", turn.turn_id, "查住宿",
+                                  tm, llm, FakeFlyAI()))
+    last_messages = llm.calls[-1][0]
+    tool_msgs = [m for m in last_messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]
+    assert "已压缩" in tool_msgs[0]["content"]
+    assert "已压缩" not in tool_msgs[-1]["content"]

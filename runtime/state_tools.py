@@ -18,8 +18,10 @@ from fieldwork_agent.kernel.context_patch import (
     context_patch_schema,
     sanitize_context_patch,
 )
+from fieldwork_agent.kernel.documents.informants import candidate_to_record
 from fieldwork_agent.kernel.guidance.brief import build_project_brief
-from fieldwork_agent.kernel.models import Envelope, ToolError
+from fieldwork_agent.kernel.models import Envelope, InformantCandidate, ToolError
+from pydantic import ValidationError
 
 _UPDATE_SCHEMA = {
     "type": "function",
@@ -63,6 +65,44 @@ _BRIEF_SCHEMA = {
     },
 }
 
+# P0-2：候选只由 suggest_informants 返回、不落库；用户采纳后必须经此工具写入，
+# 否则右栏「访谈对象」恒为空、B→C 阶段（confirmed_site + informant）永远停住。
+_INFORMANT_FIELDS = {
+    "type": {"type": "string", "description": "访谈对象类型（必填，如「村干部」）"},
+    "approach": {"type": "string", "description": "接近策略"},
+    "access_channel": {"type": "string", "description": "进入田野途径"},
+    "preparation": {"type": "string", "description": "访前准备"},
+    "cautions": {"type": "string", "description": "注意事项"},
+    "ethics": {"type": "string", "description": "伦理提示"},
+    "question_domains": {"type": "array", "items": {"type": "string"},
+                          "description": "建议提问域"},
+}
+
+_SAVE_INFORMANTS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "save_informants",
+        "description": (
+            "把用户已经采纳的访谈对象候选登记进项目（逐条落库，按 type 去重）。"
+            "suggest_informants 只返回候选、不会保存；用户确认候选后必须调用本工具，"
+            "否则右栏「访谈对象」仍为空，阶段不会推进。可直接回传 suggest_informants 的条目。"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "candidates": {
+                    "type": "array",
+                    "description": "要登记的候选（InformantCandidate 字段）；至少 1 条",
+                    "items": {"type": "object", "properties": _INFORMANT_FIELDS,
+                              "required": ["type"]},
+                },
+                "basis": {"type": "string",
+                           "description": "用户采纳依据（如「用户说按这三类来」）"},
+            },
+            "required": ["candidates"],
+        },
+    },
+}
+
 
 def build_project_state_tools(repo, pid: str, *,
                               buffer: TurnPatchBuffer | None = None):
@@ -98,6 +138,57 @@ def build_project_state_tools(repo, pid: str, *,
                         data={"brief": build_project_brief(
                             state, cached_searches=repo.list_cached_searches(pid))})
 
-    return ([_UPDATE_SCHEMA, _BRIEF_SCHEMA],
+    def save_informants(candidates: list, basis: str = "") -> Envelope:
+        """登记用户已采纳的访谈对象候选（P0-2：候选不落库，必须显式写入）。
+
+        逐条校验、按 type 去重（仓储 + 本轮暂存）；注入 buffer 时暂存到轮末
+        commit（取消/失败随 buffer 丢弃），否则直接落盘。全部无效/重复时
+        返回 ok=False，让模型知道本次没有任何写入。
+        """
+        if not isinstance(candidates, list) or not candidates:
+            return Envelope(ok=False, error=ToolError(
+                code="invalid_arguments", message="candidates 必须是非空数组",
+                hint="传入至少一条 InformantCandidate（type 必填）"))
+        records_now = repo.list_informants(pid)
+        staged = buffer.staged_informants() if buffer is not None else []
+        seen = {str(r.get("type") or "").strip() for r in [*records_now, *staged]}
+        seq = len(records_now) + len(staged) + 1
+        saved: list[dict] = []
+        skipped: list[dict] = []
+        for raw in candidates:
+            try:
+                candidate = InformantCandidate.model_validate(raw)
+            except ValidationError as exc:
+                skipped.append({"type": "", "reason": "invalid",
+                                "message": exc.errors()[0].get("msg", "")})
+                continue
+            candidate.type = candidate.type.strip()
+            if not candidate.type:
+                skipped.append({"type": "", "reason": "missing_type"})
+                continue
+            if candidate.type in seen:
+                skipped.append({"type": candidate.type, "reason": "duplicate"})
+                continue
+            record = candidate_to_record(candidate, seq)
+            seq += 1
+            if buffer is not None:
+                buffer.stage_informant(record)
+            else:
+                repo.save_informant(pid, record)
+            seen.add(candidate.type)
+            saved.append({"code": record["code"], "type": record["type"]})
+        if not saved:
+            return Envelope(ok=False, error=ToolError(
+                code="nothing_saved",
+                message="没有任何候选被登记（全部无效或已存在）",
+                hint="检查 candidates 形状；已登记的 type 不会重复写入"))
+        data: dict[str, Any] = {"saved": saved, "skipped": skipped,
+                                "total": len(records_now) + len(staged) + len(saved)}
+        if basis:
+            data["basis"] = basis
+        return Envelope(ok=True, data=data)
+
+    return ([_UPDATE_SCHEMA, _BRIEF_SCHEMA, _SAVE_INFORMANTS_SCHEMA],
             {"update_research_context": update_research_context,
-             "get_project_brief": get_project_brief})
+             "get_project_brief": get_project_brief,
+             "save_informants": save_informants})

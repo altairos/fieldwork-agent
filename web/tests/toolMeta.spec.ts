@@ -31,7 +31,7 @@ describe("toolMeta 可见性与标签", () => {
       .sort();
     expect(hidden).toEqual([
       "amap_around_search", "amap_direction_transit", "amap_geocode", "amap_regeocode",
-      "amap_weather", "get_project_brief", "update_research_context",
+      "amap_weather", "get_project_brief", "save_informants", "update_research_context",
     ]);
     // 活动条/时间线的判定入口与表同源（不允许各自维护一份名单）
     expect(hidden.every(isHiddenTool)).toBe(true);

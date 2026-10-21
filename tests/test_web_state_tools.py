@@ -41,7 +41,7 @@ def test_r05_unknown_field_rejected_atomically(env):
     repo, _ = env
     schemas, handlers = build_state_tools(repo, "p1")
     assert [s["function"]["name"] for s in schemas] == \
-        ["update_research_context", "get_project_brief"]
+        ["update_research_context", "get_project_brief", "save_informants"]
     envl = handlers["update_research_context"](
         patch={"budget": "5万", "hacked": "x", "topic": "  "})
     assert not envl.ok
@@ -131,3 +131,57 @@ def test_get_project_brief_returns_bounded_summary(env):
     assert envl.ok
     assert "项目摘要：" in envl.data["brief"]
     assert "宗族礼生" in envl.data["brief"]
+
+
+# ---------------------------------------------------------------- P0-2：候选落库
+
+_CANDIDATES = [
+    {"type": "村干部", "approach": "经村委引荐", "access_channel": "乡镇介绍信",
+     "preparation": "研究简况一页纸", "cautions": "政绩叙事",
+     "ethics": "化名", "question_domains": ["村史", "集体经济"]},
+    {"type": "乡村教师", "approach": "课后交谈"},
+    {"type": "返乡务工者", "approach": "熟人引路"},
+]
+
+
+def test_save_informants_persists_and_dedupes(env):
+    """P0-2：suggest_informants 只出候选，save_informants 才真正写进项目；
+    重复 type 幂等跳过，不制造重复记录。"""
+    repo, _ = env
+    _, handlers = build_state_tools(repo, "p1")
+    handlers["save_informants"](candidates=_CANDIDATES)
+    records = repo.list_informants("p1")
+    assert [r["type"] for r in records] == ["村干部", "乡村教师", "返乡务工者"]
+    assert [r["code"] for r in records] == ["INF-01", "INF-02", "INF-03"]
+    # 候选七字段映射进五字段记录（approach→relation、access_channel→contact）
+    assert records[0]["relation"] == "经村委引荐" and records[0]["contact"] == "乡镇介绍信"
+    assert "提问域：村史、集体经济" in records[0]["notes"]
+
+    again = handlers["save_informants"](candidates=_CANDIDATES)
+    assert not again.ok and again.error.code == "nothing_saved"
+    assert len(repo.list_informants("p1")) == 3
+
+
+def test_save_informants_stages_in_turn_buffer(env):
+    """注入 buffer 时与 ctx patch 同生命周期：commit 才落盘、discard 不落地。"""
+    from fieldwork_agent.runtime.turn_buffer import TurnPatchBuffer
+
+    repo, _ = env
+    buffer = TurnPatchBuffer(repo, "p1")
+    _, handlers = build_state_tools(repo, "p1", buffer=buffer)
+    envl = handlers["save_informants"](candidates=_CANDIDATES[:2])
+    assert envl.ok and envl.data["total"] == 2
+    assert repo.list_informants("p1") == []          # 尚未提交
+    buffer.discard()
+    assert repo.list_informants("p1") == []          # 取消不落盘
+
+    handlers["save_informants"](candidates=_CANDIDATES[:2])
+    buffer.commit()
+    assert [r["type"] for r in repo.list_informants("p1")] == ["村干部", "乡村教师"]
+
+
+def test_save_informants_rejects_empty(env):
+    repo, _ = env
+    _, handlers = build_state_tools(repo, "p1")
+    envl = handlers["save_informants"](candidates=[])
+    assert not envl.ok and envl.error.code == "invalid_arguments"

@@ -163,10 +163,87 @@ def test_llm_error_content_falls_back_to_template():
     # 走模板降级路径：markdown 含 "（模板降级版）" 尾注 + 八章 sections
     assert "（模板降级版）" in doc.markdown
     assert len(doc.sections) == 8
+    # P0-1：降级原因对机器可见（不再只藏在正文尾注里）
+    assert doc.degraded and "LLM 调用失败" in doc.degraded
+    assert "upstream 500" in doc.degraded
     # error 分支同样命中 _llm_full_proposal，参数契约与成功路径一致
     assert llm.kwargs["slot"] == "proposal"
     assert llm.kwargs["max_tokens"] == 8192
     assert llm.kwargs["temperature"] == 0.5
+
+
+def test_llm_exception_falls_back_with_reason_and_envelope_degraded():
+    """P0-1 验收：mock 一个抛异常的 LLM → compose_proposal 不裸抛、degraded 非空，
+    且 proposal_handler 把同一标记抬到 Envelope（tool_completed 可见）。"""
+
+    class BoomLLM:
+        def chat(self, messages, **kw):
+            raise TimeoutError("upstream timeout")
+
+    from fieldwork_agent.kernel.documents.proposal import proposal_handler
+
+    doc = compose_proposal(
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}], [], llm=BoomLLM()
+    )
+    assert "（模板降级版）" in doc.markdown and len(doc.sections) == 8
+    assert doc.degraded and "upstream timeout" in doc.degraded
+
+    env = proposal_handler(
+        CTX.model_dump(mode="json"), SITES, {"legs": []},
+        [{"code": "P1", "type": "村干部"}], [], llm=BoomLLM()
+    )
+    assert env.ok and env.degraded and "LLM 调用失败" in env.degraded
+    # data 里也带 degraded：宿主即使只透传 data，机器仍能识别
+    assert env.data.degraded == env.degraded
+
+
+def test_proposal_handler_without_llm_keeps_existing_degraded_wording():
+    """无 key 路径兼容旧文案（下游可能有断言/展示依赖）。"""
+    from fieldwork_agent.kernel.documents.proposal import proposal_handler
+
+    env = proposal_handler(
+        CTX.model_dump(mode="json"), SITES, {"legs": []},
+        [{"code": "P1", "type": "村干部"}], [], llm=None
+    )
+    assert env.ok and env.degraded == "模板降级版（未接入 LLM）"
+
+
+def test_mode_fallback_is_machine_visible():
+    """P1-11：kaiti/grant 回退不只在正文头部声明，也要进 degraded——
+    否则模型看不到“体例未实现”，会在回复里自由发挥成致歉说明。"""
+    doc = compose_proposal(CTX, SITES, {"legs": []}, [{"code": "P1"}], [], llm=None,
+                           mode="kaiti")
+    assert doc.requested_mode == "kaiti" and doc.mode == "global"
+    assert doc.degraded and "体例降级" in doc.degraded and "开题报告" in doc.degraded
+    # 模板降级原因也不能被体例说明盖掉
+    assert "模板降级版" in doc.degraded
+
+
+def test_input_too_long_is_machine_readable():
+    """P1-11：输入超长 → degraded 带 ``input_too_long``（而不是模糊的“调用失败”）。"""
+
+    class TooLongLLM:
+        def chat(self, messages, **kw):
+            return {"content": "", "tool_calls": None, "finish_reason": "", "usage": {},
+                    "error": "Range of input length should be [1, 6000]"}
+
+    doc = compose_proposal(
+        CTX, SITES, {"legs": []}, [{"code": "P1", "type": "村干部"}], [], llm=TooLongLLM()
+    )
+    assert doc.degraded and "input_too_long" in doc.degraded
+    assert "（模板降级版）" in doc.markdown
+
+
+def test_context_block_budget_compacts_nested_profile():
+    """P1-11：嵌套明细（transport/journeys）不得整段 JSON 直嵌，且超预算处要明说省略。"""
+    huge = {"transport": {f"leg{i}": {"detail": "x" * 400} for i in range(40)}}
+    sites = [{"name": "喜洲", "profile": huge}]
+    block = build_context_block(CTX, sites, {"legs": []},
+                                [{"code": "P1", "type": "村干部"}], [])
+    assert "喜洲" in block
+    # 单个值被压缩：不再出现 40 段 400 字的明细全文
+    assert block.count("xxxxxxxxxx") <= 20
+    assert len(block) < 9000
 
 
 def test_interview_guide_unmatched_type_still_includes_methodology():
@@ -256,6 +333,8 @@ def test_suggest_informants_no_key_degraded():
     env = suggest_informants("宗族变迁")
     assert env.ok and env.degraded and "参考起点" in env.degraded
     assert 0 < len(env.data) <= 6 and all(isinstance(c, InformantCandidate) for c in env.data)
+    # P0-2：候选未落库，下一步必须 save_informants——机器可读提示随包络返回
+    assert env.next_action and "save_informants" in env.next_action
 
 
 # ---- suggest_informants 补充覆盖（注册面 / 槽位 / 条目级容错 / 上限）----

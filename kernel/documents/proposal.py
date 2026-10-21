@@ -15,6 +15,7 @@ from typing import Any
 
 from fieldwork_agent.kernel import assets
 from fieldwork_agent.kernel.guidance import informants, phases
+from fieldwork_agent.kernel.llm import is_input_too_long
 from fieldwork_agent.kernel.models import (
     Envelope,
     ProposalDoc,
@@ -54,6 +55,62 @@ TEMPLATE_DEGRADE_NOTE = "（模板降级版）"
 
 # sections 抽取正则：仅 `## ` 开头的行计入（`# ` 与 `### ` 都不匹配）
 _SECTION_RE = re.compile(r"^## .+", re.MULTILINE)
+
+# P1-11：上下文预算。site profile / 行程里嵌套的商品明细是 JSON 直嵌，多轮会话后
+# 会把 prompt 顶到模型输入上限（实测连续两次 input too long）。两道闸：
+#   1) 单个值先压缩（只保留名称/价格/距离/时长这类结论字段）；
+#   2) 每个渠道再给字符预算，超出部分整行截断并写明省略行数——绝不静默丢数据。
+_VALUE_CHAR_LIMIT = 200
+_SECTION_CHAR_BUDGET = {
+    "研究者信息": 3000,
+    "田野点": 8000,
+    "行程": 8000,
+    "访谈对象": 4000,
+    "知识库": 4000,
+}
+# 单个值的一级键上限（嵌套 dict/list 只取前几个键，其余折叠为计数）
+_VALUE_ITEM_LIMIT = 6
+
+
+def _compact_value(value: Any, limit: int = _VALUE_CHAR_LIMIT) -> str:
+    """把任意渠道值压成一行可读文本（P1-11 预算闸门）。
+
+    dict/list 不在 prompt 里整段 JSON 直嵌：只保留一级键与前若干项，超出部分
+    以“…（共 N 项）”标注；字符超限再尾部截断。既保住结论字段（价格/距离/
+    名称），又不会让嵌套明细把上下文吃光。
+    """
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for i, (k, v) in enumerate(value.items()):
+            if i >= _VALUE_ITEM_LIMIT:
+                parts.append(f"…（共 {len(value)} 个键）")
+                break
+            parts.append(f"{k}={_compact_value(v, limit)}")
+        text = "，".join(parts)
+    elif isinstance(value, (list, tuple)):
+        parts = [
+            _compact_value(v, limit) for v in list(value)[:_VALUE_ITEM_LIMIT]]
+        text = "；".join(parts)
+        if len(value) > _VALUE_ITEM_LIMIT:
+            text += f"；…（共 {len(value)} 项）"
+    else:
+        text = str(value)
+    text = " ".join(text.split())   # 压掉换行/重复空白，避免一条 bullet 分多行
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _clip_lines(lines: list[str], budget: int) -> list[str]:
+    """按字符预算截断一个渠道的 bullets，并显式标注被省略的行数（P1-11）。"""
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + 1
+        if used + cost > budget:
+            kept.append(f"- （其余 {len(lines) - len(kept)} 行因上下文预算省略）")
+            return kept
+        kept.append(line)
+        used += cost
+    return kept
 
 
 # ---------------------------------------------------------------- 渠道渲染
@@ -107,11 +164,13 @@ def _bullets_sites(sites: list[dict]) -> list[str]:
         for desc_key in ("description", "notes"):
             v = s.get(desc_key)
             if v:
-                lines.append(f"  - {desc_key}：{v}")
+                lines.append(f"  - {desc_key}：{_compact_value(v)}")
         prof = s.get("profile")
         if isinstance(prof, dict):
             for k, v in prof.items():
-                lines.append(f"  - {k}：{v}")
+                lines.append(f"  - {k}：{_compact_value(v)}")
+        elif prof:
+            lines.append(f"  - profile：{_compact_value(prof)}")
     return lines or ["- （无候选田野点）"]
 
 
@@ -179,7 +238,7 @@ def _bullets_itinerary(itinerary: dict | None) -> list[str]:
             for stay in stays:
                 lines.append(_stay_line(stay if isinstance(stay, dict) else {}))
         else:
-            lines.append(f"- **{k}**：{v}")
+            lines.append(f"- **{k}**：{_compact_value(v, 600)}")
     return lines
 
 
@@ -247,7 +306,8 @@ def build_context_block(ctx: ResearchContext, sites: list[dict], itinerary: dict
         raise ValueError("缺少渠道: 访谈对象")
 
     def _section(title: str, bullets: list[str]) -> str:
-        return "\n".join([f"## {title}", "", *bullets])
+        kept = _clip_lines(bullets, _SECTION_CHAR_BUDGET.get(title, 4000))
+        return "\n".join([f"## {title}", "", *kept])
 
     blocks = [
         _section("研究者信息", _bullets_researcher(ctx)),
@@ -303,11 +363,26 @@ def _degrade_markdown(ctx: ResearchContext, sites: list[dict], itinerary: dict |
 # ---------------------------------------------------------------- LLM 调用
 
 
-def _llm_full_proposal(context_block: str, llm: Any) -> str:
+def _llm_failure_reason(error: object) -> str:
+    """LLM 失败原因 → 机器可读前缀 + 原文（P1-11）。
+
+    输入超长不能与“网络/额度失败”混为一谈：前者重试无用、需要缩提示或换模型，
+    且不应被当成“模型暂时不可用”。命中时前缀写成 ``input_too_long``，
+    让宿主/UI/自动化能直接判定。
+    """
+    text = str(error or "").strip()
+    if is_input_too_long(text):
+        return f"input_too_long: {text}" if text else "input_too_long"
+    return f"调用异常: {text}" if text else "空响应"
+
+
+def _llm_full_proposal(context_block: str, llm: Any) -> tuple[str, str | None]:
     """全量生成：system=phase_prompt("proposal_generation") + user=context_block+固定尾句。
 
-    尾句含文献红线（审阅意见 R1）。``chat()`` 的 error 分支（content 空串）返回空串，
-    由调用方降级到模板路径。
+    尾句含文献红线（审阅意见 R1）。返回 ``(content, error_reason)``（P0-1）：
+    ``chat()`` 的 error 分支（content 空串）或抛异常时 content 为空、reason 说明
+    失败原因，由 ``compose_proposal`` 回落到模板并把原因写进 ``degraded``——
+    绝不再静默产出“可当成品”的模板正文。
     """
     messages = [
         {"role": "system", "content": phases.phase_prompt("proposal_generation")},
@@ -315,8 +390,15 @@ def _llm_full_proposal(context_block: str, llm: Any) -> str:
          "参考文献只能使用上下文提供的资料条目，缺材料时在第八章列出待补检索清单，"
          "不得虚构或补造引用。"},
     ]
-    resp = llm.chat(messages, slot="proposal", max_tokens=8192, temperature=0.5)
-    return (resp or {}).get("content", "") or ""
+    try:
+        resp = llm.chat(messages, slot="proposal", max_tokens=8192, temperature=0.5)
+    except Exception as exc:  # noqa: BLE001 —— 回落到模板并把异常原因如实上报
+        return "", _llm_failure_reason(exc)
+    content = (resp or {}).get("content", "") or ""
+    if not content:
+        upstream = (resp or {}).get("error")
+        return "", _llm_failure_reason(upstream) if upstream else "空响应"
+    return content, None
 
 
 def _splice_section(prior: str, section: str, new_block: str) -> str:
@@ -335,8 +417,12 @@ def _splice_section(prior: str, section: str, new_block: str) -> str:
 
 
 def _llm_rewrite_section(context_block: str, section: str, prior_markdown: str,
-                         llm: Any) -> str:
-    """单章重写：LLM 只输出目标 ``## <section>`` 一节，再 splice 回 prior_markdown。"""
+                         llm: Any) -> tuple[str, str | None]:
+    """单章重写：LLM 只输出目标 ``## <section>`` 一节，再 splice 回 prior_markdown。
+
+    返回 ``(markdown, error_reason)``（P0-1）：失败时 markdown 为空，调用方回落
+    模板并标记 degraded（而不是把整篇模板当成“重写结果”静默返回）。
+    """
     user_prompt = (
         f"{context_block}\n\n"
         f"现有研究方案：\n{prior_markdown}\n\n"
@@ -347,13 +433,17 @@ def _llm_rewrite_section(context_block: str, section: str, prior_markdown: str,
         {"role": "system", "content": phases.phase_prompt("proposal_generation")},
         {"role": "user", "content": user_prompt},
     ]
-    resp = llm.chat(messages, slot="proposal", max_tokens=8192, temperature=0.5)
+    try:
+        resp = llm.chat(messages, slot="proposal", max_tokens=8192, temperature=0.5)
+    except Exception as exc:  # noqa: BLE001
+        return "", _llm_failure_reason(exc)
     content = (resp or {}).get("content", "") or ""
     if not content:
-        return ""
+        upstream = (resp or {}).get("error")
+        return "", _llm_failure_reason(upstream) if upstream else "空响应"
     if not content.lstrip().startswith(f"## {section}"):
         content = f"## {section}\n{content.strip()}"
-    return _splice_section(prior_markdown, section, content)
+    return _splice_section(prior_markdown, section, content), None
 
 
 # ---------------------------------------------------------------- 能力实现
@@ -370,20 +460,33 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
     """
     context_block = build_context_block(ctx, sites, itinerary, informants, knowledge)
 
+    # P0-1：LLM 不可用/调用失败/空响应都会回落模板，但必须留下机器可见的
+    # degraded 标记（此前只在正文尾注里，包络与 data 均无信号）。
+    degraded: str | None = None
     if section and llm is not None and prior_markdown:
-        markdown = (_llm_rewrite_section(context_block, section, prior_markdown, llm)
-                    or _degrade_markdown(ctx, sites, itinerary, informants, knowledge))
+        markdown, reason = _llm_rewrite_section(context_block, section, prior_markdown, llm)
+        if not markdown:
+            degraded = f"模板降级版（LLM 调用失败：{reason}）"
+            markdown = _degrade_markdown(ctx, sites, itinerary, informants, knowledge)
     elif llm is None:
+        degraded = "模板降级版（未接入 LLM）"
         markdown = _degrade_markdown(ctx, sites, itinerary, informants, knowledge)
     else:
-        markdown = (_llm_full_proposal(context_block, llm)
-                    or _degrade_markdown(ctx, sites, itinerary, informants, knowledge))
+        markdown, reason = _llm_full_proposal(context_block, llm)
+        if not markdown:
+            degraded = f"模板降级版（LLM 调用失败：{reason}）"
+            markdown = _degrade_markdown(ctx, sites, itinerary, informants, knowledge)
 
     requested = mode if mode in ("global", "kaiti", "grant") else "global"
     effective = requested if requested in SUPPORTED_MODES else "global"
     if effective != requested:
-        # 审阅意见 R1：能力限制头部前置声明（而非仅在文末附注）
+        # 审阅意见 R1：能力限制头部前置声明（而非仅在文末附注）。
+        # P1-11：同时写进 degraded——否则模型看不到“体例没实现”，会在正文里
+        # 自由发挥成致歉说明；带上标记后只需一句如实说明。
         markdown = MODE_FALLBACK_HEADER.format(mode=MODE_LABELS.get(requested, requested)) + markdown
+        note = (f"体例降级：请求「{MODE_LABELS.get(requested, requested)}」，"
+                f"实际产出「{MODE_LABELS.get(effective, effective)}」草稿")
+        degraded = f"{degraded}；{note}" if degraded else note
 
     return ProposalDoc(
         markdown=markdown,
@@ -391,6 +494,7 @@ def compose_proposal(ctx: ResearchContext, sites: list[dict], itinerary: dict | 
         requested_mode=requested,
         mode=effective,
         inputs_hash=compute_inputs_hash({"context_block": context_block}),
+        degraded=degraded,
     )
 
 
@@ -410,7 +514,7 @@ def _entry_block(entry: dict | None, itype: str = "") -> str:
 def _guide_degrade(topic: str, itype: str) -> str:
     """无 llm 时的模板提纲：条目直嵌 + 方法论全文（保证含"提问域"与"知情同意"字样）。"""
     entry = informants.get_informant(itype)
-    head = f"# 访谈提纲：{topic} × {itype}（模板降级版）"
+    head = f"# 访谈提纲：{topic} × {itype}{TEMPLATE_DEGRADE_NOTE}"
     if not entry:
         return f"{head}\n\n{informants.INTERVIEW_GUIDE_METHODOLOGY}"
     body = "\n".join([
@@ -464,7 +568,10 @@ def compose_interview_guide(topic: str, informant_types: list[str], *, llm: Any 
                     topic, itype, research_questions=research_questions,
                     discipline=discipline)},
             ]
-            resp = llm.chat(messages, slot="interview", max_tokens=4096, temperature=0.5)
+            try:
+                resp = llm.chat(messages, slot="interview", max_tokens=4096, temperature=0.5)
+            except Exception:  # noqa: BLE001 —— 单类失败回落到该类模板，由 handler 标 degraded
+                resp = None
             content = (resp or {}).get("content", "") or ""
         guides[itype] = content or _guide_degrade(topic, itype)
     return guides
@@ -528,27 +635,38 @@ def proposal_handler(ctx: dict, sites: list, itinerary: dict | None,
         return Envelope(ok=False, error=ToolError(
             code="missing_channel", message=str(exc),
             hint="先补齐研究者信息/田野点/行程/访谈对象四渠道，再生成方案"))
-    if llm is None:
-        # 措辞对齐 informants.suggest_informants 的既有 degraded 风格（"参考起点，非完整覆盖"）；
-        # llm 非 None 路径不动（chat error 分支的内部降级仍由 compose_proposal 尾注承担）
-        return Envelope(ok=True, data=doc, degraded="模板降级版（未接入 LLM）")
+    if doc.degraded:
+        # P0-1：LLM 失败与“未接入 LLM”同走 degraded 通道，文案由 compose_proposal
+        # 按原因生成（如“模板降级版（LLM 调用失败：空响应（upstream 500））”）
+        return Envelope(ok=True, data=doc, degraded=doc.degraded)
     return Envelope(ok=True, data=doc)
 
 
 def guide_handler(topic: str, informant_types: list, *, llm: Any = None,
                   research_questions: str = "", discipline: str = "") -> Envelope:
-    """registry 分派入口：逐类提纲折进 ``Envelope.data``（``dict[str, str]``）。"""
-    return Envelope(ok=True,
-                    data=compose_interview_guide(topic, informant_types or [], llm=llm,
-                                                 research_questions=research_questions,
-                                                 discipline=discipline))
+    """registry 分派入口：逐类提纲折进 ``Envelope.data``（``dict[str, str]``）。
+
+    P0-1 同款：任一类回落模板（无 llm / chat error / 空响应）都在包络里标
+    degraded，而不是让调用方把模板提纲当成模型成品。
+    """
+    guides = compose_interview_guide(topic, informant_types or [], llm=llm,
+                                     research_questions=research_questions,
+                                     discipline=discipline)
+    degraded = None
+    if llm is None:
+        degraded = "模板降级版（未接入 LLM）"
+    elif any(TEMPLATE_DEGRADE_NOTE in body for body in guides.values()):
+        degraded = "模板降级版（LLM 调用失败）"
+    return Envelope(ok=True, data=guides, degraded=degraded)
 
 
 register(CapabilityMeta(
     name="compose_proposal",
     description="按结构化上下文（研究者/田野点/行程/访谈对象/知识库五渠道）生成研究方案草稿；"
                 "documents 是 kernel 内唯一 LLM 消费模块，无 key 时模板降级、chat error 分支同样降级；"
-                "mode 枚举 global|kaiti|grant，requested/actual 分开记录，不支持的体例在头部前置声明限制；"
+                "mode 目前只支持 global（英美式八章）；kaiti/grant 未实现，传了会回退 global "
+                "并在 degraded 里标「体例降级」，不要向用户承诺已按开题/基金体例产出；"
+                "降级时 degraded 会带 input_too_long / 调用异常等原因，须如实告知；"
                 "参考文献仅限所给条目不得虚构；section 非空则仅重写该章。",
     fn=proposal_handler,
     args_model=ComposeProposalArgs,

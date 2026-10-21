@@ -150,7 +150,9 @@ _TOOL_GUIDANCE = (
     "search_literature 以外文为主，中文期刊用其返回的国家哲社文献中心/PubScholar 深链补位，"
     "只呈现检索到的真实条目、不臆造引用。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案、"
-    "访谈提纲与访谈对象候选。不要臆造数据；工具不可用时如实说明并给出可执行的下一步。\n\n"
+    "访谈提纲与访谈对象候选。suggest_informants 只出候选、不落库；用户采纳后必须调用 "
+    "save_informants 逐条登记（MCP 为 save_informant），不得口头声称已存进项目。"
+    "不要臆造数据；工具不可用时如实说明并给出可执行的下一步。\n\n"
     "职责边界：本助手只服务田野调查研究方案的设计与产出。输出用途（海外申请/"
     "开题/申报等）仅用于校准方案体例与严谨度，不提供留学申请咨询：不问标化成绩、"
     "GPA、写作样本、择校与申请策略；用户提起时温和拉回研究设计。"
@@ -462,7 +464,8 @@ class FieldAgent:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         rid = self.repo.save_proposal(pid, doc.markdown, kind="proposal", version="draft")
-        return {"ok": True, "id": rid, "mode": doc.mode, "sections": len(doc.sections)}
+        return {"ok": True, "id": rid, "mode": doc.mode, "sections": len(doc.sections),
+                **({"degraded": doc.degraded} if doc.degraded else {})}
 
     def _latest_itinerary(self, pid: str) -> dict | None:
         """从搜索缓存里取最近一次 compose_itinerary 的结果 dict（无则 None）。"""

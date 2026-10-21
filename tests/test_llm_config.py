@@ -9,7 +9,7 @@ import pytest
 from fieldwork_agent.kernel import config as config_mod
 from fieldwork_agent.kernel import llm as llm_mod
 from fieldwork_agent.kernel.config import Config
-from fieldwork_agent.kernel.llm import LLMClient
+from fieldwork_agent.kernel.llm import LLMClient, classify_llm_error
 
 # ---------------------------------------------------------------- Config 三槽
 
@@ -438,6 +438,172 @@ def test_compat_base_url_requires_httpx(monkeypatch):
     monkeypatch.setattr(llm_mod, "_HTTPX_AVAILABLE", False)
     with pytest.raises(RuntimeError, match="httpx"):
         LLMClient(api_key="k", models={"proposal": "m"}, base_url=_COMPAT_BASE)
+
+
+# ------------------------------------------- 瞬时故障重试 + 错误分类
+
+
+def test_classify_llm_error_kinds():
+    """错误分类：额度/端点/凭证/网络/未知各归其位（顺序即优先级）。"""
+    assert classify_llm_error(
+        "Free quota exhausted. To continue accessing the model on a paid basis...") == "quota"
+    assert classify_llm_error("url error, please check url！") == "base_url"
+    assert classify_llm_error("Invalid API-key provided.") == "auth"
+    assert classify_llm_error("invalid access token or token expired") == "auth"
+    assert classify_llm_error(
+        "网络错误：peer closed connection without sending complete message body "
+        "(incomplete chunked read)") == "network"
+    assert classify_llm_error("something odd") == "unknown"
+    assert classify_llm_error(None) == "unknown"
+
+
+def test_compat_chat_retries_transport_error(monkeypatch):
+    """连接级抖动：首次抛 httpx.TransportError，第二次成功 → 重试救回。"""
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+    calls = []
+
+    def fake_post(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            raise httpx.ConnectError("peer closed connection")
+        return _compat_response(200, {"choices": [{"message": {"content": "好"},
+                                                   "finish_reason": "stop"}]})
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    client = LLMClient(api_key="k", models={"proposal": "m"}, base_url=_COMPAT_BASE)
+    out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+    assert out["content"] == "好" and "error" not in out
+    assert len(calls) == 2                      # 恰好一次重试
+
+
+def test_compat_chat_retries_gateway_5xx(monkeypatch):
+    """网关 502 属瞬时故障：一次退避后重试成功。"""
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+    responses = [_compat_response(502, None, "<html>Bad Gateway</html>"),
+                 _compat_response(200, {"choices": [{"message": {"content": "好"},
+                                                     "finish_reason": "stop"}]})]
+    monkeypatch.setattr(llm_mod.httpx, "post", lambda url, **kw: responses.pop(0))
+    client = LLMClient(api_key="k", models={"proposal": "m"}, base_url=_COMPAT_BASE)
+    out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+    assert out["content"] == "好" and "error" not in out
+
+
+def test_compat_chat_stream_retries_before_first_delta(monkeypatch):
+    """尚未吐出正文时断流：安全重试一次（不向用户暴露半截错误）。"""
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+
+    def boom_lines():
+        raise httpx.ReadError("peer closed")
+        yield  # pragma: no cover
+
+    bad = SimpleNamespace(status_code=200, iter_lines=boom_lines)
+    good_lines = [_sse_line({"choices": [{"delta": {"content": "好"},
+                                         "finish_reason": "stop"}]}), "data: [DONE]"]
+    good = SimpleNamespace(status_code=200, iter_lines=lambda: iter(good_lines))
+    cms = [_FakeStreamCM(bad), _FakeStreamCM(good)]
+    monkeypatch.setattr(llm_mod.httpx, "stream", lambda *a, **kw: cms.pop(0))
+    client = LLMClient(api_key="k", models={"interview": "q"}, base_url=_COMPAT_BASE)
+    results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                      slot="interview"))
+    assert [r["delta"] for r in results if "delta" in r] == ["好"]
+    final = results[-1]
+    assert final["content"] == "好" and final["finish_reason"] == "stop"
+    assert "error" not in final
+
+
+def test_compat_chat_stream_no_retry_after_delta(monkeypatch):
+    """已吐字后断流：绝不重试（会重复正文），如实发网络错误帧。"""
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+    calls = []
+
+    def lines():
+        yield _sse_line({"choices": [{"delta": {"content": "你"},
+                                      "finish_reason": None}]})
+        raise httpx.ReadError("peer closed")
+
+    resp = SimpleNamespace(status_code=200, iter_lines=lines)
+
+    def fake_stream(*a, **kw):
+        calls.append(1)
+        return _FakeStreamCM(resp)
+
+    monkeypatch.setattr(llm_mod.httpx, "stream", fake_stream)
+    client = LLMClient(api_key="k", models={"interview": "q"}, base_url=_COMPAT_BASE)
+    results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                      slot="interview"))
+    assert [r["delta"] for r in results if "delta" in r] == ["你"]
+    assert "网络错误" in results[-1]["error"]
+    assert len(calls) == 1                      # 不重试，避免重复吐字
+
+
+def test_sdk_chat_retries_transport_error(monkeypatch):
+    """SDK 原生路径（未配 base_url）的连接级异常同样重试一次。"""
+    import requests
+
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+    calls = []
+
+    def fake_call(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.exceptions.ConnectionError("peer closed")
+        return _fake_response(content="好")
+
+    monkeypatch.setattr(llm_mod.Generation, "call", fake_call)
+    client = LLMClient(api_key="k", models={"proposal": "m"})
+    out = client.chat([{"role": "user", "content": "hi"}], slot="proposal")
+    assert out["content"] == "好" and "error" not in out
+    assert len(calls) == 2
+
+
+def test_sdk_chat_stream_retries_before_first_delta(monkeypatch):
+    """SDK 流式：首帧前断流可重试；已吐字后断流不重试。"""
+    import requests
+
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+    calls = []
+
+    def boom():
+        raise requests.exceptions.ConnectionError("peer closed")
+        yield  # pragma: no cover
+
+    def fake_call(**kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return boom()
+        return iter([_fake_response(content="好")])
+
+    monkeypatch.setattr(llm_mod.Generation, "call", fake_call)
+    client = LLMClient(api_key="k", models={"interview": "q"})
+    results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                      slot="interview"))
+    assert [r["delta"] for r in results if "delta" in r] == ["好"]
+    assert results[-1]["content"] == "好"
+    assert len(calls) == 2
+
+
+def test_sdk_chat_stream_no_retry_after_delta(monkeypatch):
+    """SDK 流式已吐字后断流：不重试，如实发错误帧。"""
+    import requests
+
+    monkeypatch.setattr(llm_mod, "_LLM_RETRY_DELAY_S", 0)
+    calls = []
+
+    def partial():
+        yield _fake_response(content="你", finish_reason="null")
+        raise requests.exceptions.ConnectionError("peer closed")
+
+    def fake_call(**kw):
+        calls.append(1)
+        return partial()
+
+    monkeypatch.setattr(llm_mod.Generation, "call", fake_call)
+    client = LLMClient(api_key="k", models={"interview": "q"})
+    results = list(client.chat_stream([{"role": "user", "content": "hi"}],
+                                      slot="interview"))
+    assert [r["delta"] for r in results if "delta" in r] == ["你"]
+    assert "网络错误" in results[-1]["error"]
+    assert len(calls) == 1
 
 
 # ------------------------------------------- SDK url error → 兼容端点回退

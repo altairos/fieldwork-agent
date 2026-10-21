@@ -332,6 +332,9 @@ def main():
                 if result.get("ok"):
                     print(f"✅ 方案已生成 (ID: {result['id']}, 体例: {result['mode']}, "
                           f"{result['sections']} 章)")
+                    if result.get("degraded"):
+                        # P0-1：模板降级必须明说，不能把模板当成品交付
+                        print(f"⚠ 当前为降级稿：{result['degraded']}")
                 else:
                     print(f"❌ 方案生成失败：{result.get('error', '未知原因')}")
 

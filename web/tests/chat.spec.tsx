@@ -29,6 +29,32 @@ describe("Timeline", () => {
     render(<Timeline />);
     expect(screen.getByText(/正在搜索/)).toBeInTheDocument();
   });
+  test("P1-6：滚动容器带 data-scroll-container，消息有可定位 id", () => {
+    useConversationStore.setState({ messages: [
+      { role: "user", content: "第一条" },
+      { role: "assistant", content: "第二条" },
+    ], streamBuffer: "", turnRunning: false, lastUsage: {} });
+    const { container } = render(<Timeline />);
+    const scroller = container.querySelector('[data-scroll-container="chat"]');
+    expect(scroller).not.toBeNull();
+    expect(container.querySelector('[data-msg-index="0"]')).not.toBeNull();
+    expect(container.querySelector('#msg-1')).not.toBeNull();
+    // 自动化入口已挂上（录制脚本直接调用，不靠改 scrollTop）
+    expect(typeof (window as unknown as { __scrollToMessage?: unknown }).__scrollToMessage)
+      .toBe("function");
+  });
+  test("P0-10：system_notice 渲染为可关闭提示条，不进消息正文", () => {
+    useConversationStore.getState().applyEvent({
+      event: "system_notice", code: "max_rounds",
+      message: "已达本回合处理上限，回答可能不完整。",
+    });
+    render(<Timeline />);
+    expect(screen.getByText(/已达本回合处理上限/)).toBeInTheDocument();
+    // 提示条不属于助手气泡（messages 仍为空）
+    expect(useConversationStore.getState().messages).toEqual([]);
+    fireEvent.click(screen.getByLabelText("关闭系统提示"));
+    expect(screen.queryByText(/已达本回合处理上限/)).not.toBeInTheDocument();
+  });
 });
 
 describe("ToolActivityStrip", () => {

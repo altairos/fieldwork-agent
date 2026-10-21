@@ -895,6 +895,18 @@ class SqliteRepository:
                 "UPDATE projects SET updated_at=? WHERE project_id=?", (saved_at, pid))
         return record_id
 
+    def update_proposal_dep_hash(
+            self, pid: str, doc_id: str, *, provenance: dict | None = None,
+            provenance_ctx: dict | None = None) -> bool:
+        """P2-8：只校正既有文档的依赖指纹（不新增版本）；文档不存在返回 False。"""
+        self._require(pid)
+        with self._connect(immediate=True) as conn:
+            dep_hash = self._doc_inputs_hash(pid, conn, provenance, provenance_ctx)
+            cur = conn.execute(
+                "UPDATE proposals SET dep_hash=? WHERE project_id=? AND id=?",
+                (dep_hash, pid, doc_id))
+            return cur.rowcount > 0
+
     def list_proposals(self, pid: str) -> list[dict]:
         """七键全量（含 content）；ORDER BY seq 平价 json 的保存序。"""
         self._require(pid)

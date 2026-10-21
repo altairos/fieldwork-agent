@@ -129,6 +129,9 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
     hit = tm.lookup_idempotent(project_id, body.idempotency_key)
     if hit is not None:
         return {"turn_id": hit.turn_id, "status": hit.status}
+    # P0-3：先回收静默超时的僵死回合——否则一次卡死会把项目永久锁在
+    # 「有正在执行的回合」，只能重启进程。
+    tm.reap_stale_running(project_id)
     if tm.is_writing(project_id):
         raise HTTPException(409, "该项目有正在执行的回合")
     llm, flyai, amap = _resolve_clients(request)
@@ -143,7 +146,12 @@ async def create_turn(project_id: str, body: CreateTurnRequest,
 
 
 async def _execute_turn(app, pid, tid, text, llm, flyai, amap, owner=None):
-    """后台任务：获取写锁 → 执行 agent loop → 释放（amap 为回合级实例，N4）。"""
+    """后台任务：获取写锁 → 执行 agent loop → 释放（amap 为回合级实例，N4）。
+
+    P0-3：run_turn 跑在独立 task 里并把 task 登记到 handle。`tm.cancel` 因此
+    能真正打断阻塞中的回合；`async with` 退出即释放项目写锁，下一条消息不再
+    被 409 拦住。取消由本层吞掉（外面已经置好终态），其余异常继续向上抛。
+    """
     from fieldwork_agent.web_host.agent.loop import run_turn
     from fieldwork_agent.web_host.deps import get_repo_raw, get_tm_raw
     repo = get_repo_raw(app)
@@ -154,7 +162,19 @@ async def _execute_turn(app, pid, tid, text, llm, flyai, amap, owner=None):
     if handle is None or handle.status in TERMINAL_STATUSES:
         return
     async with tm.acquire_write_lock(pid):
-        await run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap, owner=owner)
+        round_task = asyncio.create_task(
+            run_turn(repo, pid, tid, text, tm, llm, flyai, amap_client=amap, owner=owner))
+        handle.task = round_task
+        try:
+            await round_task
+        except asyncio.CancelledError:
+            # 主动取消：cancel_event 已置位，终态也已写；这里把异常收在本次
+            # 回合内，避免请求级 task 被连带取消后没人释放写锁。
+            if not handle.cancel_event.is_set():
+                raise
+            tm.finish(pid, tid, "cancelled")
+        finally:
+            handle.task = None
 
 
 async def _event_stream(tm, project_id: str, turn_id: str, last_id: int, handle):

@@ -363,6 +363,30 @@ class TestContract:
             repo.confirm_proposal("p1", itin_id)
         assert ei2.value.code == "dep_hash_mismatch"
 
+    def test_update_proposal_dep_hash_corrects_without_new_version(self, repo):
+        """P2-8：文档即时落盘后用最终 provenance 校正指纹——不新增版本，
+        且确认按校正后的指纹通过。双后端一致。"""
+        from fieldwork_agent.kernel.repository.confirm_hash import ProposalConfirmError
+
+        repo.update_research_context("p1", {"topic": "宗族变迁"})
+        final = {
+            "ctx": repo.get_research_context("p1"),
+            "sites": [], "informants": [], "knowledge": [], "itinerary": None,
+        }
+        provisional = {**final, "ctx": {"topic": "临时快照"}}
+        doc_id = repo.save_proposal("p1", "# 方案", version="draft",
+                                    provenance=provisional)
+        with pytest.raises(ProposalConfirmError):
+            repo.confirm_proposal("p1", doc_id)
+        # 轮末按最终 provenance 校正指纹：同一文档、版本数不变
+        assert repo.update_proposal_dep_hash("p1", doc_id, provenance=final) is True
+        assert len(repo.list_proposals("p1")) == 1
+        repo.confirm_proposal("p1", doc_id)
+        assert repo.is_proposal_confirmation_stale("p1") is False
+        # 不存在的文档 id：如实返回 False（不误改其他文档）
+        assert repo.update_proposal_dep_hash("p1", "prop_missing",
+                                             provenance=final) is False
+
     def test_soft_ctx_fields_do_not_stale_proposal(self, repo):
         """T02：purpose/title 等体例偏好/展示字段变化不使方案过期；
         预算等正文事实字段变化仍然失效。v3 指纹双后端一致。"""

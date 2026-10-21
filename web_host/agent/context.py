@@ -20,6 +20,8 @@ _TOOL_GUIDANCE = (
     "飞猪/高德等旅行类工具不覆盖文献（search_keyword/search_ai 只返回旅行商品，勿用于查论文）；"
     "search_literature 以外文为主，中文期刊用其返回的国家哲社文献中心/PubScholar 深链补位，不臆造引用。"
     "文档能力（compose_proposal/compose_interview_guide/suggest_informants）用于产出方案。"
+    "suggest_informants 只返回候选、不落库：用户采纳候选后必须调用 save_informants 逐条登记，"
+    "否则右栏「访谈对象」仍为空、阶段不会推进；未登记前不得声称已存进项目。"
     "不要臆造数据；工具不可用、降级或返回数据与田野需求不符时：如实标注质量与缺口，"
     "已有信息足够回应时继续交付并自然结束；仅当用户能补充的关键线索会影响下一步时，"
     "再提出一个具体问题（如地点线索、本地联系人或已有材料），不要重复索取已知信息。"

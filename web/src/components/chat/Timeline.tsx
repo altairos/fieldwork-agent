@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { getToolCard } from "../cards/registry";
 import { showsInlineInTimeline } from "../../lib/toolMeta";
 import { EmptyState } from "../ui/EmptyState";
@@ -81,9 +82,25 @@ export function Timeline({
   const hydrated = useConversationStore((s) => s.hydrated);
   const byCallId = useToolsStore((s) => s.byCallId);
   const order = useToolsStore((s) => s.order);
+  const notice = useConversationStore((s) => s.notice);
+  const dismissNotice = useConversationStore((s) => s.dismissNotice);
   const phase = useProjectStore((s) => s.phase);
   // 切 tab 回来即贴底（两 tab 都是懒挂载，否则每次从最早一条开始翻）
   const scroll = useStickBottom<HTMLDivElement>();
+  // P1-6：对录制/自动化暴露稳定的跳转入口——外部直接改 scrollTop 会被下一帧
+  // 的贴底覆盖，走这两个函数则先接管滚动，位置一定能留住。
+  useEffect(() => {
+    const w = window as unknown as {
+      __scrollChatTo?: (top: number) => boolean;
+      __scrollToMessage?: (target: string | number) => boolean;
+    };
+    w.__scrollChatTo = scroll.scrollToTop;
+    w.__scrollToMessage = scroll.scrollToMessage;
+    return () => {
+      delete w.__scrollChatTo;
+      delete w.__scrollToMessage;
+    };
+  }, [scroll.scrollToTop, scroll.scrollToMessage]);
 
   const settled = order
     .map((id) => byCallId[id])
@@ -103,14 +120,36 @@ export function Timeline({
     <div
       ref={scroll.ref}
       onScroll={scroll.onScroll}
+      data-scroll-container="chat"
       className="flex-1 min-h-0 overflow-y-auto scroll px-6 py-5 space-y-5"
     >
       {messages.map((m, i) => (
-        <MessageBubble key={`${m.role}-${i}`} role={m.role} content={m.content} />
+        <div key={`${m.role}-${i}`} id={`msg-${i}`} data-msg-index={i}>
+          <MessageBubble role={m.role} content={m.content} />
+        </div>
       ))}
 
       <ToolActivityStrip />
       <AssistantStream />
+
+      {/* P0-10：系统限制提示（触顶/未生成正文）走独立提示条——不冒充助手发言，
+          可直接关闭；关闭只影响本次渲染，不会回写对话史。 */}
+      {notice && (
+        <div className="pl-9" role="status">
+          <div className="inline-flex items-start gap-2 rounded-md border hairline bg-cardsunk px-3 py-2 text-[11.5px] leading-relaxed text-inksoft">
+            <span className="shrink-0 text-inkfaint">系统提示</span>
+            <span>{notice.message}</span>
+            <button
+              type="button"
+              onClick={dismissNotice}
+              aria-label="关闭系统提示"
+              className="shrink-0 -mr-1 px-1 text-inkfaint hover:text-ink transition cursor-pointer"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {visible.length > 0 && (
         <div className="pl-9 space-y-3">

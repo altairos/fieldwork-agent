@@ -266,6 +266,65 @@ def test_subscriber_queue_is_bounded(tm):
     assert q.maxsize == 256
 
 
+# ---------------------------------------------------------------- P0-3 取消/僵死
+
+
+def test_cancel_aborts_round_task_and_releases_lock(tm):
+    """P0-3：取消不仅要置终态，还要 task.cancel() 打断阻塞中的回合——
+    否则写锁永不释放，下一条消息永远 409。"""
+
+    async def scenario():
+        t = tm.create_turn("p1")
+        started = asyncio.Event()
+
+        async def blocking_round():
+            async with tm.acquire_write_lock("p1"):
+                started.set()
+                await asyncio.sleep(3600)   # 模拟卡在工具里的回合
+
+        handle = tm.get_turn("p1", t.turn_id)
+        handle.task = asyncio.create_task(blocking_round())
+        await started.wait()
+        assert tm.is_writing("p1") is True
+
+        assert tm.cancel("p1", t.turn_id) is True
+        await asyncio.sleep(0)          # 让 CancelledError 传播完
+        assert tm.get_turn("p1", t.turn_id).status == "cancelled"
+        assert tm.is_writing("p1") is False   # 锁已随 async with 退出
+
+    asyncio.run(scenario())
+
+
+def test_cancel_is_noop_for_terminal_turn(tm):
+    t = tm.create_turn("p1")
+    tm.finish("p1", t.turn_id, "completed")
+    assert tm.cancel("p1", t.turn_id) is False
+
+
+def test_reap_stale_running_marks_failed_and_frees_lock(tm):
+    """P0-3 兜底：无人调用 cancel 的僵死回合也要被回收，否则只能重启进程。"""
+
+    async def scenario():
+        t = tm.create_turn("p1")
+        tm.get_turn("p1", t.turn_id).last_activity -= 10_000
+        reaped = tm.reap_stale_running("p1", stale_after=600)
+        assert reaped == [t.turn_id]
+        assert tm.get_turn("p1", t.turn_id).status == "failed"
+        # 盘上留一条可回放的错误事件（不是静默消失）
+        events = tm.replay("p1", t.turn_id, after_seq=0)
+        assert [e.event for e in events] == ["error"]
+        assert events[0].data["code"] == "turn_stalled"
+
+    asyncio.run(scenario())
+
+
+def test_reap_keeps_fresh_running_turn(tm):
+    t = tm.create_turn("p1")
+    tm.append_event("p1", t.turn_id, "message_delta", {"text": "进行中"})
+    assert tm.reap_stale_running("p1", stale_after=600) == []
+    assert tm.get_turn("p1", t.turn_id).status == "running"
+
+
 def test_slow_subscriber_closed_and_replayable(tm):
     """A03：积压超限 → 清队并送 None 结束该流；事件仍可从磁盘回放（不丢）。"""
     t = tm.create_turn("p1")

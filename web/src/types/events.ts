@@ -14,6 +14,10 @@ export interface MessageDelta {
   text: string;
 }
 
+/** P2-7：助手正文即将开始的信号（每回合一次，先于首个 message_delta）。
+ *  录制/自动化据此判断“首条回复已开始”，不再靠页面文本猜测。 */
+export type AssistantMessageStarted = Record<string, never>;
+
 /** 工具调用开始事件。 */
 export interface ToolStarted {
   call_id: string;
@@ -77,14 +81,23 @@ export interface ErrorEvent {
   hint: string;
 }
 
+/** P0-10：系统提示事件（上限触顶/未生成正文）——不得混进助手正文。
+ *  前端渲染为可关闭的中性提示条，与产品说的话在视觉上区分。 */
+export interface SystemNotice {
+  code: string;
+  message: string;
+}
+
 // ---------------------------------------------------------------- 信封与判别联合
 
 export type EventType =
+  | "assistant_message_started"
   | "message_delta"
   | "tool_started"
   | "tool_completed"
   | "phase_transition"
   | "turn_done"
+  | "system_notice"
   | "error";
 
 /**
@@ -101,11 +114,13 @@ export interface EventEnvelope {
 
 /** 判别联合：解析后按 event 分派时的强类型视图。 */
 export type SseEvent =
+  | ({ event: "assistant_message_started" } & AssistantMessageStarted)
   | ({ event: "message_delta" } & MessageDelta)
   | ({ event: "tool_started" } & ToolStarted)
   | ({ event: "tool_completed" } & ToolCompleted)
   | ({ event: "phase_transition" } & PhaseTransition)
   | ({ event: "turn_done" } & TurnDone)
+  | ({ event: "system_notice" } & SystemNotice)
   | ({ event: "error" } & ErrorEvent);
 
 /** 回合创建响应（POST /projects/{id}/messages，见 web_host/api/turns.py）。 */

@@ -123,6 +123,13 @@ function Workspace() {
     void turnAdopt(turnId);
   }, [projectId, searchParams, navigate, turnAdopt]);
 
+  // P1-5：视图由 URL 驱动——`/p/:id?view=proposal` 直达方案页。深链接既方便
+  // 录制/自动化绕开点击，也让浏览器前进后退与站内页签同一通道（不再有两个真源）。
+  useEffect(() => {
+    if (!projectId || searchParams.get("view") !== "proposal") return;
+    navigate(`/p/${projectId}/proposal`, { replace: true });
+  }, [projectId, searchParams, navigate]);
+
   return (
     <div className="h-full flex flex-col">
       <Header

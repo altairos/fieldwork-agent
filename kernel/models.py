@@ -47,6 +47,9 @@ class Envelope(BaseModel):
     data: Any = None
     error: ToolError | None = None
     degraded: str | None = None
+    # 机器可读的下一步动作（P0-2）：如 suggest_informants 返回“候选未落库，
+    # 采纳后需调用 save_informants”，随工具摘要一并交给模型，不依赖提示词自觉。
+    next_action: str | None = None
     evidence: SourceEvidence | None = None
     usage: dict[str, Any] | None = None
 
@@ -450,6 +453,8 @@ class ProposalDoc(BaseModel):
     ``global`` 为当前唯一完整实现；``kaiti``/``grant`` 回退 global 时两者不一致，
     文档头部会前置声明能力限制（见 ``kernel.documents.proposal``）。
     ``inputs_hash`` 供宿主做确认/失效判定（审阅意见 R3）。
+    ``degraded``（P0-1）：LLM 不可用/调用失败/空响应而回落到模板时写入原因，
+    使「模板降级」既能进 Envelope 也能随 data 落进 tool_completed，对机器可见。
     """
 
     markdown: str = ""
@@ -459,6 +464,7 @@ class ProposalDoc(BaseModel):
     requested_mode: str = "global"
     mode: str = "global"
     inputs_hash: str = ""
+    degraded: str | None = None
 
 
 class InformantCandidate(BaseModel):

@@ -678,6 +678,20 @@ class JsonRepository:
             self._save(pid, state)
             return record["id"]
 
+    def update_proposal_dep_hash(
+            self, pid: str, doc_id: str, *, provenance: dict | None = None,
+            provenance_ctx: dict | None = None) -> bool:
+        """P2-8：只校正既有文档的依赖指纹（不新增版本）；文档不存在返回 False。"""
+        with self._lock_for(pid):
+            state = self._load(pid)
+            for record in state["proposals"]:
+                if record.get("id") == doc_id:
+                    record["dep_hash"] = self._doc_inputs_hash(
+                        pid, state, provenance, provenance_ctx)
+                    self._save(pid, state)
+                    return True
+            return False
+
     def _proposal_doc(self, pid: str, record: dict) -> dict:
         doc = dict(record)
         # R09 前的记录无 dep_hash 键：读出统一补空串（空串=无指纹，与

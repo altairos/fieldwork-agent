@@ -42,6 +42,8 @@ export const TOOL_VISIBILITY: Record<string, ToolVisibility> = {
   // hidden：内部状态读写（每回合由 build_state_tools 注入，非用户交付物，正文自会解释）
   update_research_context: "hidden",
   get_project_brief: "hidden",
+  // P0-2：访谈对象登记是状态写入，右栏「访谈对象」面板已是唯一投影，时间线不重复渲染
+  save_informants: "hidden",
   // 内部地理管线（profile_field_site/行程内部调用，非用户交付物，spec C3）：
   // 快照以 amap_ 前缀落盘，hidden 后不进证据 tab（amap_text_search 除外）
   amap_geocode: "hidden",
@@ -86,6 +88,8 @@ export const TOOL_LABELS: Record<string, string> = {
   // 2 宿主层状态工具
   update_research_context: "研究信息写入",
   get_project_brief: "项目摘要查询",
+  // P0-2：采纳候选后落库（右栏面板投影已登记报道人）
+  save_informants: "访谈对象登记",
 };
 
 /** 取工具中文名；未登记的新能力回落原始工具名（绝不抛错）。 */

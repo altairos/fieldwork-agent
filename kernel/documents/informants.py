@@ -23,6 +23,12 @@ from pydantic import BaseModel, ValidationError
 # 候选数量上限（接口契约 data=1-6 类；prompt 要求 4-6 类，超限截断保底）
 MAX_CANDIDATES = 6
 
+# P0-2：suggest_informants 只返回候选、不落库。把“下一步必须保存”写进包络，
+# 与工具描述/系统引导三重保险，避免模型把“拿到候选”当成“已经存进项目”。
+SAVE_NEXT_ACTION = (
+    "候选未落库：只有用户已采纳的类型才调用 save_informants 写入项目；"
+    "未调用前不要对用户说「已存进项目/已落到项目里」。")
+
 
 class SuggestInformantsArgs(BaseModel):
     """``suggest_informants`` 的入参模型（``llm`` 注入参数不进 schema）。"""
@@ -87,7 +93,8 @@ def suggest_informants(research_topic: str, discipline: str = "",
     if llm is None:
         data = [InformantCandidate.model_validate(d)
                 for d in informant_lib.match_examples(research_topic)[:MAX_CANDIDATES]]
-        return Envelope(ok=True, data=data, degraded="参考起点，非完整覆盖")
+        return Envelope(ok=True, data=data, degraded="参考起点，非完整覆盖",
+                        next_action=SAVE_NEXT_ACTION)
     messages = [
         {"role": "system", "content": assets.generation_prompt("suggest_system")},
         {"role": "user", "content": _user_prompt(research_topic, discipline, site_profile)},
@@ -100,7 +107,7 @@ def suggest_informants(research_topic: str, discipline: str = "",
             message="模型返回未能解析出任何合法的访谈对象候选（期望 JSON 数组）",
             hint="可重试；或改走无 llm 降级路径获取示范库参考起点",
         ))
-    return Envelope(ok=True, data=candidates)
+    return Envelope(ok=True, data=candidates, next_action=SAVE_NEXT_ACTION)
 
 
 register(CapabilityMeta(
@@ -108,7 +115,8 @@ register(CapabilityMeta(
     description="为研究主题动态生成 1-6 类访谈对象候选（InformantCandidate）：有 llm 时以精选示范库"
                 "（INFORMANT_EXAMPLES，含提问示例 examples）JSON 体做 few-shot 质量锚并要求输出 JSON "
                 "数组，逐条 schema 校验、非法条目丢弃、全非法报 generation_invalid；无 llm 时按关键词"
-                "匹配示范库降级，degraded 标注“参考起点，非完整覆盖”。示范库不是枚举白名单。",
+                "匹配示范库降级，degraded 标注“参考起点，非完整覆盖”。示范库不是枚举白名单。"
+                "只返回候选、不落库；用户采纳后必须逐条调用 save_informants 写入，否则项目里没有访谈对象。",
     fn=suggest_informants,
     args_model=SuggestInformantsArgs,
 ))

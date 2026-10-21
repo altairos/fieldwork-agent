@@ -26,6 +26,9 @@ interface ConversationState {
   currentTurnId: string | null;
   lastUsage: Record<string, unknown>;
   quickReplyGroups: QuickReplyGroup[];   // 待作答的多组快捷选项（末条 assistant 携带；用户作答后清空）
+  /** P0-10：系统提示（上限触顶等）。只进提示条，绝不拼进 messages 正文。 */
+  notice: { code: string; message: string } | null;
+  dismissNotice: () => void;
   applyEvent: (ev: SseEvent) => void;
   pushUser: (text: string) => void;      // useTurn 发送时调用
   hydrate: (msgs: HydrateMessage[]) => void; // 刷新回填：拉 GET /messages 后覆盖式灌入
@@ -37,8 +40,17 @@ interface ConversationState {
   reset: () => void;
 }
 export const useConversationStore = create<ConversationState>()((set) => ({
-  messages: [], streamBuffer: "", turnRunning: false, hydrated: false, currentTurnId: null, lastUsage: {}, quickReplyGroups: [],
+  messages: [], streamBuffer: "", turnRunning: false, hydrated: false, currentTurnId: null, lastUsage: {}, quickReplyGroups: [], notice: null,
+  dismissNotice: () => set({ notice: null }),
   applyEvent: (ev) => set((st) => {
+    if (ev.event === "assistant_message_started") {
+      // P2-7：正文即将开始——“正在输入”状态从此刻就生效（不等首个 delta）
+      return { turnRunning: true };
+    }
+    if (ev.event === "system_notice") {
+      // P0-10：系统限制提示走旁路提示条；messages / streamBuffer 均不动
+      return { notice: { code: ev.code, message: ev.message } };
+    }
     if (ev.event === "message_delta") {
       return { streamBuffer: st.streamBuffer + ev.text, turnRunning: true };
     }
@@ -88,7 +100,7 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     const last = messages[messages.length - 1];
     return { messages, hydrated: true, quickReplyGroups: last?.role === "assistant" ? (last.quickReplyGroups ?? []) : [] };
   }),
-  beginTurn: () => set({ turnRunning: true, streamBuffer: "" }),
+  beginTurn: () => set({ turnRunning: true, streamBuffer: "", notice: null }),
   // POST /messages 失败（含 409）时由 useTurn 调用：末条若是刚 push 的 user 消息则弹出，
   // 并复位 turnRunning/streamBuffer，避免打字光标永久脉冲 + 对话流留下后端未接受的消息。
   // 只用于"回合未被接受"的场景；SSE 阶段的消息已被后端接受，绝不弹出。
@@ -109,5 +121,5 @@ export const useConversationStore = create<ConversationState>()((set) => ({
     return { messages: msgs, quickReplyGroups: [] };
   }),
   setCurrentTurn: (turnId) => set({ currentTurnId: turnId }),
-  reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, hydrated: false, currentTurnId: null, lastUsage: {}, quickReplyGroups: [] }),
+  reset: () => set({ messages: [], streamBuffer: "", turnRunning: false, hydrated: false, currentTurnId: null, lastUsage: {}, quickReplyGroups: [], notice: null }),
 }));

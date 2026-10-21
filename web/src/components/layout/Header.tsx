@@ -129,9 +129,10 @@ export function Header({
                 key={v.id}
                 type="button"
                 role="tab"
+                data-testid={`nav-${v.id}`}
                 aria-selected={view === v.id}
                 onClick={() => onNavigate?.(v.id)}
-                className={`px-2 sm:px-3 h-8 rounded-md border whitespace-nowrap shrink-0 transition ${
+                className={`px-2 sm:px-3 h-8 rounded-md border whitespace-nowrap shrink-0 cursor-pointer transition ${
                   view === v.id
                     ? "text-cinnabar border-cinnabar"
                     : "border-transparent text-inksoft hover:text-ink hover:bg-cardsunk"

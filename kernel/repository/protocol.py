@@ -177,12 +177,26 @@ class ProjectRepository(Protocol):
 
     def save_proposal(
         self, pid: str, markdown: str, kind: str = "proposal", version: str = "draft",
-        *, provenance_ctx: dict | None = None,
+        *, provenance_ctx: dict | None = None, provenance: dict | None = None,
     ) -> str:
         """落一份文档并登记，返回记录 id；重复保存不覆盖既有文件（版本累积）。
 
         N04：``provenance_ctx`` 非 None 时，依赖指纹的 ctx 路用生成时实际值
         （文档正文所本），而非保存时按当前仓储推测。
+        R02：``provenance`` 为正文五渠道实际输入（ctx/sites/informants/
+        knowledge/itinerary）；缺省渠道回落仓储现值。
+        """
+        ...
+
+    def update_proposal_dep_hash(
+        self, pid: str, doc_id: str, *, provenance: dict | None = None,
+        provenance_ctx: dict | None = None,
+    ) -> bool:
+        """P2-8：文档已即时落盘后，按最终 provenance 校正依赖指纹（不新增版本）。
+
+        工具完成即落盘解决“方案页短暂空态”；轮末行程/快照解析完成后，同一
+        文档的 dep_hash 需要与确认时的口径对齐——只更新指纹，不重复插入。
+        文档不存在返回 ``False``。
         """
         ...
 

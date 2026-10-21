@@ -117,6 +117,8 @@ def _summarize(name: str, env: Envelope) -> dict:
         out["source_usage"] = env.usage
     if env.degraded:
         out["degraded"] = env.degraded
+    if env.next_action:
+        out["next_action"] = env.next_action
     if not env.ok:
         out["error"] = _error_dict(env)
         return out

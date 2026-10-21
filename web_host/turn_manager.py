@@ -1,6 +1,7 @@
 """R4 回合生命周期核心：状态机 / 幂等 / 写锁 / 事件持久化 / 回放 / 订阅。"""
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -28,6 +29,11 @@ TERMINAL_RETENTION = 30 * 60.0
 # 按 Last-Event-ID 重连后从 events.jsonl 回放，不丢事件；无界队列则会被
 # 慢客户端拖成内存泄漏。
 SUBSCRIBER_QUEUE_MAX = 256
+
+# P0-3：running 回合多久没有任何事件活动即判定僵死。工具已有 120s 硬超时、
+# 回合总墙钟 180s，正常回合不可能静默 10 分钟；阈值放宽是为了绝不误杀
+# 「长 LLM 调用 + 轮末持久化」这类已经接近上限但仍在推进的回合。
+STALE_RUNNING_SECONDS = 600.0
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -61,6 +67,12 @@ class TurnHandle:
     finished_at: float | None = None      # A02：进入终态的时间，供回收判定
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     seq_counter: int = 0
+    # P0-3：承载本回合的协程任务。cancel() 直接 task.cancel() 才能让阻塞中的
+    # 回合真正退出并释放项目写锁（此前只置 cancel_event，卡在工具里的协程不检查它，
+    # 于是 tm.finish 永不执行、下一条消息永远 409）。
+    task: asyncio.Task | None = None
+    # P0-3：最近一次事件活动时间，供僵死回收判定（append_event/finish 都会刷新）。
+    last_activity: float = field(default_factory=time.time)
 
 
 class TurnManager:
@@ -138,6 +150,7 @@ class TurnManager:
         turn_dir = self._turn_dir(pid, tid, containment=False)
         handle = self._turns[f"{pid}:{tid}"]
         handle.seq_counter += 1
+        handle.last_activity = time.time()
         envelope = EventEnvelope(
             turn_id=tid, seq=handle.seq_counter, event=event, data=data
         )
@@ -174,6 +187,7 @@ class TurnManager:
             return
         handle.status = status
         handle.finished_at = time.time()
+        handle.last_activity = handle.finished_at
         self._write_meta(handle)
         self._broadcast(pid, tid, None)
 
@@ -204,13 +218,51 @@ class TurnManager:
         return len(dead)
 
     def cancel(self, pid: str, tid: str) -> bool:
-        """取消回合；已终态则返回 False。"""
+        """取消回合；已终态则返回 False。
+
+        P0-3：先置 cancel_event（让协作式检查尽快退出），再 ``task.cancel()``
+        打断阻塞在工具/LLM await 上的回合，最后无条件置终态——三步齐全才能
+        保证写锁随 `_execute_turn` 的 `async with` 退出而释放。
+        """
         handle = self._turns.get(f"{pid}:{tid}")
         if handle is None or handle.status in TERMINAL_STATUSES:
             return False
         handle.cancel_event.set()
+        self._abort_task(handle)
         self.finish(pid, tid, "cancelled")
         return True
+
+    def reap_stale_running(self, pid: str, *,
+                           stale_after: float = STALE_RUNNING_SECONDS) -> list[str]:
+        """把长时间无事件的 running 回合判死（P0-3 兜底），返回被回收的 turn_id。
+
+        取消接口正常工作时走不到这里；它防的是「取消没打到 / 工具绕过了超时」
+        这类只在进程内可见的僵死——否则用户只能等进程重启的 recover_interrupted。
+        """
+        now = time.time()
+        stale: list[str] = []
+        for key, handle in list(self._turns.items()):
+            if not key.startswith(f"{pid}:") or handle.status in TERMINAL_STATUSES:
+                continue
+            if now - handle.last_activity <= stale_after:
+                continue
+            with contextlib.suppress(Exception):
+                self.append_event(pid, handle.turn_id, "error", {
+                    "code": "turn_stalled",
+                    "message": f"回合超过 {int(stale_after)} 秒无任何活动，已判定僵死并终止",
+                    "hint": "本轮已释放；如需继续，请重新发送消息"})
+            handle.cancel_event.set()
+            self._abort_task(handle)
+            self.finish(pid, handle.turn_id, "failed")
+            stale.append(handle.turn_id)
+        return stale
+
+    @staticmethod
+    def _abort_task(handle: TurnHandle) -> None:
+        """取消承载该回合的协程任务（未注册任务时静默跳过）。"""
+        task = handle.task
+        if task is not None and not task.done():
+            task.cancel()
 
     def cancel_all(self, pid: str) -> int:
         """取消该项目全部 running 回合（删除项目前调用，让后台 loop 尽快退出）；
