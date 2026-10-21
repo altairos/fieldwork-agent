@@ -175,6 +175,12 @@ A→B 看必填定位字段；B→C 需 confirmed 田野点 + ≥1 访谈对象�
 `state.json` · `chat_history.jsonl`（全量单轨，state 内只留 50 条窗口）· `knowledge/*.json` ·
 `search_cache/*.json` · `output/proposal_*.md`。
 
+**访谈对象登记**（`runtime/informants.py`）：编号按既有 `INF-xx` 最大值 +1 生成，
+读-算号-写在项目级进程内锁内串行（对话工具与右栏 REST 共用）。工具路径按档案指纹
+（`type/relation/contact/notes`）去重，完全相同的候选跳过；REST「采纳登记」是用户
+逐条点击，传 `dedupe=False`——同一候选点两次仍生成两条，服务端不替用户判断“是不
+是同一个人”。
+
 ---
 
 ## 5. 扩展点

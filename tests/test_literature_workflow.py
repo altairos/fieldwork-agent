@@ -102,8 +102,13 @@ def test_duplicate_query_guard_allows_distinct_and_uncovered():
     assert guarded("search_ai", {"query": "大理 民宿"}).ok       # 工具不同
     assert guarded("amap_text_search", {"keywords": "卫生院", "city": "大理"}).ok
     assert guarded("amap_text_search", {"keywords": "卫生院", "city": "丽江"}).ok
-    assert guarded("search_hotels", {"dest_name": "大理"}).ok
     assert guarded("search_hotels", {"dest_name": "大理"}).ok     # 未覆盖，不拦
+
+
+def test_guard_does_not_overlap_research_binding():
+    """P2-4：守卫覆盖的 4 个原语与 bind_research_searches 的 search_literature 不相交，
+    因此包装先后不影响判重（Web 侧 bind 在外层，CLI 侧在内层）。"""
+    assert "search_literature" not in DuplicateQueryGuard._QUERY_FIELDS
 
 
 def test_budget_blocks_repeats_and_reserves_return_slots():

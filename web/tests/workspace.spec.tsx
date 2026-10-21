@@ -9,6 +9,11 @@ import { useUiStore } from "../src/stores/ui";
 import { useAuthStore } from "../src/stores/auth";
 import type { ProjectSnapshot } from "../src/types/models";
 
+/** P1-5 深链测试只看路由重定向：替身方案页避免额外 REST 与 lazy 加载干扰。 */
+vi.mock("../src/routes/ProposalView", () => ({
+  ProposalView: () => <div data-testid="proposal-view-stub" />,
+}));
+
 /**
  * Workspace 接线集成测试（App.tsx，Task 7 的接线部分）。
  *
@@ -81,6 +86,17 @@ afterEach(() => {
 });
 
 describe("Workspace 接线（App.tsx）", () => {
+  test("P1-5：?view=proposal 深链重定向到 /p/:id/proposal 并进入方案页", async () => {
+    window.history.pushState({}, "", "/p/p1?view=proposal");
+    stubFetch({ rest: SNAP });
+    render(<App />);
+
+    // replace 后查询串清空，浏览器前进/后退不再回到工作台视图切页
+    await waitFor(() => expect(window.location.pathname).toBe("/p/p1/proposal"));
+    expect(window.location.search).toBe("");
+    expect(await screen.findByTestId("proposal-view-stub")).toBeInTheDocument();
+  });
+
   test("挂载即拉取项目快照，中栏对话流与右栏面板就位", async () => {
     const fn = stubFetch({ rest: SNAP });
     render(<App />);

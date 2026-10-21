@@ -52,6 +52,18 @@ describe("tools store 幂等", () => {
 });
 
 describe("conversation store 流式拼接", () => {
+  test("P2-7：assistant_message_started 立刻置 turnRunning，不等首个 delta", () => {
+    const s = useConversationStore.getState();
+    s.pushUser("帮我看看");
+    expect(useConversationStore.getState().turnRunning).toBe(false);
+
+    s.applyEvent(ev({ event: "assistant_message_started" }));
+    const after = useConversationStore.getState();
+    expect(after.turnRunning).toBe(true);      // 打字光标从此刻生效
+    expect(after.streamBuffer).toBe("");      // 尚未有正文，不伪造内容
+    expect(after.messages.at(-1)?.role).toBe("user");
+  });
+
   test("message_delta×3 拼接 + turn_done 定格", () => {
     const s = useConversationStore.getState();
     s.applyEvent(ev({ event: "message_delta", text: "正在" }));

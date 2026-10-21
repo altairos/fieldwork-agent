@@ -69,3 +69,20 @@ def test_build_messages_always_keeps_min_recent_messages(repo, monkeypatch):
     assert len(history) >= context_mod.HISTORY_MIN_MESSAGES
     # 保留的必须是最近的，不丢最新上下文
     assert history[-1]["content"] == "a5"
+
+
+def test_build_messages_filters_non_dialogue_roles(repo, monkeypatch):
+    """P3-6：旧史里混入的 system/tool 记录不得进 prompt（只留 user/assistant）。"""
+    repo.create("p")
+    monkeypatch.setattr(repo, "get_messages", lambda pid, limit=30: [
+        {"role": "system", "content": "旧系统提示"},
+        {"role": "user", "content": "q1"},
+        {"role": "tool", "content": "工具中间结果"},
+        {"role": "assistant", "content": "a1"},
+    ])
+
+    msgs = build_messages(repo, "p", "当前问题", "research_positioning")
+
+    history = msgs[1:-2]
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert [m["content"] for m in history] == ["q1", "a1"]

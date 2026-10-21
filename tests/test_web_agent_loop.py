@@ -581,6 +581,50 @@ def test_cancel_skips_end_of_turn_side_effects(env):
     assert not repo.get_research_context("p1").get("topic")
 
 
+def test_cancel_after_document_completed_keeps_document(env):
+    """P3-1 例外：已完成并即时落盘的文档不因后续取消撤回。
+
+    与 ``test_cancel_skips_end_of_turn_side_effects`` 互补：那里没有已落盘产物，
+    这里先完成 compose_proposal、再在下一段流中取消——成稿保留，残缺回复与
+    本轮暂存 patch 仍丢弃。
+    """
+    repo, tm = env
+    turn = tm.create_turn("p1")
+
+    class DocThenCancelLLM(ChatFakeLLM):
+        def __init__(self, script, manager, tid):
+            super().__init__(script)
+            self._tm, self._tid = manager, tid
+
+        def chat_stream(self, messages, **kw):
+            self.calls.append((list(messages), kw))
+            if len(self.calls) > 1:
+                def _gen():
+                    yield {"delta": "补充说明"}
+                    self._tm.cancel("p1", self._tid)
+                    yield {"content": "补充说明", "tool_calls": None,
+                           "finish_reason": "stop", "usage": {}}
+                return _gen()
+            return iter(self.script.pop(0))
+
+    llm = DocThenCancelLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_proposal",
+                                          "arguments": _PROPOSAL_ARGS}],
+          "finish_reason": "tool_calls", "usage": {}}],
+    ], tm, turn.turn_id)
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id,
+                         "我想研究大理的宗族变迁，预算2万", tm, llm, FakeFlyAI()))
+
+    assert tm.get_turn("p1", turn.turn_id).status == "cancelled"
+    assert len(repo.list_proposals("p1")) == 1          # 完整成稿保留
+    assert repo.list_proposals("p1")[0]["kind"] == "proposal"
+    # 残缺回复不入史；本轮抽取（预算）随 buffer 丢弃
+    assert [m["role"] for m in repo.get_messages("p1", limit=0)] == ["user"]
+    assert not repo.get_research_context("p1").get("budget")
+
+
 class CancelThenToolCallLLM:
     """N13：首帧 delta 流出后取消，随后终帧携带 tool_calls——取消后不得再启动工具。"""
     def __init__(self, tm, pid, tid):
@@ -759,6 +803,33 @@ def test_compose_interview_guide_persisted(env):
     assert docs[0]["kind"] == "interview_guide"
     doc = repo.get_proposal_by_id("p1", docs[0]["id"])
     assert "## 宗族长老" in doc["content"]
+
+
+def test_interview_guide_persisted_before_turn_end_and_not_duplicated(env):
+    """P3-6：guide 与方案同样即时落盘，轮末只校正指纹、不重复插入。"""
+    repo, tm = env
+    seen_counts: list[int] = []
+
+    def final_stream():
+        seen_counts.append(len(repo.list_proposals("p1")))
+        yield {"delta": "提纲已生成"}
+        yield {"content": "提纲已生成", "tool_calls": None,
+               "finish_reason": "stop", "usage": {}}
+
+    llm = ChatFakeLLM([
+        [{"delta": ""},
+         {"content": "", "tool_calls": [{"id": "c1", "name": "compose_interview_guide",
+                                          "arguments": {"topic": "宗族变迁",
+                                                        "informant_types": ["宗族长老"]}}],
+          "finish_reason": "tool_calls", "usage": {}}],
+        final_stream(),
+    ])
+    turn = tm.create_turn("p1")
+    from fieldwork_agent.web_host.agent.loop import run_turn
+    asyncio.run(run_turn(repo, "p1", turn.turn_id, "生成访谈提纲", tm, llm, FakeFlyAI()))
+
+    assert seen_counts == [1]                    # 轮次未结束时就已可读
+    assert len(repo.list_proposals("p1")) == 1   # 轮末不重复插入
 
 
 # ---------------------------------------------------------------- 快照链（spec §5.1）
@@ -3097,9 +3168,9 @@ def test_turn_compacts_early_tool_results_before_next_llm_call(env, monkeypatch)
 
 
 def test_phase_scoped_tools_sent_to_llm(env):
-    """P1-b：研究定位阶段不下发交通工具；state tools / 通用搜索 / 方案工具常驻。
+    """P1-b：定位阶段的工具面：状态/搜索/方案/交通常驻，重活仍按阶段裁剪。
 
-    P2-8：compose_proposal 常驻——用户可在任何阶段明确要求“直接生成方案”。
+    P2-8：compose_proposal 与交通检索常驻——用户在任何阶段明确要求时不能无工具。
     """
     repo, tm = env
     llm = FakeLLM([[{"delta": "好"},
@@ -3110,8 +3181,10 @@ def test_phase_scoped_tools_sent_to_llm(env):
     asyncio.run(run_turn(repo, "p1", turn.turn_id, "hi", tm, llm, FakeFlyAI()))
     names = {s["function"]["name"] for s in llm.calls[0][1]["tools"]}
     assert {"get_project_brief", "update_research_context", "search_literature"} <= names
-    assert "search_trains" not in names
-    assert "compose_proposal" in names
+    assert {"compose_proposal", "search_flights", "search_trains"} <= names
+    # 阶段专属重活仍不下发：定位阶段不做画像/行程生成
+    assert "compose_itinerary" not in names
+    assert "profile_field_site" not in names
 
 
 def test_itinerary_phase_sends_travel_tools(env):

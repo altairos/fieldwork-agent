@@ -240,3 +240,22 @@ def test_get_project_brief_sees_staged_informants(env):
     brief = handlers["get_project_brief"]().data["brief"]
     assert "访谈对象：（无）" not in brief
     assert "访谈对象 1 位：INF-01" in brief
+
+
+def test_register_informants_concurrent_codes_are_unique(env):
+    """P2-1：并发登记（工具与右栏同时提交）在项目锁内串行，编号不撞车。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fieldwork_agent.runtime.informants import register_informants
+
+    repo, _ = env
+
+    def register(index: int) -> dict:
+        return register_informants(repo, "p1", [{"type": f"村干部{index}"}])
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(register, range(8)))
+
+    assert all(result["saved"] for result in results)
+    codes = sorted(record["code"] for record in repo.list_informants("p1"))
+    assert codes == [f"INF-{index:02d}" for index in range(1, 9)]

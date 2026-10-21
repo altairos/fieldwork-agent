@@ -15,8 +15,9 @@ export interface MessageDelta {
 }
 
 /** P2-7：助手正文即将开始的信号（每回合一次，先于首个 message_delta）。
- *  录制/自动化据此判断“首条回复已开始”，不再靠页面文本猜测。 */
-export type AssistantMessageStarted = Record<string, never>;
+ *  录制/自动化据此判断“首条回复已开始”，不再靠页面文本猜测。
+ *  `Record<never, never>`：无字段，也不给交叉类型引入 `event: never` 的索引约束。 */
+export type AssistantMessageStarted = Record<never, never>;
 
 /** 工具调用开始事件。 */
 export interface ToolStarted {

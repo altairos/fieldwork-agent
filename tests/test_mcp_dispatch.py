@@ -286,6 +286,18 @@ def test_envelope_dict_json_serializable_and_keeps_degraded():
     assert dumped["data"]["items"][0]["name"] == "古城客栈"
 
 
+def test_envelope_next_action_is_host_neutral():
+    """P2-3：MCP 包络原样输出 next_action——不得写死 Web 工具名。"""
+    from fieldwork_agent.kernel.documents.informants import SAVE_NEXT_ACTION, suggest_informants
+
+    env = suggest_informants("宗族变迁")
+    assert env.ok and env.next_action == SAVE_NEXT_ACTION
+    dumped = dispatch.envelope_dict(env)
+    assert "保存访谈对象" in dumped["next_action"]
+    # 子串匹配同时覆盖 MCP 的 save_informant 与 Web/CLI 的 save_informants
+    assert "save_informant" not in dumped["next_action"]
+
+
 def test_business_failure_envelope_passes_through_untouched(monkeypatch):
     """终审④：``ok=False`` 的业务包络必须原样透传，不得被改写成协议级错误码。
 

@@ -4,15 +4,18 @@ from fieldwork_agent.kernel.registry import build_tool_schemas
 from fieldwork_agent.runtime.tool_scopes import filter_tool_schemas, phase_tool_names
 
 
-def test_research_positioning_scope_is_minimal():
+def test_research_positioning_scope_keeps_explicit_requests():
+    """P2-8：阶段 A 仍保留方案/交通——用户明确要求时不能“没有这个工具”。"""
     names = phase_tool_names("research_positioning")
     assert {"update_research_context", "get_project_brief",
             "search_literature", "suggest_informants"} <= names
-    # 交通工具不属于研究定位阶段
-    assert "search_trains" not in names
-    assert "search_flights" not in names
-    # P2-8：方案生成常驻——用户可在任何阶段明确要求“直接生成方案”
+    # 定位阶段问“怎么去/先查航班”是常见场景（尤其境外田野）
+    assert {"search_flights", "search_trains"} <= names
+    # 方案生成常驻——用户可在任何阶段明确要求“直接生成方案”
     assert "compose_proposal" in names
+    # 但阶段专属的重活仍不提前给：裁剪仍然有意义
+    assert "compose_itinerary" not in names
+    assert "profile_field_site" not in names
 
 
 def test_field_site_phase_has_geo_tools():
@@ -32,7 +35,9 @@ def test_itinerary_phase_has_travel_tools():
 def test_proposal_phase_has_doc_tools():
     names = phase_tool_names("proposal_generation")
     assert {"compose_proposal", "compose_interview_guide"} <= names
-    assert "search_trains" not in names
+    # 交通已常驻（P2-8），但住宿/万豪检索仍只留到行程阶段——裁剪仍有效
+    assert "search_hotels" not in names
+    assert "search_marriott_hotels" not in names
 
 
 def test_unknown_phase_falls_back_to_full_set():

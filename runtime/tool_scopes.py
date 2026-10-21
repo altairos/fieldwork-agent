@@ -2,7 +2,7 @@
 
 `build_tool_schemas()` 仍是全量单一来源（MCP/CLI 不变）；web 宿主在
 `run_turn` 里按当前 phase 过滤，把 32 个工具（23 能力 + 9 状态，约 28.6k
-字符）压到 10–23 个，固定开销平均降约 35%。未知 phase 回落全量——阶段字段
+字符）压到 12–22 个，固定开销平均降约 35%。未知 phase 回落全量——阶段字段
 异常不能让工具全空。
 
 不裁剪 guidance：收益（约 5k 字符）低于能力损失风险（如行程阶段仍可能
@@ -15,6 +15,8 @@ from __future__ import annotations
 # state tools（不在 registry），列在这里表示“永远不被过滤”的语义锚点。
 # P2-8：compose_proposal 常驻——用户在阶段 A/B 明确说“直接帮我生成方案”时，
 # 按阶段裁剪会让模型手里没有这个工具，只能反复解释“还没到阶段”。
+# 同理，search_flights/search_trains 常驻：用户在定位阶段就问“先查航班/火车”
+# 是常见场景（尤其境外田野），没有工具只能让用户等到行程阶段。
 # search_pois 是旅行 POI 检索（不是学术/通用搜索），常驻是因为任何阶段都
 # 可能需要确认田野点周边设施。
 UNIVERSAL_TOOL_NAMES = frozenset({
@@ -28,6 +30,8 @@ UNIVERSAL_TOOL_NAMES = frozenset({
     "compose_interview_guide",
     "compose_proposal",
     "search_pois",
+    "search_flights",
+    "search_trains",
 })
 
 _PHASE_TOOLS: dict[str, frozenset[str]] = {
@@ -40,7 +44,8 @@ _PHASE_TOOLS: dict[str, frozenset[str]] = {
         "amap_text_search", "amap_around_search", "amap_weather",
         "estimate_living_cost", "plan_last_mile", "search_hotels",
     }),
-    # 行程规划：交通/住宿/路线/时窗/行程生成
+    # 行程规划：交通/住宿/路线/时窗/行程生成（交通两件已常驻，此处保留表达
+    # “行程阶段工具面”的完整性；并集去重后不重复计入）
     "itinerary_planning": frozenset({
         "search_trains", "search_flights", "search_hotels",
         "search_marriott_hotels", "search_marriott_packages",

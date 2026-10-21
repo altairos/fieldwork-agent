@@ -19,6 +19,9 @@ class DuplicateQueryGuard:
 
     P2-4：签名只在**成功返回后**记账（失败回滚）——网络/上游瞬时失败后同一
     查询必须可重试；否则提示「请使用已有结果」时手里根本没有结果。
+
+    守卫只覆盖下列 4 个搜索原语，不含 ``search_literature``（后者由
+    ``bind_research_searches`` 处理），故与包装先后无关。
     """
 
     _QUERY_FIELDS = {

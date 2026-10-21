@@ -256,6 +256,9 @@ def run_tool_loop(llm: Any, messages: list[dict],
     else:
         budget.deadline = min(budget.deadline, time.monotonic() + max_wall_seconds)
     dispatch = LiteratureSearchBudget().wrap(dispatch)
+    # P2-4：守卫只覆盖 keyword/ai/amap_text/pois 四个原语，与
+    # bind_research_searches 处理的 search_literature 不相交；包装先后不影响判重
+    # （Web 侧 bind 在外层，CLI 侧在内层，见 runtime/research_workflow.py）。
     dispatch = DuplicateQueryGuard().wrap(dispatch)
     tool_events: list[dict] = []
     iterations = 0
